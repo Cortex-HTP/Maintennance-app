@@ -2153,9 +2153,9 @@
       var COL_W = 28;
       var _cm = useState(new Date());
       var currentMonth = _cm[0]; var setCurrentMonth = _cm[1];
-      var _at = useState("declarations");
+      var _at = useState("chantiers");
       var activeTab = _at[0]; var setActiveTab = _at[1];
-      var _vm = useState("timeline");
+      var _vm = useState("annuel");
       var viewMode = _vm[0]; var setViewMode = _vm[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
@@ -2298,7 +2298,7 @@
       var stateRef = React.useRef(planState);
       stateRef.current = planState;
 
-      var dragRef = React.useRef({ dragging: false, itemId: null, dragType: null, startX: 0, tab: null, daysInMonth: 31 });
+      var dragRef = React.useRef({ dragging: false, itemId: null, dragType: null, startX: 0, tab: null, daysInMonth: 31, annuel: false, containerWidth: 0, totalDaysYear: 365 });
 
       var handleDragStart = function(e, itemId, dragType, tab) {
         e.preventDefault();
@@ -2316,6 +2316,42 @@
         info.startX = e.clientX;
         info.tab = tab;
         info.daysInMonth = daysInMonth;
+        info.annuel = false;
+
+        if (tab === "chantiers") {
+          var ch = st.chantiers.find(function(c) { return c.id === itemId; });
+          if (ch) { info.origDebut = ch.dateDebut; info.origFin = ch.dateFin; }
+        } else if (tab === "declarations") {
+          var decl = st.declarations.find(function(dd) { return dd.id === itemId; });
+          if (decl) { info.origDate = decl.dateEcheance; }
+        } else if (tab === "renouvellements") {
+          var ren = st.renouvellements.find(function(r) { return r.id === itemId; });
+          if (ren) { info.origDate = ren.dateExpiration; }
+        }
+        document.body.style.cursor = dragType === "move" ? "grabbing" : "ew-resize";
+        document.body.style.userSelect = "none";
+      };
+
+      var handleDragStartAnnuel = function(e, itemId, dragType, tab) {
+        e.preventDefault();
+        e.stopPropagation();
+        var rowEl = e.target.closest("[data-annuel-row]");
+        if (!rowEl) return;
+        var timelineEl = rowEl.querySelector("[data-annuel-timeline]");
+        if (!timelineEl) return;
+        var st = stateRef.current;
+        var year = st.currentMonth.getFullYear();
+        var totalDaysYear = ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
+
+        var info = dragRef.current;
+        info.dragging = true;
+        info.itemId = itemId;
+        info.dragType = dragType;
+        info.startX = e.clientX;
+        info.tab = tab;
+        info.annuel = true;
+        info.containerWidth = timelineEl.offsetWidth;
+        info.totalDaysYear = totalDaysYear;
 
         if (tab === "chantiers") {
           var ch = st.chantiers.find(function(c) { return c.id === itemId; });
@@ -2336,36 +2372,83 @@
           var info = dragRef.current;
           if (!info.dragging) return;
           var deltaX = e.clientX - info.startX;
-          var deltaDays = Math.round(deltaX / COL_W);
+          var deltaDays;
+          if (info.annuel) {
+            var pxPerDay = info.containerWidth / info.totalDaysYear;
+            deltaDays = Math.round(deltaX / pxPerDay);
+          } else {
+            deltaDays = Math.round(deltaX / COL_W);
+          }
           if (deltaDays === 0) return;
           var st = stateRef.current;
           var month = st.currentMonth;
           var daysInMonth = info.daysInMonth;
 
+          if (info.annuel) {
+            // Mode annuel : deplacer la date absolue de deltaDays
+            if (info.tab === "declarations") {
+              var origD = parseDate(info.origDate);
+              var newDate = new Date(origD.getTime() + deltaDays * 86400000);
+              var updDecls = st.declarations.map(function(d) {
+                if (d.id === info.itemId) { return Object.assign({}, d, { dateEcheance: formatDateISO(newDate) }); }
+                return d;
+              });
+              setDeclarations(updDecls);
+            }
+            if (info.tab === "renouvellements") {
+              var origR = parseDate(info.origDate);
+              var newDateR = new Date(origR.getTime() + deltaDays * 86400000);
+              var updRen = st.renouvellements.map(function(r) {
+                if (r.id === info.itemId) { return Object.assign({}, r, { dateExpiration: formatDateISO(newDateR) }); }
+                return r;
+              });
+              setRenouvellements(updRen);
+            }
+            if (info.tab === "chantiers") {
+              var origDebA = parseDate(info.origDebut);
+              var origFinA = parseDate(info.origFin);
+              if (info.dragType === "move") {
+                var durA = Math.round((origFinA - origDebA) / 86400000);
+                var newDebA = new Date(origDebA.getTime() + deltaDays * 86400000);
+                var newFinA = new Date(newDebA.getTime() + durA * 86400000);
+                setChantiers(st.chantiers.map(function(c) { return c.id === info.itemId ? Object.assign({}, c, { dateDebut: formatDateISO(newDebA), dateFin: formatDateISO(newFinA) }) : c; }));
+              } else if (info.dragType === "resize-start") {
+                var newDebRA = new Date(origDebA.getTime() + deltaDays * 86400000);
+                if (newDebRA >= origFinA) newDebRA = new Date(origFinA.getTime() - 86400000);
+                setChantiers(st.chantiers.map(function(c) { return c.id === info.itemId ? Object.assign({}, c, { dateDebut: formatDateISO(newDebRA) }) : c; }));
+              } else if (info.dragType === "resize-end") {
+                var newFinRA = new Date(origFinA.getTime() + deltaDays * 86400000);
+                if (newFinRA <= origDebA) newFinRA = new Date(origDebA.getTime() + 86400000);
+                setChantiers(st.chantiers.map(function(c) { return c.id === info.itemId ? Object.assign({}, c, { dateFin: formatDateISO(newFinRA) }) : c; }));
+              }
+            }
+            return;
+          }
+
           if (info.tab === "declarations") {
-            var origD = parseDate(info.origDate);
-            var newDay = origD.getDate() + deltaDays;
+            var origDM = parseDate(info.origDate);
+            var newDay = origDM.getDate() + deltaDays;
             if (newDay < 1) newDay = 1;
             if (newDay > daysInMonth) newDay = daysInMonth;
             var newDateStr = dayToDateStr(newDay, month);
-            var updDecls = st.declarations.map(function(d) {
+            var updDeclsM = st.declarations.map(function(d) {
               if (d.id === info.itemId) { return Object.assign({}, d, { dateEcheance: newDateStr }); }
               return d;
             });
-            setDeclarations(updDecls);
+            setDeclarations(updDeclsM);
           }
 
           if (info.tab === "renouvellements") {
-            var origR = parseDate(info.origDate);
-            var newDayR = origR.getDate() + deltaDays;
+            var origRM = parseDate(info.origDate);
+            var newDayR = origRM.getDate() + deltaDays;
             if (newDayR < 1) newDayR = 1;
             if (newDayR > daysInMonth) newDayR = daysInMonth;
             var newDateStrR = dayToDateStr(newDayR, month);
-            var updRen = st.renouvellements.map(function(r) {
+            var updRenM = st.renouvellements.map(function(r) {
               if (r.id === info.itemId) { return Object.assign({}, r, { dateExpiration: newDateStrR }); }
               return r;
             });
-            setRenouvellements(updRen);
+            setRenouvellements(updRenM);
           }
 
           if (info.tab === "chantiers") {
@@ -2450,31 +2533,43 @@
       // ── Vue Annuelle (12 mois) ──
       function renderAnnuel() {
         var year = currentMonth.getFullYear();
-        var moisNoms = ["Jan", "Fev", "Mar", "Avr", "Mai", "Jun", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
+        var moisNoms = ["Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin", "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre"];
+        var moisCourts = ["Jan", "Fev", "Mar", "Avr", "Mai", "Jun", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
         var today = new Date(); today.setHours(0, 0, 0, 0);
         var yearStart = new Date(year, 0, 1);
         var yearEnd = new Date(year, 11, 31);
         var totalDays = Math.round((yearEnd - yearStart) / 86400000) + 1;
-        var COL_MONTH_W = 80;
-        var totalWidth = COL_MONTH_W * 12;
 
-        function dateToPx(d) {
+        function dateToPct(d) {
           var date = new Date(d);
           if (date < yearStart) return 0;
-          if (date > yearEnd) return totalWidth;
+          if (date > yearEnd) return 100;
           var dayOfYear = Math.round((date - yearStart) / 86400000);
-          return Math.round((dayOfYear / totalDays) * totalWidth);
+          return (dayOfYear / totalDays) * 100;
         }
 
-        var todayPx = (today.getFullYear() === year) ? dateToPx(today) : -1;
+        var todayPct = (today.getFullYear() === year) ? dateToPct(today) : -1;
 
-        // Headers mois
-        var monthHeaders = moisNoms.map(function(nom, idx) {
+        // Grid lines pour separateurs de mois
+        var monthLines = [];
+        for (var m = 1; m < 12; m++) {
+          var lineDate = new Date(year, m, 1);
+          var pct = dateToPct(lineDate);
+          monthLines.push(h("div", { key: "ml" + m, style: { position: "absolute", left: pct + "%", top: 0, bottom: 0, width: 1, background: "#e5e7eb", zIndex: 1 } }));
+        }
+
+        // Header avec noms de mois
+        var monthHeaderCells = moisCourts.map(function(nom, idx) {
           var isCurrentMonth = (today.getFullYear() === year && today.getMonth() === idx);
-          return h("div", { key: "mh" + idx, style: { width: COL_MONTH_W, textAlign: "center", fontSize: 11, fontWeight: isCurrentMonth ? 700 : 500, color: isCurrentMonth ? "#7c3aed" : "#6b7280", padding: "6px 0", borderRight: "1px solid #e5e7eb", flexShrink: 0 } }, nom);
+          var startPct = dateToPct(new Date(year, idx, 1));
+          var endPct = idx < 11 ? dateToPct(new Date(year, idx + 1, 1)) : 100;
+          var widthPct = endPct - startPct;
+          return h("div", { key: "mhc" + idx, style: { position: "absolute", left: startPct + "%", width: widthPct + "%", textAlign: "center", fontSize: 11, fontWeight: isCurrentMonth ? 700 : 500, color: isCurrentMonth ? "#7c3aed" : "#64748b", padding: "10px 0", letterSpacing: "0.5px" } }, nom);
         });
 
         var rows = [];
+        var rowHeight = 44;
+        var barHeight = 26;
 
         if (activeTab === "declarations") {
           var declsYear = declarations.filter(function(d) {
@@ -2483,19 +2578,25 @@
             return dd.getFullYear() === year;
           });
           declsYear.sort(function(a, b) { return parseDate(a.dateEcheance) - parseDate(b.dateEcheance); });
-          declsYear.forEach(function(decl) {
+          declsYear.forEach(function(decl, idx) {
             var dd = parseDate(decl.dateEcheance);
-            var leftPx = dateToPx(dd);
-            var barColor = decl.status === "Fait" ? "#059669" : "#d97706";
-            rows.push(h("div", { key: "ar" + decl.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
-              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, decl.titre),
-              h("div", { style: { position: "relative", flex: 1, height: 28 } },
-                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
-                h("div", { style: { position: "absolute", left: leftPx - 5, top: 8, width: 12, height: 12, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }, title: decl.titre + " - " + formatDateFr(decl.dateEcheance) + " - " + fmtMoney(decl.montant) })
+            var leftPct = dateToPct(dd);
+            var barColor = decl.status === "Fait" ? "#10b981" : "#f59e0b";
+            var bgColor = idx % 2 === 0 ? "#ffffff" : "#fafbfc";
+            var isDragging = dragRef.current.dragging && dragRef.current.itemId === decl.id;
+            rows.push(h("div", { key: "ar" + decl.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "#f0f9ff" : bgColor, borderBottom: "1px solid #f1f5f9" } },
+              h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid #e2e8f0" } },
+                h("div", null, decl.titre),
+                h("div", { style: { fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 } }, fmtMoney(decl.montant) + " - " + formatDateFr(decl.dateEcheance))
+              ),
+              h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
+                monthLines.map(function(line) { return line; }),
+                todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
+                h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, decl.id, "move", "declarations"); }, style: { position: "absolute", left: "calc(" + leftPct + "% - 7px)", top: (rowHeight - 14) / 2, width: 14, height: 14, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: isDragging ? "0 4px 12px rgba(0,0,0,0.3)" : "0 2px 6px rgba(0,0,0,0.15)", zIndex: 3, cursor: "grab", transition: "box-shadow 0.15s" }, title: decl.titre + " - " + formatDateFr(decl.dateEcheance) + " - " + fmtMoney(decl.montant) })
               )
             ));
           });
-          if (declsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucune declaration cette annee"));
+          if (declsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 } }, "Aucune declaration pour " + year));
         }
 
         if (activeTab === "renouvellements") {
@@ -2505,20 +2606,26 @@
             return dd.getFullYear() === year;
           });
           rensYear.sort(function(a, b) { return parseDate(a.dateExpiration) - parseDate(b.dateExpiration); });
-          rensYear.forEach(function(ren) {
+          rensYear.forEach(function(ren, idx) {
             var dd = parseDate(ren.dateExpiration);
-            var leftPx = dateToPx(dd);
+            var leftPct = dateToPct(dd);
             var status = computeRenouvellementStatus(ren);
-            var barColor = status === "Expire" ? "#dc2626" : status === "Expire bientot" ? "#d97706" : "#059669";
-            rows.push(h("div", { key: "ar" + ren.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
-              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ren.titre),
-              h("div", { style: { position: "relative", flex: 1, height: 28 } },
-                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
-                h("div", { style: { position: "absolute", left: leftPx - 5, top: 8, width: 12, height: 12, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }, title: ren.titre + " - Expire: " + formatDateFr(ren.dateExpiration) + " - " + status })
+            var barColor = status === "Expire" ? "#ef4444" : status === "Expire bientot" ? "#f59e0b" : "#10b981";
+            var bgColor = idx % 2 === 0 ? "#ffffff" : "#fafbfc";
+            var isDragging = dragRef.current.dragging && dragRef.current.itemId === ren.id;
+            rows.push(h("div", { key: "ar" + ren.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "#f0f9ff" : bgColor, borderBottom: "1px solid #f1f5f9" } },
+              h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid #e2e8f0" } },
+                h("div", null, ren.titre),
+                h("div", { style: { fontSize: 11, fontWeight: 400, color: status === "Expire" ? "#ef4444" : "#94a3b8", marginTop: 2 } }, status + " - " + formatDateFr(ren.dateExpiration))
+              ),
+              h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
+                monthLines.map(function(line) { return line; }),
+                todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
+                h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ren.id, "move", "renouvellements"); }, style: { position: "absolute", left: "calc(" + leftPct + "% - 7px)", top: (rowHeight - 14) / 2, width: 14, height: 14, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: isDragging ? "0 4px 12px rgba(0,0,0,0.3)" : "0 2px 6px rgba(0,0,0,0.15)", zIndex: 3, cursor: "grab", transition: "box-shadow 0.15s" }, title: ren.titre + " - Expire: " + formatDateFr(ren.dateExpiration) + " - " + status })
               )
             ));
           });
-          if (rensYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucun renouvellement cette annee"));
+          if (rensYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 } }, "Aucun renouvellement pour " + year));
         }
 
         if (activeTab === "chantiers") {
@@ -2528,35 +2635,59 @@
             return debut <= yearEnd && fin >= yearStart;
           });
           chantsYear.sort(function(a, b) { return parseDate(a.dateDebut) - parseDate(b.dateDebut); });
-          chantsYear.forEach(function(ch) {
+          chantsYear.forEach(function(ch, idx) {
             var debut = parseDate(ch.dateDebut);
             var fin = parseDate(ch.dateFin);
-            var leftPx = dateToPx(debut);
-            var rightPx = dateToPx(fin);
-            var widthPx = Math.max(rightPx - leftPx, 6);
-            var barColor = ch.statut === "Termine" ? "#059669" : ch.statut === "En cours" ? "#d97706" : "#6b7280";
-            rows.push(h("div", { key: "ar" + ch.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
-              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ch.titre),
-              h("div", { style: { position: "relative", flex: 1, height: 28 } },
-                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
-                h("div", { style: { position: "absolute", left: leftPx, top: 6, height: 16, width: widthPx, background: barColor, borderRadius: 8, opacity: 0.85 }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " a " + formatDateFr(ch.dateFin) },
-                  widthPx > 50 ? h("span", { style: { fontSize: 9, color: "white", padding: "0 4px", lineHeight: "16px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" } }, ch.titre) : null
+            var leftPct = dateToPct(debut);
+            var rightPct = dateToPct(fin);
+            var widthPct = Math.max(rightPct - leftPct, 1);
+            var barColor = ch.statut === "Termine" ? "#10b981" : ch.statut === "En cours" ? "#f59e0b" : "#94a3b8";
+            var barGradient = ch.statut === "Termine" ? "linear-gradient(135deg, #10b981, #059669)" : ch.statut === "En cours" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #94a3b8, #64748b)";
+            var bgColor = idx % 2 === 0 ? "#ffffff" : "#fafbfc";
+            var isDragging = dragRef.current.dragging && dragRef.current.itemId === ch.id;
+            rows.push(h("div", { key: "ar" + ch.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "#f0f9ff" : bgColor, borderBottom: "1px solid #f1f5f9" } },
+              h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid #e2e8f0" } },
+                h("div", null, ch.titre),
+                h("div", { style: { fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 } }, formatDateFr(ch.dateDebut) + " - " + formatDateFr(ch.dateFin))
+              ),
+              h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
+                monthLines.map(function(line) { return line; }),
+                todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
+                h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ch.id, "move", "chantiers"); }, style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, background: barGradient, borderRadius: 6, boxShadow: isDragging ? "0 4px 16px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.12)", zIndex: 3, display: "flex", alignItems: "center", overflow: "hidden", cursor: "grab", transition: "box-shadow 0.15s" }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " au " + formatDateFr(ch.dateFin) + " (" + ch.statut + ")" },
+                  h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-start", "chantiers"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } }),
+                  widthPct > 8 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)", flex: 1 } }, ch.titre) : null,
+                  h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-end", "chantiers"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } })
                 )
               )
             ));
           });
-          if (chantsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucun chantier cette annee"));
+          if (chantsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 } }, "Aucun chantier pour " + year));
         }
 
-        return h(Card, { style: { overflow: "hidden" } },
-          h("div", { style: { overflowX: "auto" } },
-            h("div", { style: { minWidth: 160 + totalWidth } },
-              h("div", { style: { display: "flex", borderBottom: "2px solid #e5e7eb", background: "#f9fafb" } },
-                h("div", { style: { width: 160, flexShrink: 0, padding: "8px", fontSize: 12, fontWeight: 700, color: "#374151" } }, year),
-                h("div", { style: { display: "flex", flex: 1 } }, monthHeaders)
-              ),
-              h("div", null, rows)
-            )
+        return h("div", { style: { background: "white", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" } },
+          // Header annee avec mois
+          h("div", { style: { display: "flex", borderBottom: "2px solid #e2e8f0", background: "linear-gradient(180deg, #f8fafc, #f1f5f9)" } },
+            h("div", { style: { width: 180, flexShrink: 0, padding: "10px 12px", fontSize: 15, fontWeight: 700, color: "#1e293b", borderRight: "1px solid #e2e8f0", display: "flex", alignItems: "center" } }, String(year)),
+            h("div", { style: { position: "relative", flex: 1, height: 38 } }, monthHeaderCells)
+          ),
+          // Rows
+          h("div", { style: { maxHeight: 500, overflowY: "auto" } }, rows),
+          // Legende
+          activeTab === "chantiers" ? h("div", { style: { display: "flex", gap: 16, padding: "10px 16px", borderTop: "1px solid #e2e8f0", background: "#f8fafc" } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: 3, background: "linear-gradient(135deg, #f59e0b, #d97706)" } }), "En cours"),
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: 3, background: "linear-gradient(135deg, #10b981, #059669)" } }), "Termine"),
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: 3, background: "linear-gradient(135deg, #94a3b8, #64748b)" } }), "A venir"),
+            todayPct >= 0 ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b", marginLeft: "auto" } }, h("div", { style: { width: 2, height: 12, background: "#7c3aed" } }), "Aujourd'hui") : null
+          ) : h("div", { style: { display: "flex", gap: 16, padding: "10px 16px", borderTop: "1px solid #e2e8f0", background: "#f8fafc" } },
+            activeTab === "declarations" ? h(React.Fragment, null,
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#f59e0b" } }), "A venir"),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#10b981" } }), "Fait")
+            ) : h(React.Fragment, null,
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#10b981" } }), "Valide"),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#f59e0b" } }), "Expire bientot"),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#ef4444" } }), "Expire")
+            ),
+            todayPct >= 0 ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b", marginLeft: "auto" } }, h("div", { style: { width: 2, height: 12, background: "#7c3aed" } }), "Aujourd'hui") : null
           )
         );
       }
@@ -2801,9 +2932,9 @@
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#2563eb" }), label: "Marge %", value: margeChantiers + "%", color: "#2563eb" })
         ),
         h("div", { style: { marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, -1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
-          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, 1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? -12 : -1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
+          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, viewMode === "annuel" ? String(currentMonth.getFullYear()) : currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? 12 : 1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
           h("div", { style: { marginLeft: "auto", display: "flex", gap: 8 } },
             h("button", { onClick: function() { setViewMode("timeline"); }, style: { background: viewMode === "timeline" ? "#7c3aed" : "white", color: viewMode === "timeline" ? "white" : "#6b7280", border: "1px solid #d1d5db", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "gantt-chart", size: 14, color: viewMode === "timeline" ? "white" : "#6b7280" })),
             h("button", { onClick: function() { setViewMode("annuel"); }, style: { background: viewMode === "annuel" ? "#7c3aed" : "white", color: viewMode === "annuel" ? "white" : "#6b7280", border: "1px solid #d1d5db", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "calendar-range", size: 14, color: viewMode === "annuel" ? "white" : "#6b7280" })),
@@ -2811,9 +2942,9 @@
           )
         ),
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16, borderBottom: "1px solid #e5e7eb", paddingBottom: 0 } },
+          h("button", { onClick: function() { setActiveTab("chantiers"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "chantiers" ? "#7c3aed" : "transparent", color: activeTab === "chantiers" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Chantiers"),
           h("button", { onClick: function() { setActiveTab("declarations"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "declarations" ? "#7c3aed" : "transparent", color: activeTab === "declarations" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Declarations"),
-          h("button", { onClick: function() { setActiveTab("renouvellements"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "renouvellements" ? "#7c3aed" : "transparent", color: activeTab === "renouvellements" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Renouvellements"),
-          h("button", { onClick: function() { setActiveTab("chantiers"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "chantiers" ? "#7c3aed" : "transparent", color: activeTab === "chantiers" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Chantiers")
+          h("button", { onClick: function() { setActiveTab("renouvellements"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "renouvellements" ? "#7c3aed" : "transparent", color: activeTab === "renouvellements" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Renouvellements")
         ),
         activeTab === "declarations" && h("div", null,
           h(Card, { style: { marginBottom: 16, background: "#fef9c3", borderLeft: "4px solid #d97706", padding: 16 } },
