@@ -2447,6 +2447,120 @@
         setDeclarations(updated);
       }
 
+      // ── Vue Annuelle (12 mois) ──
+      function renderAnnuel() {
+        var year = currentMonth.getFullYear();
+        var moisNoms = ["Jan", "Fev", "Mar", "Avr", "Mai", "Jun", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
+        var today = new Date(); today.setHours(0, 0, 0, 0);
+        var yearStart = new Date(year, 0, 1);
+        var yearEnd = new Date(year, 11, 31);
+        var totalDays = Math.round((yearEnd - yearStart) / 86400000) + 1;
+        var COL_MONTH_W = 80;
+        var totalWidth = COL_MONTH_W * 12;
+
+        function dateToPx(d) {
+          var date = new Date(d);
+          if (date < yearStart) return 0;
+          if (date > yearEnd) return totalWidth;
+          var dayOfYear = Math.round((date - yearStart) / 86400000);
+          return Math.round((dayOfYear / totalDays) * totalWidth);
+        }
+
+        var todayPx = (today.getFullYear() === year) ? dateToPx(today) : -1;
+
+        // Headers mois
+        var monthHeaders = moisNoms.map(function(nom, idx) {
+          var isCurrentMonth = (today.getFullYear() === year && today.getMonth() === idx);
+          return h("div", { key: "mh" + idx, style: { width: COL_MONTH_W, textAlign: "center", fontSize: 11, fontWeight: isCurrentMonth ? 700 : 500, color: isCurrentMonth ? "#7c3aed" : "#6b7280", padding: "6px 0", borderRight: "1px solid #e5e7eb", flexShrink: 0 } }, nom);
+        });
+
+        var rows = [];
+
+        if (activeTab === "declarations") {
+          var declsYear = declarations.filter(function(d) {
+            if (!d.dateEcheance) return false;
+            var dd = parseDate(d.dateEcheance);
+            return dd.getFullYear() === year;
+          });
+          declsYear.sort(function(a, b) { return parseDate(a.dateEcheance) - parseDate(b.dateEcheance); });
+          declsYear.forEach(function(decl) {
+            var dd = parseDate(decl.dateEcheance);
+            var leftPx = dateToPx(dd);
+            var barColor = decl.status === "Fait" ? "#059669" : "#d97706";
+            rows.push(h("div", { key: "ar" + decl.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
+              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, decl.titre),
+              h("div", { style: { position: "relative", flex: 1, height: 28 } },
+                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
+                h("div", { style: { position: "absolute", left: leftPx - 5, top: 8, width: 12, height: 12, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }, title: decl.titre + " - " + formatDateFr(decl.dateEcheance) + " - " + fmtMoney(decl.montant) })
+              )
+            ));
+          });
+          if (declsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucune declaration cette annee"));
+        }
+
+        if (activeTab === "renouvellements") {
+          var rensYear = renouvellements.filter(function(r) {
+            if (!r.dateExpiration) return false;
+            var dd = parseDate(r.dateExpiration);
+            return dd.getFullYear() === year;
+          });
+          rensYear.sort(function(a, b) { return parseDate(a.dateExpiration) - parseDate(b.dateExpiration); });
+          rensYear.forEach(function(ren) {
+            var dd = parseDate(ren.dateExpiration);
+            var leftPx = dateToPx(dd);
+            var status = computeRenouvellementStatus(ren);
+            var barColor = status === "Expire" ? "#dc2626" : status === "Expire bientot" ? "#d97706" : "#059669";
+            rows.push(h("div", { key: "ar" + ren.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
+              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ren.titre),
+              h("div", { style: { position: "relative", flex: 1, height: 28 } },
+                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
+                h("div", { style: { position: "absolute", left: leftPx - 5, top: 8, width: 12, height: 12, borderRadius: "50%", background: barColor, border: "2px solid white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }, title: ren.titre + " - Expire: " + formatDateFr(ren.dateExpiration) + " - " + status })
+              )
+            ));
+          });
+          if (rensYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucun renouvellement cette annee"));
+        }
+
+        if (activeTab === "chantiers") {
+          var chantsYear = chantiers.filter(function(ch) {
+            var debut = parseDate(ch.dateDebut);
+            var fin = parseDate(ch.dateFin);
+            return debut <= yearEnd && fin >= yearStart;
+          });
+          chantsYear.sort(function(a, b) { return parseDate(a.dateDebut) - parseDate(b.dateDebut); });
+          chantsYear.forEach(function(ch) {
+            var debut = parseDate(ch.dateDebut);
+            var fin = parseDate(ch.dateFin);
+            var leftPx = dateToPx(debut);
+            var rightPx = dateToPx(fin);
+            var widthPx = Math.max(rightPx - leftPx, 6);
+            var barColor = ch.statut === "Termine" ? "#059669" : ch.statut === "En cours" ? "#d97706" : "#6b7280";
+            rows.push(h("div", { key: "ar" + ch.id, style: { display: "flex", alignItems: "center", borderBottom: "1px solid #f3f4f6", minHeight: 36 } },
+              h("div", { style: { width: 160, flexShrink: 0, padding: "4px 8px", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ch.titre),
+              h("div", { style: { position: "relative", flex: 1, height: 28 } },
+                todayPx >= 0 ? h("div", { style: { position: "absolute", left: todayPx, top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3 } }) : null,
+                h("div", { style: { position: "absolute", left: leftPx, top: 6, height: 16, width: widthPx, background: barColor, borderRadius: 8, opacity: 0.85 }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " a " + formatDateFr(ch.dateFin) },
+                  widthPx > 50 ? h("span", { style: { fontSize: 9, color: "white", padding: "0 4px", lineHeight: "16px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" } }, ch.titre) : null
+                )
+              )
+            ));
+          });
+          if (chantsYear.length === 0) rows.push(h("div", { key: "empty", style: { padding: 20, textAlign: "center", color: "#94a3b8" } }, "Aucun chantier cette annee"));
+        }
+
+        return h(Card, { style: { overflow: "hidden" } },
+          h("div", { style: { overflowX: "auto" } },
+            h("div", { style: { minWidth: 160 + totalWidth } },
+              h("div", { style: { display: "flex", borderBottom: "2px solid #e5e7eb", background: "#f9fafb" } },
+                h("div", { style: { width: 160, flexShrink: 0, padding: "8px", fontSize: 12, fontWeight: 700, color: "#374151" } }, year),
+                h("div", { style: { display: "flex", flex: 1 } }, monthHeaders)
+              ),
+              h("div", null, rows)
+            )
+          )
+        );
+      }
+
       // ── Gantt rendering ──
       function renderGantt() {
         var year = currentMonth.getFullYear();
@@ -2692,6 +2806,7 @@
           h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, 1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
           h("div", { style: { marginLeft: "auto", display: "flex", gap: 8 } },
             h("button", { onClick: function() { setViewMode("timeline"); }, style: { background: viewMode === "timeline" ? "#7c3aed" : "white", color: viewMode === "timeline" ? "white" : "#6b7280", border: "1px solid #d1d5db", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "gantt-chart", size: 14, color: viewMode === "timeline" ? "white" : "#6b7280" })),
+            h("button", { onClick: function() { setViewMode("annuel"); }, style: { background: viewMode === "annuel" ? "#7c3aed" : "white", color: viewMode === "annuel" ? "white" : "#6b7280", border: "1px solid #d1d5db", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "calendar-range", size: 14, color: viewMode === "annuel" ? "white" : "#6b7280" })),
             h("button", { onClick: function() { setViewMode("liste"); }, style: { background: viewMode === "liste" ? "#7c3aed" : "white", color: viewMode === "liste" ? "white" : "#6b7280", border: "1px solid #d1d5db", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "list", size: 14, color: viewMode === "liste" ? "white" : "#6b7280" }))
           )
         ),
@@ -2704,7 +2819,7 @@
           h(Card, { style: { marginBottom: 16, background: "#fef9c3", borderLeft: "4px solid #d97706", padding: 16 } },
             h("div", { style: { fontSize: 13, fontWeight: 600, color: "#92400e" } }, "Cumul annuel declarations : " + fmtMoney(decCumul))
           ),
-          viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 } },
+          viewMode === "annuel" ? renderAnnuel() : viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 } },
             declarations.map(function(decl) {
               return h(Card, { key: decl.id, style: { borderLeft: "4px solid " + (decl.status === "Fait" ? "#059669" : "#d97706") } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 } },
@@ -2725,7 +2840,7 @@
           )
         ),
         activeTab === "renouvellements" && h("div", null,
-          viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 } },
+          viewMode === "annuel" ? renderAnnuel() : viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 } },
             renouvellements.map(function(renewal) {
               var status = computeRenouvellementStatus(renewal);
               var statusColor = status === "Valide" ? "#059669" : status === "Expire bientot" ? "#d97706" : "#dc2626";
@@ -2745,7 +2860,7 @@
           )
         ),
         activeTab === "chantiers" && h("div", null,
-          viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 } },
+          viewMode === "annuel" ? renderAnnuel() : viewMode === "timeline" ? renderGantt() : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 } },
             chantiers.map(function(chantier) {
               var ca = chantier.metrage * chantier.prixMetre;
               var marge = ca - (chantier.depensesPrevues || 0);
