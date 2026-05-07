@@ -3431,7 +3431,8 @@
             h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
             h("button", { onClick: function() { setCurrentMonth(addMonthsAv(currentMonth, 1)); }, style: { background: "#7c3aed", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" }))
           ),
-          activeChantiers.map(function(chantier) {
+          h("div", { style: { fontSize: 13, fontWeight: 700, color: "#d97706", marginBottom: 8, marginTop: 8 } }, "En cours / Termines"),
+          activeChantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; }).map(function(chantier) {
             var isExpanded = expandedChantier === chantier.id;
             var realise = getRealise(chantier.id);
             var caRealise = realise * chantier.prixMetre;
@@ -3584,6 +3585,32 @@
                       )
                     )
                   )
+                )
+              )
+            );
+          }),
+          activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("div", { style: { fontSize: 13, fontWeight: 700, color: "#6366f1", marginBottom: 8, marginTop: 24 } }, "A venir") : null,
+          activeChantiers.filter(function(c) { return c.statut === "A venir"; }).map(function(chantier) {
+            var isExpanded = expandedChantier === chantier.id;
+            var realise = getRealise(chantier.id);
+            var caRealise = realise * chantier.prixMetre;
+            var avancement = chantier.metrage > 0 ? Math.round((realise / chantier.metrage) * 100) : 0;
+            var monthMet = getMonthMetrage(chantier.id);
+            var remaining = Math.max(0, chantier.metrage - realise);
+
+            return h("div", { key: chantier.id, style: { marginBottom: 16 } },
+              h("div", { style: { background: isExpanded ? "#f5f3ff" : "#fafbff", borderRadius: 12, padding: 20, border: "1px solid #c7d2fe", borderLeft: "4px solid #6366f1", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" } },
+                h("div", { onClick: function() { setExpandedChantier(isExpanded ? null : chantier.id); }, style: { cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "start" } },
+                  h("div", { style: { flex: 1 } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
+                      h("h3", { style: { fontSize: 16, fontWeight: 700, margin: 0 } }, chantier.titre),
+                      h("span", { style: { fontSize: 11, fontWeight: 600, color: "#6366f1", background: "#eef2ff", padding: "2px 8px", borderRadius: 3 } }, "A venir"),
+                      h("button", { onClick: function(e) { e.stopPropagation(); openEditChantier(chantier); }, style: actionBtnStyleAv, title: "Modifier" }, h(Icon, { name: "pencil", size: 14, color: "#6b7280" })),
+                      h("button", { onClick: function(e) { e.stopPropagation(); setToDelete({ id: chantier.id, titre: chantier.titre }); }, style: actionBtnStyleAv, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#ef4444" }))
+                    ),
+                    h("div", { style: { fontSize: 12, color: "#6b7280" } }, formatDateFrAv(chantier.dateDebut) + " - " + formatDateFrAv(chantier.dateFin))
+                  ),
+                  h(Icon, { name: isExpanded ? "chevron-up" : "chevron-down", size: 20, color: "#6b7280" })
                 )
               )
             );
@@ -3817,7 +3844,8 @@
         h("div", { style: { background: "white", borderRadius: 12, border: "1px solid var(--border)", padding: 16, marginBottom: 16, boxShadow: "var(--shadow-sm)" } },
           h("div", { style: { fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 } }, "Outil de peinture"),
           h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
-            activeChantiers.map(function(ch, idx) {
+            activeChantiers.filter(function(c) { return c.statut === "En cours"; }).map(function(ch) {
+              var idx = activeChantiers.indexOf(ch);
               var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
               var isActive = brush === ch.id;
               return h("button", {
@@ -3834,8 +3862,31 @@
                 }
               },
                 h("div", { style: { width: 16, height: 16, borderRadius: 4, background: color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "white" } }, ch.titre.charAt(0)),
-                ch.titre,
-                ch.statut === "A venir" ? h("span", { style: { fontSize: 10, fontWeight: 600, color: "#64748b", background: "#f1f5f9", padding: "2px 6px", borderRadius: 4, marginLeft: 4 } }, "A venir") : null
+                ch.titre
+              );
+            }),
+            activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("div", { style: { width: 1, height: 28, background: "#c7d2fe", margin: "0 4px" } }) : null,
+            activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#6366f1", textTransform: "uppercase" } }, "A venir:") : null,
+            activeChantiers.filter(function(c) { return c.statut === "A venir"; }).map(function(ch) {
+              var idx = activeChantiers.indexOf(ch);
+              var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
+              var isActive = brush === ch.id;
+              return h("button", {
+                key: ch.id,
+                onClick: function() { setBrush(isActive ? null : ch.id); },
+                style: {
+                  display: "flex", alignItems: "center", gap: 8, padding: "8px 14px",
+                  border: isActive ? "2px solid " + color : "1px solid #c7d2fe",
+                  borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                  background: isActive ? color + "15" : "#fafbff",
+                  color: isActive ? color : "#374151",
+                  boxShadow: isActive ? "0 0 0 3px " + color + "30" : "none",
+                  transition: "all 0.15s",
+                  borderStyle: "dashed"
+                }
+              },
+                h("div", { style: { width: 16, height: 16, borderRadius: 4, background: color, opacity: 0.7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "white" } }, ch.titre.charAt(0)),
+                ch.titre
               );
             }),
             h("div", { style: { width: 1, height: 28, background: "#e2e8f0", margin: "0 4px" } }),
