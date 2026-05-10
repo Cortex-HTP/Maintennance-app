@@ -283,15 +283,28 @@
     }
 
     // Auto-creer un site dans paliers_primes si nouveau
-    function ensureSiteExists(siteName, paliers, setPaliers) {
+    function ensureSiteExists(siteName, paliers, setPaliers, siteConfig) {
       if (!siteName) return;
       var existing = paliers.find(function(p) { return p.site === siteName; });
       if (existing) return;
-      // Creer un palier par defaut pour ce nouveau site
-      var defaultPalier = { site: siteName, seuil_mh: 0, coefficient: 0, objectif_mh: 0, moyenne_jour: 0 };
-      supabase.from("paliers_primes").insert(defaultPalier).select().single().then(function(res) {
+      var cfg = siteConfig || {};
+      var rows = [];
+      var paliersList = cfg.paliers || [];
+      var objectif = parseFloat(cfg.objectif) || 0;
+      var moyenne = parseFloat(cfg.moyenne) || 0;
+      if (paliersList.length > 0) {
+        paliersList.forEach(function(pl) {
+          if (pl.seuil || pl.coef) {
+            rows.push({ site: siteName, seuil_mh: parseFloat(pl.seuil) || 0, coefficient: parseInt(pl.coef) || 0, objectif_mh: objectif, moyenne_jour: moyenne });
+          }
+        });
+      }
+      if (rows.length === 0) {
+        rows.push({ site: siteName, seuil_mh: 0, coefficient: 0, objectif_mh: objectif, moyenne_jour: moyenne });
+      }
+      supabase.from("paliers_primes").insert(rows).select().then(function(res) {
         if (res.error) { console.error("Erreur creation site palier:", res.error.message); return; }
-        setPaliers(paliers.concat(palierFromDb(res.data)));
+        setPaliers(paliers.concat((res.data || []).map(palierFromDb)));
       });
     }
 
@@ -2243,9 +2256,10 @@
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
         var ff = Object.assign({}, f, { site: siteName });
-        delete ff.newSite;
+        var siteConfig = f.newSite ? { objectif: f.siteObjectif, moyenne: f.siteMoyenne, paliers: f.sitePaliers || [] } : null;
+        delete ff.newSite; delete ff.siteObjectif; delete ff.siteMoyenne; delete ff.sitePaliers;
         var dbData = chantierToDb(ff);
-        if (siteName) ensureSiteExists(siteName, ctx.dbPaliers, ctx.setDbPaliers);
+        if (siteName) ensureSiteExists(siteName, ctx.dbPaliers, ctx.setDbPaliers, siteConfig);
         if (ff.id) {
           supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
             if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
@@ -2775,7 +2789,23 @@
               getAvailableSites(ctx.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); }),
               h("option", { value: "__new__" }, "+ Nouveau site")
             )),
-            f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })) : null,
+            f.newSite !== undefined ? h("div", { style: { background: "#f0f5ff", border: "1px solid #c7d2fe", borderRadius: 8, padding: 16, marginTop: 4 } },
+              h("div", { style: { fontSize: 13, fontWeight: 700, color: "#4f46e5", marginBottom: 12 } }, "Configuration du nouveau site"),
+              h(FormField, { label: "Nom du site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })),
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                h(FormField, { label: "Objectif (m/h)" }, h("input", { type: "number", step: "0.1", style: inputStyle, value: f.siteObjectif || "", placeholder: "0", onChange: function(e) { upd("siteObjectif", e.target.value); } })),
+                h(FormField, { label: "Moyenne jour (m)" }, h("input", { type: "number", step: "0.1", style: inputStyle, value: f.siteMoyenne || "", placeholder: "0", onChange: function(e) { upd("siteMoyenne", e.target.value); } }))
+              ),
+              h("div", { style: { fontSize: 12, fontWeight: 700, color: "#4f46e5", marginTop: 12, marginBottom: 8 } }, "Paliers de prime"),
+              (f.sitePaliers || [{ seuil: "", coef: "" }]).map(function(pl, pi) {
+                return h("div", { key: pi, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 } },
+                  h("input", { type: "number", step: "0.1", style: Object.assign({}, inputStyle, { flex: 1 }), placeholder: "Seuil m/h", value: pl.seuil || "", onChange: function(e) { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr[pi] = Object.assign({}, arr[pi], { seuil: e.target.value }); upd("sitePaliers", arr); } }),
+                  h("input", { type: "number", style: Object.assign({}, inputStyle, { flex: 1 }), placeholder: "Coef. XPF", value: pl.coef || "", onChange: function(e) { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr[pi] = Object.assign({}, arr[pi], { coef: e.target.value }); upd("sitePaliers", arr); } }),
+                  (f.sitePaliers || []).length > 1 ? h("button", { onClick: function() { var arr = (f.sitePaliers || []).slice(); arr.splice(pi, 1); upd("sitePaliers", arr); }, style: { background: "none", border: "none", cursor: "pointer", padding: 4 } }, h(Icon, { name: "x", size: 14, color: "#ef4444" })) : null
+                );
+              }),
+              h("button", { onClick: function() { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr.push({ seuil: "", coef: "" }); upd("sitePaliers", arr); }, style: { background: "none", border: "1px dashed #a5b4fc", color: "#4f46e5", padding: "4px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, marginTop: 4 } }, "+ Ajouter un palier")
+            ) : null,
             h("div", { style: { background: "#f0fdf4", padding: 12, borderRadius: 8, marginTop: 8, fontSize: 14, fontWeight: 600, color: "#059669" } }, "CA prevu : " + fmtMoney(caPreview)),
             h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
               h(Button, { variant: "secondary", onClick: closeModal }, "Annuler"),
@@ -3232,9 +3262,10 @@
       var saveChantier = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
         var ff = Object.assign({}, f, { site: siteName });
-        delete ff.newSite;
+        var siteConfig = f.newSite ? { objectif: f.siteObjectif, moyenne: f.siteMoyenne, paliers: f.sitePaliers || [] } : null;
+        delete ff.newSite; delete ff.siteObjectif; delete ff.siteMoyenne; delete ff.sitePaliers;
         var dbData = chantierToDb(ff);
-        if (siteName) ensureSiteExists(siteName, ctxAv.dbPaliers, ctxAv.setDbPaliers);
+        if (siteName) ensureSiteExists(siteName, ctxAv.dbPaliers, ctxAv.setDbPaliers, siteConfig);
         if (ff.id) {
           supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
             if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
@@ -3425,7 +3456,23 @@
               getAvailableSites(ctxAv.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); }),
               h("option", { value: "__new__" }, "+ Nouveau site")
             )),
-            f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })) : null,
+            f.newSite !== undefined ? h("div", { style: { background: "#f0f5ff", border: "1px solid #c7d2fe", borderRadius: 8, padding: 16, marginTop: 4 } },
+              h("div", { style: { fontSize: 13, fontWeight: 700, color: "#4f46e5", marginBottom: 12 } }, "Configuration du nouveau site"),
+              h(FormField, { label: "Nom du site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })),
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                h(FormField, { label: "Objectif (m/h)" }, h("input", { type: "number", step: "0.1", style: inputStyle, value: f.siteObjectif || "", placeholder: "0", onChange: function(e) { upd("siteObjectif", e.target.value); } })),
+                h(FormField, { label: "Moyenne jour (m)" }, h("input", { type: "number", step: "0.1", style: inputStyle, value: f.siteMoyenne || "", placeholder: "0", onChange: function(e) { upd("siteMoyenne", e.target.value); } }))
+              ),
+              h("div", { style: { fontSize: 12, fontWeight: 700, color: "#4f46e5", marginTop: 12, marginBottom: 8 } }, "Paliers de prime"),
+              (f.sitePaliers || [{ seuil: "", coef: "" }]).map(function(pl, pi) {
+                return h("div", { key: pi, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 } },
+                  h("input", { type: "number", step: "0.1", style: Object.assign({}, inputStyle, { flex: 1 }), placeholder: "Seuil m/h", value: pl.seuil || "", onChange: function(e) { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr[pi] = Object.assign({}, arr[pi], { seuil: e.target.value }); upd("sitePaliers", arr); } }),
+                  h("input", { type: "number", style: Object.assign({}, inputStyle, { flex: 1 }), placeholder: "Coef. XPF", value: pl.coef || "", onChange: function(e) { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr[pi] = Object.assign({}, arr[pi], { coef: e.target.value }); upd("sitePaliers", arr); } }),
+                  (f.sitePaliers || []).length > 1 ? h("button", { onClick: function() { var arr = (f.sitePaliers || []).slice(); arr.splice(pi, 1); upd("sitePaliers", arr); }, style: { background: "none", border: "none", cursor: "pointer", padding: 4 } }, h(Icon, { name: "x", size: 14, color: "#ef4444" })) : null
+                );
+              }),
+              h("button", { onClick: function() { var arr = (f.sitePaliers || [{ seuil: "", coef: "" }]).slice(); arr.push({ seuil: "", coef: "" }); upd("sitePaliers", arr); }, style: { background: "none", border: "1px dashed #a5b4fc", color: "#4f46e5", padding: "4px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, marginTop: 4 } }, "+ Ajouter un palier")
+            ) : null,
             h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 } },
               h(Button, { onClick: closeModalAv, variant: "secondary" }, "Annuler"),
               h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); if (f.newSite !== undefined && !f.newSite.trim()) return alert("Veuillez saisir le nom du nouveau site"); saveChantier(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
@@ -4069,6 +4116,15 @@
         chantiersBySite[ch.site].push(ch);
       });
 
+      // Sites avec au moins un chantier "En cours"
+      var sitesEnCours = [];
+      var sitesAutres = [];
+      sites.forEach(function(s) {
+        var hasEnCours = chantiers.some(function(c) { return c.site === s && c.statut === "En cours"; });
+        if (hasEnCours) { sitesEnCours.push(s); } else { sitesAutres.push(s); }
+      });
+      function isSiteEnCours(s) { return sitesEnCours.indexOf(s) >= 0; }
+
       // ── Periode du 26 au 25 ──
       // Pour un mois M donne, la periode va du 26/(M-1) au 25/M
       function getPeriodBounds(year, month) {
@@ -4274,7 +4330,8 @@
               h("thead", null,
                 h("tr", null,
                   h("th", { style: thStyle }, "Employe"),
-                  sites.map(function(s) { return h("th", { key: s, style: Object.assign({}, thStyle, { textAlign: "right" }) }, s); }),
+                  sitesEnCours.map(function(s) { return h("th", { key: s, style: Object.assign({}, thStyle, { textAlign: "right", color: "#059669", background: "#f0fdf4" }) }, s); }),
+                  sitesAutres.map(function(s) { return h("th", { key: s, style: Object.assign({}, thStyle, { textAlign: "right", color: "#64748b", background: "#f8fafc" }) }, s); }),
                   h("th", { style: Object.assign({}, thStyle, { textAlign: "right", color: "#7c3aed" }) }, "Total")
                 )
               ),
@@ -4282,18 +4339,26 @@
                 recapList.map(function(row, ri) {
                   return h("tr", { key: ri, style: { background: ri % 2 === 0 ? "white" : "#fafbfc" } },
                     h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600 }) }, row.employe),
-                    sites.map(function(s) {
+                    sitesEnCours.map(function(s) {
                       var val = row.sites[s] || 0;
-                      return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#059669" : "#94a3b8" }) }, val > 0 ? fmtNum(Math.round(val)) : "-");
+                      return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#059669" : "#94a3b8", background: "rgba(240,253,244,0.3)" }) }, val > 0 ? fmtNum(Math.round(val)) : "-");
+                    }),
+                    sitesAutres.map(function(s) {
+                      var val = row.sites[s] || 0;
+                      return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#64748b" : "#d1d5db" }) }, val > 0 ? fmtNum(Math.round(val)) : "-");
                     }),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, color: "#7c3aed" }) }, fmtNum(Math.round(row.totalPrime)) + " XPF")
                   );
                 }),
                 h("tr", { style: { background: "#f5f3ff" } },
                   h("td", { style: Object.assign({}, tdStyle, { fontWeight: 700, fontSize: 14, borderTop: "2px solid #7c3aed" }) }, "Total"),
-                  sites.map(function(s) {
+                  sitesEnCours.map(function(s) {
                     var sTotal = recapList.reduce(function(sum, r) { return sum + (r.sites[s] || 0); }, 0);
-                    return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, borderTop: "2px solid #7c3aed" }) }, fmtNum(Math.round(sTotal)));
+                    return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, borderTop: "2px solid #7c3aed", color: "#059669", background: "rgba(240,253,244,0.3)" }) }, fmtNum(Math.round(sTotal)));
+                  }),
+                  sitesAutres.map(function(s) {
+                    var sTotal = recapList.reduce(function(sum, r) { return sum + (r.sites[s] || 0); }, 0);
+                    return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, borderTop: "2px solid #7c3aed", color: "#64748b" }) }, fmtNum(Math.round(sTotal)));
                   }),
                   h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 800, fontSize: 14, color: "#7c3aed", borderTop: "2px solid #7c3aed" }) }, fmtNum(Math.round(grandTotal)) + " XPF")
                 )
@@ -4303,13 +4368,24 @@
         // ── Detail par site ──
         h("div", { style: { fontSize: 14, fontWeight: 700, color: "#374151", marginBottom: 12 } }, "Detail par site"),
         // Site tabs
-        sites.length > 0 ? h("div", { style: { display: "flex", gap: 8, marginBottom: 16 } },
-          sites.map(function(site) {
+        sites.length > 0 ? h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+          sitesEnCours.length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#059669", textTransform: "uppercase", marginRight: 4 } }, "En cours:") : null,
+          sitesEnCours.map(function(site) {
             var isActive = site === displaySite;
             return h("button", {
               key: site,
               onClick: function() { setSelectedSite(site); setShowGrille(false); },
-              style: { padding: "8px 16px", border: isActive ? "2px solid #7c3aed" : "1px solid #d1d5db", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500, background: isActive ? "#ede9fe" : "white", color: isActive ? "#7c3aed" : "#374151" }
+              style: { padding: "8px 16px", border: isActive ? "2px solid #059669" : "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500, background: isActive ? "#ecfdf5" : "#f0fdf4", color: isActive ? "#059669" : "#065f46" }
+            }, site);
+          }),
+          sitesAutres.length > 0 && sitesEnCours.length > 0 ? h("div", { style: { width: 1, height: 28, background: "#e2e8f0", margin: "0 8px" } }) : null,
+          sitesAutres.length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginRight: 4 } }, "Autres:") : null,
+          sitesAutres.map(function(site) {
+            var isActive = site === displaySite;
+            return h("button", {
+              key: site,
+              onClick: function() { setSelectedSite(site); setShowGrille(false); },
+              style: { padding: "8px 16px", border: isActive ? "2px solid #64748b" : "1px solid #d1d5db", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500, background: isActive ? "#f1f5f9" : "white", color: isActive ? "#475569" : "#6b7280" }
             }, site);
           })
         ) : null,
