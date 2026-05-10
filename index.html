@@ -4061,6 +4061,7 @@
     // ─── EcranPrimes ──────────────────────────────────────────────────
     function EcranPrimes() {
       var ctx = useAppData();
+      var isAdmin = ctx.isAdmin;
       var chantiers = ctx.dbChantiers;
       var saisies = ctx.dbSaisies;
       var affectations = ctx.dbAffectations || [];
@@ -4408,10 +4409,11 @@
             h(Icon, { name: showGrille ? "chevron-up" : "chevron-down", size: 16, color: "#6b7280" })
           ),
           showGrille ? h("div", { style: { background: "white", borderRadius: "0 0 8px 8px", border: "1px solid var(--border)", borderTop: "none", overflow: "hidden" } },
+            !isAdmin ? h("div", { style: { padding: "8px 16px", background: "#fef3c7", borderBottom: "1px solid #fde68a", fontSize: 12, color: "#92400e", display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "lock", size: 12, color: "#92400e" }), "Lecture seule - seuls les administrateurs peuvent modifier les paliers.") : null,
             h("div", { style: { padding: "12px 16px", background: "#f5f3ff", borderBottom: "1px solid #e5e7eb", display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
                 h("span", { style: { fontWeight: 600, color: "#374151" } }, "Objectif :"),
-                h("input", {
+                isAdmin ? h("input", {
                   type: "number", step: "0.1",
                   value: getObjectifForSite(paliers, displaySite),
                   onChange: function(e) {
@@ -4426,12 +4428,12 @@
                     });
                   },
                   style: { width: 70, padding: "4px 8px", border: "1px solid #d1d5db", borderRadius: 4, fontSize: 13, fontWeight: 700, textAlign: "center", color: "#7c3aed" }
-                }),
+                }) : h("span", { style: { fontWeight: 700, color: "#7c3aed" } }, getObjectifForSite(paliers, displaySite)),
                 h("span", { style: { fontSize: 11, color: "#6b7280" } }, "m/h")
               ),
               h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
                 h("span", { style: { fontWeight: 600, color: "#374151" } }, "Moyenne jour :"),
-                h("input", {
+                isAdmin ? h("input", {
                   type: "number", step: "0.1",
                   value: getMoyenneForSite(paliers, displaySite),
                   onChange: function(e) {
@@ -4446,23 +4448,23 @@
                     });
                   },
                   style: { width: 70, padding: "4px 8px", border: "1px solid #d1d5db", borderRadius: 4, fontSize: 13, fontWeight: 700, textAlign: "center", color: "#7c3aed" }
-                }),
+                }) : h("span", { style: { fontWeight: 700, color: "#7c3aed" } }, getMoyenneForSite(paliers, displaySite)),
                 h("span", { style: { fontSize: 11, color: "#6b7280" } }, "m/jour")
               )
             ),
             h("table", { style: { width: "100%", borderCollapse: "collapse" } },
               h("thead", null,
                 h("tr", null,
-                  h("th", { style: Object.assign({}, thStyle, { width: "40%" }) }, "Seuil m/h"),
-                  h("th", { style: Object.assign({}, thStyle, { width: "40%", textAlign: "right" }) }, "Coefficient (XPF)"),
-                  h("th", { style: Object.assign({}, thStyle, { width: "20%", textAlign: "center" }) }, "")
+                  h("th", { style: Object.assign({}, thStyle, { width: isAdmin ? "40%" : "50%" }) }, "Seuil m/h"),
+                  h("th", { style: Object.assign({}, thStyle, { width: isAdmin ? "40%" : "50%", textAlign: "right" }) }, "Coefficient (XPF)"),
+                  isAdmin ? h("th", { style: Object.assign({}, thStyle, { width: "20%", textAlign: "center" }) }, "") : null
                 )
               ),
               h("tbody", null,
                 (paliers || []).filter(function(p) { return p.site === displaySite; }).sort(function(a, b) { return a.seuilMh - b.seuilMh; }).map(function(p) {
                   return h("tr", { key: p.id },
                     h("td", { style: tdStyle },
-                      h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                      isAdmin ? h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         h("span", { style: { color: "#6b7280", fontSize: 12 } }, ">="),
                         h("input", { type: "number", step: "0.1", value: p.seuilMh, onChange: function(e) {
                           var newVal = parseFloat(e.target.value) || 0;
@@ -4472,30 +4474,30 @@
                           });
                         }, style: { width: 80, padding: "4px 8px", border: "1px solid #d1d5db", borderRadius: 4, fontSize: 13, fontWeight: 600, textAlign: "center" } }),
                         h("span", { style: { color: "#6b7280", fontSize: 12 } }, "m/h")
-                      )
+                      ) : h("span", null, ">= " + p.seuilMh + " m/h")
                     ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) },
-                      h("input", { type: "number", value: p.coefficient, onChange: function(e) {
+                      isAdmin ? h("input", { type: "number", value: p.coefficient, onChange: function(e) {
                         var newVal = parseInt(e.target.value) || 0;
                         supabase.from("paliers_primes").update({ coefficient: newVal }).eq("id", p.id).then(function(res) {
                           if (res.error) { alert("Erreur: " + res.error.message); return; }
                           ctx.setDbPaliers(paliers.map(function(pp) { return pp.id === p.id ? Object.assign({}, pp, { coefficient: newVal }) : pp; }));
                         });
-                      }, style: { width: 100, padding: "4px 8px", border: "1px solid #d1d5db", borderRadius: 4, fontSize: 13, fontWeight: 600, textAlign: "right" } })
+                      }, style: { width: 100, padding: "4px 8px", border: "1px solid #d1d5db", borderRadius: 4, fontSize: 13, fontWeight: 600, textAlign: "right" } }) : h("span", { style: { fontWeight: 600 } }, fmtNum(p.coefficient))
                     ),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+                    isAdmin ? h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
                       h("button", { onClick: function() {
                         supabase.from("paliers_primes").delete().eq("id", p.id).then(function(res) {
                           if (res.error) { alert("Erreur: " + res.error.message); return; }
                           ctx.setDbPaliers(paliers.filter(function(pp) { return pp.id !== p.id; }));
                         });
                       }, style: { background: "none", border: "none", cursor: "pointer", padding: 4 } }, h(Icon, { name: "trash-2", size: 14, color: "#ef4444" }))
-                    )
+                    ) : null
                   );
                 })
               )
             ),
-            h("div", { style: { padding: "12px 16px", borderTop: "1px solid #e5e7eb" } },
+            isAdmin ? h("div", { style: { padding: "12px 16px", borderTop: "1px solid #e5e7eb" } },
               h("button", { onClick: function() {
                 var objVal = getObjectifForSite(paliers, displaySite);
                 var moyVal = getMoyenneForSite(paliers, displaySite);
@@ -4507,7 +4509,7 @@
                 h(Icon, { name: "plus", size: 14, color: "#4f46e5" }),
                 "Ajouter un palier"
               )
-            )
+            ) : null
           ) : null
         ) : null
       );
