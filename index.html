@@ -282,6 +282,19 @@
       return sitePalier ? sitePalier.moyenneJour || 0 : 0;
     }
 
+    // Auto-creer un site dans paliers_primes si nouveau
+    function ensureSiteExists(siteName, paliers, setPaliers) {
+      if (!siteName) return;
+      var existing = paliers.find(function(p) { return p.site === siteName; });
+      if (existing) return;
+      // Creer un palier par defaut pour ce nouveau site
+      var defaultPalier = { site: siteName, seuil_mh: 0, coefficient: 0, objectif_mh: 0, moyenne_jour: 0 };
+      supabase.from("paliers_primes").insert(defaultPalier).select().single().then(function(res) {
+        if (res.error) { console.error("Erreur creation site palier:", res.error.message); return; }
+        setPaliers(paliers.concat(palierFromDb(res.data)));
+      });
+    }
+
     // ─── Helpers saisie (valeur peut etre un objet {valeur, typeJour} ou un nombre) ──
     function getSaisieVal(entry) {
       if (entry === null || entry === undefined) return 0;
@@ -2228,11 +2241,15 @@
       var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, depensesPrevues: 0, statut: "A venir", site: "" }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
-        var dbData = chantierToDb(f);
-        if (f.id) {
-          supabase.from("chantiers").update(dbData).eq("id", f.id).select().single().then(function(res) {
+        var siteName = f.newSite ? f.newSite.trim() : f.site;
+        var ff = Object.assign({}, f, { site: siteName });
+        delete ff.newSite;
+        var dbData = chantierToDb(ff);
+        if (siteName) ensureSiteExists(siteName, ctx.dbPaliers, ctx.setDbPaliers);
+        if (ff.id) {
+          supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
             if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
-            setChantiers(chantiers.map(function(c) { return c.id === f.id ? chantierFromDb(res.data) : c; }));
+            setChantiers(chantiers.map(function(c) { return c.id === ff.id ? chantierFromDb(res.data) : c; }));
           });
         } else {
           supabase.from("chantiers").insert(dbData).select().single().then(function(res) {
@@ -2753,14 +2770,16 @@
                 ["A venir", "En cours", "Termine"].map(function(x) { return h("option", { key: x, value: x }, x); })
               ))
             ),
-            h(FormField, { label: "Site (pour calcul prime)" }, h("select", { style: selectStyle, value: f.site || "", onChange: function(e) { upd("site", e.target.value); } },
+            h(FormField, { label: "Site (pour calcul prime)" }, h("select", { style: selectStyle, value: f.newSite !== undefined ? "__new__" : (f.site || ""), onChange: function(e) { var v = e.target.value; if (v === "__new__") { setEditing(Object.assign({}, f, { site: "", newSite: "" })); } else { var c2 = Object.assign({}, f, { site: v }); delete c2.newSite; setEditing(c2); } } },
               h("option", { value: "" }, "-- Aucun --"),
-              getAvailableSites(ctx.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); })
+              getAvailableSites(ctx.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); }),
+              h("option", { value: "__new__" }, "+ Nouveau site")
             )),
+            f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })) : null,
             h("div", { style: { background: "#f0fdf4", padding: 12, borderRadius: 8, marginTop: 8, fontSize: 14, fontWeight: 600, color: "#059669" } }, "CA prevu : " + fmtMoney(caPreview)),
             h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
               h(Button, { variant: "secondary", onClick: closeModal }, "Annuler"),
-              h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); saveChant(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
+              h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); if (f.newSite !== undefined && !f.newSite.trim()) return alert("Veuillez saisir le nom du nouveau site"); saveChant(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
             )
           );
         }
@@ -3211,11 +3230,15 @@
         setShowModal(true);
       };
       var saveChantier = function(f) {
-        var dbData = chantierToDb(f);
-        if (f.id) {
-          supabase.from("chantiers").update(dbData).eq("id", f.id).select().single().then(function(res) {
+        var siteName = f.newSite ? f.newSite.trim() : f.site;
+        var ff = Object.assign({}, f, { site: siteName });
+        delete ff.newSite;
+        var dbData = chantierToDb(ff);
+        if (siteName) ensureSiteExists(siteName, ctxAv.dbPaliers, ctxAv.setDbPaliers);
+        if (ff.id) {
+          supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
             if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
-            setChantiers(chantiers.map(function(c) { return c.id === f.id ? chantierFromDb(res.data) : c; }));
+            setChantiers(chantiers.map(function(c) { return c.id === ff.id ? chantierFromDb(res.data) : c; }));
           });
         } else {
           supabase.from("chantiers").insert(dbData).select().single().then(function(res) {
@@ -3397,13 +3420,15 @@
             h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
               statuts.map(function(s) { return h("option", { key: s, value: s }, s); })
             )),
-            h(FormField, { label: "Site (pour calcul prime)" }, h("select", { style: selectStyle, value: f.site || "", onChange: function(e) { upd("site", e.target.value); } },
+            h(FormField, { label: "Site (pour calcul prime)" }, h("select", { style: selectStyle, value: f.newSite !== undefined ? "__new__" : (f.site || ""), onChange: function(e) { var v = e.target.value; if (v === "__new__") { setEditing(Object.assign({}, f, { site: "", newSite: "" })); } else { var c2 = Object.assign({}, f, { site: v }); delete c2.newSite; setEditing(c2); } } },
               h("option", { value: "" }, "-- Aucun --"),
-              getAvailableSites(ctxAv.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); })
+              getAvailableSites(ctxAv.dbPaliers).map(function(s) { return h("option", { key: s, value: s }, s); }),
+              h("option", { value: "__new__" }, "+ Nouveau site")
             )),
+            f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: inputStyle, placeholder: "Ex: Kouaoua, Kopeto...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value); } })) : null,
             h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 } },
               h(Button, { onClick: closeModalAv, variant: "secondary" }, "Annuler"),
-              h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); saveChantier(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
+              h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); if (f.newSite !== undefined && !f.newSite.trim()) return alert("Veuillez saisir le nom du nouveau site"); saveChantier(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
             )
           )
         );
