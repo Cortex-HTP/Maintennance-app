@@ -2202,6 +2202,10 @@
       var _mc = useState("engin");
       var maintCateg = _mc[0]; var setMaintCateg = _mc[1];
 
+      // ── Preview de la date pendant un drag/resize ──
+      var _dpv = useState({ active: false, label: "", x: 0, y: 0 });
+      var dragPreview = _dpv[0]; var setDragPreview = _dpv[1];
+
       // ── Modal / CRUD state ──
       var _showModal = useState(false);
       var showModal = _showModal[0]; var setShowModal = _showModal[1];
@@ -2333,6 +2337,21 @@
       function dayToDateStr(day, month) {
         var m = month.getMonth() + 1;
         return month.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+      }
+
+      // ── Couleur stable par engin (hash -> HSL) ──
+      function colorForEngin(eq) {
+        var str = ((eq && (eq.Id || eq.Title)) || "default") + "";
+        var hash = 0;
+        for (var i = 0; i < str.length; i++) {
+          hash = ((hash << 5) - hash) + str.charCodeAt(i);
+          hash = hash & hash;
+        }
+        var hue = Math.abs(hash) % 360;
+        return {
+          solid: "hsl(" + hue + ", 60%, 45%)",
+          gradient: "linear-gradient(135deg, hsl(" + hue + ", 65%, 55%), hsl(" + hue + ", 70%, 35%))"
+        };
       }
 
       // ── Helpers non-chevauchement engin ──
@@ -2527,20 +2546,25 @@
               var origDebCEA = parseDate(info.origDebut);
               var origFinCEA = parseDate(info.origFin);
               var setCEA = ctx.setDbChantierEquipements;
+              var previewLabel = "";
               if (info.dragType === "move") {
                 var durCEA = Math.round((origFinCEA - origDebCEA) / 86400000);
                 var newDebCEA = new Date(origDebCEA.getTime() + deltaDays * 86400000);
                 var newFinCEA = new Date(newDebCEA.getTime() + durCEA * 86400000);
                 setCEA(ceListA.map(function(a) { return a.id === info.itemId ? Object.assign({}, a, { dateDebut: formatDateISO(newDebCEA), dateFin: formatDateISO(newFinCEA) }) : a; }));
+                previewLabel = formatDateFr(formatDateISO(newDebCEA)) + " > " + formatDateFr(formatDateISO(newFinCEA));
               } else if (info.dragType === "resize-start") {
                 var newDebCERA = new Date(origDebCEA.getTime() + deltaDays * 86400000);
                 if (newDebCERA >= origFinCEA) newDebCERA = new Date(origFinCEA.getTime() - 86400000);
                 setCEA(ceListA.map(function(a) { return a.id === info.itemId ? Object.assign({}, a, { dateDebut: formatDateISO(newDebCERA) }) : a; }));
+                previewLabel = "Debut : " + formatDateFr(formatDateISO(newDebCERA));
               } else if (info.dragType === "resize-end") {
                 var newFinCERA = new Date(origFinCEA.getTime() + deltaDays * 86400000);
                 if (newFinCERA <= origDebCEA) newFinCERA = new Date(origDebCEA.getTime() + 86400000);
                 setCEA(ceListA.map(function(a) { return a.id === info.itemId ? Object.assign({}, a, { dateFin: formatDateISO(newFinCERA) }) : a; }));
+                previewLabel = "Fin : " + formatDateFr(formatDateISO(newFinCERA));
               }
+              setDragPreview({ active: true, label: previewLabel, x: e.clientX, y: e.clientY });
             }
             return;
           }
@@ -2658,6 +2682,7 @@
             info.dragType = null;
             document.body.style.cursor = "";
             document.body.style.userSelect = "";
+            setDragPreview({ active: false, label: "", x: 0, y: 0 });
           }
         };
         document.addEventListener("mousemove", handleMouseMove);
@@ -3412,11 +3437,12 @@
                   ? h("span", { style: { fontSize: 13, color: "#94a3b8", fontStyle: "italic" } }, "Aucun engin")
                   : poolEqs.map(function(eq) {
                       var hor = Math.round(parseFloat(eq.Horametre || 0));
+                      var chipColor = colorForEngin(eq);
                       return h("div", { key: "pool" + eq.Id,
                         draggable: true,
                         onDragStart: function(e) { onChipDragStart(e, eq.Id); },
                         title: (eq.Nom || eq.Title) + " - " + hor + "h" + (parseFloat(eq.KM || 0) > 0 ? " - " + Math.round(parseFloat(eq.KM || 0)) + "km" : ""),
-                        style: { padding: "8px 12px", background: "linear-gradient(135deg, #7c3aed, #6d28d9)", color: "white", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "grab", userSelect: "none", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" } },
+                        style: { padding: "8px 12px", background: chipColor.gradient, color: "white", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "grab", userSelect: "none", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" } },
                         eq.Title,
                         h("span", { style: { fontSize: 10, opacity: 0.85, fontWeight: 500 } }, hor + "h")
                       );
@@ -3493,6 +3519,7 @@
                                       var isDraggingCE = dragRef.current.dragging && dragRef.current.itemId === a.id && dragRef.current.tab === "chantier-equipement";
                                       var dateRange = formatDateFr(a.dateDebut) + " > " + formatDateFr(a.dateFin);
                                       var tooltip = (eq.Nom || eq.Title) + " (" + eq.Title + ") - " + dateRange + (projs.length > 0 ? " - " + projs.length + " maintenance(s) prevue(s)" : "") + " - Clic droit : retirer";
+                                      var bandColor = colorForEngin(eq);
 
                                       // Bande affectation
                                       acc.push(h("div", { key: "ce" + a.id,
@@ -3505,7 +3532,7 @@
                                           if (confirm("Retirer " + eq.Title + " du chantier " + ch.titre + " ?")) deleteCE(a.id);
                                         },
                                         title: tooltip,
-                                        style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
+                                        style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: bandColor.gradient, borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
                                         h("div", { onMouseDown: function(e) { if (e.button !== 0) return; e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, title: "Glisser pour ajuster la date de debut", style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 14, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.4)", borderRight: "1px solid rgba(0,0,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", gap: 2 } },
                                           h("div", { style: { width: 2, height: 12, background: "white", borderRadius: 1, pointerEvents: "none" } }),
                                           h("div", { style: { width: 2, height: 12, background: "white", borderRadius: 1, pointerEvents: "none" } })
@@ -3554,6 +3581,9 @@
           );
         }()),
         showModal && renderModalForm(),
+        dragPreview.active && h("div", {
+          style: { position: "fixed", left: dragPreview.x + 14, top: dragPreview.y - 32, background: "rgba(15,23,42,0.92)", color: "white", padding: "6px 10px", borderRadius: 4, fontSize: 12, fontWeight: 600, pointerEvents: "none", zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,0.25)", whiteSpace: "nowrap" }
+        }, dragPreview.label),
         toDelete && h(ConfirmDialog, {
           title: "Supprimer ?",
           message: "Confirmer la suppression de \"" + toDelete.titre + "\" ?",
