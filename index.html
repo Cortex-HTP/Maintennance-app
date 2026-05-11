@@ -3307,8 +3307,29 @@
             addCE({ chantierId: chantierId, equipementId: eqId, dateDebut: ch.dateDebut, dateFin: ch.dateFin, dureeMaintenanceJours: 1, notes: "" });
           }
 
-          var rowHeightCE = 64;
+          var rowHeightCE = 42;
           var bandHeightCE = 24;
+
+          // ── Assignation en "lanes" : items non chevauchants partagent une ligne ──
+          function assignToLanes(items) {
+            var sorted = items.slice().sort(function(a, b) { return parseDate(a.dateDebut) - parseDate(b.dateDebut); });
+            var lanes = [];
+            sorted.forEach(function(item) {
+              var itemStart = parseDate(item.dateDebut);
+              var placed = false;
+              for (var i = 0; i < lanes.length; i++) {
+                var last = lanes[i][lanes[i].length - 1];
+                var lastEnd = parseDate(last.dateFin);
+                if (lastEnd < itemStart) {
+                  lanes[i].push(item);
+                  placed = true;
+                  break;
+                }
+              }
+              if (!placed) lanes.push([item]);
+            });
+            return lanes;
+          }
 
           return h("div", null,
             // ── Filtres categorie ──
@@ -3386,83 +3407,62 @@
                           ? h("div", { style: { display: "flex", alignItems: "center", minHeight: 50 } },
                               h("div", { style: { width: 240, flexShrink: 0, padding: "12px", boxSizing: "border-box" } }, ""),
                               h("div", { style: { flex: 1, margin: "12px", padding: "12px", border: "2px dashed #cbd5e1", borderRadius: 6, textAlign: "center", fontSize: 12, color: "#94a3b8", fontStyle: "italic" } }, "Glisser un engin du pool ici"))
-                          : chAssigns.map(function(a) {
-                              var eq = eqById[a.equipementId];
-                              if (!eq) return null;
-                              var aDebut = parseDate(a.dateDebut);
-                              var aFin = parseDate(a.dateFin);
-                              var aLeftPct = dateToPctY(aDebut);
-                              var aRightPct = dateToPctY(aFin);
-                              var aWidthPct = Math.max(aRightPct - aLeftPct, 1);
-                              var dureeM = a.dureeMaintenanceJours != null ? a.dureeMaintenanceJours : 1;
-                              var projs = computeMaintenanceProjections(eq).filter(function(p) {
-                                if (!p.projectedDate) return false;
-                                return p.projectedDate >= aDebut && p.projectedDate <= aFin;
-                              });
-                              var isDraggingCE = dragRef.current.dragging && dragRef.current.itemId === a.id && dragRef.current.tab === "chantier-equipement";
-                              var dateRangeLabel = formatDateFr(a.dateDebut) + " > " + formatDateFr(a.dateFin);
-                              return h("div", { key: "ce" + a.id, "data-annuel-row": true, style: { display: "flex", alignItems: "stretch", minHeight: rowHeightCE, background: isDraggingCE ? "#f0f9ff" : "white", borderBottom: "1px solid #f1f5f9" } },
-                                h("div", { style: { width: 240, flexShrink: 0, padding: "6px 10px", boxSizing: "border-box", display: "flex", flexDirection: "column", justifyContent: "center" } },
-                                  h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4, marginBottom: 3 } },
-                                    h("div", { style: { flex: 1, minWidth: 0 } },
-                                      h("div", { style: { fontSize: 12, fontWeight: 700, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, eq.Title),
-                                      h("div", { style: { fontSize: 10, color: "#64748b" } },
-                                        Math.round(parseFloat(eq.Horametre || 0)) + "h"
-                                        + (projs.length > 0 ? " - " + projs.length + " maint." : "")
-                                      )
-                                    ),
-                                    h("button", { onClick: function() { if (confirm("Retirer " + eq.Title + " du chantier " + ch.titre + " ?")) deleteCE(a.id); },
-                                      style: { background: "transparent", border: "none", cursor: "pointer", padding: 3, display: "flex", alignItems: "center", borderRadius: 3 }, title: "Retirer cette affectation" },
-                                      h(Icon, { name: "trash-2", size: 14, color: "#dc2626" }))
-                                  ),
-                                  h("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
-                                    h("span", { style: { fontSize: 9, color: "#94a3b8", width: 14, flexShrink: 0, fontWeight: 600 } }, "Du"),
-                                    h("input", { type: "date", value: a.dateDebut || "",
-                                      onChange: function(e) {
-                                        var v = e.target.value;
-                                        if (!v) return;
-                                        if (a.dateFin && v > a.dateFin) { alert("La date de debut doit etre avant la date de fin"); return; }
-                                        ctx.updateChantierEquipement(a.id, Object.assign({}, a, { dateDebut: v }));
-                                      },
-                                      style: { fontSize: 10, padding: "1px 3px", border: "1px solid #e2e8f0", borderRadius: 3, flex: 1, minWidth: 0, boxSizing: "border-box", fontFamily: "inherit" } })
-                                  ),
-                                  h("div", { style: { display: "flex", gap: 4, alignItems: "center", marginTop: 2 } },
-                                    h("span", { style: { fontSize: 9, color: "#94a3b8", width: 14, flexShrink: 0, fontWeight: 600 } }, "Au"),
-                                    h("input", { type: "date", value: a.dateFin || "",
-                                      onChange: function(e) {
-                                        var v = e.target.value;
-                                        if (!v) return;
-                                        if (a.dateDebut && v < a.dateDebut) { alert("La date de fin doit etre apres la date de debut"); return; }
-                                        ctx.updateChantierEquipement(a.id, Object.assign({}, a, { dateFin: v }));
-                                      },
-                                      style: { fontSize: 10, padding: "1px 3px", border: "1px solid #e2e8f0", borderRadius: 3, flex: 1, minWidth: 0, boxSizing: "border-box", fontFamily: "inherit" } })
+                          : (function() {
+                              var lanes = assignToLanes(chAssigns);
+                              return lanes.map(function(laneItems, laneIdx) {
+                                return h("div", { key: "lane" + ch.id + "_" + laneIdx, "data-annuel-row": true, style: { display: "flex", alignItems: "stretch", minHeight: rowHeightCE, borderBottom: "1px solid #f1f5f9", background: "white" } },
+                                  h("div", { style: { width: 240, flexShrink: 0 } }, ""),
+                                  h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeightCE } },
+                                    todayPctLocal >= 0 ? h("div", { style: { position: "absolute", left: todayPctLocal + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3, zIndex: 1 } }) : null,
+                                    laneItems.reduce(function(acc, a) {
+                                      var eq = eqById[a.equipementId];
+                                      if (!eq) return acc;
+                                      var aDebut = parseDate(a.dateDebut);
+                                      var aFin = parseDate(a.dateFin);
+                                      var aLeftPct = dateToPctY(aDebut);
+                                      var aRightPct = dateToPctY(aFin);
+                                      var aWidthPct = Math.max(aRightPct - aLeftPct, 1);
+                                      var dureeM = a.dureeMaintenanceJours != null ? a.dureeMaintenanceJours : 1;
+                                      var projs = computeMaintenanceProjections(eq).filter(function(p) {
+                                        if (!p.projectedDate) return false;
+                                        return p.projectedDate >= aDebut && p.projectedDate <= aFin;
+                                      });
+                                      var isDraggingCE = dragRef.current.dragging && dragRef.current.itemId === a.id && dragRef.current.tab === "chantier-equipement";
+                                      var dateRange = formatDateFr(a.dateDebut) + " > " + formatDateFr(a.dateFin);
+                                      var tooltip = (eq.Nom || eq.Title) + " (" + eq.Title + ") - " + dateRange + (projs.length > 0 ? " - " + projs.length + " maintenance(s) prevue(s)" : "") + " - Clic droit : retirer";
+
+                                      // Bande affectation
+                                      acc.push(h("div", { key: "ce" + a.id,
+                                        onMouseDown: function(e) {
+                                          if (e.button !== 0) return; // ignore right/middle clicks
+                                          handleDragStartAnnuel(e, a.id, "move", "chantier-equipement");
+                                        },
+                                        onContextMenu: function(e) {
+                                          e.preventDefault();
+                                          if (confirm("Retirer " + eq.Title + " du chantier " + ch.titre + " ?")) deleteCE(a.id);
+                                        },
+                                        title: tooltip,
+                                        style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
+                                        h("div", { onMouseDown: function(e) { if (e.button !== 0) return; e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, title: "Glisser pour ajuster la date de debut", style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 10, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.18)", borderRight: "1px solid rgba(255,255,255,0.3)" } }),
+                                        aWidthPct > 4 ? h("span", { style: { padding: "0 14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: "0 1px 2px rgba(0,0,0,0.25)", pointerEvents: "none" } }, eq.Title) : null,
+                                        h("div", { onMouseDown: function(e) { if (e.button !== 0) return; e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-end", "chantier-equipement"); }, title: "Glisser pour ajuster la date de fin", style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 10, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.18)", borderLeft: "1px solid rgba(255,255,255,0.3)" } })
+                                      ));
+                                      // Trous de maintenance projetes
+                                      projs.forEach(function(p, pi) {
+                                        var posPct = dateToPctY(p.projectedDate);
+                                        var notchWidthPct = (dureeM / totalDaysYearLocal) * 100;
+                                        var color = maintBarColor(p);
+                                        acc.push(h("div", { key: "n" + a.id + "_" + pi,
+                                          title: eq.Title + " - " + p.planTitle + " - " + maintStateLabel(p) + " - Seuil " + p.nextDue + p.freqType + " (reste " + p.reste + ") - " + formatDateFr(p.projectedDate) + " - Duree " + dureeM + "j",
+                                          style: { position: "absolute", left: posPct + "%", top: (rowHeightCE - bandHeightCE) / 2 - 1, width: Math.max(notchWidthPct, 0.4) + "%", minWidth: 6, height: bandHeightCE + 2, background: color, borderRadius: 2, border: "2px solid white", zIndex: 3, cursor: "help", boxShadow: "0 1px 3px rgba(220,38,38,0.3)" }
+                                        }));
+                                      });
+                                      return acc;
+                                    }, [])
                                   )
-                                ),
-                                h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeightCE } },
-                                  todayPctLocal >= 0 ? h("div", { style: { position: "absolute", left: todayPctLocal + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3, zIndex: 1 } }) : null,
-                                  // Bande affectation (draggable move + resize)
-                                  h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, a.id, "move", "chantier-equipement"); },
-                                    title: eq.Title + " - " + dateRangeLabel + " - Glisser pour deplacer, utiliser les poignees ou les date pickers pour ajuster",
-                                    style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
-                                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, title: "Glisser pour ajuster la date de debut", style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 10, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.18)", borderRight: "1px solid rgba(255,255,255,0.3)" } }),
-                                    aWidthPct > 12 ? h("span", { style: { padding: "0 14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.25)" } },
-                                      eq.Title + " (" + dateRangeLabel + ")"
-                                    ) : null,
-                                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-end", "chantier-equipement"); }, title: "Glisser pour ajuster la date de fin", style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 10, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.18)", borderLeft: "1px solid rgba(255,255,255,0.3)" } })
-                                  ),
-                                  // Trous de maintenance projetes
-                                  projs.map(function(p, pi) {
-                                    var posPct = dateToPctY(p.projectedDate);
-                                    var notchWidthPct = (dureeM / totalDaysYearLocal) * 100;
-                                    var color = maintBarColor(p);
-                                    return h("div", { key: "n" + pi,
-                                      title: p.planTitle + " - " + maintStateLabel(p) + " - Seuil " + p.nextDue + p.freqType + " (reste " + p.reste + ") - " + formatDateFr(p.projectedDate) + " - Duree " + dureeM + "j",
-                                      style: { position: "absolute", left: posPct + "%", top: (rowHeightCE - bandHeightCE) / 2 - 1, width: Math.max(notchWidthPct, 0.4) + "%", minWidth: 6, height: bandHeightCE + 2, background: color, borderRadius: 2, border: "2px solid white", zIndex: 3, cursor: "help", boxShadow: "0 1px 3px rgba(220,38,38,0.3)" }
-                                    });
-                                  })
-                                )
-                              );
-                            })
+                                );
+                              });
+                            }())
                       );
                     })
               ),
