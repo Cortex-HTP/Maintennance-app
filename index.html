@@ -333,6 +333,28 @@
     // Pour chaque plan (horametre) lie a l'equipement, on calcule combien
     // de cycles de visite ont ete atteints par l'horametre actuel, et on
     // soustrait le nombre d'interventions preventives deja faites.
+    // Calcule le prochain seuil de maintenance pour un plan donne
+    // Prochain seuil = prochain multiple de freqVal apres le dernier entretien connu
+    // isDue = vrai si le compteur a DEPASSE le seuil (strictement)
+    // atThreshold = vrai si le compteur est exactement au seuil
+    function computeNextDue(freqVal, freqType, currentVal, baseVal, planInterventions) {
+      if (planInterventions.length > 0) {
+        var cyclesBase = Math.floor(baseVal / freqVal);
+        var maxCompleted = planInterventions.reduce(function(a, i) { return Math.max(a, parseInt(i.CycleNumber || 0)); }, cyclesBase);
+        var nextDue = (maxCompleted + 1) * freqVal;
+        return { nextDue: nextDue, isDue: currentVal > nextDue, atThreshold: currentVal === nextDue };
+      }
+      if (baseVal > 0) {
+        // Prochain multiple de freqVal apres baseVal
+        var cyclesBase2 = Math.floor(baseVal / freqVal);
+        var nextDue2 = (cyclesBase2 + 1) * freqVal;
+        return { nextDue: nextDue2, isDue: currentVal > nextDue2, atThreshold: currentVal === nextDue2 };
+      }
+      // Aucun historique : considerer tout comme fait
+      var cyclesAtteints = Math.floor(currentVal / freqVal);
+      return { nextDue: (cyclesAtteints + 1) * freqVal, isDue: false, atThreshold: false };
+    }
+
     function computeVisitesADeclencher(eq, plans, interventions) {
       if (!eq) return 0;
       const eqCode = (eq.Title || "").toLowerCase();
@@ -341,7 +363,6 @@
       const baseH = parseFloat(eq.DernierEntretienH || 0);
       const baseKM = parseFloat(eq.DernierEntretienKM || 0);
 
-      // 1ere passe : collecter les plans en retard avec leur frequence
       var duePlans = [];
       plans.forEach((p) => {
         if (p.Statut === "Suspendu") return;
@@ -350,47 +371,28 @@
         const freq = p.Frequence || "";
         const matchH = freq.match(/horametre\s*(\d+)/i) || freq.match(/^(\d+)\s*h/i);
         const matchK = freq.match(/km\s*(\d+)/i) || freq.match(/(\d+)\s*km/i);
-        let freqVal = 0;
-        let cyclesAtteints = 0;
-        let cyclesBase = 0;
-        let freqType = "";
-        if (matchH) {
-          freqVal = parseInt(matchH[1]);
-          if (freqVal > 0) { cyclesAtteints = Math.floor(horam / freqVal); cyclesBase = Math.floor(baseH / freqVal); freqType = "h"; }
-        } else if (matchK) {
-          freqVal = parseInt(matchK[1]);
-          if (freqVal > 0) { cyclesAtteints = Math.floor(km / freqVal); cyclesBase = Math.floor(baseKM / freqVal); freqType = "km"; }
-        } else return;
+        var freqVal = 0, freqType = "";
+        if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; }
+        else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
+        else return;
         if (freqVal === 0) return;
-        var planInterventions = interventions.filter((i) =>
+        var currentVal = freqType === "h" ? horam : km;
+        var baseVal = freqType === "h" ? baseH : baseKM;
+        var planInts = interventions.filter((i) =>
           i.Type === "Preventive" &&
           (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
           (i.Plan || "").toLowerCase() === p.Title.toLowerCase() &&
           i.Statut_Intervention === "Termine"
         );
-        // Si aucun historique (pas d'interventions et pas de base), considerer cycles passes comme faits
-        var effectiveBase = cyclesBase;
-        if (planInterventions.length === 0 && cyclesBase === 0 && cyclesAtteints > 0) {
-          effectiveBase = cyclesAtteints;
-        }
-        const maxCompleted = planInterventions.reduce((a, i) => Math.max(a, parseInt(i.CycleNumber || 0)), effectiveBase);
-        // Deja depasse le seuil → a declencher
-        if (cyclesAtteints > maxCompleted) {
+        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+        var seuil = parseInt(p.SeuilAlerte || 50);
+        var reste = result.nextDue - currentVal;
+        if (result.isDue || result.atThreshold || (reste > 0 && reste <= seuil)) {
           duePlans.push({ freqVal: freqVal, freqType: freqType });
-        } else {
-          // Pas encore depasse, mais dans le seuil d'alerte → a declencher aussi
-          var seuil = parseInt(p.SeuilAlerte || 50);
-          var prochainCycle = maxCompleted + 1;
-          var prochainSeuil = prochainCycle * freqVal;
-          var currentVal = freqType === "h" ? horam : km;
-          var reste = prochainSeuil - currentVal;
-          if (reste > 0 && reste <= seuil) {
-            duePlans.push({ freqVal: freqVal, freqType: freqType });
-          }
         }
       });
 
-      // Deduplique par frequence (si le meme equipement matche 2 fois le meme plan)
+      // Deduplique
       var seen = {};
       var uniqueDuePlans = [];
       duePlans.forEach(function(dp) {
@@ -398,7 +400,7 @@
         if (!seen[key]) { seen[key] = true; uniqueDuePlans.push(dp); }
       });
 
-      // Hierarchie : si un plan plus gros est aussi en retard, les petits sont absorbes
+      // Hierarchie : si un plan plus gros est aussi du, les petits sont absorbes
       var count = 0;
       uniqueDuePlans.forEach(function(dp) {
         var absorbed = uniqueDuePlans.some(function(other) {
@@ -425,32 +427,24 @@
         var freq = p.Frequence || "";
         var matchH = freq.match(/horametre\s*(\d+)/i) || freq.match(/^(\d+)\s*h/i);
         var matchK = freq.match(/km\s*(\d+)/i) || freq.match(/(\d+)\s*km/i);
-        var freqVal = 0, freqType = "", currentVal = 0, cyclesBase = 0;
-        if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; currentVal = horam; cyclesBase = Math.floor(baseH / freqVal); }
-        else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; currentVal = km; cyclesBase = Math.floor(baseKM / freqVal); }
+        var freqVal = 0, freqType = "";
+        if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; }
+        else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
         else return;
         if (freqVal === 0) return;
-        var cyclesAtteints = Math.floor(currentVal / freqVal);
+        var currentVal = freqType === "h" ? horam : km;
+        var baseVal = freqType === "h" ? baseH : baseKM;
         var planInts = interventions.filter(function(i) {
           return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && i.Statut_Intervention === "Termine";
         });
-        // Si aucun historique, considerer que les cycles passes sont faits
-        var effectiveBase = cyclesBase;
-        if (planInts.length === 0 && cyclesBase === 0 && cyclesAtteints > 0) {
-          effectiveBase = cyclesAtteints;
-        }
-        var maxCompleted = planInts.reduce(function(a, i) { return Math.max(a, parseInt(i.CycleNumber || 0)); }, effectiveBase);
+        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
         // Si deja du, pas d'alerte anticipee (c'est gere par computeVisitesADeclencher)
-        if (cyclesAtteints > maxCompleted) return;
-        // Prochain seuil
-        var prochainCycle = maxCompleted + 1;
-        var prochainSeuil = prochainCycle * freqVal;
+        if (result.isDue || result.atThreshold) return;
         var seuilDecl = parseInt(p.SeuilAlerte || 50);
         var seuilAvenir = parseInt(p.SeuilAlerteAvenir || 0);
-        var reste = prochainSeuil - currentVal;
-        // Alerte "a venir" : entre le seuil avenir et le seuil declenchement (exclut les deja declenches)
+        var reste = result.nextDue - currentVal;
         if (seuilAvenir > 0 && reste > seuilDecl && reste <= seuilAvenir) {
-          alertes.push({ plan: p.Title, freqVal: freqVal, freqType: freqType, prochainSeuil: prochainSeuil, reste: Math.round(reste), unite: freqType === "h" ? "h" : "km" });
+          alertes.push({ plan: p.Title, freqVal: freqVal, freqType: freqType, prochainSeuil: result.nextDue, reste: Math.round(reste), unite: freqType === "h" ? "h" : "km" });
         }
       });
       // Hierarchie : si un plan plus gros a aussi une alerte au meme seuil, absorber le petit
@@ -652,37 +646,25 @@
           var freq = p.Frequence || "";
           var matchH = freq.match(/horametre\s*(\d+)/i) || freq.match(/^(\d+)\s*h/i);
           var matchK = freq.match(/km\s*(\d+)/i) || freq.match(/(\d+)\s*km/i);
-          var freqVal = 0, freqType = "", currentVal = 0, cyclesAtteints = 0, cyclesBase = 0;
-          if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; currentVal = horam; cyclesAtteints = Math.floor(horam / freqVal); cyclesBase = Math.floor(baseH / freqVal); }
-          else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; currentVal = km; cyclesAtteints = Math.floor(km / freqVal); cyclesBase = Math.floor(baseKM / freqVal); }
+          var freqVal = 0, freqType = "";
+          if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; }
+          else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
           if (freqVal === 0) return;
-          var planInterventions = interventions.filter(function(i) {
+          var currentVal = freqType === "h" ? horam : km;
+          var baseVal = freqType === "h" ? baseH : baseKM;
+          var planInts = interventions.filter(function(i) {
             return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && i.Statut_Intervention === "Termine";
           });
-          var effectiveBase = cyclesBase;
-          if (planInterventions.length === 0 && cyclesBase === 0 && cyclesAtteints > 0) {
-            effectiveBase = cyclesAtteints;
-          }
-          var maxCompleted = planInterventions.reduce(function(a, i) { return Math.max(a, parseInt(i.CycleNumber || 0)); }, effectiveBase);
-          // DEBUG - a supprimer apres diagnostic
-          if (eqCode.indexOf("d37") >= 0) {
-            console.log("DEBUG D37 plan:", p.Title, "freq:", freq, "freqVal:", freqVal, "horam:", horam, "baseH:", baseH, "cyclesAtteints:", cyclesAtteints, "cyclesBase:", cyclesBase, "effectiveBase:", effectiveBase, "maxCompleted:", maxCompleted, "planInts:", planInterventions.length, "isDue:", cyclesAtteints > maxCompleted);
-          }
-          if (cyclesAtteints > maxCompleted) {
-            var hasHistory = baseH > 0 || baseKM > 0 || planInterventions.length > 0;
-            if (hasHistory) {
-              var prochainDeclenchement = (maxCompleted + 1) * freqVal;
-              var depassement = currentVal - prochainDeclenchement;
-              infosOverdue.push({ text: p.Title + " depasse de " + Math.round(depassement) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
-            }
-          } else {
-            var seuil = parseInt(p.SeuilAlerte || 50);
-            var prochainCycle = maxCompleted + 1;
-            var prochainSeuil = prochainCycle * freqVal;
-            var reste = prochainSeuil - currentVal;
-            if (reste > 0 && reste <= seuil) {
-              infosPreventive.push({ text: p.Title + " dans " + Math.round(reste) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
-            }
+          var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+          var seuil = parseInt(p.SeuilAlerte || 50);
+          var reste = result.nextDue - currentVal;
+          if (result.isDue) {
+            var depassement = currentVal - result.nextDue;
+            infosOverdue.push({ text: p.Title + " depasse de " + Math.round(depassement) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
+          } else if (result.atThreshold) {
+            infosPreventive.push({ text: p.Title + " a faire maintenant (" + result.nextDue + (freqType === "h" ? "h" : "km") + ")", freqVal: freqVal, freqType: freqType });
+          } else if (reste > 0 && reste <= seuil) {
+            infosPreventive.push({ text: p.Title + " dans " + Math.round(reste) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
           }
         });
         // Hierarchie : absorber les petits plans quand un plus gros du meme type est aussi du
@@ -5012,7 +4994,7 @@
             const baseH = parseFloat(eq.DernierEntretienH || 0);
             const baseKM = parseFloat(eq.DernierEntretienKM || 0);
 
-            // 1) Collecter tous les plans dus pour cet equipement (avec baseline)
+            // 1) Collecter tous les plans dus pour cet equipement (relatif au dernier entretien)
             var duePlansList = [];
             plans.forEach((p) => {
               if (p.Statut === "Suspendu") return;
@@ -5021,34 +5003,32 @@
               const freq = p.Frequence || "";
               const matchH = freq.match(/horametre\s*(\d+)/i) || freq.match(/^(\d+)\s*h/i);
               const matchK = freq.match(/km\s*(\d+)/i) || freq.match(/(\d+)\s*km/i);
-              let cyclesAtteints = 0, typeCycle = null, freqNum = 0, cyclesBase = 0;
-              if (matchH) { freqNum = parseInt(matchH[1]); if (freqNum > 0) { cyclesAtteints = Math.floor(horam / freqNum); cyclesBase = Math.floor(baseH / freqNum); typeCycle = "h"; } }
-              else if (matchK) { freqNum = parseInt(matchK[1]); if (freqNum > 0) { cyclesAtteints = Math.floor(km / freqNum); cyclesBase = Math.floor(baseKM / freqNum); typeCycle = "km"; } }
+              var freqNum = 0, typeCycle = null;
+              if (matchH) { freqNum = parseInt(matchH[1]); if (freqNum > 0) typeCycle = "h"; }
+              else if (matchK) { freqNum = parseInt(matchK[1]); if (freqNum > 0) typeCycle = "km"; }
               else return;
+              if (freqNum === 0) return;
+
+              var currentVal = typeCycle === "h" ? horam : km;
+              var baseVal = typeCycle === "h" ? baseH : baseKM;
 
               const myInts = interventions.filter((i) =>
                 i.Type === "Preventive" &&
                 (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
                 (i.Plan || "").toLowerCase() === (p.Title || "").toLowerCase()
               );
-              const maxCompleted = myInts
-                .filter((i) => i.Statut_Intervention === "Termine")
-                .reduce((a, i) => Math.max(a, parseInt(i.CycleNumber || 0)), cyclesBase);
+              var terminatedInts = myInts.filter((i) => i.Statut_Intervention === "Termine");
               const pending = myInts.filter((i) =>
                 i.Statut_Intervention !== "Termine" && (i.Title || "").startsWith("[Auto]")
               );
 
-              // Verifier aussi si dans le seuil de declenchement (maintenance preventive)
-              var inSeuil = false;
-              if (cyclesAtteints <= maxCompleted) {
-                var seuilDecl = parseInt(p.SeuilAlerte || 50);
-                var prochainCycle = maxCompleted + 1;
-                var prochainSeuilVal = prochainCycle * freqNum;
-                var currentValCheck = typeCycle === "h" ? horam : km;
-                var resteCheck = prochainSeuilVal - currentValCheck;
-                if (resteCheck > 0 && resteCheck <= seuilDecl) { inSeuil = true; }
-              }
-              duePlansList.push({ plan: p, freqNum, typeCycle, cyclesAtteints, maxCompleted, pending, isDue: cyclesAtteints > maxCompleted, inSeuil: inSeuil });
+              var result = computeNextDue(freqNum, typeCycle, currentVal, baseVal, terminatedInts);
+              var seuilDecl = parseInt(p.SeuilAlerte || 50);
+              var reste = result.nextDue - currentVal;
+              var isDue = result.isDue || result.atThreshold;
+              var inSeuil = !isDue && reste > 0 && reste <= seuilDecl;
+
+              duePlansList.push({ plan: p, freqNum: freqNum, typeCycle: typeCycle, pending: pending, isDue: isDue, inSeuil: inSeuil, nextDue: result.nextDue });
             });
 
             // 2) Hierarchie : si un plan plus gros est aussi du ou dans seuil, les petits sont absorbes
@@ -5063,15 +5043,14 @@
             duePlansList.forEach(function(dp) {
               var p = dp.plan;
               if ((dp.isDue || dp.inSeuil) && !dp.absorbed) {
-                // Ce plan est du (depasse ou dans seuil) : il faut une intervention auto
-                var targetCycle = dp.isDue ? dp.cyclesAtteints : dp.maxCompleted + 1;
-                var targetVal = dp.freqNum * targetCycle;
+                var targetVal = dp.nextDue;
+                var targetCycle = Math.ceil(targetVal / dp.freqNum);
                 const existingAtTarget = dp.pending.find((i) => parseInt(i.CycleNumber || 0) === targetCycle);
                 if (existingAtTarget) {
                   dp.pending.filter((i) => i !== existingAtTarget).forEach((i) => toDelete.push(i.Id));
                 } else if (dp.pending.length > 0) {
                   const first = dp.pending[0];
-                  toUpdate.push({ id: first.Id, cycle: targetCycle, freqNum: dp.freqNum, typeCycle: dp.typeCycle, planTitle: p.Title });
+                  toUpdate.push({ id: first.Id, cycle: targetCycle, freqNum: dp.freqNum, typeCycle: dp.typeCycle, planTitle: p.Title, targetVal: targetVal });
                   dp.pending.slice(1).forEach((i) => toDelete.push(i.Id));
                 } else {
                   toCreate.push({
@@ -5106,7 +5085,7 @@
               if (error) throw error;
             }
             for (const u of toUpdate) {
-              var uTargetVal = u.freqNum * u.cycle;
+              var uTargetVal = u.targetVal || (u.freqNum * u.cycle);
               const newPayload = {
                 cycle_number: u.cycle,
                 titre: "[Auto] " + u.planTitle + " - " + uTargetVal + " " + u.typeCycle,
