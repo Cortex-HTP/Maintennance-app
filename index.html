@@ -2193,7 +2193,7 @@
       var relevesData = ctx.releves;
 
       // ── Filtre pour onglet Maintenances ──
-      var _mc = useState("tous");
+      var _mc = useState("engin");
       var maintCateg = _mc[0]; var setMaintCateg = _mc[1];
 
       // ── Modal / CRUD state ──
@@ -2881,9 +2881,48 @@
         }
 
         if (activeTab === "maintenances") {
+          // ── Bande chantiers en haut du calendrier Maintenances (draggables) ──
+          var chantsForMaint = chantiers.filter(function(ch) {
+            if (ch.statut === "Termine") return false;
+            var debut = parseDate(ch.dateDebut);
+            var fin = parseDate(ch.dateFin);
+            return debut <= yearEnd && fin >= yearStart;
+          });
+          chantsForMaint.sort(function(a, b) { return parseDate(a.dateDebut) - parseDate(b.dateDebut); });
+
+          if (chantsForMaint.length > 0) {
+            rows.push(h("div", { key: "sec-chant", style: { display: "flex", alignItems: "center", height: 28, background: "#f1f5f9", borderBottom: "1px solid #e2e8f0", padding: "0 12px", fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5 } }, "Chantiers"));
+            chantsForMaint.forEach(function(ch, idx) {
+              var debut = parseDate(ch.dateDebut);
+              var fin = parseDate(ch.dateFin);
+              var leftPct = dateToPct(debut);
+              var rightPct = dateToPct(fin);
+              var widthPct = Math.max(rightPct - leftPct, 1);
+              var barGradient = ch.statut === "En cours" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #94a3b8, #64748b)";
+              var bgColor = idx % 2 === 0 ? "#ffffff" : "#fafbfc";
+              var isDragging = dragRef.current.dragging && dragRef.current.itemId === ch.id;
+              rows.push(h("div", { key: "mc" + ch.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "#f0f9ff" : bgColor, borderBottom: "1px solid #f1f5f9" } },
+                h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid #e2e8f0" } },
+                  h("div", null, ch.titre),
+                  h("div", { style: { fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 } }, formatDateFr(ch.dateDebut) + " - " + formatDateFr(ch.dateFin))
+                ),
+                h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
+                  monthLines.map(function(line) { return line; }),
+                  todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
+                  h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ch.id, "move", "chantiers"); }, style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, background: barGradient, borderRadius: 6, boxShadow: isDragging ? "0 4px 16px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.12)", zIndex: 3, display: "flex", alignItems: "center", overflow: "hidden", cursor: "grab", transition: "box-shadow 0.15s" }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " au " + formatDateFr(ch.dateFin) + " (" + ch.statut + ")" },
+                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-start", "chantiers"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } }),
+                    widthPct > 8 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)", flex: 1 } }, ch.titre) : null,
+                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-end", "chantiers"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } })
+                  )
+                )
+              ));
+            });
+            rows.push(h("div", { key: "sec-maint", style: { display: "flex", alignItems: "center", height: 28, background: "#f1f5f9", borderBottom: "1px solid #e2e8f0", padding: "0 12px", fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5 } }, "Maintenances par engin"));
+          }
+
           var maintEqs = filteredMaintenanceEqs();
           var maintItems = maintEqs.map(function(eq) {
-            return { eq: eq, projs: computeMaintenanceProjections(eq).filter(function(p) { return !p.absorbed; }) };
+            return { eq: eq, projs: computeMaintenanceProjections(eq) };
           });
           // Trie : severite max desc, puis projection la plus proche
           maintItems.sort(function(a, b) {
@@ -3175,19 +3214,18 @@
           ) : renderAnnuel()
         ),
         activeTab === "maintenances" && h("div", null,
-          h("div", { style: { marginBottom: 16, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-            h("span", { style: { fontSize: 13, fontWeight: 600, color: "#64748b" } }, "Categorie :"),
-            ["tous", "engin", "vl"].map(function(c) {
-              var label = c === "tous" ? "Tous" : c === "engin" ? "Engins" : "VL";
+          h("div", { style: { marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+            ["engin", "vl"].map(function(c) {
+              var label = c === "engin" ? "Engins" : "VL";
               return h("button", { key: c, onClick: function() { setMaintCateg(c); },
-                style: { padding: "6px 12px", border: "1px solid " + (maintCateg === c ? "#7c3aed" : "#e2e8f0"), borderRadius: 6, background: maintCateg === c ? "#7c3aed" : "white", color: maintCateg === c ? "white" : "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, label);
-            }),
-            h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#94a3b8", fontStyle: "italic" } },
-              "Projections basees sur la consommation moyenne des relevés (90 derniers jours)")
+                style: { padding: "6px 14px", border: "1px solid " + (maintCateg === c ? "#7c3aed" : "#e2e8f0"), borderRadius: 6, background: maintCateg === c ? "#7c3aed" : "white", color: maintCateg === c ? "white" : "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, label);
+            })
           ),
+          h("div", { style: { marginBottom: 16, fontSize: 11, color: "#94a3b8", fontStyle: "italic" } },
+            "Projections basees sur la consommation moyenne des relevés (90 derniers jours). Tous les seuils a venir sont affiches (250H, 500H, 1000H, KM...)."),
           viewMode === "liste" ? (function() {
             var items = filteredMaintenanceEqs().map(function(eq) {
-              return { eq: eq, projs: computeMaintenanceProjections(eq).filter(function(p) { return !p.absorbed; }) };
+              return { eq: eq, projs: computeMaintenanceProjections(eq) };
             });
             items.sort(function(a, b) {
               var sevA = a.projs.reduce(function(m, p) { return Math.max(m, maintSeverity(p)); }, 0);
