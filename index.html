@@ -243,6 +243,12 @@
     function affectationToDb(a) {
       return { personnel_id: a.personnelId, chantier_id: a.chantierId, date_affectation: a.dateAffectation };
     }
+    function chantierEquipementFromDb(r) {
+      return { id: r.id, chantierId: r.chantier_id, equipementId: r.equipement_id, dateDebut: r.date_debut, dateFin: r.date_fin, dureeMaintenanceJours: r.duree_maintenance_jours != null ? r.duree_maintenance_jours : 1, notes: r.notes || "" };
+    }
+    function chantierEquipementToDb(a) {
+      return { chantier_id: a.chantierId, equipement_id: a.equipementId, date_debut: a.dateDebut, date_fin: a.dateFin, duree_maintenance_jours: a.dureeMaintenanceJours != null ? a.dureeMaintenanceJours : 1, notes: a.notes || null };
+    }
     function palierFromDb(r) {
       return { id: r.id, site: r.site || "", seuilMh: parseFloat(r.seuil_mh) || 0, coefficient: parseInt(r.coefficient) || 0, objectifMh: parseFloat(r.objectif_mh) || 0, moyenneJour: parseFloat(r.moyenne_jour) || 0 };
     }
@@ -2330,7 +2336,7 @@
       }
 
       // ── State ref for drag (avoid stale closures) ──
-      var planState = { declarations: declarations, renouvellements: renouvellements, chantiers: chantiers, currentMonth: currentMonth };
+      var planState = { declarations: declarations, renouvellements: renouvellements, chantiers: chantiers, chantierEquipements: ctx.dbChantierEquipements || [], currentMonth: currentMonth };
       var stateRef = React.useRef(planState);
       stateRef.current = planState;
 
@@ -2398,6 +2404,9 @@
         } else if (tab === "renouvellements") {
           var ren = st.renouvellements.find(function(r) { return r.id === itemId; });
           if (ren) { info.origDate = ren.dateExpiration; }
+        } else if (tab === "chantier-equipement") {
+          var ce = (st.chantierEquipements || []).find(function(c) { return c.id === itemId; });
+          if (ce) { info.origDebut = ce.dateDebut; info.origFin = ce.dateFin; }
         }
         document.body.style.cursor = dragType === "move" ? "grabbing" : "ew-resize";
         document.body.style.userSelect = "none";
@@ -2545,10 +2554,48 @@
               setChantiers(updChE);
             }
           }
+
+          if (info.tab === "chantier-equipement") {
+            var ceList = st.chantierEquipements || [];
+            var origDebCE = parseDate(info.origDebut);
+            var origFinCE = parseDate(info.origFin);
+            var setCE = ctx.setDbChantierEquipements;
+            if (info.dragType === "move") {
+              var durCE = Math.round((origFinCE - origDebCE) / 86400000);
+              var newDebCE = new Date(origDebCE.getTime() + deltaDays * 86400000);
+              var newFinCE = new Date(newDebCE.getTime() + durCE * 86400000);
+              setCE(ceList.map(function(a) {
+                if (a.id === info.itemId) { return Object.assign({}, a, { dateDebut: formatDateISO(newDebCE), dateFin: formatDateISO(newFinCE) }); }
+                return a;
+              }));
+            } else if (info.dragType === "resize-start") {
+              var newDebCER = new Date(origDebCE.getTime() + deltaDays * 86400000);
+              if (newDebCER >= origFinCE) newDebCER = new Date(origFinCE.getTime() - 86400000);
+              setCE(ceList.map(function(a) {
+                if (a.id === info.itemId) { return Object.assign({}, a, { dateDebut: formatDateISO(newDebCER) }); }
+                return a;
+              }));
+            } else if (info.dragType === "resize-end") {
+              var newFinCER = new Date(origFinCE.getTime() + deltaDays * 86400000);
+              if (newFinCER <= origDebCE) newFinCER = new Date(origDebCE.getTime() + 86400000);
+              setCE(ceList.map(function(a) {
+                if (a.id === info.itemId) { return Object.assign({}, a, { dateFin: formatDateISO(newFinCER) }); }
+                return a;
+              }));
+            }
+          }
         };
         var handleMouseUp = function() {
           var info = dragRef.current;
           if (info.dragging) {
+            // Persistance pour les affectations engin <-> chantier
+            if (info.tab === "chantier-equipement" && info.itemId != null && ctx.updateChantierEquipement) {
+              var ceListFin = stateRef.current.chantierEquipements || [];
+              var aFin = ceListFin.find(function(x) { return x.id === info.itemId; });
+              if (aFin) {
+                ctx.updateChantierEquipement(info.itemId, aFin);
+              }
+            }
             info.dragging = false;
             info.itemId = null;
             info.dragType = null;
@@ -3124,7 +3171,7 @@
         ),
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16, borderBottom: "1px solid #e5e7eb", paddingBottom: 0 } },
           h("button", { onClick: function() { setActiveTab("chantiers"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "chantiers" ? "#7c3aed" : "transparent", color: activeTab === "chantiers" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Chantiers"),
-          h("button", { onClick: function() { setActiveTab("maintenances"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "maintenances" ? "#7c3aed" : "transparent", color: activeTab === "maintenances" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Maintenances"),
+          h("button", { onClick: function() { setActiveTab("maintenances"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "maintenances" ? "#7c3aed" : "transparent", color: activeTab === "maintenances" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Planning engins"),
           h("button", { onClick: function() { setActiveTab("declarations"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "declarations" ? "#7c3aed" : "transparent", color: activeTab === "declarations" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Declarations"),
           h("button", { onClick: function() { setActiveTab("renouvellements"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "renouvellements" ? "#7c3aed" : "transparent", color: activeTab === "renouvellements" ? "white" : "#6b7280", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Renouvellements")
         ),
@@ -3213,76 +3260,192 @@
             })
           ) : renderAnnuel()
         ),
-        activeTab === "maintenances" && h("div", null,
-          h("div", { style: { marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-            ["engin", "vl"].map(function(c) {
-              var label = c === "engin" ? "Engins" : "VL";
-              return h("button", { key: c, onClick: function() { setMaintCateg(c); },
-                style: { padding: "6px 14px", border: "1px solid " + (maintCateg === c ? "#7c3aed" : "#e2e8f0"), borderRadius: 6, background: maintCateg === c ? "#7c3aed" : "white", color: maintCateg === c ? "white" : "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, label);
-            })
-          ),
-          h("div", { style: { marginBottom: 16, fontSize: 11, color: "#94a3b8", fontStyle: "italic" } },
-            "Projections basees sur la consommation moyenne des relevés (90 derniers jours). Tous les seuils a venir sont affiches (250H, 500H, 1000H, KM...)."),
-          viewMode === "liste" ? (function() {
-            var items = filteredMaintenanceEqs().map(function(eq) {
-              return { eq: eq, projs: computeMaintenanceProjections(eq) };
-            });
-            items.sort(function(a, b) {
-              var sevA = a.projs.reduce(function(m, p) { return Math.max(m, maintSeverity(p)); }, 0);
-              var sevB = b.projs.reduce(function(m, p) { return Math.max(m, maintSeverity(p)); }, 0);
-              if (sevA !== sevB) return sevB - sevA;
-              var minA = a.projs.reduce(function(m, p) { return (p.daysUntil != null && p.daysUntil < m) ? p.daysUntil : m; }, Infinity);
-              var minB = b.projs.reduce(function(m, p) { return (p.daysUntil != null && p.daysUntil < m) ? p.daysUntil : m; }, Infinity);
-              return minA - minB;
-            });
-            if (items.length === 0) {
-              return h(Card, null, h("div", { style: { textAlign: "center", color: "#94a3b8", fontSize: 14, padding: 20 } }, "Aucun engin a afficher"));
-            }
-            return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 } },
-              items.map(function(item) {
-                var eq = item.eq;
-                var maxSev = item.projs.reduce(function(m, p) { return Math.max(m, maintSeverity(p)); }, 0);
-                var sevColor = maxSev === 3 ? "#dc2626" : maxSev === 2 ? "#f59e0b" : maxSev === 1 ? "#eab308" : "#94a3b8";
-                var sortedProjs = item.projs.slice().sort(function(a, b) {
-                  var sa = maintSeverity(a); var sb = maintSeverity(b);
-                  if (sa !== sb) return sb - sa;
-                  var da = a.daysUntil == null ? Infinity : a.daysUntil;
-                  var db = b.daysUntil == null ? Infinity : b.daysUntil;
-                  return da - db;
-                });
-                return h(Card, { key: "ml" + eq.Id, style: { borderLeft: "4px solid " + sevColor } },
-                  h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
-                    h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, eq.Nom || eq.Title),
-                    h("span", { style: { fontSize: 11, color: "#94a3b8", marginLeft: 8 } }, eq.Title)
-                  ),
-                  h("div", { style: { fontSize: 12, color: "#64748b", marginBottom: 12 } },
-                    Math.round(parseFloat(eq.Horametre || 0)) + " h"
-                    + (parseFloat(eq.KM || 0) > 0 ? " - " + Math.round(parseFloat(eq.KM || 0)) + " km" : "")
-                  ),
-                  sortedProjs.length === 0
-                    ? h("div", { style: { fontSize: 12, color: "#94a3b8", fontStyle: "italic" } }, "Aucune projection")
-                    : sortedProjs.slice(0, 6).map(function(dp, i) {
-                        var color = maintBarColor(dp);
-                        var dateLabel = (dp.isDue || dp.atThreshold) ? "Aujourd'hui"
-                          : (dp.projectedDate ? formatDateFr(dp.projectedDate) : "Taux inconnu");
-                        return h("div", { key: i, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 6, background: "#f8fafc", marginBottom: 6, borderLeft: "3px solid " + color } },
-                          h("div", { style: { flex: 1, minWidth: 0, marginRight: 8 } },
-                            h("div", { style: { fontSize: 13, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, dp.planTitle),
-                            h("div", { style: { fontSize: 11, color: "#64748b" } }, "Seuil " + dp.nextDue + dp.freqType + " (reste " + dp.reste + ")")
-                          ),
-                          h("div", { style: { textAlign: "right", flexShrink: 0 } },
-                            h("div", { style: { fontSize: 11, fontWeight: 700, color: color } }, maintStateLabel(dp)),
-                            h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 2 } },
-                              dateLabel + (dp.daysUntil != null && dp.daysUntil > 0 ? " (J+" + dp.daysUntil + ")" : "")
-                            )
-                          )
-                        );
-                      })
-                );
+        activeTab === "maintenances" && (function() {
+          // ── Setup local pour l'onglet Planning engins ──
+          var year = currentMonth.getFullYear();
+          var yearStart = new Date(year, 0, 1);
+          var yearEnd = new Date(year, 11, 31);
+          var totalDaysYearLocal = Math.round((yearEnd - yearStart) / 86400000) + 1;
+          function dateToPctY(d) {
+            var date = new Date(d);
+            if (date < yearStart) return 0;
+            if (date > yearEnd) return 100;
+            return (Math.round((date - yearStart) / 86400000) / totalDaysYearLocal) * 100;
+          }
+          var todayLocal = new Date(); todayLocal.setHours(0, 0, 0, 0);
+          var todayPctLocal = (todayLocal.getFullYear() === year) ? dateToPctY(todayLocal) : -1;
+
+          var poolEqs = filteredMaintenanceEqs();
+          var eqById = {};
+          equipements.forEach(function(e) { eqById[e.Id] = e; });
+
+          var ceList = ctx.dbChantierEquipements || [];
+          var addCE = ctx.addChantierEquipement;
+          var deleteCE = ctx.deleteChantierEquipement;
+
+          var activeChantiers = chantiers.filter(function(ch) {
+            if (ch.statut === "Termine") return false;
+            var debut = parseDate(ch.dateDebut);
+            var fin = parseDate(ch.dateFin);
+            return debut <= yearEnd && fin >= yearStart;
+          });
+          activeChantiers.sort(function(a, b) { return parseDate(a.dateDebut) - parseDate(b.dateDebut); });
+
+          function onChipDragStart(e, eqId) {
+            e.dataTransfer.effectAllowed = "copy";
+            e.dataTransfer.setData("text/x-engin-id", String(eqId));
+          }
+          function onSwimlaneDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
+          function onSwimlaneDrop(e, chantierId) {
+            e.preventDefault();
+            var eqId = e.dataTransfer.getData("text/x-engin-id");
+            if (!eqId || !addCE) return;
+            var ch = chantiers.find(function(c) { return c.id === chantierId; });
+            if (!ch) return;
+            var dup = ceList.some(function(a) { return a.chantierId === chantierId && a.equipementId === eqId; });
+            if (dup) { alert("Cet engin est deja affecte a ce chantier."); return; }
+            addCE({ chantierId: chantierId, equipementId: eqId, dateDebut: ch.dateDebut, dateFin: ch.dateFin, dureeMaintenanceJours: 1, notes: "" });
+          }
+
+          var rowHeightCE = 38;
+          var bandHeightCE = 24;
+
+          return h("div", null,
+            // ── Filtres categorie ──
+            h("div", { style: { marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+              ["engin", "vl"].map(function(c) {
+                var label = c === "engin" ? "Engins" : "VL";
+                return h("button", { key: c, onClick: function() { setMaintCateg(c); },
+                  style: { padding: "6px 14px", border: "1px solid " + (maintCateg === c ? "#7c3aed" : "#e2e8f0"), borderRadius: 6, background: maintCateg === c ? "#7c3aed" : "white", color: maintCateg === c ? "white" : "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, label);
               })
-            );
-          }()) : renderAnnuel()
-        ),
+            ),
+            // ── Pool d'engins disponibles ──
+            h("div", { style: { background: "white", border: "1px solid #e2e8f0", borderRadius: 8, padding: 12, marginBottom: 16 } },
+              h("div", { style: { fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } },
+                h(IconText, { icon: "wrench", size: 12, color: "#475569" }, "Engins disponibles - glisser vers un chantier")),
+              h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                poolEqs.length === 0
+                  ? h("span", { style: { fontSize: 13, color: "#94a3b8", fontStyle: "italic" } }, "Aucun engin")
+                  : poolEqs.map(function(eq) {
+                      var hor = Math.round(parseFloat(eq.Horametre || 0));
+                      return h("div", { key: "pool" + eq.Id,
+                        draggable: true,
+                        onDragStart: function(e) { onChipDragStart(e, eq.Id); },
+                        title: (eq.Nom || eq.Title) + " - " + hor + "h" + (parseFloat(eq.KM || 0) > 0 ? " - " + Math.round(parseFloat(eq.KM || 0)) + "km" : ""),
+                        style: { padding: "8px 12px", background: "linear-gradient(135deg, #7c3aed, #6d28d9)", color: "white", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "grab", userSelect: "none", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" } },
+                        eq.Title,
+                        h("span", { style: { fontSize: 10, opacity: 0.85, fontWeight: 500 } }, hor + "h")
+                      );
+                    })
+              )
+            ),
+            // ── Calendrier annuel avec swimlanes par chantier ──
+            h("div", { style: { background: "white", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" } },
+              // Header annee
+              h("div", { style: { display: "flex", borderBottom: "2px solid #e2e8f0", background: "linear-gradient(180deg, #f8fafc, #f1f5f9)" } },
+                h("div", { style: { width: 200, flexShrink: 0, padding: "10px 12px", fontSize: 15, fontWeight: 700, color: "#1e293b", borderRight: "1px solid #e2e8f0", display: "flex", alignItems: "center" } }, String(year)),
+                h("div", { style: { position: "relative", flex: 1, height: 38 } },
+                  ["Jan","Fev","Mar","Avr","Mai","Jun","Jul","Aou","Sep","Oct","Nov","Dec"].map(function(nom, idx) {
+                    var startPctH = dateToPctY(new Date(year, idx, 1));
+                    var endPctH = idx < 11 ? dateToPctY(new Date(year, idx + 1, 1)) : 100;
+                    var isCurr = todayLocal.getFullYear() === year && todayLocal.getMonth() === idx;
+                    return h("div", { key: idx, style: { position: "absolute", left: startPctH + "%", width: (endPctH - startPctH) + "%", textAlign: "center", fontSize: 11, fontWeight: isCurr ? 700 : 500, color: isCurr ? "#7c3aed" : "#64748b", padding: "10px 0", letterSpacing: 0.5 } }, nom);
+                  })
+                )
+              ),
+              // Swimlanes
+              h("div", { style: { maxHeight: 600, overflowY: "auto" } },
+                activeChantiers.length === 0
+                  ? h("div", { style: { padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 } }, "Aucun chantier actif (en cours ou a venir) pour " + year)
+                  : activeChantiers.map(function(ch) {
+                      var chDebut = parseDate(ch.dateDebut);
+                      var chFin = parseDate(ch.dateFin);
+                      var chLeftPct = dateToPctY(chDebut);
+                      var chRightPct = dateToPctY(chFin);
+                      var chWidthPct = Math.max(chRightPct - chLeftPct, 1);
+                      var chAssigns = ceList.filter(function(a) { return a.chantierId === ch.id; });
+                      var statutColor = ch.statut === "En cours" ? "#d97706" : "#94a3b8";
+                      return h("div", { key: "swl" + ch.id,
+                        onDragOver: onSwimlaneDragOver,
+                        onDrop: function(e) { onSwimlaneDrop(e, ch.id); },
+                        style: { borderBottom: "2px solid #e2e8f0" } },
+                        // En-tete chantier
+                        h("div", { style: { display: "flex", alignItems: "center", padding: "8px 12px", background: "#f1f5f9", borderBottom: "1px solid #e2e8f0" } },
+                          h("div", { style: { width: 188, flexShrink: 0 } },
+                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#1e293b" } }, ch.titre),
+                            h("div", { style: { fontSize: 10, color: "#64748b", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin))
+                          ),
+                          h("div", { style: { position: "relative", flex: 1, height: 22 } },
+                            // Bande indicative du chantier
+                            h("div", { style: { position: "absolute", left: chLeftPct + "%", top: 5, width: chWidthPct + "%", height: 12, background: ch.statut === "En cours" ? "rgba(245,158,11,0.15)" : "rgba(148,163,184,0.15)", borderRadius: 3, border: "1px dashed " + statutColor } }),
+                            todayPctLocal >= 0 ? h("div", { style: { position: "absolute", left: todayPctLocal + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.5 } }) : null
+                          )
+                        ),
+                        // Lignes d'affectation
+                        chAssigns.length === 0
+                          ? h("div", { style: { display: "flex", alignItems: "center", padding: "12px", minHeight: 50 } },
+                              h("div", { style: { width: 188, flexShrink: 0 } }, ""),
+                              h("div", { style: { flex: 1, padding: "12px", border: "2px dashed #cbd5e1", borderRadius: 6, textAlign: "center", fontSize: 12, color: "#94a3b8", fontStyle: "italic" } }, "Glisser un engin du pool ici"))
+                          : chAssigns.map(function(a) {
+                              var eq = eqById[a.equipementId];
+                              if (!eq) return null;
+                              var aDebut = parseDate(a.dateDebut);
+                              var aFin = parseDate(a.dateFin);
+                              var aLeftPct = dateToPctY(aDebut);
+                              var aRightPct = dateToPctY(aFin);
+                              var aWidthPct = Math.max(aRightPct - aLeftPct, 1);
+                              var dureeM = a.dureeMaintenanceJours != null ? a.dureeMaintenanceJours : 1;
+                              var projs = computeMaintenanceProjections(eq).filter(function(p) {
+                                if (!p.projectedDate) return false;
+                                return p.projectedDate >= aDebut && p.projectedDate <= aFin;
+                              });
+                              var isDraggingCE = dragRef.current.dragging && dragRef.current.itemId === a.id && dragRef.current.tab === "chantier-equipement";
+                              return h("div", { key: "ce" + a.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", padding: "6px 12px", minHeight: rowHeightCE, background: isDraggingCE ? "#f0f9ff" : "white" } },
+                                h("div", { style: { width: 188, flexShrink: 0, paddingRight: 8 } },
+                                  h("div", { style: { fontSize: 12, fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, eq.Title),
+                                  h("div", { style: { fontSize: 10, color: "#64748b" } }, Math.round(parseFloat(eq.Horametre || 0)) + "h" + (parseFloat(eq.KM || 0) > 0 ? " - " + Math.round(parseFloat(eq.KM || 0)) + "km" : "") + " - " + projs.length + " maint.")
+                                ),
+                                h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeightCE } },
+                                  todayPctLocal >= 0 ? h("div", { style: { position: "absolute", left: todayPctLocal + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.3, zIndex: 1 } }) : null,
+                                  // Bande affectation (draggable move + resize)
+                                  h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, a.id, "move", "chantier-equipement"); },
+                                    title: eq.Title + " - " + formatDateFr(a.dateDebut) + " au " + formatDateFr(a.dateFin) + " - Glisser pour deplacer",
+                                    style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
+                                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 6, cursor: "ew-resize", zIndex: 4 } }),
+                                    aWidthPct > 8 ? h("span", { style: { padding: "0 10px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.2)" } }, eq.Title) : null,
+                                    h("button", { onClick: function(ev) { ev.stopPropagation(); if (confirm("Retirer " + eq.Title + " du chantier " + ch.titre + " ?")) deleteCE(a.id); },
+                                      onMouseDown: function(ev) { ev.stopPropagation(); },
+                                      style: { position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", width: 18, height: 18, background: "rgba(0,0,0,0.25)", border: "none", borderRadius: 9, color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, zIndex: 5 }, title: "Retirer cette affectation" },
+                                      h(Icon, { name: "x", size: 11, color: "white" })),
+                                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-end", "chantier-equipement"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "ew-resize", zIndex: 4 } })
+                                  ),
+                                  // Trous de maintenance projetes
+                                  projs.map(function(p, pi) {
+                                    var posPct = dateToPctY(p.projectedDate);
+                                    var notchWidthPct = (dureeM / totalDaysYearLocal) * 100;
+                                    var color = maintBarColor(p);
+                                    return h("div", { key: "n" + pi,
+                                      title: p.planTitle + " - " + maintStateLabel(p) + " - Seuil " + p.nextDue + p.freqType + " (reste " + p.reste + ") - " + formatDateFr(p.projectedDate) + " - Duree " + dureeM + "j",
+                                      style: { position: "absolute", left: posPct + "%", top: (rowHeightCE - bandHeightCE) / 2 - 1, width: Math.max(notchWidthPct, 0.4) + "%", minWidth: 6, height: bandHeightCE + 2, background: color, borderRadius: 2, border: "2px solid white", zIndex: 3, cursor: "help", boxShadow: "0 1px 3px rgba(220,38,38,0.3)" }
+                                    });
+                                  })
+                                )
+                              );
+                            })
+                      );
+                    })
+              ),
+              // Legende
+              h("div", { style: { display: "flex", gap: 16, padding: "10px 16px", borderTop: "1px solid #e2e8f0", background: "#f8fafc", flexWrap: "wrap" } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 14, height: 14, borderRadius: 3, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)" } }), "Affectation engin"),
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 10, height: 14, background: "#dc2626", border: "2px solid white" } }), "Maintenance prevue (1j)"),
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 10, height: 14, background: "#f59e0b", border: "2px solid white" } }), "A faire"),
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" } }, h("div", { style: { width: 10, height: 14, background: "#eab308", border: "2px solid white" } }), "Alerte"),
+                todayPctLocal >= 0 ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b", marginLeft: "auto" } }, h("div", { style: { width: 2, height: 12, background: "#7c3aed" } }), "Aujourd'hui") : null
+              )
+            )
+          );
+        }()),
         showModal && renderModalForm(),
         toDelete && h(ConfirmDialog, {
           title: "Supprimer ?",
@@ -5209,6 +5372,7 @@
       const [dbAppUsers, setDbAppUsers] = useState([]);
       const [dbAffectations, setDbAffectations] = useState([]);
       const [dbPaliers, setDbPaliers] = useState([]);
+      const [dbChantierEquipements, setDbChantierEquipements] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -5244,13 +5408,16 @@
           // Nouvelles tables (chargement separe pour eviter un crash si migration pas faite)
           var afRes = { data: [], error: null };
           var ppRes = { data: [], error: null };
+          var ceRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
               supabase.from("paliers_primes").select("*").order("site").order("seuil_mh"),
+              supabase.from("chantier_equipements").select("*"),
             ]);
             afRes = results[0];
             ppRes = results[1];
+            ceRes = results[2];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -5267,6 +5434,7 @@
           if (auRes.error) console.error("Table app_users:", auRes.error.message);
           if (afRes.error) console.error("Table affectations:", afRes.error.message);
           if (ppRes.error) console.error("Table paliers_primes:", ppRes.error.message);
+          if (ceRes.error) console.error("Table chantier_equipements:", ceRes.error.message);
 
           const eqList = (eqRes.data || []).map(equipementFromDb);
           const eqCodeById = {}; const eqIdByCode = {};
@@ -5295,6 +5463,7 @@
           // Affectations & Paliers
           setDbAffectations((afRes.data || []).map(affectationFromDb));
           setDbPaliers((ppRes.data || []).map(palierFromDb));
+          setDbChantierEquipements((ceRes.data || []).map(chantierEquipementFromDb));
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -5616,6 +5785,27 @@
         showToast("Releve supprime");
       };
 
+      // CRUD : affectations engin <-> chantier
+      const addChantierEquipement = async (item) => {
+        const payload = chantierEquipementToDb(item);
+        const { data, error } = await supabase.from("chantier_equipements").insert(payload).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbChantierEquipements((p) => [...p, chantierEquipementFromDb(data)]);
+        return chantierEquipementFromDb(data);
+      };
+      const updateChantierEquipement = async (id, patch) => {
+        const payload = chantierEquipementToDb(patch);
+        const { data, error } = await supabase.from("chantier_equipements").update(payload).eq("id", id).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbChantierEquipements((p) => p.map((x) => x.id === id ? chantierEquipementFromDb(data) : x));
+        return chantierEquipementFromDb(data);
+      };
+      const deleteChantierEquipement = async (id) => {
+        const { error } = await supabase.from("chantier_equipements").delete().eq("id", id);
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbChantierEquipements((p) => p.filter((x) => x.id !== id));
+      };
+
       // CRUD : liaisons pieces <-> equipements
       const linkPieceEquipement = async (pieceId, equipementId) => {
         const { data, error } = await supabase.from("pieces_equipements").insert({ piece_id: pieceId, equipement_id: equipementId }).select().single();
@@ -5774,7 +5964,9 @@
         isAdmin, userEmail, pendingValidations, validationLog,
         dbChantiers, setDbChantiers, dbSaisies, setDbSaisies,
         dbDeclarations, setDbDeclarations, dbRenouvellements, setDbRenouvellements,
-        dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers, loadAll, showToast,
+        dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
+        dbChantierEquipements, setDbChantierEquipements, addChantierEquipement, updateChantierEquipement, deleteChantierEquipement,
+        loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
         addPlan: wrappedAddPlan, updatePlan: wrappedUpdatePlan, deletePlan,
