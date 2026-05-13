@@ -769,6 +769,55 @@
       const nbAlertesAnticipees = toutesAlertesAnticipees.length;
 
       const derniersEquips = sortByField(equipements, "Title").slice(0, 10);
+
+      // ── Liste des interventions [Auto] Pas fait, enrichies avec leur statut courant ──
+      var autoPasFait = interventions
+        .filter(function(i) {
+          return (i.Title || "").indexOf("[Auto]") === 0 && i.Statut_Intervention === "Pas fait";
+        })
+        .map(function(i) {
+          var eq = null;
+          for (var k = 0; k < equipements.length; k++) {
+            if (equipements[k].Id === i.EquipementId || equipements[k].Title === i.Equipement) { eq = equipements[k]; break; }
+          }
+          var pl = null;
+          for (var k2 = 0; k2 < plans.length; k2++) {
+            if (plans[k2].Title && i.Plan && plans[k2].Title.toLowerCase() === (i.Plan || "").toLowerCase()) { pl = plans[k2]; break; }
+          }
+          var statusText = "";
+          var statusType = "unknown";
+          var diff = 0;
+          if (eq && pl) {
+            var freq = pl.Frequence || "";
+            var matchH = freq.match(/horametre\s*(\d+)/i) || freq.match(/^(\d+)\s*h/i);
+            var matchK = freq.match(/km\s*(\d+)/i) || freq.match(/(\d+)\s*km/i);
+            var freqVal = 0, freqType = "";
+            if (matchH) { freqVal = parseInt(matchH[1]); freqType = "h"; }
+            else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
+            if (freqVal > 0) {
+              var currentVal = freqType === "h" ? parseFloat(eq.Horametre || 0) : parseFloat(eq.KM || 0);
+              var cycleNum = parseInt(i.CycleNumber || 0);
+              var threshold = cycleNum > 0 ? cycleNum * freqVal : freqVal;
+              diff = currentVal - threshold;
+              var unit = freqType === "h" ? " h" : " km";
+              if (diff > 0) { statusText = "En retard de " + Math.round(diff) + unit; statusType = "overdue"; }
+              else if (diff === 0) { statusText = "A faire maintenant (" + Math.round(threshold) + unit + ")"; statusType = "due"; }
+              else { statusText = "Dans " + Math.round(-diff) + unit; statusType = "soon"; }
+            }
+          }
+          return { intervention: i, eq: eq, plan: pl, statusText: statusText, statusType: statusType, diff: diff };
+        });
+
+      // Tri : en retard (plus gros depassement d'abord), puis a faire, puis a venir
+      autoPasFait.sort(function(a, b) {
+        var rA = a.statusType === "overdue" ? 0 : a.statusType === "due" ? 1 : a.statusType === "soon" ? 2 : 3;
+        var rB = b.statusType === "overdue" ? 0 : b.statusType === "due" ? 1 : b.statusType === "soon" ? 2 : 3;
+        if (rA !== rB) return rA - rB;
+        if (a.statusType === "overdue") return b.diff - a.diff;
+        if (a.statusType === "soon") return a.diff - b.diff;
+        return 0;
+      });
+
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "home", size: 20 }, "Tableau de bord"), subtitle: "Vue d'ensemble de la maintenance" }),
         h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 } },
@@ -797,7 +846,7 @@
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700 } }, h(IconText, { icon: "wrench", size: 16, color: "#d97706" }, "Travaux non termines")),
             (function() {
-              var nonTermines = interventions.filter(function(i) { return i.Statut_Intervention === "Planifiee" || i.Statut_Intervention === "En cours" || i.Statut_Intervention === "Pas fait"; });
+              var nonTermines = interventions.filter(function(i) { return i.Statut_Intervention !== "Termine"; });
               return nonTermines.length === 0 ? h("p", { style: { color: "#9ca3af", textAlign: "center", padding: 20 } }, "Tous les travaux sont termines") :
                 h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" } },
                   sortByField(nonTermines, "Title").map(function(i) {
@@ -809,15 +858,23 @@
                       h(StatusBadge, { status: i.Statut_Intervention }));
                   }));
             }()))),
-        detailVisitesDecl.length > 0 && h(Card, { style: { marginBottom: 20 } },
+        autoPasFait.length > 0 && h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700 } }, h(IconText, { icon: "bell-ring", size: 16, color: "#dc2626" }, "Maintenance preventive")),
-          h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" } },
-            detailVisitesDecl.map(function(v, idx) {
-              return h("div", { key: idx, onClick: function() { onNavigate("fiche-equipement", v.eqObj); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "#fef2f2", borderRadius: 8, borderLeft: "4px solid #dc2626", cursor: "pointer", transition: "all 0.15s" } },
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" } },
+            autoPasFait.map(function(item) {
+              var i = item.intervention;
+              var bgColor = item.statusType === "overdue" ? "#fef2f2" : item.statusType === "due" ? "#fff7ed" : "#fefce8";
+              var borderColor = item.statusType === "overdue" ? "#dc2626" : item.statusType === "due" ? "#ea580c" : "#eab308";
+              var badgeBg = item.statusType === "overdue" ? "#fee2e2" : item.statusType === "due" ? "#ffedd5" : "#fef9c3";
+              var badgeColor = item.statusType === "overdue" ? "#991b1b" : item.statusType === "due" ? "#9a3412" : "#854d0e";
+              var badgeLabel = item.statusType === "overdue" ? "En retard" : item.statusType === "due" ? "A faire" : item.statusType === "soon" ? "A venir" : "Auto";
+              var eqName = (item.eq && item.eq.Title) || i.Equipement || "—";
+              return h("div", { key: i.Id, onClick: function() { onNavigate("interventions", i); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: bgColor, borderRadius: 8, borderLeft: "4px solid " + borderColor, cursor: "pointer", transition: "all 0.15s" } },
                 h("div", null,
-                  h("div", { style: { fontWeight: 600, fontSize: 14 } }, v.equipement),
-                  h("div", { style: { fontSize: 12, color: "#6b7280" } }, v.infos.join(", "))),
-                h("span", { style: { background: "#fee2e2", color: "#991b1b", padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" } }, "A faire"));
+                  h("div", { style: { fontWeight: 600, fontSize: 14 } }, i.Title || ("[Auto] " + (i.Plan || ""))),
+                  h("div", { style: { fontSize: 12, color: "#6b7280" } }, eqName + (item.statusText ? " — " + item.statusText : ""))
+                ),
+                h("span", { style: { background: badgeBg, color: badgeColor, padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" } }, badgeLabel));
             }))),
         nbAlertesAnticipees > 0 && h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700 } }, h(IconText, { icon: "clock", size: 16, color: "#d97706" }, "Maintenances a venir")),
