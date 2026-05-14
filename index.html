@@ -6041,8 +6041,18 @@
         try {
           var payload = Object.assign({}, f);
           if (submit) {
-            payload.statut = "soumise";
-            payload.dateSoumission = new Date().toISOString();
+            var nowIso = new Date().toISOString();
+            payload.dateSoumission = nowIso;
+            if (ctx.isAdmin) {
+              // Bypass : un admin qui soumet sa propre demande l'auto-approuve
+              payload.statut = "approuvee";
+              payload.montantApprouve = parseFloat(payload.montantDemande) || 0;
+              payload.decideurEmail = currentUserEmail;
+              payload.dateDecision = nowIso;
+              if (!payload.commentaireDecideur) payload.commentaireDecideur = "Auto-approuvee (admin)";
+            } else {
+              payload.statut = "soumise";
+            }
           }
           if (f.id) await ctx.updateDemandeFin(f.id, payload); else await ctx.addDemandeFin(payload);
           if (onDone) onDone();
@@ -6086,7 +6096,7 @@
         h("div", { style: { display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end", flexWrap: "wrap" } },
           h(Button, { variant: "secondary", onClick: () => { if (onDone) onDone(); }, disabled: saving }, "Annuler"),
           h(Button, { variant: "secondary", onClick: () => save(false), disabled: saving || !canSubmit }, h(IconText, { icon: "save", size: 14 }, "Enregistrer brouillon")),
-          h(Button, { onClick: () => save(true), disabled: saving || !canSubmit }, h(IconText, { icon: "send", size: 14 }, saving ? "..." : (f.statut === "info_demandee" ? "Re-soumettre" : "Soumettre"))))
+          h(Button, { onClick: () => save(true), disabled: saving || !canSubmit }, h(IconText, { icon: ctx.isAdmin ? "check-circle" : "send", size: 14 }, saving ? "..." : (ctx.isAdmin ? "Enregistrer (auto-approuve)" : f.statut === "info_demandee" ? "Re-soumettre" : "Soumettre"))))
       );
     }
 
