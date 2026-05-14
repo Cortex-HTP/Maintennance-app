@@ -335,6 +335,54 @@
       return { nom: u.nom, email: u.email, role: u.role || "Utilisateur", statut: u.statut || "Actif", pages_autorisees: u.pagesAutorisees || ["accueil"], date_creation: u.dateCreation || new Date().toISOString().substring(0, 10) };
     }
 
+    // ─── Conversion DB: demandes_financement ──────────────────────────
+    function demandeFinFromDb(r) {
+      return {
+        id: r.id,
+        demandeurEmail: r.demandeur_email || "",
+        titre: r.titre || "",
+        categorie: r.categorie || "autre",
+        montantDemande: r.montant_demande != null ? parseFloat(r.montant_demande) : 0,
+        montantApprouve: r.montant_approuve != null ? parseFloat(r.montant_approuve) : null,
+        urgence: r.urgence || "Normale",
+        description: r.description || "",
+        fournisseur: r.fournisseur || "",
+        urlDevis: r.url_devis || "",
+        dateSouhaitee: r.date_souhaitee || null,
+        equipementId: r.equipement_id || null,
+        chantierId: r.chantier_id || null,
+        interventionId: r.intervention_id || null,
+        statut: r.statut || "brouillon",
+        dateSoumission: r.date_soumission || null,
+        decideurEmail: r.decideur_email || null,
+        dateDecision: r.date_decision || null,
+        commentaireDecideur: r.commentaire_decideur || "",
+        createdAt: r.created_at || null
+      };
+    }
+    function demandeFinToDb(d) {
+      return {
+        demandeur_email: d.demandeurEmail || null,
+        titre: d.titre || "",
+        categorie: d.categorie || "autre",
+        montant_demande: parseFloat(d.montantDemande) || 0,
+        montant_approuve: d.montantApprouve != null && d.montantApprouve !== "" ? parseFloat(d.montantApprouve) : null,
+        urgence: d.urgence || "Normale",
+        description: d.description || null,
+        fournisseur: d.fournisseur || null,
+        url_devis: d.urlDevis || null,
+        date_souhaitee: d.dateSouhaitee || null,
+        equipement_id: d.equipementId || null,
+        chantier_id: d.chantierId || null,
+        intervention_id: d.interventionId || null,
+        statut: d.statut || "brouillon",
+        date_soumission: d.dateSoumission || null,
+        decideur_email: d.decideurEmail || null,
+        date_decision: d.dateDecision || null,
+        commentaire_decideur: d.commentaireDecideur || null
+      };
+    }
+
     // ─── Conversion DB: affectations, paliers_primes ──────────────────
     function affectationFromDb(r) {
       return { id: r.id, personnelId: r.personnel_id, chantierId: r.chantier_id, dateAffectation: r.date_affectation, typeJour: r.type_jour || "travail" };
@@ -571,6 +619,11 @@
         "Planifiee": { bg: "rgba(99, 102, 241, 0.14)", text: "#a5b4fc", ring: "rgba(99, 102, 241, 0.28)", lucide: "calendar" },
         "Pas fait": { bg: "rgba(244, 63, 94, 0.14)", text: "#fda4af", ring: "rgba(244, 63, 94, 0.28)", lucide: "x-circle" },
         "Partiellement terminee": { bg: "rgba(168, 85, 247, 0.14)", text: "#d8b4fe", ring: "rgba(168, 85, 247, 0.28)", lucide: "list-checks" },
+        "Brouillon": { bg: "rgba(255,255,255,0.06)", text: "#cbd5e1", ring: "rgba(255,255,255,0.1)", lucide: "file-edit" },
+        "Soumise": { bg: "rgba(99, 102, 241, 0.14)", text: "#a5b4fc", ring: "rgba(99, 102, 241, 0.28)", lucide: "send" },
+        "Info demandee": { bg: "rgba(245, 158, 11, 0.14)", text: "#fcd34d", ring: "rgba(245, 158, 11, 0.28)", lucide: "message-circle-question" },
+        "Approuvee": { bg: "rgba(16, 185, 129, 0.14)", text: "#6ee7b7", ring: "rgba(16, 185, 129, 0.28)", lucide: "check-circle" },
+        "Refusee": { bg: "rgba(244, 63, 94, 0.14)", text: "#fda4af", ring: "rgba(244, 63, 94, 0.28)", lucide: "x-circle" },
         "En service": { bg: "rgba(16, 185, 129, 0.14)", text: "#6ee7b7", ring: "rgba(16, 185, 129, 0.28)", lucide: "check-circle" },
         "En panne": { bg: "rgba(244, 63, 94, 0.14)", text: "#fda4af", ring: "rgba(244, 63, 94, 0.28)", lucide: "x-circle" },
         "En maintenance": { bg: "rgba(245, 158, 11, 0.14)", text: "#fcd34d", ring: "rgba(245, 158, 11, 0.28)", lucide: "wrench" },
@@ -957,7 +1010,16 @@
 
     // ─── Ecran Accueil ──────────────────────────────────────────────────
     function EcranAccueil({ onNavigate }) {
-      const { interventions, equipements, plans, pieces } = useAppData();
+      const ctx = useAppData();
+      const { interventions, equipements, plans, pieces } = ctx;
+      const isAdmin = ctx.isAdmin;
+      const userEmail = ctx.userEmail || "";
+      const demandesFin = ctx.dbDemandesFin || [];
+      // Demandes pour widget : soumise + info_demandee (pour admin = toutes, pour user = les siennes)
+      const demandesEnAttente = demandesFin.filter(function(d) {
+        if (!isAdmin && d.demandeurEmail !== userEmail) return false;
+        return d.statut === "soumise" || d.statut === "info_demandee";
+      });
       const totalEquip = equipements.length;
       const enPanne = equipements.filter((e) => e.Statut === "En panne").length;
       // Statuts effectifs (avec prise en compte de la gamme)
@@ -1149,6 +1211,22 @@
                   h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, eqName + (item.statusText ? " — " + item.statusText : ""))
                 ),
                 h("span", { style: { background: badgeBg, color: badgeColor, padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", border: "1px solid " + badgeBorder } }, badgeLabel));
+            }))),
+        demandesEnAttente.length > 0 && h(Card, { style: { marginBottom: 20 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+            h("h3", { style: { margin: 0, fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "wallet", size: 16, color: "#fbbf24" }, isAdmin ? "Demandes de financement en attente" : "Mes demandes en attente")),
+            h(Button, { variant: "secondary", onClick: function() { onNavigate("financement"); }, style: { padding: "6px 12px", fontSize: 12 } }, "Voir tout")
+          ),
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" } },
+            demandesEnAttente.slice(0, 6).map(function(d) {
+              var statutLabel = DEMANDE_STATUT_UI[d.statut] || d.statut;
+              var urgColor = urgenceColor(d.urgence);
+              return h("div", { key: d.id, onClick: function() { onNavigate("financement"); },
+                style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: d.urgence === "Critique" ? "rgba(244,63,94,0.10)" : d.urgence === "Urgente" ? "rgba(251,191,36,0.10)" : "rgba(99,102,241,0.08)", border: "1px solid " + (d.urgence === "Critique" ? "rgba(244,63,94,0.20)" : d.urgence === "Urgente" ? "rgba(251,191,36,0.18)" : "rgba(99,102,241,0.15)"), borderRadius: 10, borderLeft: "4px solid " + (d.urgence === "Critique" ? "#f43f5e" : d.urgence === "Urgente" ? "#fbbf24" : "#818cf8"), cursor: "pointer", transition: "all 0.15s" } },
+                h("div", { style: { minWidth: 0, flex: 1 } },
+                  h("div", { style: { fontWeight: 600, fontSize: 14, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, d.titre),
+                  h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, (isAdmin ? d.demandeurEmail.split("@")[0] + " · " : "") + categorieLabel(d.categorie) + " · " + fmtMoney(d.montantDemande))),
+                h(StatusBadge, { status: statutLabel }));
             }))),
         nbAlertesAnticipees > 0 && h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "clock", size: 16, color: "#fbbf24" }, "Maintenances a venir")),
@@ -5672,6 +5750,7 @@
         { key: "avancement", label: "Avancement", icon: "hard-hat" },
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
         { key: "primes", label: "Primes", icon: "trophy" },
+        { key: "financement", label: "Financement", icon: "wallet" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
         { key: "administration", label: "Administration", icon: "user-cog", adminOnly: true }
       ];
@@ -5913,6 +5992,282 @@
       );
     }
 
+    // ─── Demande de financement : constantes ────────────────────────────
+    const DEMANDE_CATEGORIES = [
+      { key: "piece", label: "Piece detachee", icon: "package" },
+      { key: "outillage", label: "Outillage / materiel", icon: "wrench" },
+      { key: "reparation", label: "Reparation externe", icon: "hammer" },
+      { key: "consommable", label: "Consommables", icon: "droplet" },
+      { key: "formation", label: "Formation / certification", icon: "graduation-cap" },
+      { key: "autre", label: "Autre", icon: "more-horizontal" }
+    ];
+    const DEMANDE_URGENCES = [
+      { key: "Normale", color: "#a1a1aa" },
+      { key: "Urgente", color: "#fbbf24" },
+      { key: "Critique", color: "#f43f5e" }
+    ];
+    const DEMANDE_STATUT_UI = { brouillon: "Brouillon", soumise: "Soumise", info_demandee: "Info demandee", approuvee: "Approuvee", refusee: "Refusee" };
+    function categorieLabel(k) { var c = DEMANDE_CATEGORIES.find(function(x) { return x.key === k; }); return c ? c.label : k; }
+    function categorieIcon(k) { var c = DEMANDE_CATEGORIES.find(function(x) { return x.key === k; }); return c ? c.icon : "circle"; }
+    function urgenceColor(u) { var x = DEMANDE_URGENCES.find(function(z) { return z.key === u; }); return x ? x.color : "#a1a1aa"; }
+
+    // ─── Formulaire Demande de financement ──────────────────────────────
+    function DemandeFinForm({ editItem, onDone, currentUserEmail }) {
+      const ctx = useAppData();
+      const equipements = ctx.equipements;
+      const chantiers = ctx.dbChantiers;
+      const interventions = ctx.interventions;
+      const now = new Date().toISOString().substring(0, 10);
+      const [f, setF] = useState(editItem || {
+        id: null, demandeurEmail: currentUserEmail || "", titre: "", categorie: "piece",
+        montantDemande: 0, urgence: "Normale", description: "", fournisseur: "", urlDevis: "",
+        dateSouhaitee: "", equipementId: null, chantierId: null, interventionId: null,
+        statut: "brouillon"
+      });
+      const [saving, setSaving] = useState(false);
+      const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
+      const canSubmit = !!f.titre && f.montantDemande > 0;
+
+      const save = async (submit) => {
+        if (!f.titre) return alert("Le titre est obligatoire");
+        if (!f.montantDemande || f.montantDemande <= 0) return alert("Le montant doit etre superieur a 0");
+        setSaving(true);
+        try {
+          var payload = Object.assign({}, f);
+          if (submit) {
+            payload.statut = "soumise";
+            payload.dateSoumission = new Date().toISOString();
+          }
+          if (f.id) await ctx.updateDemandeFin(f.id, payload); else await ctx.addDemandeFin(payload);
+          if (onDone) onDone();
+        } catch (err) { alert("Erreur : " + err.message); }
+        finally { setSaving(false); }
+      };
+
+      return h("div", null,
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+          h(FormField, { label: "Titre / Objet" },
+            h("input", { style: inputStyle, value: f.titre, onChange: (e) => upd("titre", e.target.value), placeholder: "Ex: Remplacement pompe hydraulique D36" })),
+          h(FormField, { label: "Categorie" },
+            h("select", { style: selectStyle, value: f.categorie, onChange: (e) => upd("categorie", e.target.value) },
+              DEMANDE_CATEGORIES.map((c) => h("option", { key: c.key, value: c.key }, c.label)))),
+          h(FormField, { label: "Montant estime (XPF)" },
+            h("input", { type: "number", style: inputStyle, value: f.montantDemande, onChange: (e) => upd("montantDemande", parseFloat(e.target.value) || 0), placeholder: "0" })),
+          h(FormField, { label: "Urgence" },
+            h("select", { style: selectStyle, value: f.urgence, onChange: (e) => upd("urgence", e.target.value) },
+              DEMANDE_URGENCES.map((u) => h("option", { key: u.key, value: u.key }, u.key)))),
+          h(FormField, { label: "Date souhaitee" },
+            h("input", { type: "date", style: inputStyle, value: f.dateSouhaitee || "", onChange: (e) => upd("dateSouhaitee", e.target.value) })),
+          h(FormField, { label: "Fournisseur (optionnel)" },
+            h("input", { style: inputStyle, value: f.fournisseur || "", onChange: (e) => upd("fournisseur", e.target.value), placeholder: "Ex: STM Pacific" })),
+          h(FormField, { label: "Equipement lie (optionnel)" },
+            h("select", { style: selectStyle, value: f.equipementId || "", onChange: (e) => upd("equipementId", e.target.value || null) },
+              h("option", { value: "" }, "-- Aucun --"),
+              sortByField(equipements, "Title").map((eq) => h("option", { key: eq.Id, value: eq.Id }, eq.Title + " - " + eq.Nom)))),
+          h(FormField, { label: "Chantier lie (optionnel)" },
+            h("select", { style: selectStyle, value: f.chantierId || "", onChange: (e) => upd("chantierId", e.target.value ? parseInt(e.target.value) : null) },
+              h("option", { value: "" }, "-- Aucun --"),
+              (chantiers || []).map((c) => h("option", { key: c.id, value: c.id }, c.titre)))),
+          h(FormField, { label: "Intervention liee (optionnel)" },
+            h("select", { style: selectStyle, value: f.interventionId || "", onChange: (e) => upd("interventionId", e.target.value || null) },
+              h("option", { value: "" }, "-- Aucune --"),
+              (interventions || []).slice(0, 100).map((i) => h("option", { key: i.Id, value: i.Id }, i.Title)))),
+          h(FormField, { label: "URL devis / photo (optionnel)" },
+            h("input", { style: inputStyle, value: f.urlDevis || "", onChange: (e) => upd("urlDevis", e.target.value), placeholder: "https://drive.google.com/..." }))
+        ),
+        h(FormField, { label: "Description / Justification" },
+          h("textarea", { style: { ...inputStyle, minHeight: 90, resize: "vertical" }, value: f.description || "", onChange: (e) => upd("description", e.target.value), placeholder: "Pourquoi cette depense est necessaire..." })),
+        h("div", { style: { display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end", flexWrap: "wrap" } },
+          h(Button, { variant: "secondary", onClick: () => { if (onDone) onDone(); }, disabled: saving }, "Annuler"),
+          h(Button, { variant: "secondary", onClick: () => save(false), disabled: saving || !canSubmit }, h(IconText, { icon: "save", size: 14 }, "Enregistrer brouillon")),
+          h(Button, { onClick: () => save(true), disabled: saving || !canSubmit }, h(IconText, { icon: "send", size: 14 }, saving ? "..." : (f.statut === "info_demandee" ? "Re-soumettre" : "Soumettre"))))
+      );
+    }
+
+    // ─── Modal Decision Admin (Approuver/Refuser/Demander info) ─────────
+    function DemandeDecisionModal({ demande, onClose, currentUserEmail }) {
+      const ctx = useAppData();
+      const [action, setAction] = useState("approuvee");
+      const [montant, setMontant] = useState(demande.montantDemande || 0);
+      const [commentaire, setCommentaire] = useState("");
+      const [saving, setSaving] = useState(false);
+      const submit = async () => {
+        if (action === "refusee" && !commentaire.trim()) return alert("Un commentaire est obligatoire pour un refus");
+        if (action === "info_demandee" && !commentaire.trim()) return alert("Un commentaire est obligatoire pour demander des infos");
+        setSaving(true);
+        try {
+          var patch = Object.assign({}, demande, {
+            statut: action,
+            decideurEmail: currentUserEmail,
+            dateDecision: new Date().toISOString(),
+            commentaireDecideur: commentaire || demande.commentaireDecideur
+          });
+          if (action === "approuvee") patch.montantApprouve = parseFloat(montant) || demande.montantDemande;
+          await ctx.updateDemandeFin(demande.id, patch);
+          if (onClose) onClose();
+        } catch (err) { alert("Erreur : " + err.message); }
+        finally { setSaving(false); }
+      };
+      return h(Modal, { title: "Decision admin", onClose: onClose, size: 520 },
+        h("div", { style: { marginBottom: 16, padding: 12, background: "rgba(255,255,255,0.04)", borderRadius: 10, fontSize: 13 } },
+          h("div", { style: { fontWeight: 700, color: "#fafafa", marginBottom: 6 } }, demande.titre),
+          h("div", { style: { color: "#a1a1aa" } }, "Demandeur : " + demande.demandeurEmail),
+          h("div", { style: { color: "#a1a1aa" } }, "Montant demande : " + fmtMoney(demande.montantDemande))
+        ),
+        h(FormField, { label: "Decision" },
+          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            [
+              { key: "approuvee", label: "Approuver", color: "#22c55e", bg: "rgba(34,197,94,0.15)", border: "rgba(34,197,94,0.4)" },
+              { key: "refusee", label: "Refuser", color: "#f43f5e", bg: "rgba(244,63,94,0.15)", border: "rgba(244,63,94,0.4)" },
+              { key: "info_demandee", label: "Demander info", color: "#fbbf24", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.4)" }
+            ].map(function(opt) {
+              var active = action === opt.key;
+              return h("button", { key: opt.key, onClick: function() { setAction(opt.key); },
+                style: { padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                         border: "1px solid " + (active ? opt.border : "rgba(255,255,255,0.1)"),
+                         background: active ? opt.bg : "rgba(255,255,255,0.04)",
+                         color: active ? opt.color : "#a1a1aa", fontFamily: "inherit" } }, opt.label);
+            }))),
+        action === "approuvee" ? h(FormField, { label: "Montant approuve (XPF)" },
+          h("input", { type: "number", style: inputStyle, value: montant, onChange: (e) => setMontant(e.target.value), placeholder: "Peut differer du montant demande" })) : null,
+        h(FormField, { label: "Commentaire" + (action !== "approuvee" ? " (obligatoire)" : " (optionnel)") },
+          h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: commentaire, onChange: (e) => setCommentaire(e.target.value), placeholder: action === "info_demandee" ? "Quelle info te manque ?" : action === "refusee" ? "Raison du refus..." : "Note interne (optionnel)" })),
+        h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
+          h(Button, { variant: "secondary", onClick: onClose, disabled: saving }, "Annuler"),
+          h(Button, { onClick: submit, disabled: saving }, saving ? "..." : "Valider la decision"))
+      );
+    }
+
+    // ─── Ecran Financement ──────────────────────────────────────────────
+    function EcranFinancement({ onNavigate }) {
+      const ctx = useAppData();
+      const demandes = ctx.dbDemandesFin || [];
+      const isAdmin = ctx.isAdmin;
+      const userEmail = ctx.userEmail || "";
+      const [filterStatut, setFilterStatut] = useState("all");
+      const [filterMine, setFilterMine] = useState(false);
+      const [search, setSearch] = useState("");
+      const [showForm, setShowForm] = useState(false);
+      const [editing, setEditing] = useState(null);
+      const [decision, setDecision] = useState(null);
+      const [toDelete, setToDelete] = useState(null);
+
+      // Filtrage : les non-admins ne voient que leurs propres demandes
+      var visible = demandes.filter(function(d) {
+        if (!isAdmin && d.demandeurEmail !== userEmail) return false;
+        if (filterMine && d.demandeurEmail !== userEmail) return false;
+        if (filterStatut !== "all" && d.statut !== filterStatut) return false;
+        if (search) {
+          var s = search.toLowerCase();
+          var blob = (d.titre + " " + (d.description || "") + " " + (d.fournisseur || "") + " " + d.demandeurEmail).toLowerCase();
+          if (blob.indexOf(s) < 0) return false;
+        }
+        return true;
+      });
+      visible.sort(function(a, b) { return (b.createdAt || "").localeCompare(a.createdAt || ""); });
+
+      var counts = { all: demandes.length };
+      ["brouillon", "soumise", "info_demandee", "approuvee", "refusee"].forEach(function(k) {
+        counts[k] = demandes.filter(function(d) { return d.statut === k && (isAdmin || d.demandeurEmail === userEmail); }).length;
+      });
+      var totalApprouve = demandes.filter(function(d) { return d.statut === "approuvee"; }).reduce(function(s, d) { return s + (d.montantApprouve || d.montantDemande || 0); }, 0);
+      var enAttente = (counts.soumise || 0) + (counts.info_demandee || 0);
+
+      const openNew = () => { setEditing(null); setShowForm(true); };
+      const openEdit = (d) => { setEditing(d); setShowForm(true); };
+      const closeForm = () => { setShowForm(false); setEditing(null); };
+
+      var equipById = {}; (ctx.equipements || []).forEach(function(e) { equipById[e.Id] = e; });
+      var chantById = {}; (ctx.dbChantiers || []).forEach(function(c) { chantById[c.id] = c; });
+
+      function renderRow(d) {
+        var statutLabel = DEMANDE_STATUT_UI[d.statut] || d.statut;
+        var urgColor = urgenceColor(d.urgence);
+        var canEdit = (d.demandeurEmail === userEmail && (d.statut === "brouillon" || d.statut === "info_demandee")) || isAdmin;
+        var canDelete = (d.demandeurEmail === userEmail && d.statut === "brouillon") || isAdmin;
+        var canDecide = isAdmin && (d.statut === "soumise" || d.statut === "info_demandee");
+        var eq = d.equipementId ? equipById[d.equipementId] : null;
+        var ch = d.chantierId ? chantById[d.chantierId] : null;
+        return h(Card, { key: d.id, style: { padding: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
+            h("div", { style: { flex: 1, minWidth: 220, cursor: canEdit ? "pointer" : "default" }, onClick: function() { if (canEdit) openEdit(d); } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
+                h("span", { style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 700, color: "#fafafa", padding: "2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", textTransform: "uppercase", letterSpacing: 0.5 } },
+                  h(Icon, { name: categorieIcon(d.categorie), size: 10, color: "#a1a1aa" }), categorieLabel(d.categorie)),
+                d.urgence !== "Normale" ? h("span", { style: { fontSize: 10, fontWeight: 700, color: urgColor, padding: "2px 8px", borderRadius: 999, background: urgColor + "20", border: "1px solid " + urgColor + "55", textTransform: "uppercase", letterSpacing: 0.5 } }, d.urgence) : null
+              ),
+              h("div", { style: { fontWeight: 700, fontSize: 15, color: "#fafafa" } }, d.titre),
+              h("div", { style: { display: "flex", gap: 14, fontSize: 12, color: "#a1a1aa", flexWrap: "wrap", marginTop: 4 } },
+                h("span", null, h(IconText, { icon: "user-round", size: 12, color: "#a1a1aa" }, d.demandeurEmail.split("@")[0])),
+                h("span", null, h(IconText, { icon: "wallet", size: 12, color: "#a1a1aa" }, fmtMoney(d.montantDemande))),
+                d.statut === "approuvee" && d.montantApprouve != null ? h("span", { style: { color: "#6ee7b7" } }, h(IconText, { icon: "check", size: 12, color: "#6ee7b7" }, "Approuve : " + fmtMoney(d.montantApprouve))) : null,
+                eq ? h("span", null, h(IconText, { icon: "truck", size: 12, color: "#a1a1aa" }, eq.Title)) : null,
+                ch ? h("span", null, h(IconText, { icon: "briefcase", size: 12, color: "#a1a1aa" }, ch.titre)) : null,
+                d.dateSouhaitee ? h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, "Souhaite : " + d.dateSouhaitee)) : null
+              ),
+              d.commentaireDecideur ? h("div", { style: { marginTop: 8, padding: "6px 10px", fontSize: 12, color: "#cbd5e1", background: "rgba(99,102,241,0.08)", borderLeft: "3px solid #818cf8", borderRadius: 4 } }, h(IconText, { icon: "message-circle", size: 11, color: "#a5b4fc" }, "Decideur : " + d.commentaireDecideur)) : null
+            ),
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" } },
+              h(StatusBadge, { status: statutLabel }),
+              h("div", { style: { display: "flex", gap: 4 } },
+                canDecide ? h(Button, { variant: "primary", onClick: function() { setDecision(d); }, style: { padding: "6px 12px", fontSize: 12 } }, h(IconText, { icon: "gavel", size: 12 }, "Decider")) : null,
+                canEdit ? h("button", { onClick: function() { openEdit(d); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })) : null,
+                canDelete ? h("button", { onClick: function() { setToDelete(d); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })) : null,
+                d.urlDevis ? h("a", { href: d.urlDevis, target: "_blank", rel: "noopener", title: "Ouvrir devis", style: { display: "inline-flex", alignItems: "center", padding: 4, color: "#a5b4fc" } }, h(Icon, { name: "external-link", size: 15, color: "#a5b4fc" })) : null
+              )
+            )
+          )
+        );
+      }
+
+      var filtres = [
+        { key: "all", label: "Toutes", count: counts.all },
+        { key: "brouillon", label: "Brouillons", count: counts.brouillon },
+        { key: "soumise", label: "Soumises", count: counts.soumise },
+        { key: "info_demandee", label: "Info demandee", count: counts.info_demandee },
+        { key: "approuvee", label: "Approuvees", count: counts.approuvee },
+        { key: "refusee", label: "Refusees", count: counts.refusee }
+      ];
+
+      return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "wallet", size: 20 }, "Demandes de financement"), subtitle: isAdmin ? demandes.length + " demande" + (demandes.length > 1 ? "s" : "") + " au total" : "Vos demandes personnelles",
+          action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle demande")) }),
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 } },
+          h(KPICard, { icon: h(Icon, { name: "send", size: 22, color: "#ffffff" }), label: "En attente", value: String(enAttente), color: enAttente > 0 ? "#fbbf24" : "#22c55e" }),
+          h(KPICard, { icon: h(Icon, { name: "check-circle", size: 22, color: "#ffffff" }), label: "Approuvees", value: String(counts.approuvee), color: "#22c55e" }),
+          h(KPICard, { icon: h(Icon, { name: "wallet", size: 22, color: "#ffffff" }), label: "Total approuve", value: fmtMoney(totalApprouve), color: "#818cf8" })
+        ),
+        // Filtres
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
+          filtres.map(function(f) {
+            var active = filterStatut === f.key;
+            return h("button", { key: f.key, onClick: function() { setFilterStatut(f.key); },
+              style: { padding: "6px 12px", borderRadius: 999, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit",
+                       border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"),
+                       background: active ? "rgba(99,102,241,0.18)" : "rgba(255,255,255,0.04)",
+                       color: active ? "#a5b4fc" : "#a1a1aa" } },
+              f.label + (f.count > 0 ? " (" + f.count + ")" : ""));
+          })
+        ),
+        // Search + filtre "Mes demandes"
+        h("div", { style: { display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+          h("div", { style: { flex: 1, minWidth: 240 } }, h(SearchInput, { placeholder: "Recherche titre, description, fournisseur, demandeur...", value: search, onChange: setSearch })),
+          isAdmin ? h("label", { style: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "#cbd5e1", cursor: "pointer", padding: "8px 12px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, background: filterMine ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.04)" } },
+            h("input", { type: "checkbox", checked: filterMine, onChange: function(e) { setFilterMine(e.target.checked); }, style: { accentColor: "#818cf8" } }),
+            "Mes demandes uniquement") : null
+        ),
+        // Liste
+        visible.length === 0
+          ? h(Card, null, h("p", { style: { color: "#71717a", textAlign: "center", padding: 30 } }, demandes.length === 0 ? "Aucune demande pour l'instant. Cliquez sur '+ Nouvelle demande' pour commencer." : "Aucune demande ne correspond aux filtres."))
+          : h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, visible.map(renderRow)),
+        showForm && h(Modal, { title: editing ? "Modifier la demande" : "Nouvelle demande", onClose: closeForm, size: 800 },
+          h(DemandeFinForm, { editItem: editing, onDone: closeForm, currentUserEmail: userEmail })),
+        decision && h(DemandeDecisionModal, { demande: decision, onClose: function() { setDecision(null); }, currentUserEmail: userEmail }),
+        toDelete && h(ConfirmDialog, { title: "Supprimer la demande ?", message: "Confirmer la suppression de \"" + toDelete.titre + "\" ?", onConfirm: async function() { await ctx.deleteDemandeFin(toDelete.id); setToDelete(null); }, onCancel: function() { setToDelete(null); } })
+      );
+    }
+
     // ─── Ecran Administration (Parametres / Validations / Utilisateurs) ──
     function EcranAdministration({ onNavigate, pendingCount }) {
       const ctx = useAppData();
@@ -5958,7 +6313,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, demandesFinPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "accueil", label: "Accueil", lucide: "home" },
@@ -5974,6 +6329,7 @@
           { key: "avancement", label: "Avancement", lucide: "hard-hat" },
           { key: "planning-employes", label: "Planning Employes", lucide: "users" },
           { key: "primes", label: "Primes", lucide: "trophy" },
+          { key: "financement", label: "Financement", lucide: "wallet" },
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
@@ -6016,7 +6372,8 @@
                 onMouseLeave: (e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }
               },
                 h(Icon, { name: p.lucide, size: 16, color: isActive ? "#a5b4fc" : "#71717a" }), p.label,
-                p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" } }, pendingCount) : null
+                p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" } }, pendingCount) : null,
+                p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -6047,6 +6404,7 @@
       const [dbAffectations, setDbAffectations] = useState([]);
       const [dbPaliers, setDbPaliers] = useState([]);
       const [dbChantierEquipements, setDbChantierEquipements] = useState([]);
+      const [dbDemandesFin, setDbDemandesFin] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -6086,15 +6444,18 @@
           var afRes = { data: [], error: null };
           var ppRes = { data: [], error: null };
           var ceRes = { data: [], error: null };
+          var dfRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
               supabase.from("paliers_primes").select("*").order("site").order("seuil_mh"),
               supabase.from("chantier_equipements").select("*"),
+              supabase.from("demandes_financement").select("*").order("created_at", { ascending: false }),
             ]);
             afRes = results[0];
             ppRes = results[1];
             ceRes = results[2];
+            dfRes = results[3];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -6112,6 +6473,7 @@
           if (afRes.error) console.error("Table affectations:", afRes.error.message);
           if (ppRes.error) console.error("Table paliers_primes:", ppRes.error.message);
           if (ceRes.error) console.error("Table chantier_equipements:", ceRes.error.message);
+          if (dfRes.error) console.error("Table demandes_financement:", dfRes.error.message);
 
           const eqList = (eqRes.data || []).map(equipementFromDb);
           const eqCodeById = {}; const eqIdByCode = {};
@@ -6141,6 +6503,7 @@
           setDbAffectations((afRes.data || []).map(affectationFromDb));
           setDbPaliers((ppRes.data || []).map(palierFromDb));
           setDbChantierEquipements((ceRes.data || []).map(chantierEquipementFromDb));
+          setDbDemandesFin((dfRes.data || []).map(demandeFinFromDb));
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -6491,6 +6854,27 @@
         setDbChantierEquipements((p) => p.filter((x) => x.id !== id));
       };
 
+      // CRUD : demandes de financement
+      const addDemandeFin = async (item) => {
+        const payload = demandeFinToDb(item);
+        const { data, error } = await supabase.from("demandes_financement").insert(payload).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbDemandesFin((p) => [demandeFinFromDb(data), ...p]);
+        return demandeFinFromDb(data);
+      };
+      const updateDemandeFin = async (id, patch) => {
+        const payload = demandeFinToDb(patch);
+        const { data, error } = await supabase.from("demandes_financement").update(payload).eq("id", id).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbDemandesFin((p) => p.map((x) => x.id === id ? demandeFinFromDb(data) : x));
+        return demandeFinFromDb(data);
+      };
+      const deleteDemandeFin = async (id) => {
+        const { error } = await supabase.from("demandes_financement").delete().eq("id", id);
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbDemandesFin((p) => p.filter((x) => x.id !== id));
+      };
+
       // CRUD : liaisons pieces <-> equipements
       const linkPieceEquipement = async (pieceId, equipementId) => {
         const { data, error } = await supabase.from("pieces_equipements").insert({ piece_id: pieceId, equipement_id: equipementId }).select().single();
@@ -6651,6 +7035,7 @@
         dbDeclarations, setDbDeclarations, dbRenouvellements, setDbRenouvellements,
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
         dbChantierEquipements, setDbChantierEquipements, addChantierEquipement, updateChantierEquipement, deleteChantierEquipement,
+        dbDemandesFin, setDbDemandesFin, addDemandeFin, updateDemandeFin, deleteDemandeFin,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
@@ -6686,6 +7071,7 @@
         if (currentPage === "fiche-equipement") return h(EcranFicheEquipement, { onNavigate: navigate, equipement: pageData });
         if (currentPage === "personnel") return h(EcranPersonnel, { onNavigate: navigate });
         if (currentPage === "pieces") return h(EcranPieces, null);
+        if (currentPage === "financement") return h(EcranFinancement, { onNavigate: navigate });
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
@@ -6701,7 +7087,7 @@
         h("div", { style: { display: "flex", minHeight: "100vh", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: "auto", maxHeight: "100vh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: 12, left: 12, width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
