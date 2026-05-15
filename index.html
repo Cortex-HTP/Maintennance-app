@@ -2282,6 +2282,65 @@
       return [];
     }
 
+    // ─── Memoire des correspondances (sondeuse, site) → chantier ──────
+    // Permet a l'app d'apprendre des choix manuels lors de l'import.
+    const SONDEUSE_CHANTIER_PREF_KEY = "sondeuse_chantier_pref";
+    function getSondeuseChantierPrefs(parametres) {
+      var row = (parametres || []).find(function(p) { return p.categorie === SONDEUSE_CHANTIER_PREF_KEY; });
+      if (!row || !row.valeur) return {};
+      try { return JSON.parse(row.valeur) || {}; } catch(e) { return {}; }
+    }
+    function setSondeuseChantierPref(parametres, setParametres, sondeuseCode, siteNom, chantierId) {
+      var key = (sondeuseCode || "").toUpperCase().trim() + "|" + (siteNom || "").toUpperCase().trim();
+      if (!key || key === "|") return;
+      var row = (parametres || []).find(function(p) { return p.categorie === SONDEUSE_CHANTIER_PREF_KEY; });
+      var data = {};
+      if (row && row.valeur) { try { data = JSON.parse(row.valeur) || {}; } catch(e) {} }
+      data[key] = chantierId;
+      var jsonVal = JSON.stringify(data);
+      if (row) {
+        supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) {
+          if (!res.error) { row.valeur = jsonVal; if (setParametres) setParametres((parametres || []).slice()); }
+        });
+      } else {
+        supabase.from("parametres").insert({ categorie: SONDEUSE_CHANTIER_PREF_KEY, valeur: jsonVal, ordre: 0 }).select().single().then(function(res) {
+          if (!res.error && setParametres) setParametres((parametres || []).concat(res.data));
+        });
+      }
+    }
+
+    // ─── Objectif global de metrage par site (stocke dans parametres) ──
+    const OBJECTIF_SITE_KEY = "objectif_metrage_site";
+    function getObjectifMetrageSite(parametres, siteName) {
+      if (!siteName) return 0;
+      var row = (parametres || []).find(function(p) { return p.categorie === OBJECTIF_SITE_KEY; });
+      if (!row || !row.valeur) return 0;
+      try {
+        var data = JSON.parse(row.valeur);
+        return parseFloat(data[siteName]) || 0;
+      } catch(e) { return 0; }
+    }
+    function setObjectifMetrageSite(parametres, setParametres, siteName, value) {
+      if (!siteName) return Promise.resolve();
+      var row = (parametres || []).find(function(p) { return p.categorie === OBJECTIF_SITE_KEY; });
+      var data = {};
+      if (row && row.valeur) { try { data = JSON.parse(row.valeur); } catch(e) {} }
+      data[siteName] = parseFloat(value) || 0;
+      var jsonVal = JSON.stringify(data);
+      if (row) {
+        return supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) {
+          if (res.error) { alert("Erreur sauvegarde objectif site: " + res.error.message); return; }
+          row.valeur = jsonVal;
+          if (setParametres) setParametres((parametres || []).slice());
+        });
+      } else {
+        return supabase.from("parametres").insert({ categorie: OBJECTIF_SITE_KEY, valeur: jsonVal, ordre: 0 }).select().single().then(function(res) {
+          if (res.error) { alert("Erreur creation objectif site: " + res.error.message); return; }
+          if (setParametres) setParametres((parametres || []).concat(res.data));
+        });
+      }
+    }
+
     function savePersonnel(parametres, newList, setSaving) {
       setSaving(true);
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
@@ -4565,11 +4624,12 @@
       }
       return null;
     }
-    // Auto-detection chantier - 3 strategies en cascade :
+    // Auto-detection chantier - 4 strategies en cascade :
     // 1. Planning Engins (chantier_equipements) : affectation precise par dates
+    // 1.5. Memoire des choix manuels precedents (sondeuse + site → chantier)
     // 2. Titre chantier contient le code sondeuse + site match (ex: titre="D36", site="Tiebaghi")
     // 3. Fallback nom de site STRICT (1 seul match accepte)
-    function matchChantierAuto(dateStr, equipementId, chantiers, chantierEquipements, siteNomFallback, sondeuseCodeFallback) {
+    function matchChantierAuto(dateStr, equipementId, chantiers, chantierEquipements, siteNomFallback, sondeuseCodeFallback, prefs) {
       // Strategie 1 : croiser equipement + date avec chantier_equipements
       if (equipementId && dateStr && chantierEquipements && chantierEquipements.length > 0) {
         for (var i = 0; i < chantierEquipements.length; i++) {
@@ -4581,6 +4641,15 @@
             var ch = chantiers.find(function(c) { return c.id === ce.chantierId; });
             if (ch) return { chantier: ch, source: "planning" };
           }
+        }
+      }
+      // Strategie 1.5 : memoire des choix manuels precedents
+      if (prefs && sondeuseCodeFallback) {
+        var prefKey = sondeuseCodeFallback.toUpperCase().trim() + "|" + (siteNomFallback || "").toUpperCase().trim();
+        var prefChId = prefs[prefKey];
+        if (prefChId) {
+          var prefCh = chantiers.find(function(c) { return String(c.id) === String(prefChId); });
+          if (prefCh) return { chantier: prefCh, source: "memoire" };
         }
       }
       // Strategie 2 : titre du chantier contient le code sondeuse, et site correspond
@@ -4604,16 +4673,23 @@
           return { chantier: byCode[0], source: "code-sondeuse" };
         }
       }
-      // Strategie 3 : fallback par nom de site STRICT
+      // Strategie 3 : nom de site, plusieurs niveaux de precision
       if (siteNomFallback) {
         var n = siteNomFallback.toUpperCase().trim();
-        var matches = chantiers.filter(function(c) {
+        // 3a : match EXACT sur le champ site → priorite max
+        var exactSite = chantiers.filter(function(c) {
+          return (c.site || "").toUpperCase().trim() === n;
+        });
+        if (exactSite.length === 1) return { chantier: exactSite[0], source: "site" };
+        if (exactSite.length > 1) return { chantier: null, source: "ambigu", ambiguCount: exactSite.length };
+        // 3b : si pas de match exact sur site, fallback sur "contient" (titre OU site)
+        var partial = chantiers.filter(function(c) {
           var t = (c.titre || "").toUpperCase();
           var s = (c.site || "").toUpperCase();
-          return t.indexOf(n) >= 0 || s === n || s.indexOf(n) >= 0;
+          return t.indexOf(n) >= 0 || s.indexOf(n) >= 0;
         });
-        if (matches.length === 1) return { chantier: matches[0], source: "site" };
-        if (matches.length > 1) return { chantier: null, source: "ambigu", ambiguCount: matches.length };
+        if (partial.length === 1) return { chantier: partial[0], source: "site" };
+        if (partial.length > 1) return { chantier: null, source: "ambigu", ambiguCount: partial.length };
       }
       return null;
     }
@@ -4643,10 +4719,15 @@
       // Met a jour le chantier d'une ligne specifique (selection manuelle).
       // Si applyToSimilar = true, applique le meme chantier a toutes les lignes
       // qui ont la meme (sondeuse, site).
+      // Sauve aussi le choix dans les preferences pour les imports futurs.
       const setManualChantier = (rowIdx, newChantierId, applyToSimilar) => {
         setRows(function(prevRows) {
           var row = prevRows[rowIdx];
           var ch = chantiers.find(function(c) { return String(c.id) === String(newChantierId); });
+          // Memoriser la preference pour les futurs imports
+          if (ch && row.sondeuseCode) {
+            setSondeuseChantierPref(ctx.parametres, ctx.setParametres, row.sondeuseCode, row.siteNom, ch.id);
+          }
           return prevRows.map(function(r, i) {
             var shouldUpdate = false;
             if (i === rowIdx) shouldUpdate = true;
@@ -4684,8 +4765,9 @@
             var eq = matchEquipement(r.sondeuseCode, equipements);
             r.personnelId = emp ? emp.id : null;
             r.equipementId = eq ? eq.Id : null;
-            // Auto-detection chantier : 3 strategies (Planning Engins / titre=sondeuse / site)
-            var chMatch = matchChantierAuto(r.dateReleve, r.equipementId, chantiers, chantierEquipements, r.siteNom, r.sondeuseCode);
+            // Auto-detection chantier : 4 strategies (Planning Engins / memoire / titre=sondeuse / site)
+            var prefsMap = getSondeuseChantierPrefs(ctx.parametres);
+            var chMatch = matchChantierAuto(r.dateReleve, r.equipementId, chantiers, chantierEquipements, r.siteNom, r.sondeuseCode, prefsMap);
             r.chantierId = (chMatch && chMatch.chantier) ? chMatch.chantier.id : null;
             r.chantierTitre = (chMatch && chMatch.chantier) ? chMatch.chantier.titre : "";
             r.chantierSource = chMatch ? chMatch.source : null; // "planning", "site" ou "ambigu"
@@ -4781,8 +4863,8 @@
             h("tbody", null,
               rows.map(function(r, i) {
                 var bg = r.statut === "alerte" ? "rgba(251,191,36,0.06)" : (i % 2 === 0 ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.035)");
-                var chSrcLabel = r.chantierSource === "planning" ? "via Planning Engins" : r.chantierSource === "code-sondeuse" ? "via code sondeuse (titre chantier)" : r.chantierSource === "site" ? "via nom de site (unique)" : r.chantierSource === "manuel" ? "choix manuel" : r.chantierSource === "ambigu" ? (r.chantierAmbiguCount + " chantiers " + r.siteNom + " trouves") : "non détecté";
-                var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "code-sondeuse" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : r.chantierSource === "manuel" ? "#a5b4fc" : "#fcd34d";
+                var chSrcLabel = r.chantierSource === "planning" ? "via Planning Engins" : r.chantierSource === "memoire" ? "via memoire (choix precedent)" : r.chantierSource === "code-sondeuse" ? "via code sondeuse (titre chantier)" : r.chantierSource === "site" ? "via nom de site (unique)" : r.chantierSource === "manuel" ? "choix manuel (memorise)" : r.chantierSource === "ambigu" ? (r.chantierAmbiguCount + " chantiers " + r.siteNom + " trouves") : "non détecté";
+                var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "memoire" ? "#86efac" : r.chantierSource === "code-sondeuse" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : r.chantierSource === "manuel" ? "#a5b4fc" : "#fcd34d";
                 // Liste des chantiers pour selection manuelle : prefere ceux qui matchent le site
                 var sitePrefix = (r.siteNom || "").toUpperCase().trim();
                 var chCandidats = sitePrefix ? chantiers.filter(function(c) {
@@ -4874,6 +4956,47 @@
           }
         }
         return "";
+      }
+      // Releves du mois affiche, pour ce chantier (filtre annee + mois)
+      function getRelevesForChantierMonth(chantierId, year, monthIdx) {
+        var rels = ctxAv.dbRelevesJourn || [];
+        var monthStr = (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1);
+        var prefix = year + "-" + monthStr;
+        return rels.filter(function(r) {
+          return String(r.chantierId) === String(chantierId) && (r.dateReleve || "").indexOf(prefix) === 0;
+        });
+      }
+      // Liste des machines actives sur ce chantier dans le mois affiche
+      // Retourne [{ code, equipementId, dailyMetrage: {1: 25, 2: 30, ...}, totalMois }]
+      function getMachinesActivesChantier(chantierId, year, monthIdx) {
+        var rels = getRelevesForChantierMonth(chantierId, year, monthIdx);
+        var byMachine = {};
+        var order = [];
+        rels.forEach(function(r) {
+          var key = r.equipementId || r.sondeuseCode || "_no_machine";
+          if (!byMachine[key]) {
+            byMachine[key] = {
+              key: key,
+              code: r.sondeuseCode || ((ctxAv.equipements || []).find(function(e) { return e.Id === r.equipementId; }) || {}).Title || "?",
+              equipementId: r.equipementId,
+              dailyMetrage: {},
+              totalMois: 0
+            };
+            order.push(key);
+          }
+          var day = parseInt((r.dateReleve || "").substring(8, 10), 10);
+          if (!isNaN(day)) {
+            byMachine[key].dailyMetrage[day] = (byMachine[key].dailyMetrage[day] || 0) + (parseFloat(r.metrage) || 0);
+            byMachine[key].totalMois += (parseFloat(r.metrage) || 0);
+          }
+        });
+        // Tri stable par code
+        order.sort(function(a, b) {
+          var ca = byMachine[a].code || "";
+          var cb = byMachine[b].code || "";
+          return ca.localeCompare(cb);
+        });
+        return order.map(function(k) { return byMachine[k]; });
       }
       var chantiers = ctxAv.dbChantiers;
       var setChantiers = ctxAv.setDbChantiers;
@@ -5291,8 +5414,54 @@
             return orderCT.map(function(grpKey) {
               var grp = groupsCT[grpKey];
               var grpMultiple = grp.chantiers.length > 1;
+              // Calculs site-level
+              var siteObjectif = grp.site ? getObjectifMetrageSite(ctxAv.parametres, grp.site) : 0;
+              var siteRealise = grp.chantiers.reduce(function(s, c) { return s + getRealise(c.id); }, 0);
+              var sitePct = siteObjectif > 0 ? Math.min(100, Math.round((siteRealise / siteObjectif) * 100)) : 0;
+              var siteMonthMet = grp.chantiers.reduce(function(s, c) { return s + getMonthMetrage(c.id); }, 0);
               return h("div", { key: grpKey, style: grpMultiple ? { marginBottom: 20, padding: 14, background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 14 } : null },
-                grpMultiple && grp.site ? h("div", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa", marginBottom: 10, padding: "8px 14px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), transparent)", borderLeft: "4px solid #818cf8", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }), grp.site, h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")) : null,
+                grpMultiple && grp.site ? h("div", { style: { marginBottom: 12, padding: "12px 16px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))", borderLeft: "4px solid #818cf8", borderRadius: 8 } },
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                    h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }),
+                    h("span", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa" } }, grp.site),
+                    h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")
+                  ),
+                  // Ligne objectif / realisation / avancement site
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 10 } },
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Objectif site"),
+                      ctxAv.isAdmin ? h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+                        h("input", {
+                          type: "number",
+                          defaultValue: siteObjectif,
+                          onBlur: function(e) {
+                            var v = parseFloat(e.target.value) || 0;
+                            if (v !== siteObjectif) setObjectifMetrageSite(ctxAv.parametres, ctxAv.setParametres, grp.site, v);
+                          },
+                          onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); },
+                          style: { ...inputStyle, padding: "4px 8px", fontSize: 14, fontWeight: 700, width: 100, textAlign: "right", color: "#fafafa" }
+                        }),
+                        h("span", { style: { fontSize: 12, color: "#a1a1aa" } }, "m")
+                      ) : h("div", { style: { fontSize: 16, fontWeight: 700, color: "#fafafa" } }, fmtNum(siteObjectif) + " m")
+                    ),
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Realise total"),
+                      h("div", { style: { fontSize: 16, fontWeight: 700, color: "#86efac" } }, fmtNum(siteRealise) + " m")
+                    ),
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Mois en cours"),
+                      h("div", { style: { fontSize: 16, fontWeight: 700, color: "#fde68a" } }, fmtNum(siteMonthMet) + " m")
+                    ),
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Avancement"),
+                      h("div", { style: { fontSize: 16, fontWeight: 700, color: sitePct >= 100 ? "#86efac" : sitePct >= 75 ? "#fde68a" : "#a5b4fc" } }, siteObjectif > 0 ? sitePct + " %" : "—")
+                    )
+                  ),
+                  // Barre de progression
+                  siteObjectif > 0 ? h("div", { style: { height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 999, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" } },
+                    h("div", { style: { width: sitePct + "%", height: "100%", background: sitePct >= 100 ? "linear-gradient(90deg, #22c55e, #16a34a)" : "linear-gradient(90deg, #818cf8, #6366f1)", transition: "width 0.3s ease-out" } })
+                  ) : h("div", { style: { fontSize: 11, color: "#71717a", fontStyle: "italic" } }, ctxAv.isAdmin ? "Definir un objectif site pour suivre l'avancement global" : "Aucun objectif site defini")
+                ) : null,
                 grp.chantiers.map(function(chantier) {
             var isExpanded = expandedChantier === chantier.id;
             var realise = getRealise(chantier.id);
@@ -5416,7 +5585,8 @@
                     )
                   ),
                   h("div", { style: { background: "rgba(36, 40, 60, 0.45)", backdropFilter: "blur(12px)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.07)", overflowX: "auto" } },
-                    h("div", { style: { display: "inline-flex", minWidth: daysInMonth * 48 + 60 } },
+                    // Main saisie row
+                    h("div", { style: { display: "flex", minWidth: daysInMonth * 48 + 60 } },
                       Array.apply(null, Array(daysInMonth)).map(function(_, di) {
                         var dayOfMonth = di + 1;
                         var cellDate = new Date(year, monthIdx, dayOfMonth);
@@ -5445,7 +5615,30 @@
                         h("div", { style: { fontSize: 9, fontWeight: 600, color: "#a1a1aa", marginBottom: 2 } }, "Total"),
                         h("div", { style: { fontSize: 14, fontWeight: 700, color: "#86efac" } }, fmtNum(monthMet))
                       )
-                    )
+                    ),
+                    // Sous-lignes par machine (depuis releves_journaliers, lecture seule)
+                    (function() {
+                      var machines = getMachinesActivesChantier(chantier.id, year, monthIdx);
+                      if (machines.length === 0) return null;
+                      return machines.map(function(m, mi) {
+                        return h("div", { key: "msr_" + m.key, style: { display: "flex", minWidth: daysInMonth * 48 + 60, borderTop: "1px solid rgba(255,255,255,0.08)", background: mi % 2 === 0 ? "rgba(129,140,248,0.04)" : "rgba(167,139,250,0.04)" } },
+                          Array.apply(null, Array(daysInMonth)).map(function(_, di) {
+                            var dayNum = di + 1;
+                            var dayCellDate = new Date(year, monthIdx, dayNum);
+                            var isWE2 = dayCellDate.getDay() === 0 || dayCellDate.getDay() === 6;
+                            var val = m.dailyMetrage[dayNum] || 0;
+                            return h("div", { key: "msrc_" + m.key + "_" + dayNum, style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.04)", background: isWE2 ? "rgba(255,255,255,0.02)" : "transparent", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 0" } },
+                              di === 0 ? h("div", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc", letterSpacing: 0.3, position: "absolute", marginTop: -22 } }, m.code) : null,
+                              h("div", { style: { fontSize: 13, fontWeight: 600, color: val > 0 ? "#86efac" : "rgba(255,255,255,0.15)" } }, val > 0 ? fmtNum(val) : "·")
+                            );
+                          }),
+                          h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: "rgba(129,140,248,0.10)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 0" } },
+                            h("div", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc", marginBottom: 2 } }, m.code),
+                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#a5b4fc" } }, fmtNum(m.totalMois))
+                          )
+                        );
+                      });
+                    }())
                   )
                 )
               )
@@ -5466,8 +5659,40 @@
             return orderAv.map(function(grpKey) {
               var grp = groupsAv[grpKey];
               var grpMultiple = grp.chantiers.length > 1;
+              // Calculs site-level (idem En cours)
+              var siteObjectifAv = grp.site ? getObjectifMetrageSite(ctxAv.parametres, grp.site) : 0;
+              var siteRealiseAv = grp.chantiers.reduce(function(s, c) { return s + getRealise(c.id); }, 0);
+              var sitePctAv = siteObjectifAv > 0 ? Math.min(100, Math.round((siteRealiseAv / siteObjectifAv) * 100)) : 0;
               return h("div", { key: grpKey, style: grpMultiple ? { marginBottom: 20, padding: 14, background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 14 } : null },
-                grpMultiple && grp.site ? h("div", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa", marginBottom: 10, padding: "8px 14px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), transparent)", borderLeft: "4px solid #818cf8", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }), grp.site, h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")) : null,
+                grpMultiple && grp.site ? h("div", { style: { marginBottom: 12, padding: "12px 16px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))", borderLeft: "4px solid #818cf8", borderRadius: 8 } },
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                    h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }),
+                    h("span", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa" } }, grp.site),
+                    h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")
+                  ),
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 } },
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Objectif site"),
+                      ctxAv.isAdmin ? h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+                        h("input", {
+                          type: "number",
+                          defaultValue: siteObjectifAv,
+                          onBlur: function(e) {
+                            var v = parseFloat(e.target.value) || 0;
+                            if (v !== siteObjectifAv) setObjectifMetrageSite(ctxAv.parametres, ctxAv.setParametres, grp.site, v);
+                          },
+                          onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); },
+                          style: { ...inputStyle, padding: "4px 8px", fontSize: 14, fontWeight: 700, width: 100, textAlign: "right", color: "#fafafa" }
+                        }),
+                        h("span", { style: { fontSize: 12, color: "#a1a1aa" } }, "m")
+                      ) : h("div", { style: { fontSize: 16, fontWeight: 700, color: "#fafafa" } }, fmtNum(siteObjectifAv) + " m")
+                    ),
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Statut"),
+                      h("div", { style: { fontSize: 14, fontWeight: 700, color: "#a5b4fc" } }, "A venir")
+                    )
+                  )
+                ) : null,
                 grp.chantiers.map(function(chantier) {
             var isExpanded = expandedChantier === chantier.id;
             var realise = getRealise(chantier.id);
@@ -7740,7 +7965,7 @@
       const wrappedUpdatePiece = isAdmin ? updatePiece : async (item) => { addPendingItem("update", "piece", item, pieces.find((p) => p.Id === item.Id)); };
 
       const contextValue = {
-        interventions, equipements, plans, pieces, releves, piecesEquipements, parametres,
+        interventions, equipements, plans, pieces, releves, piecesEquipements, parametres, setParametres,
         isAdmin, userEmail, pendingValidations, validationLog,
         dbChantiers, setDbChantiers, dbSaisies, setDbSaisies,
         dbDeclarations, setDbDeclarations, dbRenouvellements, setDbRenouvellements,
