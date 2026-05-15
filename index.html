@@ -3268,6 +3268,58 @@
                 }
               }
             }
+            // Persistance Supabase pour les chantiers (drag move / resize)
+            if (info.tab === "chantiers" && info.itemId != null) {
+              var chFin = stateRef.current.chantiers.find(function(c) { return c.id === info.itemId; });
+              if (chFin && (chFin.dateDebut !== info.origDebut || chFin.dateFin !== info.origFin)) {
+                supabase.from("chantiers")
+                  .update({ date_debut: chFin.dateDebut, date_fin: chFin.dateFin })
+                  .eq("id", info.itemId)
+                  .then(function(res) {
+                    if (res.error) {
+                      alert("Erreur sauvegarde chantier : " + res.error.message);
+                      // Revert local en cas d'erreur DB
+                      setChantiers(stateRef.current.chantiers.map(function(c) {
+                        return c.id === info.itemId ? Object.assign({}, c, { dateDebut: info.origDebut, dateFin: info.origFin }) : c;
+                      }));
+                    }
+                  });
+              }
+            }
+            // Persistance Supabase pour les declarations
+            if (info.tab === "declarations" && info.itemId != null) {
+              var declFin = stateRef.current.declarations.find(function(d) { return d.id === info.itemId; });
+              if (declFin && (declFin.dateDebutPeriode !== info.origDebut || declFin.dateFinPeriode !== info.origFin)) {
+                supabase.from("declarations")
+                  .update({ date_debut_periode: declFin.dateDebutPeriode, date_fin_periode: declFin.dateFinPeriode })
+                  .eq("id", info.itemId)
+                  .then(function(res) {
+                    if (res.error) {
+                      alert("Erreur sauvegarde declaration : " + res.error.message);
+                      setDeclarations(stateRef.current.declarations.map(function(d) {
+                        return d.id === info.itemId ? Object.assign({}, d, { dateDebutPeriode: info.origDebut, dateFinPeriode: info.origFin }) : d;
+                      }));
+                    }
+                  });
+              }
+            }
+            // Persistance Supabase pour les renouvellements
+            if (info.tab === "renouvellements" && info.itemId != null) {
+              var renFin = stateRef.current.renouvellements.find(function(r) { return r.id === info.itemId; });
+              if (renFin && renFin.dateExpiration !== info.origDate) {
+                supabase.from("renouvellements")
+                  .update({ date_expiration: renFin.dateExpiration })
+                  .eq("id", info.itemId)
+                  .then(function(res) {
+                    if (res.error) {
+                      alert("Erreur sauvegarde renouvellement : " + res.error.message);
+                      setRenouvellements(stateRef.current.renouvellements.map(function(r) {
+                        return r.id === info.itemId ? Object.assign({}, r, { dateExpiration: info.origDate }) : r;
+                      }));
+                    }
+                  });
+              }
+            }
             info.dragging = false;
             info.itemId = null;
             info.dragType = null;
@@ -4568,6 +4620,30 @@
         reader.onload = function(e) { cb(e.target.result); };
         reader.readAsText(file, "UTF-8");
       };
+
+      // Met a jour le chantier d'une ligne specifique (selection manuelle).
+      // Si applyToSimilar = true, applique le meme chantier a toutes les lignes
+      // qui ont la meme (sondeuse, site).
+      const setManualChantier = (rowIdx, newChantierId, applyToSimilar) => {
+        setRows(function(prevRows) {
+          var row = prevRows[rowIdx];
+          var ch = chantiers.find(function(c) { return String(c.id) === String(newChantierId); });
+          return prevRows.map(function(r, i) {
+            var shouldUpdate = false;
+            if (i === rowIdx) shouldUpdate = true;
+            else if (applyToSimilar && r.sondeuseCode === row.sondeuseCode && r.siteNom === row.siteNom && !r.chOk) shouldUpdate = true;
+            if (!shouldUpdate) return r;
+            var updated = Object.assign({}, r, {
+              chantierId: ch ? ch.id : null,
+              chantierTitre: ch ? ch.titre : "",
+              chantierSource: ch ? "manuel" : null,
+              chOk: !!ch
+            });
+            updated.statut = (updated.empOk && (updated.eqOk || !updated.sondeuseCode) && updated.chOk) ? "ok" : "alerte";
+            return updated;
+          });
+        });
+      };
       const onDropHeures = (file) => {
         setHeuresFile(file); setHeuresFileName(file.name);
       };
@@ -4686,20 +4762,54 @@
             h("tbody", null,
               rows.map(function(r, i) {
                 var bg = r.statut === "alerte" ? "rgba(251,191,36,0.06)" : (i % 2 === 0 ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.035)");
-                var chSrcLabel = r.chantierSource === "planning" ? "via Planning Engins" : r.chantierSource === "site" ? "via nom de site (unique)" : r.chantierSource === "ambigu" ? (r.chantierAmbiguCount + " chantiers " + r.siteNom + " trouves → affecter la sondeuse via Planning Engins") : "non détecté";
-                var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : "#fcd34d";
+                var chSrcLabel = r.chantierSource === "planning" ? "via Planning Engins" : r.chantierSource === "site" ? "via nom de site (unique)" : r.chantierSource === "manuel" ? "choix manuel" : r.chantierSource === "ambigu" ? (r.chantierAmbiguCount + " chantiers " + r.siteNom + " trouves") : "non détecté";
+                var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : r.chantierSource === "manuel" ? "#a5b4fc" : "#fcd34d";
+                // Liste des chantiers pour selection manuelle : prefere ceux qui matchent le site
+                var sitePrefix = (r.siteNom || "").toUpperCase().trim();
+                var chCandidats = sitePrefix ? chantiers.filter(function(c) {
+                  var t = (c.titre || "").toUpperCase();
+                  var s = (c.site || "").toUpperCase();
+                  return t.indexOf(sitePrefix) >= 0 || s === sitePrefix || s.indexOf(sitePrefix) >= 0;
+                }) : chantiers;
+                if (chCandidats.length === 0) chCandidats = chantiers;
+                // Compte les autres lignes similaires (meme sondeuse+site, sans chantier)
+                var similarCount = rows.filter(function(other) { return other !== r && other.sondeuseCode === r.sondeuseCode && other.siteNom === r.siteNom && !other.chOk; }).length;
                 return h("tr", { key: i, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
                   h("td", { style: { padding: "6px 10px", color: "#d4d4d8" } }, r.dateReleve),
                   h("td", { style: { padding: "6px 10px", fontWeight: 600, color: r.empOk ? "#fafafa" : "#fcd34d" } }, r.employeNom + (r.empOk ? "" : " ⚠")),
                   h("td", { style: { padding: "6px 10px", color: r.sondeuseCode && !r.eqOk ? "#fcd34d" : "#d4d4d8" } }, r.sondeuseCode + (r.sondeuseCode && !r.eqOk ? " ⚠" : "")),
                   h("td", { style: { padding: "6px 10px", color: "#a1a1aa" } }, r.siteNom || "—"),
-                  h("td", { style: { padding: "6px 10px" } },
+                  h("td", { style: { padding: "6px 10px", minWidth: 220 } },
                     r.chOk ? h("div", null,
                       h("div", { style: { color: "#fafafa", fontWeight: 600 } }, r.chantierTitre),
-                      h("div", { style: { fontSize: 10, color: chSrcColor } }, chSrcLabel)
-                    ) : h("div", null,
+                      h("div", { style: { fontSize: 10, color: chSrcColor, display: "flex", alignItems: "center", gap: 4 } },
+                        chSrcLabel,
+                        // Permet de changer manuellement meme si deja matche
+                        h("button", { onClick: function() {
+                          var newId = window.prompt("Changer le chantier pour cette ligne ?\nLaisser vide pour annuler.\n\nChantiers disponibles :\n" + chCandidats.map(function(c, idx) { return (idx + 1) + ". " + c.titre; }).join("\n") + "\n\nEntre le numero du chantier :");
+                          if (!newId) return;
+                          var idx = parseInt(newId, 10) - 1;
+                          if (idx >= 0 && idx < chCandidats.length) {
+                            var apply = similarCount > 0 && window.confirm("Appliquer aussi a " + similarCount + " autre(s) ligne(s) " + r.sondeuseCode + " / " + r.siteNom + " ?");
+                            setManualChantier(i, chCandidats[idx].id, apply);
+                          }
+                        }, style: { background: "transparent", border: "1px solid rgba(255,255,255,0.1)", color: "#a1a1aa", cursor: "pointer", padding: "1px 6px", borderRadius: 4, fontSize: 9 } }, "modif")
+                      )
+                    ) : h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
                       h("div", { style: { color: "#fcd34d", fontSize: 11, fontWeight: 600 } }, r.chantierSource === "ambigu" ? "Ambigu ⚠" : "Aucun chantier ⚠"),
-                      r.chantierSource === "ambigu" ? h("div", { style: { fontSize: 10, color: "#fcd34d" } }, chSrcLabel) : null
+                      r.chantierSource === "ambigu" ? h("div", { style: { fontSize: 9, color: "#fcd34d" } }, chSrcLabel) : null,
+                      h("select", {
+                        value: "",
+                        onChange: function(e) {
+                          if (!e.target.value) return;
+                          var apply = similarCount > 0 && window.confirm("Appliquer aussi a " + similarCount + " autre(s) ligne(s) " + (r.sondeuseCode || "(sans sondeuse)") + " / " + (r.siteNom || "(sans site)") + " ?");
+                          setManualChantier(i, e.target.value, apply);
+                        },
+                        style: { ...selectStyle, padding: "4px 6px", fontSize: 11, minWidth: 180 }
+                      },
+                        h("option", { value: "" }, "Choisir un chantier..."),
+                        chCandidats.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre); })
+                      )
                     )
                   ),
                   h("td", { style: { padding: "6px 10px", textAlign: "right", color: "#d4d4d8" } }, (r.heures || 0).toFixed(1) + " h"),
