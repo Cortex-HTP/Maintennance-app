@@ -6080,15 +6080,15 @@
       // Affectations implicites depuis releves_journaliers (import CSV).
       // { "empId-date": chantierId } - utilise comme fallback automatique
       // pour que le site de chaque employe s'affiche sans saisie manuelle.
+      // IMPORTANT: on ignore les releves d'heures seules (metrage = 0).
+      // Seul un releve avec metrage > 0 declenche l'affectation auto.
       var relevesAffMap = {};
       var relevesPe = ctx.dbRelevesJourn || [];
       relevesPe.forEach(function(r) {
         if (!r.personnelId || !r.dateReleve || !r.chantierId) return;
+        if ((parseFloat(r.metrage) || 0) <= 0) return; // skip releves heures-seules
         var k = r.personnelId + "-" + r.dateReleve;
-        // Si plusieurs releves pour le meme employe/jour (changement de machine ?),
-        // garde le premier rencontre. On pourrait privilegier celui avec metrage > 0.
-        if (!relevesAffMap[k]) relevesAffMap[k] = r.chantierId;
-        else if ((parseFloat(r.metrage) || 0) > 0) relevesAffMap[k] = r.chantierId;
+        relevesAffMap[k] = r.chantierId;
       });
 
       // Build map of recent chantiers per employee (last 60 days from current month)
@@ -6103,9 +6103,11 @@
           empRecentChantiers[a.personnelId][String(a.chantierId)] = true;
         }
       });
-      // Inclure aussi les releves journaliers (CSV) dans les chantiers recents
+      // Inclure aussi les releves journaliers (CSV) dans les chantiers recents,
+      // uniquement pour ceux avec metrage > 0 (on ignore les releves heures-seules).
       relevesPe.forEach(function(r) {
         if (!r.personnelId || !r.chantierId || !r.dateReleve) return;
+        if ((parseFloat(r.metrage) || 0) <= 0) return;
         var rd = new Date(r.dateReleve + "T12:00:00");
         var dd = (refDate - rd) / (1000 * 60 * 60 * 24);
         if (dd >= 0 && dd <= 60) {
