@@ -4713,6 +4713,7 @@
       const [importing, setImporting] = useState(false);
       const [rows, setRows] = useState([]);
       const [meta, setMeta] = useState({ anneeDetectee: null, moisDetecte: null });
+      const [warnings, setWarnings] = useState([]);
 
       const readFile = (file, cb) => {
         const reader = new FileReader();
@@ -4759,9 +4760,22 @@
         setParsing(true);
         var hData = null; var mData = null;
         var finalize = function() {
+          // Auto-detection : verifier si les fichiers sont a l'envers et swap si besoin
+          var heuresPattern = /(["']?(Flotte|Rig)["']?\s*,|Timesheet)/i;
+          var hLooksLikeHeures = hData ? heuresPattern.test(hData) : false;
+          var mLooksLikeHeures = mData ? heuresPattern.test(mData) : false;
+          var swapped = false;
+          if (mLooksLikeHeures && !hLooksLikeHeures) {
+            var tmp = hData; hData = mData; mData = tmp; swapped = true;
+          }
           var hParse = hData ? parseHeuresCsv(hData) : { byKey: {}, allKeys: [], anneeDetectee: null, moisDetecte: null };
           var annee = hParse.anneeDetectee || new Date().getFullYear();
           var mParse = mData ? parseMetrageCsv(mData, annee) : { byKey: {} };
+          // Avertissements
+          var warnings = [];
+          if (swapped) warnings.push("Les fichiers etaient inverses, swap automatique applique.");
+          if (heuresFile && hParse.allKeys.length === 0) warnings.push("Le fichier d'heures n'a renvoye aucune ligne (verifie qu'il s'agit bien d'un releve d'heures, format ControleHeurePersonnel).");
+          if (metrageFile && Object.keys(mParse.byKey).length === 0) warnings.push("Le fichier de metrage n'a renvoye aucune ligne (verifie qu'il s'agit bien d'un releve de metrage, format Prime_Metrage).");
           var joined = joindreReleves(hParse, mParse);
           // Enrichir avec matching
           joined.forEach(function(r) {
@@ -4784,6 +4798,7 @@
           });
           setRows(joined);
           setMeta({ anneeDetectee: hParse.anneeDetectee, moisDetecte: hParse.moisDetecte });
+          setWarnings(warnings);
           setParsing(false);
         };
         var pending = 0;
@@ -4841,6 +4856,10 @@
           h(DropZone, { label: "Releve metrage (KOPETO, TIEBAGHI...)", fileName: metrageFileName, onFile: onDropMetrage, accent: "#fbbf24" })
         ),
         meta.anneeDetectee ? h("div", { style: { fontSize: 12, color: "#a5b4fc", marginBottom: 12, padding: "6px 10px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 6 } }, h(IconText, { icon: "info", size: 11, color: "#a5b4fc" }, "Periode detectee : mois " + (meta.moisDetecte || "?") + " / " + meta.anneeDetectee)) : null,
+        warnings.length > 0 ? h("div", { style: { fontSize: 12, marginBottom: 12, padding: "10px 12px", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 6, color: "#fde68a" } },
+          h("div", { style: { fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "alert-triangle", size: 13, color: "#fcd34d" }), "Avertissements :"),
+          h("ul", { style: { margin: 0, paddingLeft: 20 } }, warnings.map(function(w, idx) { return h("li", { key: idx, style: { marginBottom: 2 } }, w); }))
+        ) : null,
         parsing ? h("div", { style: { color: "#a1a1aa", padding: 20, textAlign: "center" } }, "Analyse en cours...") : null,
         rows.length > 0 ? h("div", { style: { display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" } },
           h("div", { style: { flex: 1, minWidth: 140, padding: 12, background: "rgba(255,255,255,0.04)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)" } },
