@@ -5433,10 +5433,10 @@
         }
 
         var W = 1100;
-        var H = 340;
+        var H = 360;
         var padL = 60;
         var padR = 20;
-        var padT = 20;
+        var padT = 38; // place pour les labels CA par semaine
         var padB = 40;
         var chartW = W - padL - padR;
         var chartHt = H - padT - padB;
@@ -5452,6 +5452,23 @@
         else if (maxMet <= 500) maxMet = Math.ceil(maxMet / 50) * 50;
         else maxMet = Math.ceil(maxMet / 100) * 100;
 
+        // Construction des semaines (lundi -> dimanche, debordement borne au mois)
+        var weeks = [];
+        var curW = null;
+        for (var wi = 0; wi < n; wi++) {
+          var dD = new Date(year, monthIdx, chartData[wi].day);
+          var dow = dD.getDay(); // 0=Dim, 1=Lun, ..., 6=Sam
+          if (curW === null || dow === 1) {
+            if (curW) weeks.push(curW);
+            curW = { startIdx: wi, endIdx: wi, caSum: chartData[wi].ca, metSum: chartData[wi].metrage };
+          } else {
+            curW.endIdx = wi;
+            curW.caSum += chartData[wi].ca;
+            curW.metSum += chartData[wi].metrage;
+          }
+        }
+        if (curW) weeks.push(curW);
+
         // Grid lines
         var gridLines = [];
         var yLabels = [];
@@ -5460,6 +5477,24 @@
           gridLines.push(h("line", { key: "gl" + g, x1: padL, x2: W - padR, y1: gy, y2: gy, stroke: "rgba(255,255,255,0.06)", strokeWidth: 1 }));
           yLabels.push(h("text", { key: "yl" + g, x: padL - 8, y: gy + 4, textAnchor: "end", fontSize: 10, fill: "#a1a1aa", fontWeight: 600 }, fmtNum(Math.round(maxMet * g / 4))));
         }
+
+        // Bandes de fond par semaine + labels CA semaine
+        var weekBg = [];
+        var weekCaLabels = [];
+        weeks.forEach(function(w, wIdx) {
+          var x1 = padL + w.startIdx * (barW + gap) - 1;
+          var x2 = padL + w.endIdx * (barW + gap) + barW + 1;
+          var cx = (x1 + x2) / 2;
+          weekBg.push(h("rect", { key: "wkbg" + wIdx, x: x1, y: padT, width: x2 - x1, height: chartHt, fill: wIdx % 2 === 0 ? "rgba(99,102,241,0.04)" : "rgba(99,102,241,0.10)" }));
+          if (w.caSum > 0) {
+            // Pill avec CA semaine
+            var pillW = Math.min(x2 - x1 - 4, 120);
+            weekCaLabels.push(h("g", { key: "wkca" + wIdx },
+              h("rect", { x: cx - pillW / 2, y: 6, width: pillW, height: 22, rx: 11, fill: "rgba(37,99,235,0.15)", stroke: "rgba(37,99,235,0.45)", strokeWidth: 1 }),
+              h("text", { x: cx, y: 21, textAnchor: "middle", fontSize: 11, fill: "#93c5fd", fontWeight: 700 }, "Sem : " + fmtNum(w.caSum) + " XPF")
+            ));
+          }
+        });
 
         // Bars
         var bars = [];
@@ -5480,19 +5515,21 @@
         var totalMoisCA = chartData.reduce(function(s, p) { return s + p.ca; }, 0);
 
         return h("div", { style: { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, padding: 20, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", marginBottom: 24 } },
-          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 } },
             h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, color: "#e5e7eb" } }, h(IconText, { icon: "bar-chart-3", size: 16 }, "Progression globale - " + currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }))),
-            h("div", { style: { display: "flex", gap: 16, fontSize: 12, fontWeight: 600 } },
+            h("div", { style: { display: "flex", gap: 16, fontSize: 12, fontWeight: 600, alignItems: "center" } },
               h("span", { style: { color: "#a78bfa" } }, "Total : " + fmtNum(totalMoisMet) + " m"),
-              h("span", { style: { color: "#2563eb" } }, "CA : " + fmtNum(totalMoisCA) + " XPF")
+              h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 12px", borderRadius: 999, background: "rgba(37,99,235,0.15)", border: "1px solid rgba(37,99,235,0.45)", color: "#93c5fd", fontWeight: 800 } }, h(Icon, { name: "wallet", size: 12, color: "#93c5fd" }), "CA mois : " + fmtNum(totalMoisCA) + " XPF")
             )
           ),
           h("div", { style: { overflowX: "auto" } },
-            h("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", maxHeight: 320 } },
+            h("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", maxHeight: 340 } },
+              weekBg,
               gridLines,
               bars,
               yLabels,
               xLabels,
+              weekCaLabels,
               h("line", { x1: padL, x2: padL, y1: padT, y2: padT + chartHt, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 }),
               h("line", { x1: padL, x2: W - padR, y1: padT + chartHt, y2: padT + chartHt, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 })
             )
@@ -5635,9 +5672,10 @@
             var monthMet = getMonthMetrage(chantier.id);
             var remaining = Math.max(0, chantier.metrage - realise);
 
+            var caMois = monthMet * (chantier.prixMetre || 0);
             return h("div", { key: chantier.id, style: { marginBottom: 16 } },
               h("div", { style: { background: isExpanded ? "rgba(99,102,241,0.10)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.06)" : "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, padding: 20, border: "1px solid " + (chantier.statut === "A venir" ? "rgba(99,102,241,0.3)" : "rgba(255,255,255,0.07)"), borderLeft: chantier.statut === "A venir" ? "4px solid #6366f1" : "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
-                h("div", { onClick: function() { setExpandedChantier(isExpanded ? null : chantier.id); }, style: { cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "start" } },
+                h("div", { onClick: function() { setExpandedChantier(isExpanded ? null : chantier.id); }, style: { cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 } },
                   h("div", { style: { flex: 1 } },
                     h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
                       h("h3", { style: { fontSize: 16, fontWeight: 700, margin: 0 } }, chantier.titre),
@@ -5656,6 +5694,12 @@
                       h("div", { style: { width: Math.min(avancement, 100) + "%", height: "100%", background: avancement >= 75 ? "#059669" : avancement >= 50 ? "#d97706" : "#a1a1aa", transition: "width 0.3s" } })
                     ),
                     h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600 } }, realise + " / " + chantier.metrage + " m (" + avancement + "%)")
+                  ),
+                  // Indicateur CA mois (a cote du bloc texte date/titre/metrage)
+                  h("div", { onClick: function(e) { e.stopPropagation(); }, style: { flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, padding: "10px 14px", borderRadius: 10, background: "linear-gradient(135deg, rgba(37,99,235,0.18), rgba(37,99,235,0.06))", border: "1px solid rgba(37,99,235,0.35)", minWidth: 140 } },
+                    h("div", { style: { fontSize: 10, fontWeight: 700, color: "#93c5fd", textTransform: "uppercase", letterSpacing: 0.5, display: "flex", alignItems: "center", gap: 4 } }, h(Icon, { name: "wallet", size: 11, color: "#93c5fd" }), "CA mois"),
+                    h("div", { style: { fontSize: 16, fontWeight: 800, color: "#dbeafe", lineHeight: 1.1 } }, fmtNum(caMois)),
+                    h("div", { style: { fontSize: 9, fontWeight: 600, color: "#93c5fd", opacity: 0.85 } }, "XPF · " + currentMonth.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" }))
                   ),
                   h(Icon, { name: isExpanded ? "chevron-up" : "chevron-down", size: 20, color: "#a1a1aa" })
                 ),
@@ -5691,13 +5735,47 @@
                     if (maxDayVal === 0) return null;
                     var barW = Math.max(Math.floor(800 / daysInMonth) - 2, 8);
                     var chartH2 = 120;
+                    var topPad = 26; // place pour labels CA semaine
                     var svgW2 = daysInMonth * (barW + 2) + 40;
+                    var prixMet = chantier.prixMetre || 0;
+                    // Construction des semaines (lundi -> dimanche)
+                    var weeksMini = [];
+                    var curMW = null;
+                    for (var wj = 0; wj < daysInMonth; wj++) {
+                      var dwj = new Date(year, monthIdx, wj + 1).getDay();
+                      if (curMW === null || dwj === 1) {
+                        if (curMW) weeksMini.push(curMW);
+                        curMW = { startIdx: wj, endIdx: wj, caSum: dayVals[wj] * prixMet };
+                      } else {
+                        curMW.endIdx = wj;
+                        curMW.caSum += dayVals[wj] * prixMet;
+                      }
+                    }
+                    if (curMW) weeksMini.push(curMW);
                     return h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "12px 16px", marginBottom: 14, border: "1px solid rgba(255,255,255,0.07)" } },
                       h("div", { style: { fontSize: 12, fontWeight: 700, color: "#e5e7eb", marginBottom: 8 } }, h(IconText, { icon: "bar-chart-3", size: 14 }, "Metrage par jour - " + currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }))),
                       h("div", { style: { overflowX: "auto" } },
-                        h("svg", { viewBox: "0 0 " + svgW2 + " " + (chartH2 + 30), style: { width: "100%", maxHeight: 160 } },
+                        h("svg", { viewBox: "0 0 " + svgW2 + " " + (chartH2 + topPad + 30), style: { width: "100%", maxHeight: 180 } },
+                          // Bandes de fond par semaine
+                          weeksMini.map(function(w, wIdx) {
+                            var x1 = 20 + w.startIdx * (barW + 2) - 1;
+                            var x2 = 20 + w.endIdx * (barW + 2) + barW + 1;
+                            return h("rect", { key: "miwbg" + wIdx, x: x1, y: topPad, width: x2 - x1, height: chartH2 - topPad, fill: wIdx % 2 === 0 ? "rgba(99,102,241,0.04)" : "rgba(99,102,241,0.10)" });
+                          }),
+                          // Labels CA semaine
+                          weeksMini.map(function(w, wIdx) {
+                            if (w.caSum <= 0) return null;
+                            var x1 = 20 + w.startIdx * (barW + 2);
+                            var x2 = 20 + w.endIdx * (barW + 2) + barW;
+                            var cx = (x1 + x2) / 2;
+                            var pillW = Math.min(x2 - x1 - 2, 110);
+                            return h("g", { key: "miwca" + wIdx },
+                              h("rect", { x: cx - pillW / 2, y: 4, width: pillW, height: 18, rx: 9, fill: "rgba(37,99,235,0.15)", stroke: "rgba(37,99,235,0.45)", strokeWidth: 1 }),
+                              h("text", { x: cx, y: 16, textAnchor: "middle", fontSize: 9, fill: "#93c5fd", fontWeight: 700 }, "Sem : " + fmtNum(w.caSum) + " XPF")
+                            );
+                          }),
                           dayVals.map(function(val, idx) {
-                            var barH = maxDayVal > 0 ? (val / maxDayVal) * chartH2 : 0;
+                            var barH = maxDayVal > 0 ? (val / maxDayVal) * (chartH2 - topPad) : 0;
                             var x = 20 + idx * (barW + 2);
                             var dayDate = new Date(year, monthIdx, idx + 1);
                             var isWE2 = dayDate.getDay() === 0 || dayDate.getDay() === 6;
