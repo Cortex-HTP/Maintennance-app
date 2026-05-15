@@ -4972,6 +4972,53 @@
       var expandedChantier = _exp[0]; var setExpandedChantier = _exp[1];
       var _showImport = useState(false);
       var showImport = _showImport[0]; var setShowImport = _showImport[1];
+      // Cles "${chantierId}_${equipementId}" des lignes machine debloquees pour edition
+      var _unlocked = useState({});
+      var unlockedMachineRows = _unlocked[0]; var setUnlockedMachineRows = _unlocked[1];
+      function isMachineRowUnlocked(chantierId, equipementId) {
+        return !!unlockedMachineRows[String(chantierId) + "_" + String(equipementId || "")];
+      }
+      function toggleMachineRowUnlock(chantierId, equipementId) {
+        var key = String(chantierId) + "_" + String(equipementId || "");
+        setUnlockedMachineRows(function(prev) {
+          var copy = Object.assign({}, prev);
+          if (copy[key]) delete copy[key]; else copy[key] = true;
+          return copy;
+        });
+      }
+      // Met a jour le metrage d'une cellule machine (jour) en repercutant sur les releves existants
+      async function updateMachineMetrage(chantierId, equipementId, dateStr, newValue) {
+        var newTotal = Math.max(0, parseFloat(newValue) || 0);
+        var rels = (ctxAv.dbRelevesJourn || []).filter(function(r) {
+          return String(r.chantierId) === String(chantierId) &&
+                 String(r.equipementId || "") === String(equipementId || "") &&
+                 r.dateReleve === dateStr;
+        });
+        try {
+          if (rels.length === 0) {
+            // Aucun releve existant : creer une ligne manuelle
+            var eqList = ctxAv.equipements || [];
+            var eqObj = eqList.find(function(e) { return e.Id === equipementId; });
+            await ctxAv.createReleveJourn({
+              dateReleve: dateStr,
+              employeNom: "Edition manuelle",
+              sondeuseCode: eqObj ? eqObj.Title : "",
+              equipementId: equipementId || null,
+              chantierId: chantierId,
+              heures: 0,
+              metrage: newTotal,
+              sourceFichier: "manuel"
+            });
+          } else {
+            // Au moins un releve : ajuster le premier pour que la somme = newTotal
+            var sumOthers = rels.slice(1).reduce(function(s, r) { return s + (parseFloat(r.metrage) || 0); }, 0);
+            var firstNew = Math.max(0, newTotal - sumOthers);
+            await ctxAv.updateReleveJourn(rels[0].id, Object.assign({}, rels[0], { metrage: firstNew }));
+          }
+        } catch (err) {
+          alert("Erreur sauvegarde : " + err.message);
+        }
+      }
       // Helper : trouve la sondeuse affectee a un chantier a une date donnee
       // (depuis chantier_equipements). Retourne le code/titre court de l'equipement.
       function findMachineForDate(chantierId, dateStr) {
@@ -5648,25 +5695,46 @@
                         h("div", { style: { fontSize: 14, fontWeight: 700, color: "#86efac" } }, fmtNum(monthMet))
                       )
                     ),
-                    // Sous-lignes par machine (depuis releves_journaliers, lecture seule)
+                    // Sous-lignes par machine (depuis releves_journaliers).
+                    // Lecture seule par defaut, debloquable via le cadenas dans la colonne Total.
                     (function() {
                       var machines = getMachinesActivesChantier(chantier.id, year, monthIdx);
                       if (machines.length === 0) return null;
                       return machines.map(function(m, mi) {
+                        var unlocked = isMachineRowUnlocked(chantier.id, m.equipementId);
                         return h("div", { key: "msr_" + m.key, style: { display: "flex", minWidth: daysInMonth * 48 + 60, borderTop: "1px solid rgba(255,255,255,0.08)", background: mi % 2 === 0 ? "rgba(129,140,248,0.04)" : "rgba(167,139,250,0.04)" } },
                           Array.apply(null, Array(daysInMonth)).map(function(_, di) {
                             var dayNum = di + 1;
                             var dayCellDate = new Date(year, monthIdx, dayNum);
                             var isWE2 = dayCellDate.getDay() === 0 || dayCellDate.getDay() === 6;
                             var val = m.dailyMetrage[dayNum] || 0;
-                            return h("div", { key: "msrc_" + m.key + "_" + dayNum, style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.04)", background: isWE2 ? "rgba(255,255,255,0.02)" : "transparent", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 0" } },
+                            var ds2 = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayNum < 10 ? "0" : "") + dayNum;
+                            return h("div", { key: "msrc_" + m.key + "_" + dayNum, style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.04)", background: isWE2 ? "rgba(255,255,255,0.02)" : (unlocked ? "rgba(251,191,36,0.06)" : "transparent"), textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 0" } },
                               di === 0 ? h("div", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc", letterSpacing: 0.3, position: "absolute", marginTop: -22 } }, m.code) : null,
-                              h("div", { style: { fontSize: 13, fontWeight: 600, color: val > 0 ? "#86efac" : "rgba(255,255,255,0.15)" } }, val > 0 ? fmtNum(val) : "·")
+                              unlocked ? h("input", {
+                                type: "number",
+                                defaultValue: val > 0 ? val : "",
+                                onBlur: function(e) {
+                                  var newV = e.target.value === "" ? 0 : parseFloat(e.target.value) || 0;
+                                  if (newV !== val) updateMachineMetrage(chantier.id, m.equipementId, ds2, newV);
+                                },
+                                onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); },
+                                onFocus: function(e) { e.target.select(); },
+                                onClick: function(e) { e.stopPropagation(); },
+                                style: { width: 40, height: 26, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: "1px solid rgba(251,191,36,0.4)", borderRadius: 4, background: "rgba(0,0,0,0.3)", color: "#fde68a", outline: "none", MozAppearance: "textfield", boxSizing: "border-box" }
+                              }) : h("div", { style: { fontSize: 13, fontWeight: 600, color: val > 0 ? "#86efac" : "rgba(255,255,255,0.15)" } }, val > 0 ? fmtNum(val) : "·")
                             );
                           }),
-                          h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: "rgba(129,140,248,0.10)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 0" } },
-                            h("div", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc", marginBottom: 2 } }, m.code),
-                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#a5b4fc" } }, fmtNum(m.totalMois))
+                          h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: unlocked ? "rgba(251,191,36,0.15)" : "rgba(129,140,248,0.10)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 0", gap: 2 } },
+                            h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+                              h("span", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc" } }, m.code),
+                              h("button", {
+                                onClick: function() { toggleMachineRowUnlock(chantier.id, m.equipementId); },
+                                title: unlocked ? "Verrouiller la ligne (lecture seule)" : "Deverrouiller pour editer les valeurs",
+                                style: { background: "transparent", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center" }
+                              }, h(Icon, { name: unlocked ? "unlock" : "lock", size: 11, color: unlocked ? "#fcd34d" : "#71717a" }))
+                            ),
+                            h("div", { style: { fontSize: 13, fontWeight: 700, color: unlocked ? "#fde68a" : "#a5b4fc" } }, fmtNum(m.totalMois))
                           )
                         );
                       });
@@ -7842,6 +7910,20 @@
         if (error) { showToast(error.message, "error"); throw error; }
         setDbRelevesJourn((p) => p.filter((x) => x.id !== id));
       };
+      const updateReleveJourn = async (id, patch) => {
+        const payload = releveJournToDb(patch);
+        const { data, error } = await supabase.from("releves_journaliers").update(payload).eq("id", id).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbRelevesJourn((p) => p.map((x) => x.id === id ? releveJournFromDb(data) : x));
+        return releveJournFromDb(data);
+      };
+      const createReleveJourn = async (item) => {
+        const payload = releveJournToDb(item);
+        const { data, error } = await supabase.from("releves_journaliers").insert(payload).select().single();
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbRelevesJourn((p) => [releveJournFromDb(data), ...p]);
+        return releveJournFromDb(data);
+      };
 
       // CRUD : liaisons pieces <-> equipements
       const linkPieceEquipement = async (pieceId, equipementId) => {
@@ -8004,7 +8086,7 @@
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
         dbChantierEquipements, setDbChantierEquipements, addChantierEquipement, updateChantierEquipement, deleteChantierEquipement,
         dbDemandesFin, setDbDemandesFin, addDemandeFin, updateDemandeFin, deleteDemandeFin,
-        dbRelevesJourn, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn,
+        dbRelevesJourn, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn, updateReleveJourn, createReleveJourn,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
