@@ -5313,20 +5313,75 @@
       var year = currentMonth.getFullYear();
       var monthIdx = currentMonth.getMonth();
 
+      // Pre-construit un index releves par chantier+date (MAX par machine puis SUM)
+      // pour eviter de boucler sur dbRelevesJourn dans chaque KPI/chart.
+      var relevesIdx = (function() {
+        var idx = {};
+        var all = ctxAv.dbRelevesJourn || [];
+        // Premier passage: { chId: { date: { machineKey: maxMet } } }
+        for (var i = 0; i < all.length; i++) {
+          var r = all[i];
+          if (!r.chantierId || !r.dateReleve) continue;
+          var ck = String(r.chantierId);
+          var dk = r.dateReleve;
+          var mk = String(r.equipementId || r.sondeuseCode || "_no_machine");
+          var v = parseFloat(r.metrage) || 0;
+          if (!idx[ck]) idx[ck] = {};
+          if (!idx[ck][dk]) idx[ck][dk] = {};
+          if (v > (idx[ck][dk][mk] || 0)) idx[ck][dk][mk] = v;
+        }
+        // Deuxieme passage: somme par chantier+date
+        var out = {};
+        var cks = Object.keys(idx);
+        for (var c2 = 0; c2 < cks.length; c2++) {
+          out[cks[c2]] = {};
+          var dks = Object.keys(idx[cks[c2]]);
+          for (var d2 = 0; d2 < dks.length; d2++) {
+            var s = 0;
+            var mks = Object.keys(idx[cks[c2]][dks[d2]]);
+            for (var m2 = 0; m2 < mks.length; m2++) s += idx[cks[c2]][dks[d2]][mks[m2]];
+            out[cks[c2]][dks[d2]] = s;
+          }
+        }
+        return out;
+      })();
+
+      // Metrage chantier+date : priorite aux releves_journaliers (MAX/machine puis somme),
+      // fallback sur les saisies manuelles si aucun releve.
+      function getDailyMetrageChantier(chId, dateStr) {
+        var ck = String(chId);
+        if (relevesIdx[ck] && relevesIdx[ck][dateStr] != null) return relevesIdx[ck][dateStr];
+        if (saisies[chId] && saisies[chId][dateStr]) return getSaisieVal(saisies[chId][dateStr]);
+        return 0;
+      }
+
       function getRealise(chId) {
-        if (!saisies[chId]) return 0;
         var total = 0;
-        var keys = Object.keys(saisies[chId]);
-        for (var i = 0; i < keys.length; i++) { total += getSaisieVal(saisies[chId][keys[i]]); }
+        var ck = String(chId);
+        // Cumule depuis releves_journaliers (toutes dates)
+        var seen = {};
+        if (relevesIdx[ck]) {
+          var dks = Object.keys(relevesIdx[ck]);
+          for (var i = 0; i < dks.length; i++) {
+            total += relevesIdx[ck][dks[i]] || 0;
+            seen[dks[i]] = true;
+          }
+        }
+        // Complete avec saisies manuelles pour les dates sans releve
+        if (saisies[chId]) {
+          var ks = Object.keys(saisies[chId]);
+          for (var j = 0; j < ks.length; j++) {
+            if (!seen[ks[j]]) total += getSaisieVal(saisies[chId][ks[j]]);
+          }
+        }
         return total;
       }
 
       function getMonthMetrage(chId) {
-        if (!saisies[chId]) return 0;
         var total = 0;
         for (var d = 1; d <= daysInMonth; d++) {
           var ds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (d < 10 ? "0" : "") + d;
-          if (saisies[chId][ds]) total += getSaisieVal(saisies[chId][ds]);
+          total += getDailyMetrageChantier(chId, ds);
         }
         return total;
       }
@@ -5352,8 +5407,8 @@
           var dayMet = 0;
           var dayCA = 0;
           activeChantiers.forEach(function(c) {
-            if (saisies[c.id] && saisies[c.id][ds]) {
-              var val = getSaisieVal(saisies[c.id][ds]);
+            var val = getDailyMetrageChantier(c.id, ds);
+            if (val > 0) {
               dayMet += val;
               dayCA += val * c.prixMetre;
             }
@@ -5624,12 +5679,12 @@
                     )
                   ),
                   (function() {
-                    // Bar chart: metrage par jour du mois
+                    // Bar chart: metrage par jour du mois (releves_journaliers prioritaire + cumul)
                     var dayVals = [];
                     var maxDayVal = 0;
                     for (var dd = 1; dd <= daysInMonth; dd++) {
                       var dds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dd < 10 ? "0" : "") + dd;
-                      var v = saisies[chantier.id] && saisies[chantier.id][dds] ? getSaisieVal(saisies[chantier.id][dds]) : 0;
+                      var v = getDailyMetrageChantier(chantier.id, dds);
                       dayVals.push(v);
                       if (v > maxDayVal) maxDayVal = v;
                     }
@@ -6022,6 +6077,20 @@
         affMap[a.personnelId + "-" + a.dateAffectation] = { chantierId: a.chantierId, typeJour: a.typeJour || "travail" };
       });
 
+      // Affectations implicites depuis releves_journaliers (import CSV).
+      // { "empId-date": chantierId } - utilise comme fallback automatique
+      // pour que le site de chaque employe s'affiche sans saisie manuelle.
+      var relevesAffMap = {};
+      var relevesPe = ctx.dbRelevesJourn || [];
+      relevesPe.forEach(function(r) {
+        if (!r.personnelId || !r.dateReleve || !r.chantierId) return;
+        var k = r.personnelId + "-" + r.dateReleve;
+        // Si plusieurs releves pour le meme employe/jour (changement de machine ?),
+        // garde le premier rencontre. On pourrait privilegier celui avec metrage > 0.
+        if (!relevesAffMap[k]) relevesAffMap[k] = r.chantierId;
+        else if ((parseFloat(r.metrage) || 0) > 0) relevesAffMap[k] = r.chantierId;
+      });
+
       // Build map of recent chantiers per employee (last 60 days from current month)
       var empRecentChantiers = {};
       var refDate = new Date(year, monthIdx + 1, 0); // last day of current month
@@ -6034,10 +6103,23 @@
           empRecentChantiers[a.personnelId][String(a.chantierId)] = true;
         }
       });
+      // Inclure aussi les releves journaliers (CSV) dans les chantiers recents
+      relevesPe.forEach(function(r) {
+        if (!r.personnelId || !r.chantierId || !r.dateReleve) return;
+        var rd = new Date(r.dateReleve + "T12:00:00");
+        var dd = (refDate - rd) / (1000 * 60 * 60 * 24);
+        if (dd >= 0 && dd <= 60) {
+          if (!empRecentChantiers[r.personnelId]) empRecentChantiers[r.personnelId] = {};
+          empRecentChantiers[r.personnelId][String(r.chantierId)] = true;
+        }
+      });
 
       function getAffectation(empId, dateStr) {
         var entry = affMap[empId + "-" + dateStr];
         if (entry) return entry.chantierId;
+        // Fallback : releves_journaliers (import CSV)
+        var k = empId + "-" + dateStr;
+        if (relevesAffMap[k] != null) return relevesAffMap[k];
         // Pas d'affectation: verifier si un chantier recent a une panne/intemperie ce jour
         var recentChs = empRecentChantiers[empId];
         if (recentChs) {
@@ -6065,6 +6147,22 @@
             }
           }
           return entry.typeJour || "travail";
+        }
+        // Fallback : releves_journaliers (import CSV) - employe affecte automatiquement au site
+        var relK = empId + "-" + dateStr;
+        var relChId = relevesAffMap[relK];
+        if (relChId != null) {
+          // Verifier si le site associe a un brush (panne/intemperies/ferie) ce jour
+          var chRel = chantiers.find(function(c) { return c.id == relChId; });
+          var siteR = chRel ? chRel.site : "";
+          if (siteR) {
+            var siteRChs = chantiers.filter(function(c) { return c.site && c.site === siteR; });
+            for (var sri = 0; sri < siteRChs.length; sri++) {
+              var stR = saisieTypeMap[String(siteRChs[sri].id) + "-" + dateStr];
+              if (stR) return stR;
+            }
+          }
+          return "travail";
         }
         // Pas d'affectation: verifier les chantiers recents pour pannes/intemperies
         var recentChs = empRecentChantiers[empId];
