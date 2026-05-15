@@ -341,6 +341,38 @@
       return { nom: u.nom, email: u.email, role: u.role || "Utilisateur", statut: u.statut || "Actif", pages_autorisees: u.pagesAutorisees || ["accueil"], date_creation: u.dateCreation || new Date().toISOString().substring(0, 10) };
     }
 
+    // ─── Conversion DB: releves_journaliers (heures + metrage importes) ──
+    function releveJournFromDb(r) {
+      return {
+        id: r.id,
+        dateReleve: r.date_releve || "",
+        employeNom: r.employe_nom || "",
+        personnelId: r.personnel_id != null ? r.personnel_id : null,
+        sondeuseCode: r.sondeuse_code || "",
+        equipementId: r.equipement_id || null,
+        siteNom: r.site_nom || "",
+        chantierId: r.chantier_id || null,
+        heures: r.heures != null ? parseFloat(r.heures) : 0,
+        metrage: r.metrage != null ? parseFloat(r.metrage) : 0,
+        sourceFichier: r.source_fichier || "",
+        createdAt: r.created_at || null
+      };
+    }
+    function releveJournToDb(r) {
+      return {
+        date_releve: r.dateReleve,
+        employe_nom: r.employeNom,
+        personnel_id: r.personnelId != null ? parseInt(r.personnelId) : null,
+        sondeuse_code: r.sondeuseCode || null,
+        equipement_id: r.equipementId || null,
+        site_nom: r.siteNom || null,
+        chantier_id: r.chantierId != null ? parseInt(r.chantierId) : null,
+        heures: parseFloat(r.heures) || 0,
+        metrage: parseFloat(r.metrage) || 0,
+        source_fichier: r.sourceFichier || null
+      };
+    }
+
     // ─── Conversion DB: demandes_financement ──────────────────────────
     function demandeFinFromDb(r) {
       return {
@@ -4026,7 +4058,24 @@
               h("div", { style: { maxHeight: 600, overflowY: "auto" } },
                 activeChantiers.length === 0
                   ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun chantier actif (en cours ou a venir) pour " + year)
-                  : activeChantiers.map(function(ch) {
+                  : (function() {
+                      // Groupage des swimlanes par site
+                      var grpSwl = {}; var ordSwl = [];
+                      activeChantiers.forEach(function(c) {
+                        var k = (c.site || "").trim() || ("__solo_" + c.id);
+                        if (!grpSwl[k]) { grpSwl[k] = { site: c.site || null, list: [] }; ordSwl.push(k); }
+                        grpSwl[k].list.push(c);
+                      });
+                      return ordSwl.map(function(grpKey) {
+                        var grpData = grpSwl[grpKey];
+                        var grpHasMultiple = grpData.list.length > 1;
+                        return h("div", { key: "siteGrp_" + grpKey, style: grpHasMultiple ? { borderBottom: "3px solid rgba(99,102,241,0.4)", marginBottom: 4 } : null },
+                          grpHasMultiple && grpData.site ? h("div", { style: { display: "flex", alignItems: "center", gap: 8, background: "linear-gradient(90deg, rgba(99,102,241,0.20), rgba(99,102,241,0.04))", padding: "10px 16px", borderBottom: "1px solid rgba(99,102,241,0.3)", borderLeft: "4px solid #818cf8" } },
+                            h(Icon, { name: "map-pin", size: 14, color: "#a5b4fc" }),
+                            h("span", { style: { fontSize: 14, fontWeight: 800, color: "#fafafa", textTransform: "uppercase", letterSpacing: 0.5 } }, grpData.site),
+                            h("span", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase" } }, grpData.list.length + " chantiers")
+                          ) : null,
+                          grpData.list.map(function(ch) {
                       var chDebut = parseDate(ch.dateDebut);
                       var chFin = parseDate(ch.dateFin);
                       var chLeftPct = dateToPctY(chDebut);
@@ -4127,6 +4176,9 @@
                             }())
                       );
                     })
+                        );
+                      });
+                    }())
               ),
               // Legende
               h("div", { style: { display: "flex", gap: 16, padding: "10px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", flexWrap: "wrap" } },
@@ -4260,12 +4312,14 @@
         inputBorder = "2px solid #818cf8";
       }
 
+      var machineLabel = props.machineLabel || "";
       return h("div", {
         onClick: activeBrush ? handleBrushClick : undefined,
         onMouseDown: activeBrush ? function(e) { e.preventDefault(); if (props.onPaintStart) props.onPaintStart(); handleBrushClick(); } : undefined,
         onMouseEnter: activeBrush && props.isPainting ? handleBrushClick : undefined,
         style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: bgColor, textAlign: "center", cursor: activeBrush ? "pointer" : "default" }
       },
+        h("div", { title: machineLabel ? "Sondeuse: " + machineLabel : "", style: { height: 14, fontSize: 9, fontWeight: 700, lineHeight: "14px", color: machineLabel ? "#a5b4fc" : "rgba(255,255,255,0.04)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: 0.3 } }, machineLabel || "—"),
         h("div", { style: { height: 20, fontSize: 9, fontWeight: 600, lineHeight: "20px", color: isWeekend ? "#71717a" : isToday ? "#7c3aed" : "#a1a1aa" } }, dayLetter),
         h("div", { style: { height: 18, fontSize: 11, fontWeight: 700, lineHeight: "18px", borderBottom: "1px solid rgba(255,255,255,0.07)", color: isToday ? "#7c3aed" : "#e5e7eb" } }, String(dayNum)),
         isSpecial && !activeBrush ?
@@ -4294,6 +4348,378 @@
       );
     }
 
+    // ─── Parsers CSV : releves heures + metrage ─────────────────────────
+    // Parse une ligne CSV avec quotes (gere virgules dans valeurs quotees)
+    function parseCsvLine(line) {
+      var out = []; var cur = ""; var inQ = false;
+      for (var i = 0; i < line.length; i++) {
+        var c = line[i];
+        if (c === '"') {
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+          else inQ = !inQ;
+        } else if (c === "," && !inQ) { out.push(cur); cur = ""; }
+        else { cur += c; }
+      }
+      out.push(cur);
+      return out;
+    }
+    function parseFr(numStr) {
+      if (numStr == null) return 0;
+      var s = String(numStr).trim().replace(",", ".").replace(/\s/g, "");
+      var n = parseFloat(s);
+      return isNaN(n) ? 0 : n;
+    }
+    // Parse ControleHeurePersonnel.csv : { byKey: Map<"YYYY-MM-DD|NOM", { sondeuse, heures }>, anneeDetectee, moisDetecte }
+    function parseHeuresCsv(text) {
+      var lines = text.split(/\r?\n/);
+      var byKey = {};
+      var allKeys = [];
+      var anneeDetectee = null;
+      var moisDetecte = null;
+      // Detecter "Timesheet 01-05-2026 - 31-05-2026"
+      for (var i = 0; i < Math.min(lines.length, 5); i++) {
+        var m = lines[i].match(/(\d{2})-(\d{2})-(\d{4})/);
+        if (m) { moisDetecte = parseInt(m[2]); anneeDetectee = parseInt(m[3]); break; }
+      }
+      var seenHeader = false;
+      for (var idx = 0; idx < lines.length; idx++) {
+        var raw = lines[idx];
+        if (!raw || !raw.trim()) continue;
+        var cols = parseCsvLine(raw);
+        // Detection header
+        if (!seenHeader) {
+          var first = (cols[0] || "").trim();
+          if (first === "Flotte" || first === "Rig") { seenHeader = true; continue; }
+          continue;
+        }
+        var sondeuse = (cols[0] || "").trim();
+        var nom = (cols[1] || "").trim();
+        var date = (cols[2] || "").trim();
+        var heuresEff = parseFr(cols[4]);
+        // Ignorer lignes "Total XXX" (sondeuse commence par "Total")
+        if (sondeuse.indexOf("Total") === 0) continue;
+        if (!sondeuse || !nom || !date) continue;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+        var key = date + "|" + nom.toUpperCase();
+        byKey[key] = { sondeuse: sondeuse, heures: heuresEff };
+        allKeys.push(key);
+      }
+      return { byKey: byKey, allKeys: allKeys, anneeDetectee: anneeDetectee, moisDetecte: moisDetecte };
+    }
+    // Parse Prime_Metrage.csv : blocs par site
+    // Renvoie { byKey: Map<"YYYY-MM-DD|NOM", { site, metrage }> }
+    function parseMetrageCsv(text, anneeParDefaut) {
+      var lines = text.split(/\r?\n/);
+      var byKey = {};
+      var currentSite = null;
+      var currentDateCols = null; // tableau [{ date: "YYYY-MM-DD" }, ...] index par colonne
+      for (var idx = 0; idx < lines.length; idx++) {
+        var raw = lines[idx];
+        if (!raw || !raw.trim()) { continue; }
+        var cols = parseCsvLine(raw);
+        // Detecter une ligne de site (single col non-vide, pas de date "01/05")
+        var nonEmpty = cols.filter(function(c) { return c && c.trim(); });
+        if (nonEmpty.length === 1 && !/\d{2}\/\d{2}/.test(nonEmpty[0])) {
+          currentSite = nonEmpty[0].trim();
+          currentDateCols = null;
+          continue;
+        }
+        // Detecter ligne de header dates : "" puis "01/05","02/05",...
+        if (cols[0] !== undefined && (cols[0] === "" || cols[0].trim() === "") && /\d{2}\/\d{2}/.test(cols[1] || "")) {
+          currentDateCols = [];
+          for (var c = 1; c < cols.length; c++) {
+            var dm = (cols[c] || "").trim();
+            if (/^\d{2}\/\d{2}$/.test(dm)) {
+              var parts = dm.split("/");
+              var jour = parts[0]; var mois = parts[1];
+              currentDateCols[c] = anneeParDefaut + "-" + mois + "-" + jour;
+            } else {
+              currentDateCols[c] = null;
+            }
+          }
+          continue;
+        }
+        // Ligne de donnees employe (necessite site + date cols connus)
+        if (!currentSite || !currentDateCols) continue;
+        var nom = (cols[0] || "").trim();
+        if (!nom) continue;
+        for (var c2 = 1; c2 < cols.length && c2 < currentDateCols.length; c2++) {
+          var date = currentDateCols[c2];
+          if (!date) continue;
+          var val = parseFr(cols[c2]);
+          if (val === 0) continue; // ne pas creer une ligne pour 0
+          var key = date + "|" + nom.toUpperCase();
+          byKey[key] = { site: currentSite, metrage: val };
+        }
+      }
+      return { byKey: byKey };
+    }
+    // Joint les 2 parses sur (date, employé)
+    function joindreReleves(heuresParse, metrageParse) {
+      var allKeys = {};
+      Object.keys(heuresParse.byKey).forEach(function(k) { allKeys[k] = true; });
+      Object.keys(metrageParse.byKey).forEach(function(k) { allKeys[k] = true; });
+      var rows = [];
+      Object.keys(allKeys).forEach(function(k) {
+        var h = heuresParse.byKey[k] || {};
+        var m = metrageParse.byKey[k] || {};
+        var parts = k.split("|");
+        rows.push({
+          dateReleve: parts[0],
+          employeNom: parts[1],
+          sondeuseCode: h.sondeuse || "",
+          heures: h.heures != null ? h.heures : 0,
+          siteNom: m.site || "",
+          metrage: m.metrage != null ? m.metrage : 0
+        });
+      });
+      rows.sort(function(a, b) {
+        if (a.dateReleve !== b.dateReleve) return a.dateReleve.localeCompare(b.dateReleve);
+        return a.employeNom.localeCompare(b.employeNom);
+      });
+      return rows;
+    }
+    // Normalise un nom pour matching fuzzy
+    function normalizeName(s) {
+      return (s || "").toString().toUpperCase().replace(/\s+/g, " ").trim();
+    }
+    function matchEmploye(nom, personnel) {
+      var n = normalizeName(nom);
+      for (var i = 0; i < personnel.length; i++) {
+        var emp = personnel[i];
+        var full1 = normalizeName(emp.prenom + " " + emp.nom);
+        var full2 = normalizeName(emp.nom + " " + emp.prenom);
+        if (full1 === n || full2 === n) return emp;
+      }
+      return null;
+    }
+    function matchEquipement(code, equipements) {
+      var c = (code || "").toUpperCase().trim();
+      if (!c) return null;
+      for (var i = 0; i < equipements.length; i++) {
+        var t = (equipements[i].Title || "").toUpperCase().trim();
+        if (t === c || t.indexOf(c) === 0 || c.indexOf(t) === 0) return equipements[i];
+      }
+      return null;
+    }
+    function matchChantier(siteNom, chantiers) {
+      var n = (siteNom || "").toUpperCase().trim();
+      if (!n) return null;
+      // Match exact sur titre ou site
+      for (var i = 0; i < chantiers.length; i++) {
+        var t = (chantiers[i].titre || "").toUpperCase();
+        var s = (chantiers[i].site || "").toUpperCase();
+        if (t.indexOf(n) >= 0 || s === n || s.indexOf(n) >= 0) return chantiers[i];
+      }
+      return null;
+    }
+    // Auto-detection chantier via Planning Engins (chantier_equipements) :
+    // si la sondeuse est affectee a un chantier dans la periode, on prend ce chantier.
+    // Retourne { chantier, source, ambigu? } ou null.
+    function matchChantierAuto(dateStr, equipementId, chantiers, chantierEquipements, siteNomFallback) {
+      // Strategie 1 : croiser equipement + date avec chantier_equipements
+      if (equipementId && dateStr && chantierEquipements && chantierEquipements.length > 0) {
+        for (var i = 0; i < chantierEquipements.length; i++) {
+          var ce = chantierEquipements[i];
+          if (ce.equipementId !== equipementId) continue;
+          var db = (ce.dateDebut || "").substring(0, 10);
+          var df = (ce.dateFin || "").substring(0, 10);
+          if (db && df && dateStr >= db && dateStr <= df) {
+            var ch = chantiers.find(function(c) { return c.id === ce.chantierId; });
+            if (ch) return { chantier: ch, source: "planning" };
+          }
+        }
+      }
+      // Strategie 2 : fallback par nom de site STRICT
+      // - 0 match → null
+      // - 1 match → on prend
+      // - 2+ matches → ambigu, ne PAS deviner (force l'utilisateur a creer l'affectation Planning Engins)
+      if (siteNomFallback) {
+        var n = siteNomFallback.toUpperCase().trim();
+        var matches = chantiers.filter(function(c) {
+          var t = (c.titre || "").toUpperCase();
+          var s = (c.site || "").toUpperCase();
+          return t.indexOf(n) >= 0 || s === n || s.indexOf(n) >= 0;
+        });
+        if (matches.length === 1) return { chantier: matches[0], source: "site" };
+        if (matches.length > 1) return { chantier: null, source: "ambigu", ambiguCount: matches.length };
+      }
+      return null;
+    }
+
+    // ─── Modal Import Releves journaliers ───────────────────────────────
+    function ImportRelevesModal({ onClose }) {
+      const ctx = useAppData();
+      const personnel = loadPersonnelFromParametres(ctx.parametres);
+      const equipements = ctx.equipements;
+      const chantiers = ctx.dbChantiers;
+      const chantierEquipements = ctx.dbChantierEquipements || [];
+      const [heuresFile, setHeuresFile] = useState(null);
+      const [metrageFile, setMetrageFile] = useState(null);
+      const [heuresFileName, setHeuresFileName] = useState("");
+      const [metrageFileName, setMetrageFileName] = useState("");
+      const [parsing, setParsing] = useState(false);
+      const [importing, setImporting] = useState(false);
+      const [rows, setRows] = useState([]);
+      const [meta, setMeta] = useState({ anneeDetectee: null, moisDetecte: null });
+
+      const readFile = (file, cb) => {
+        const reader = new FileReader();
+        reader.onload = function(e) { cb(e.target.result); };
+        reader.readAsText(file, "UTF-8");
+      };
+      const onDropHeures = (file) => {
+        setHeuresFile(file); setHeuresFileName(file.name);
+      };
+      const onDropMetrage = (file) => {
+        setMetrageFile(file); setMetrageFileName(file.name);
+      };
+      const doParse = () => {
+        if (!heuresFile && !metrageFile) return;
+        setParsing(true);
+        var hData = null; var mData = null;
+        var finalize = function() {
+          var hParse = hData ? parseHeuresCsv(hData) : { byKey: {}, allKeys: [], anneeDetectee: null, moisDetecte: null };
+          var annee = hParse.anneeDetectee || new Date().getFullYear();
+          var mParse = mData ? parseMetrageCsv(mData, annee) : { byKey: {} };
+          var joined = joindreReleves(hParse, mParse);
+          // Enrichir avec matching
+          joined.forEach(function(r) {
+            var emp = matchEmploye(r.employeNom, personnel);
+            var eq = matchEquipement(r.sondeuseCode, equipements);
+            r.personnelId = emp ? emp.id : null;
+            r.equipementId = eq ? eq.Id : null;
+            // Auto-detection chantier : Planning Engins en priorite, fallback site
+            var chMatch = matchChantierAuto(r.dateReleve, r.equipementId, chantiers, chantierEquipements, r.siteNom);
+            r.chantierId = (chMatch && chMatch.chantier) ? chMatch.chantier.id : null;
+            r.chantierTitre = (chMatch && chMatch.chantier) ? chMatch.chantier.titre : "";
+            r.chantierSource = chMatch ? chMatch.source : null; // "planning", "site" ou "ambigu"
+            r.chantierAmbiguCount = (chMatch && chMatch.source === "ambigu") ? chMatch.ambiguCount : 0;
+            r.empOk = !!emp;
+            r.eqOk = !!r.sondeuseCode && !!eq;
+            r.chOk = !!r.chantierId;
+            r.statut = (r.empOk && (r.eqOk || !r.sondeuseCode) && r.chOk) ? "ok" : "alerte";
+          });
+          setRows(joined);
+          setMeta({ anneeDetectee: hParse.anneeDetectee, moisDetecte: hParse.moisDetecte });
+          setParsing(false);
+        };
+        var pending = 0;
+        if (heuresFile) { pending++; readFile(heuresFile, function(t) { hData = t; pending--; if (pending === 0) finalize(); }); }
+        if (metrageFile) { pending++; readFile(metrageFile, function(t) { mData = t; pending--; if (pending === 0) finalize(); }); }
+      };
+      // Auto-parse quand les fichiers changent
+      React.useEffect(function() { doParse(); }, [heuresFile, metrageFile]);
+
+      const validRows = rows.filter(function(r) { return r.statut === "ok"; });
+      const alerteRows = rows.filter(function(r) { return r.statut === "alerte"; });
+
+      const doImport = async () => {
+        if (validRows.length === 0) return alert("Aucune ligne valide a importer");
+        setImporting(true);
+        try {
+          var sourceFichier = heuresFileName + (metrageFileName ? " + " + metrageFileName : "");
+          var payload = validRows.map(function(r) { return Object.assign({}, r, { sourceFichier: sourceFichier }); });
+          var res = await ctx.upsertRelevesJourn(payload);
+          alert("Import termine : " + res.count + " lignes enregistrees");
+          if (onClose) onClose();
+        } catch (err) {
+          alert("Erreur import : " + err.message);
+        } finally {
+          setImporting(false);
+        }
+      };
+
+      var dropZoneStyle = function(filled) { return {
+        flex: 1, minWidth: 240, padding: 24, borderRadius: 12,
+        border: "2px dashed " + (filled ? "rgba(34,197,94,0.5)" : "rgba(255,255,255,0.15)"),
+        background: filled ? "rgba(34,197,94,0.08)" : "rgba(255,255,255,0.03)",
+        textAlign: "center", cursor: "pointer", transition: "all 0.15s"
+      }; };
+
+      function DropZone({ label, fileName, onFile, accent }) {
+        const inputRef = React.useRef(null);
+        const onDragOver = (e) => { e.preventDefault(); };
+        const onDrop = (e) => {
+          e.preventDefault();
+          if (e.dataTransfer.files && e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+        };
+        const onChange = (e) => { if (e.target.files && e.target.files[0]) onFile(e.target.files[0]); };
+        return h("div", { onClick: function() { inputRef.current && inputRef.current.click(); }, onDragOver: onDragOver, onDrop: onDrop, style: dropZoneStyle(!!fileName) },
+          h(Icon, { name: fileName ? "file-check" : "upload", size: 32, color: fileName ? "#22c55e" : "#a1a1aa" }),
+          h("div", { style: { marginTop: 12, fontWeight: 600, color: "#fafafa", fontSize: 13 } }, label),
+          h("div", { style: { marginTop: 6, fontSize: 12, color: fileName ? "#86efac" : "#71717a" } }, fileName || "Glisser le fichier ici ou cliquer"),
+          h("input", { ref: inputRef, type: "file", accept: ".csv,text/csv", onChange: onChange, style: { display: "none" } })
+        );
+      }
+
+      return h(Modal, { title: "Importer releves journaliers", onClose: onClose, size: 1000 },
+        h("div", { style: { display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" } },
+          h(DropZone, { label: "Releve d'heures (Flotte / Employe / Date / Heures)", fileName: heuresFileName, onFile: onDropHeures, accent: "#818cf8" }),
+          h(DropZone, { label: "Releve metrage (KOPETO, TIEBAGHI...)", fileName: metrageFileName, onFile: onDropMetrage, accent: "#fbbf24" })
+        ),
+        meta.anneeDetectee ? h("div", { style: { fontSize: 12, color: "#a5b4fc", marginBottom: 12, padding: "6px 10px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 6 } }, h(IconText, { icon: "info", size: 11, color: "#a5b4fc" }, "Periode detectee : mois " + (meta.moisDetecte || "?") + " / " + meta.anneeDetectee)) : null,
+        parsing ? h("div", { style: { color: "#a1a1aa", padding: 20, textAlign: "center" } }, "Analyse en cours...") : null,
+        rows.length > 0 ? h("div", { style: { display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" } },
+          h("div", { style: { flex: 1, minWidth: 140, padding: 12, background: "rgba(255,255,255,0.04)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)" } },
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase" } }, "Total lignes"),
+            h("div", { style: { fontSize: 22, fontWeight: 700, color: "#fafafa" } }, rows.length)
+          ),
+          h("div", { style: { flex: 1, minWidth: 140, padding: 12, background: "rgba(34,197,94,0.08)", borderRadius: 8, border: "1px solid rgba(34,197,94,0.2)" } },
+            h("div", { style: { fontSize: 11, color: "#86efac", fontWeight: 600, textTransform: "uppercase" } }, "Valides"),
+            h("div", { style: { fontSize: 22, fontWeight: 700, color: "#6ee7b7" } }, validRows.length)
+          ),
+          h("div", { style: { flex: 1, minWidth: 140, padding: 12, background: "rgba(251,191,36,0.08)", borderRadius: 8, border: "1px solid rgba(251,191,36,0.2)" } },
+            h("div", { style: { fontSize: 11, color: "#fde68a", fontWeight: 600, textTransform: "uppercase" } }, "Alertes"),
+            h("div", { style: { fontSize: 22, fontWeight: 700, color: "#fcd34d" } }, alerteRows.length)
+          )
+        ) : null,
+        rows.length > 0 ? h("div", { style: { maxHeight: 400, overflowY: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+            h("thead", { style: { position: "sticky", top: 0, background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(8px)", zIndex: 1 } },
+              h("tr", null,
+                ["Date", "Employé", "Sondeuse", "Site", "Chantier détecté", "Heures", "Métrage", "Statut"].map(function(h2, i) {
+                  return h("th", { key: i, style: { padding: "8px 10px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", borderBottom: "1px solid rgba(255,255,255,0.08)" } }, h2);
+                })
+              )
+            ),
+            h("tbody", null,
+              rows.map(function(r, i) {
+                var bg = r.statut === "alerte" ? "rgba(251,191,36,0.06)" : (i % 2 === 0 ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.035)");
+                var chSrcLabel = r.chantierSource === "planning" ? "via Planning Engins" : r.chantierSource === "site" ? "via nom de site (unique)" : r.chantierSource === "ambigu" ? (r.chantierAmbiguCount + " chantiers " + r.siteNom + " trouves → affecter la sondeuse via Planning Engins") : "non détecté";
+                var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : "#fcd34d";
+                return h("tr", { key: i, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                  h("td", { style: { padding: "6px 10px", color: "#d4d4d8" } }, r.dateReleve),
+                  h("td", { style: { padding: "6px 10px", fontWeight: 600, color: r.empOk ? "#fafafa" : "#fcd34d" } }, r.employeNom + (r.empOk ? "" : " ⚠")),
+                  h("td", { style: { padding: "6px 10px", color: r.sondeuseCode && !r.eqOk ? "#fcd34d" : "#d4d4d8" } }, r.sondeuseCode + (r.sondeuseCode && !r.eqOk ? " ⚠" : "")),
+                  h("td", { style: { padding: "6px 10px", color: "#a1a1aa" } }, r.siteNom || "—"),
+                  h("td", { style: { padding: "6px 10px" } },
+                    r.chOk ? h("div", null,
+                      h("div", { style: { color: "#fafafa", fontWeight: 600 } }, r.chantierTitre),
+                      h("div", { style: { fontSize: 10, color: chSrcColor } }, chSrcLabel)
+                    ) : h("div", null,
+                      h("div", { style: { color: "#fcd34d", fontSize: 11, fontWeight: 600 } }, r.chantierSource === "ambigu" ? "Ambigu ⚠" : "Aucun chantier ⚠"),
+                      r.chantierSource === "ambigu" ? h("div", { style: { fontSize: 10, color: "#fcd34d" } }, chSrcLabel) : null
+                    )
+                  ),
+                  h("td", { style: { padding: "6px 10px", textAlign: "right", color: "#d4d4d8" } }, (r.heures || 0).toFixed(1) + " h"),
+                  h("td", { style: { padding: "6px 10px", textAlign: "right", color: "#86efac", fontWeight: 600 } }, (r.metrage || 0).toFixed(1) + " m"),
+                  h("td", { style: { padding: "6px 10px" } }, r.statut === "ok" ? h("span", { style: { color: "#6ee7b7", fontSize: 11 } }, "OK") : h("span", { style: { color: "#fcd34d", fontSize: 11 } }, "Alerte"))
+                );
+              })
+            )
+          )
+        ) : null,
+        alerteRows.length > 0 ? h("div", { style: { marginTop: 12, padding: 10, background: "rgba(251,191,36,0.08)", borderRadius: 8, fontSize: 12, color: "#fde68a", border: "1px solid rgba(251,191,36,0.2)" } },
+          h(IconText, { icon: "alert-triangle", size: 12, color: "#fcd34d" }, alerteRows.length + " ligne(s) avec employe/sondeuse/site inconnu. Verifier les noms exacts dans Personnel / Equipements / Chantiers ou laisser tel quel - les lignes alertes ne seront PAS importees.")
+        ) : null,
+        h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20, flexWrap: "wrap" } },
+          h(Button, { variant: "secondary", onClick: onClose, disabled: importing }, "Annuler"),
+          h(Button, { onClick: doImport, disabled: importing || validRows.length === 0 }, h(IconText, { icon: "upload", size: 14 }, importing ? "Import en cours..." : ("Importer " + validRows.length + " ligne(s)")))
+        )
+      );
+    }
+
     // ─── EcranAvancement ────────────────────────────────────────────────
     function EcranAvancement() {
       var ctxAv = useAppData();
@@ -4301,6 +4727,25 @@
       var currentMonth = _cm2[0]; var setCurrentMonth = _cm2[1];
       var _exp = useState(null);
       var expandedChantier = _exp[0]; var setExpandedChantier = _exp[1];
+      var _showImport = useState(false);
+      var showImport = _showImport[0]; var setShowImport = _showImport[1];
+      // Helper : trouve la sondeuse affectee a un chantier a une date donnee
+      // (depuis chantier_equipements). Retourne le code/titre court de l'equipement.
+      function findMachineForDate(chantierId, dateStr) {
+        var ces = ctxAv.dbChantierEquipements || [];
+        var eqs = ctxAv.equipements || [];
+        for (var i = 0; i < ces.length; i++) {
+          var ce = ces[i];
+          if (String(ce.chantierId) !== String(chantierId)) continue;
+          var db = (ce.dateDebut || "").substring(0, 10);
+          var df = (ce.dateFin || "").substring(0, 10);
+          if (db && df && dateStr >= db && dateStr <= df) {
+            var eq = eqs.find(function(x) { return x.Id === ce.equipementId; });
+            if (eq) return eq.Title || "";
+          }
+        }
+        return "";
+      }
       var chantiers = ctxAv.dbChantiers;
       var setChantiers = ctxAv.setDbChantiers;
       var saisies = ctxAv.dbSaisies;
@@ -4685,8 +5130,12 @@
         h(PageHeader, {
           title: h(IconText, { icon: "hard-hat", size: 20 }, "Avancement"),
           subtitle: "Suivi des chantiers actifs",
-          action: h(Button, { onClick: openNewChantier }, h(IconText, { icon: "plus", size: 14, color: "white" }, "Nouveau chantier"))
+          action: h(React.Fragment, null,
+            h(Button, { variant: "secondary", onClick: function() { setShowImport(true); } }, h(IconText, { icon: "upload", size: 14 }, "Importer")),
+            h(Button, { onClick: openNewChantier }, h(IconText, { icon: "plus", size: 14, color: "white" }, "Nouveau chantier"))
+          )
         }),
+        showImport ? h(ImportRelevesModal, { onClose: function() { setShowImport(false); } }) : null,
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#a78bfa" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#059669" }), label: "Avancement global", value: avancementGlobal + "%", color: "#059669" }),
@@ -4702,7 +5151,20 @@
             h("button", { onClick: function() { setCurrentMonth(addMonthsAv(currentMonth, 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" }))
           ),
           h("div", { style: { fontSize: 13, fontWeight: 700, color: "#d97706", marginBottom: 8, marginTop: 8 } }, "En cours / Termines"),
-          activeChantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; }).map(function(chantier) {
+          (function() {
+            var listEnCours = activeChantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; });
+            var groupsCT = {}; var orderCT = [];
+            listEnCours.forEach(function(c) {
+              var key = (c.site || "").trim() || ("__solo_" + c.id);
+              if (!groupsCT[key]) { groupsCT[key] = { site: c.site || null, chantiers: [] }; orderCT.push(key); }
+              groupsCT[key].chantiers.push(c);
+            });
+            return orderCT.map(function(grpKey) {
+              var grp = groupsCT[grpKey];
+              var grpMultiple = grp.chantiers.length > 1;
+              return h("div", { key: grpKey, style: grpMultiple ? { marginBottom: 20, padding: 14, background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 14 } : null },
+                grpMultiple && grp.site ? h("div", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa", marginBottom: 10, padding: "8px 14px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), transparent)", borderLeft: "4px solid #818cf8", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }), grp.site, h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")) : null,
+                grp.chantiers.map(function(chantier) {
             var isExpanded = expandedChantier === chantier.id;
             var realise = getRealise(chantier.id);
             var caRealise = realise * chantier.prixMetre;
@@ -4843,6 +5305,7 @@
                           dayLetter: dayLetters[dow],
                           dayNum: dayOfMonth,
                           isToday: isTD,
+                          machineLabel: findMachineForDate(chantier.id, ds),
                           activeBrush: chantierBrush,
                           isPainting: chPainting,
                           onPaintStart: function() { setChPainting(true); },
@@ -4858,9 +5321,25 @@
                 )
               )
             );
-          }),
+                })
+              );
+            });
+          }()),
           activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("div", { style: { fontSize: 13, fontWeight: 700, color: "#6366f1", marginBottom: 8, marginTop: 24 } }, "A venir") : null,
-          activeChantiers.filter(function(c) { return c.statut === "A venir"; }).map(function(chantier) {
+          (function() {
+            var listAvenir = activeChantiers.filter(function(c) { return c.statut === "A venir"; });
+            var groupsAv = {}; var orderAv = [];
+            listAvenir.forEach(function(c) {
+              var key = (c.site || "").trim() || ("__solo_" + c.id);
+              if (!groupsAv[key]) { groupsAv[key] = { site: c.site || null, chantiers: [] }; orderAv.push(key); }
+              groupsAv[key].chantiers.push(c);
+            });
+            return orderAv.map(function(grpKey) {
+              var grp = groupsAv[grpKey];
+              var grpMultiple = grp.chantiers.length > 1;
+              return h("div", { key: grpKey, style: grpMultiple ? { marginBottom: 20, padding: 14, background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 14 } : null },
+                grpMultiple && grp.site ? h("div", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa", marginBottom: 10, padding: "8px 14px", background: "linear-gradient(90deg, rgba(99,102,241,0.18), transparent)", borderLeft: "4px solid #818cf8", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "map-pin", size: 16, color: "#a5b4fc" }), grp.site, h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")) : null,
+                grp.chantiers.map(function(chantier) {
             var isExpanded = expandedChantier === chantier.id;
             var realise = getRealise(chantier.id);
             var caRealise = realise * chantier.prixMetre;
@@ -4884,7 +5363,10 @@
                 )
               )
             );
-          }),
+                })
+              );
+            });
+          }()),
         // Modal CRUD
         renderModalChantier(),
         // Confirm delete
@@ -5297,6 +5779,8 @@
       var paliers = ctx.dbPaliers || [];
       var parametres = ctx.parametres;
       var personnel = loadPersonnelFromParametres(parametres);
+      var releves = ctx.dbRelevesJourn || [];
+      var equipementsList = ctx.equipements || [];
 
       var _selectedSite = useState("");
       var selectedSite = _selectedSite[0]; var setSelectedSite = _selectedSite[1];
@@ -5363,10 +5847,65 @@
       function calcPrimesForSitePeriod(site, period) {
         var siteCh = chantiersBySite[site] || [];
         if (siteCh.length === 0) return [];
+        var siteChIds = siteCh.map(function(c) { return c.id; });
         var results = [];
+        var siteMoyenne = getMoyenneForSite(paliers, site);
+        var objectif = getObjectifForSite(paliers, site);
+
         personnel.forEach(function(emp) {
+          var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
+          var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
           var totalPrime = 0;
           var details = [];
+
+          // ── Stratégie 1 : utiliser releves_journaliers (machine + site) si disponibles ──
+          var empReleves = releves.filter(function(r) {
+            if (!r.dateReleve) return false;
+            if (!isDateInPeriod(r.dateReleve, period.start, period.end)) return false;
+            // Doit etre rattache a un chantier de ce site
+            if (!r.chantierId || siteChIds.indexOf(r.chantierId) < 0) return false;
+            // Match employe : personnel_id si renseigne, sinon nom
+            if (r.personnelId === emp.id) return true;
+            var rNom = (r.employeNom || "").toUpperCase().trim();
+            return rNom === empNom || rNom === empNomRev;
+          });
+
+          if (empReleves.length > 0) {
+            // Calcul par machine + site, base sur le metrage et heures reels
+            var byMachine = {};
+            empReleves.forEach(function(r) {
+              var key = r.equipementId || r.sondeuseCode || "_no_machine";
+              if (!byMachine[key]) byMachine[key] = { metrage: 0, heures: 0, jours: 0, sondeuseCode: r.sondeuseCode, equipementId: r.equipementId, chantierId: r.chantierId };
+              byMachine[key].metrage += parseFloat(r.metrage) || 0;
+              byMachine[key].heures += parseFloat(r.heures) || 0;
+              byMachine[key].jours += 1;
+            });
+            Object.keys(byMachine).forEach(function(k) {
+              var b = byMachine[k];
+              if (b.heures <= 0) return;
+              var mhRealise = b.metrage / b.heures;
+              var coef = lookupCoefficient(paliers, site, mhRealise);
+              var diff = mhRealise - objectif;
+              var prime = diff > 0 && coef > 0 ? diff * coef : 0;
+              totalPrime += prime;
+              var eqLabel = b.sondeuseCode || (b.equipementId ? (equipementsList.find(function(e) { return e.Id === b.equipementId; }) || {}).Title : "");
+              var chRef = siteCh.find(function(c) { return c.id === b.chantierId; });
+              details.push({
+                chantier: (chRef ? chRef.titre : site) + (eqLabel ? " · " + eqLabel : ""),
+                jours: b.jours,
+                mhRealise: mhRealise,
+                objectif: objectif,
+                coef: coef,
+                prime: prime
+              });
+            });
+            if (details.length > 0) {
+              results.push({ employe: (emp.prenom || "") + " " + (emp.nom || ""), employeId: emp.id, totalPrime: totalPrime, details: details });
+            }
+            return; // employe traite via releves, on saute le fallback
+          }
+
+          // ── Stratégie 2 (fallback) : ancien calcul via affectations + saisies ──
           siteCh.forEach(function(ch) {
             // Affectations travail sur ce chantier dans la periode
             var empAff = affectations.filter(function(a) {
@@ -5397,8 +5936,7 @@
             var allEmpAff = empAff.concat(nullDaysForSite);
             var joursEmp = allEmpAff.length;
             // ── Calcul base sur les affectations (Planning Employes) ──
-            var siteMoyenne = getMoyenneForSite(paliers, site);
-            var objectif = getObjectifForSite(paliers, site);
+            // siteMoyenne et objectif sont definis en amont
             var adjMetrage = 0;
             var adjJours = 0;
             // Parcourir chaque jour d'affectation
@@ -6416,6 +6954,7 @@
       const [dbPaliers, setDbPaliers] = useState([]);
       const [dbChantierEquipements, setDbChantierEquipements] = useState([]);
       const [dbDemandesFin, setDbDemandesFin] = useState([]);
+      const [dbRelevesJourn, setDbRelevesJourn] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -6456,17 +6995,20 @@
           var ppRes = { data: [], error: null };
           var ceRes = { data: [], error: null };
           var dfRes = { data: [], error: null };
+          var rjRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
               supabase.from("paliers_primes").select("*").order("site").order("seuil_mh"),
               supabase.from("chantier_equipements").select("*"),
               supabase.from("demandes_financement").select("*").order("created_at", { ascending: false }),
+              supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }),
             ]);
             afRes = results[0];
             ppRes = results[1];
             ceRes = results[2];
             dfRes = results[3];
+            rjRes = results[4];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -6485,6 +7027,7 @@
           if (ppRes.error) console.error("Table paliers_primes:", ppRes.error.message);
           if (ceRes.error) console.error("Table chantier_equipements:", ceRes.error.message);
           if (dfRes.error) console.error("Table demandes_financement:", dfRes.error.message);
+          if (rjRes.error) console.error("Table releves_journaliers:", rjRes.error.message);
 
           const eqList = (eqRes.data || []).map(equipementFromDb);
           const eqCodeById = {}; const eqIdByCode = {};
@@ -6515,6 +7058,7 @@
           setDbPaliers((ppRes.data || []).map(palierFromDb));
           setDbChantierEquipements((ceRes.data || []).map(chantierEquipementFromDb));
           setDbDemandesFin((dfRes.data || []).map(demandeFinFromDb));
+          setDbRelevesJourn((rjRes.data || []).map(releveJournFromDb));
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -6886,6 +7430,27 @@
         setDbDemandesFin((p) => p.filter((x) => x.id !== id));
       };
 
+      // CRUD : releves journaliers (heures + metrage)
+      // upsertBatch fait un upsert sur la contrainte UNIQUE (date_releve, employe_nom, sondeuse_code)
+      const upsertRelevesJourn = async (items) => {
+        if (!items || items.length === 0) return { count: 0 };
+        const payloads = items.map(releveJournToDb);
+        const { data, error } = await supabase
+          .from("releves_journaliers")
+          .upsert(payloads, { onConflict: "date_releve,employe_nom,sondeuse_code" })
+          .select();
+        if (error) { showToast(error.message, "error"); throw error; }
+        // Recharger les releves depuis la DB pour avoir l'etat propre
+        const { data: refreshed } = await supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false });
+        setDbRelevesJourn((refreshed || []).map(releveJournFromDb));
+        return { count: (data || []).length };
+      };
+      const deleteReleveJourn = async (id) => {
+        const { error } = await supabase.from("releves_journaliers").delete().eq("id", id);
+        if (error) { showToast(error.message, "error"); throw error; }
+        setDbRelevesJourn((p) => p.filter((x) => x.id !== id));
+      };
+
       // CRUD : liaisons pieces <-> equipements
       const linkPieceEquipement = async (pieceId, equipementId) => {
         const { data, error } = await supabase.from("pieces_equipements").insert({ piece_id: pieceId, equipement_id: equipementId }).select().single();
@@ -7047,6 +7612,7 @@
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
         dbChantierEquipements, setDbChantierEquipements, addChantierEquipement, updateChantierEquipement, deleteChantierEquipement,
         dbDemandesFin, setDbDemandesFin, addDemandeFin, updateDemandeFin, deleteDemandeFin,
+        dbRelevesJourn, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
