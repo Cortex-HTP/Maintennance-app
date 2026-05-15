@@ -4356,10 +4356,15 @@
       var dayNum = props.dayNum;
       var isToday = props.isToday;
 
+      var readOnly = !!props.readOnly;
       var entry = (saisies[chantierId] && saisies[chantierId][dateStr] !== undefined) ? saisies[chantierId][dateStr] : null;
-      var val = getSaisieVal(entry);
+      var rawVal = getSaisieVal(entry);
+      // overrideValue : permet d'afficher une valeur calculee (somme des sous-lignes) au lieu de la saisie manuelle
+      var val = (typeof props.overrideValue !== "undefined" && props.overrideValue !== null) ? props.overrideValue : rawVal;
       var typeJour = getSaisieType(entry);
       var activeBrush = props.activeBrush || null;
+      // Si readOnly, on ignore le brush actif pour ne pas declencher de painting depuis le top row
+      var effectiveBrush = readOnly ? null : activeBrush;
 
       var handleChange = function(e) {
         var newSaisies = {};
@@ -4424,16 +4429,25 @@
       }
 
       var machineLabel = props.machineLabel || "";
+      // En mode read-only, le rendu en bas est un simple affichage (non editable)
+      var roBg = isSpecial ? TYPE_COLORS[typeJour] || "#f59e0b" : val ? "rgba(34,197,94,0.18)" : isWeekend ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.03)";
+      var roColor = isSpecial ? "white" : val ? "#86efac" : "#a1a1aa";
+      var roBorder = isSpecial ? "1px solid " + (TYPE_COLORS[typeJour] || "#f59e0b") : val ? "1px solid rgba(34,197,94,0.35)" : isWeekend ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.07)";
       return h("div", {
-        onClick: activeBrush ? handleBrushClick : undefined,
-        onMouseDown: activeBrush ? function(e) { e.preventDefault(); if (props.onPaintStart) props.onPaintStart(); handleBrushClick(); } : undefined,
-        onMouseEnter: activeBrush && props.isPainting ? handleBrushClick : undefined,
-        style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: bgColor, textAlign: "center", cursor: activeBrush ? "pointer" : "default" }
+        onClick: effectiveBrush ? handleBrushClick : undefined,
+        onMouseDown: effectiveBrush ? function(e) { e.preventDefault(); if (props.onPaintStart) props.onPaintStart(); handleBrushClick(); } : undefined,
+        onMouseEnter: effectiveBrush && props.isPainting ? handleBrushClick : undefined,
+        style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: bgColor, textAlign: "center", cursor: effectiveBrush ? "pointer" : "default" }
       },
         h("div", { title: machineLabel ? "Sondeuse: " + machineLabel : "", style: { height: 14, fontSize: 9, fontWeight: 700, lineHeight: "14px", color: machineLabel ? "#a5b4fc" : "rgba(255,255,255,0.04)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: 0.3 } }, machineLabel || "—"),
         h("div", { style: { height: 20, fontSize: 9, fontWeight: 600, lineHeight: "20px", color: isWeekend ? "#71717a" : isToday ? "#7c3aed" : "#a1a1aa" } }, dayLetter),
         h("div", { style: { height: 18, fontSize: 11, fontWeight: 700, lineHeight: "18px", borderBottom: "1px solid rgba(255,255,255,0.07)", color: isToday ? "#7c3aed" : "#e5e7eb" } }, String(dayNum)),
-        isSpecial && !activeBrush ?
+        readOnly ?
+          h("div", { style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center" } },
+            isSpecial ? h("div", { style: { position: "absolute", top: -1, left: 2, fontSize: 7, fontWeight: 800, color: TYPE_COLORS[typeJour], textTransform: "uppercase", zIndex: 1 } }, TYPE_LABELS[typeJour]) : null,
+            h("div", { title: "Lecture seule (somme des machines)", style: { width: 44, height: 34, margin: 1, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: roBorder, borderRadius: 4, background: roBg, color: roColor, display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" } }, val > 0 ? val : (isWeekend ? "" : "·"))
+          ) :
+        isSpecial && !effectiveBrush ?
           h("div", { style: { position: "relative" } },
             h("div", { style: { position: "absolute", top: -1, left: 2, fontSize: 7, fontWeight: 800, color: TYPE_COLORS[typeJour], textTransform: "uppercase", zIndex: 1 } }, TYPE_LABELS[typeJour]),
             h("input", {
@@ -4447,14 +4461,14 @@
             })
           ) :
           h("input", {
-            type: "number", value: val, disabled: isWeekend || !!activeBrush,
+            type: "number", value: val, disabled: isWeekend || !!effectiveBrush,
             placeholder: isWeekend ? "" : "0",
-            onMouseDown: function(e) { if (!activeBrush) e.stopPropagation(); },
-            onClick: function(e) { if (!activeBrush) { e.stopPropagation(); e.target.select(); } },
+            onMouseDown: function(e) { if (!effectiveBrush) e.stopPropagation(); },
+            onClick: function(e) { if (!effectiveBrush) { e.stopPropagation(); e.target.select(); } },
             onFocus: function(e) { e.stopPropagation(); setIsFocused(true); },
             onBlur: function() { setIsFocused(false); },
-            onChange: activeBrush ? undefined : handleChange,
-            style: { width: 44, height: 34, margin: 1, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: inputBorder, borderRadius: 4, background: inputBg, color: inputColor, outline: "none", cursor: isWeekend ? "not-allowed" : activeBrush ? "pointer" : "text", MozAppearance: "textfield", boxSizing: "border-box", pointerEvents: activeBrush ? "none" : "auto" }
+            onChange: effectiveBrush ? undefined : handleChange,
+            style: { width: 44, height: 34, margin: 1, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: inputBorder, borderRadius: 4, background: inputBg, color: inputColor, outline: "none", cursor: isWeekend ? "not-allowed" : effectiveBrush ? "pointer" : "text", MozAppearance: "textfield", boxSizing: "border-box", pointerEvents: effectiveBrush ? "none" : "auto" }
           })
       );
     }
@@ -4801,7 +4815,9 @@
             r.empOk = !!emp;
             r.eqOk = !!r.sondeuseCode && !!eq;
             r.chOk = !!r.chantierId;
-            r.statut = (r.empOk && (r.eqOk || !r.sondeuseCode) && r.chOk) ? "ok" : "alerte";
+            // Tolerant : on accepte d'importer meme si l'equipement n'est pas trouve
+            // (le code sondeuse en texte est preserve, l'affichage Avancement utilise ce fallback)
+            r.statut = (r.empOk && r.chOk) ? "ok" : "alerte";
           });
           setRows(joined);
           setMeta({ anneeDetectee: hParse.anneeDetectee, moisDetecte: hParse.moisDetecte });
@@ -4986,9 +5002,11 @@
           return copy;
         });
       }
-      // Met a jour le metrage d'une cellule machine (jour) en repercutant sur les releves existants
+      // Met a jour le metrage d'une cellule machine (jour) en repercutant sur les releves existants.
+      // Comme tous les employes sur la meme machine le meme jour partagent la meme valeur,
+      // on aligne TOUS les releves de cette machine/date sur newValue.
       async function updateMachineMetrage(chantierId, equipementId, dateStr, newValue) {
-        var newTotal = Math.max(0, parseFloat(newValue) || 0);
+        var newVal = Math.max(0, parseFloat(newValue) || 0);
         var rels = (ctxAv.dbRelevesJourn || []).filter(function(r) {
           return String(r.chantierId) === String(chantierId) &&
                  String(r.equipementId || "") === String(equipementId || "") &&
@@ -5006,14 +5024,15 @@
               equipementId: equipementId || null,
               chantierId: chantierId,
               heures: 0,
-              metrage: newTotal,
+              metrage: newVal,
               sourceFichier: "manuel"
             });
           } else {
-            // Au moins un releve : ajuster le premier pour que la somme = newTotal
-            var sumOthers = rels.slice(1).reduce(function(s, r) { return s + (parseFloat(r.metrage) || 0); }, 0);
-            var firstNew = Math.max(0, newTotal - sumOthers);
-            await ctxAv.updateReleveJourn(rels[0].id, Object.assign({}, rels[0], { metrage: firstNew }));
+            // Aligne tous les releves de cette machine/date sur newVal (sequentiel)
+            for (var i = 0; i < rels.length; i++) {
+              if ((parseFloat(rels[i].metrage) || 0) === newVal) continue;
+              await ctxAv.updateReleveJourn(rels[i].id, Object.assign({}, rels[i], { metrage: newVal }));
+            }
           }
         } catch (err) {
           alert("Erreur sauvegarde : " + err.message);
@@ -5047,6 +5066,9 @@
       }
       // Liste des machines actives sur ce chantier dans le mois affiche
       // Retourne [{ code, equipementId, dailyMetrage: {1: 25, 2: 30, ...}, totalMois }]
+      // NB: le metrage est celui produit par la machine ; tous les employes
+      // affectes a la meme machine le meme jour reportent la meme valeur.
+      // On prend donc le MAX (et non la somme) pour eviter de cumuler les doublons.
       function getMachinesActivesChantier(chantierId, year, monthIdx) {
         var rels = getRelevesForChantierMonth(chantierId, year, monthIdx);
         var byMachine = {};
@@ -5065,9 +5087,18 @@
           }
           var day = parseInt((r.dateReleve || "").substring(8, 10), 10);
           if (!isNaN(day)) {
-            byMachine[key].dailyMetrage[day] = (byMachine[key].dailyMetrage[day] || 0) + (parseFloat(r.metrage) || 0);
-            byMachine[key].totalMois += (parseFloat(r.metrage) || 0);
+            var rm = parseFloat(r.metrage) || 0;
+            if (rm > (byMachine[key].dailyMetrage[day] || 0)) {
+              byMachine[key].dailyMetrage[day] = rm;
+            }
           }
+        });
+        // Recalcule le total mois apres deduplication par jour
+        Object.keys(byMachine).forEach(function(k) {
+          var sum = 0;
+          var dm = byMachine[k].dailyMetrage;
+          Object.keys(dm).forEach(function(d) { sum += dm[d] || 0; });
+          byMachine[k].totalMois = sum;
         });
         // Tri stable par code
         order.sort(function(a, b) {
@@ -5664,80 +5695,159 @@
                     )
                   ),
                   h("div", { style: { background: "rgba(36, 40, 60, 0.45)", backdropFilter: "blur(12px)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.07)", overflowX: "auto" } },
-                    // Main saisie row
-                    h("div", { style: { display: "flex", minWidth: daysInMonth * 48 + 60 } },
-                      Array.apply(null, Array(daysInMonth)).map(function(_, di) {
-                        var dayOfMonth = di + 1;
-                        var cellDate = new Date(year, monthIdx, dayOfMonth);
-                        var dow = cellDate.getDay();
-                        var isWE = dow === 0 || dow === 6;
-                        var isTD = dayOfMonth === todayDate.getDate() && monthIdx === todayDate.getMonth() && year === todayDate.getFullYear();
-                        var ds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayOfMonth < 10 ? "0" : "") + dayOfMonth;
-                        return h(SaisieCell, {
-                          key: ds,
-                          chantierId: chantier.id,
-                          dateStr: ds,
-                          saisies: saisies,
-                          setSaisies: setSaisies,
-                          isWeekend: isWE,
-                          dayLetter: dayLetters[dow],
-                          dayNum: dayOfMonth,
-                          isToday: isTD,
-                          machineLabel: findMachineForDate(chantier.id, ds),
-                          activeBrush: chantierBrush,
-                          isPainting: chPainting,
-                          onPaintStart: function() { setChPainting(true); },
-                          onBrushApply: propagateBrushToEmployees
-                        });
-                      }),
-                      h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: "rgba(34,197,94,0.12)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" } },
-                        h("div", { style: { fontSize: 9, fontWeight: 600, color: "#a1a1aa", marginBottom: 2 } }, "Total"),
-                        h("div", { style: { fontSize: 14, fontWeight: 700, color: "#86efac" } }, fmtNum(monthMet))
-                      )
-                    ),
-                    // Sous-lignes par machine (depuis releves_journaliers).
-                    // Lecture seule par defaut, debloquable via le cadenas dans la colonne Total.
                     (function() {
+                      // Sous-lignes par machine (depuis releves_journaliers)
                       var machines = getMachinesActivesChantier(chantier.id, year, monthIdx);
-                      if (machines.length === 0) return null;
-                      return machines.map(function(m, mi) {
-                        var unlocked = isMachineRowUnlocked(chantier.id, m.equipementId);
-                        return h("div", { key: "msr_" + m.key, style: { display: "flex", minWidth: daysInMonth * 48 + 60, borderTop: "1px solid rgba(255,255,255,0.08)", background: mi % 2 === 0 ? "rgba(129,140,248,0.04)" : "rgba(167,139,250,0.04)" } },
+                      var hasMachines = machines.length > 0;
+                      var leftColW = hasMachines ? 100 : 0;
+                      // Pre-calcule la somme par jour (somme entre machines uniquement,
+                      // chaque machine ayant deja un metrage unique par jour via MAX).
+                      var sumPerDay = {};
+                      var totalMachines = 0;
+                      if (hasMachines) {
+                        for (var dn = 1; dn <= daysInMonth; dn++) {
+                          var sd = 0;
+                          for (var mi0 = 0; mi0 < machines.length; mi0++) {
+                            sd += machines[mi0].dailyMetrage[dn] || 0;
+                          }
+                          sumPerDay[dn] = sd;
+                          totalMachines += sd;
+                        }
+                      }
+                      var totalAffiche = hasMachines ? totalMachines : monthMet;
+                      // Helper : peint un brush sur le chantier-date (sans valeur)
+                      var paintBrushOnDate = function(dateStr) {
+                        if (!chantierBrush) return;
+                        var newSaisies = {};
+                        var ks = Object.keys(saisies);
+                        for (var i = 0; i < ks.length; i++) newSaisies[ks[i]] = Object.assign({}, saisies[ks[i]]);
+                        if (!newSaisies[chantier.id]) newSaisies[chantier.id] = {};
+                        var existing = newSaisies[chantier.id][dateStr] || null;
+                        var curVal = getSaisieVal(existing);
+                        if (chantierBrush === "eraser-type") {
+                          if (existing) {
+                            newSaisies[chantier.id][dateStr] = { valeur: curVal, typeJour: "normal" };
+                            supabase.from("saisies_metrage").upsert({ chantier_id: chantier.id, date_saisie: dateStr, valeur: curVal, type_jour: "normal" }, { onConflict: "chantier_id,date_saisie" }).then(function(res) { if (res.error) alert("Erreur: " + res.error.message); });
+                          }
+                          propagateBrushToEmployees(chantier.id, dateStr, "eraser-type");
+                        } else {
+                          newSaisies[chantier.id][dateStr] = { valeur: curVal, typeJour: chantierBrush };
+                          supabase.from("saisies_metrage").upsert({ chantier_id: chantier.id, date_saisie: dateStr, valeur: curVal, type_jour: chantierBrush }, { onConflict: "chantier_id,date_saisie" }).then(function(res) { if (res.error) alert("Erreur: " + res.error.message); });
+                          propagateBrushToEmployees(chantier.id, dateStr, chantierBrush);
+                        }
+                        setSaisies(newSaisies);
+                      };
+                      // Helper : couleurs brush
+                      var TYPE_COLORS_BR = { panne: "#f59e0b", intemperies: "#3b82f6", ferie: "#dc2626" };
+                      var TYPE_LABELS_BR = { panne: "P", intemperies: "I", ferie: "F" };
+                      var children = [];
+                      // Main row (read-only si machines, editable sinon)
+                      children.push(
+                        h("div", { key: "main_row", style: { display: "flex", minWidth: daysInMonth * 48 + 60 + leftColW } },
+                          hasMachines ? h("div", { style: { width: leftColW, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: "rgba(34,197,94,0.06)", display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center", padding: "0 6px 10px 6px" } },
+                            h("div", { style: { fontSize: 9, fontWeight: 700, color: "#86efac", textTransform: "uppercase", letterSpacing: 0.5 } }, "Cumul"),
+                            h("div", { style: { fontSize: 9, fontWeight: 500, color: "#71717a", marginTop: 2 } }, "(somme)")
+                          ) : null,
                           Array.apply(null, Array(daysInMonth)).map(function(_, di) {
-                            var dayNum = di + 1;
-                            var dayCellDate = new Date(year, monthIdx, dayNum);
-                            var isWE2 = dayCellDate.getDay() === 0 || dayCellDate.getDay() === 6;
-                            var val = m.dailyMetrage[dayNum] || 0;
-                            var ds2 = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayNum < 10 ? "0" : "") + dayNum;
-                            return h("div", { key: "msrc_" + m.key + "_" + dayNum, style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.04)", background: isWE2 ? "rgba(255,255,255,0.02)" : (unlocked ? "rgba(251,191,36,0.06)" : "transparent"), textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 0" } },
-                              di === 0 ? h("div", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc", letterSpacing: 0.3, position: "absolute", marginTop: -22 } }, m.code) : null,
-                              unlocked ? h("input", {
-                                type: "number",
-                                defaultValue: val > 0 ? val : "",
-                                onBlur: function(e) {
-                                  var newV = e.target.value === "" ? 0 : parseFloat(e.target.value) || 0;
-                                  if (newV !== val) updateMachineMetrage(chantier.id, m.equipementId, ds2, newV);
-                                },
-                                onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); },
-                                onFocus: function(e) { e.target.select(); },
-                                onClick: function(e) { e.stopPropagation(); },
-                                style: { width: 40, height: 26, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: "1px solid rgba(251,191,36,0.4)", borderRadius: 4, background: "rgba(0,0,0,0.3)", color: "#fde68a", outline: "none", MozAppearance: "textfield", boxSizing: "border-box" }
-                              }) : h("div", { style: { fontSize: 13, fontWeight: 600, color: val > 0 ? "#86efac" : "rgba(255,255,255,0.15)" } }, val > 0 ? fmtNum(val) : "·")
-                            );
+                            var dayOfMonth = di + 1;
+                            var cellDate = new Date(year, monthIdx, dayOfMonth);
+                            var dow = cellDate.getDay();
+                            var isWE = dow === 0 || dow === 6;
+                            var isTD = dayOfMonth === todayDate.getDate() && monthIdx === todayDate.getMonth() && year === todayDate.getFullYear();
+                            var ds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayOfMonth < 10 ? "0" : "") + dayOfMonth;
+                            // Quand plusieurs machines sur le site, on retire le nom de la sondeuse
+                            // au-dessus des jours (l'info est portee par les sous-lignes).
+                            var mLabel = (machines.length >= 2) ? "" : findMachineForDate(chantier.id, ds);
+                            return h(SaisieCell, {
+                              key: ds,
+                              chantierId: chantier.id,
+                              dateStr: ds,
+                              saisies: saisies,
+                              setSaisies: setSaisies,
+                              isWeekend: isWE,
+                              dayLetter: dayLetters[dow],
+                              dayNum: dayOfMonth,
+                              isToday: isTD,
+                              machineLabel: mLabel,
+                              activeBrush: chantierBrush,
+                              isPainting: chPainting,
+                              onPaintStart: function() { setChPainting(true); },
+                              onBrushApply: propagateBrushToEmployees,
+                              readOnly: hasMachines,
+                              overrideValue: hasMachines ? (sumPerDay[dayOfMonth] || 0) : undefined
+                            });
                           }),
-                          h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: unlocked ? "rgba(251,191,36,0.15)" : "rgba(129,140,248,0.10)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 0", gap: 2 } },
-                            h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
-                              h("span", { style: { fontSize: 9, fontWeight: 700, color: "#a5b4fc" } }, m.code),
-                              h("button", {
-                                onClick: function() { toggleMachineRowUnlock(chantier.id, m.equipementId); },
-                                title: unlocked ? "Verrouiller la ligne (lecture seule)" : "Deverrouiller pour editer les valeurs",
-                                style: { background: "transparent", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center" }
-                              }, h(Icon, { name: unlocked ? "unlock" : "lock", size: 11, color: unlocked ? "#fcd34d" : "#71717a" }))
-                            ),
-                            h("div", { style: { fontSize: 13, fontWeight: 700, color: unlocked ? "#fde68a" : "#a5b4fc" } }, fmtNum(m.totalMois))
+                          h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: "rgba(34,197,94,0.12)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" } },
+                            h("div", { style: { fontSize: 9, fontWeight: 600, color: "#a1a1aa", marginBottom: 2 } }, "Total"),
+                            h("div", { style: { fontSize: 14, fontWeight: 700, color: "#86efac" } }, fmtNum(totalAffiche))
                           )
-                        );
-                      });
+                        )
+                      );
+                      // Sous-lignes par machine
+                      if (hasMachines) {
+                        machines.forEach(function(m, mi) {
+                          var unlocked = isMachineRowUnlocked(chantier.id, m.equipementId);
+                          children.push(
+                            h("div", { key: "msr_" + m.key, style: { display: "flex", minWidth: daysInMonth * 48 + 60 + leftColW, borderTop: "1px solid rgba(255,255,255,0.08)", background: mi % 2 === 0 ? "rgba(129,140,248,0.04)" : "rgba(167,139,250,0.04)" } },
+                              // Colonne gauche : nom machine + cadenas
+                              h("div", { style: { width: leftColW, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.08)", background: unlocked ? "rgba(251,191,36,0.10)" : "rgba(99,102,241,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px", gap: 6 } },
+                                h("div", { style: { display: "flex", flexDirection: "column", overflow: "hidden" } },
+                                  h("div", { style: { fontSize: 11, fontWeight: 800, color: "#c7d2fe", letterSpacing: 0.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, m.code),
+                                  h("div", { style: { fontSize: 9, fontWeight: 500, color: "#71717a", marginTop: 1 } }, unlocked ? "Edition" : "Lecture")
+                                ),
+                                h("button", {
+                                  onClick: function() { toggleMachineRowUnlock(chantier.id, m.equipementId); },
+                                  title: unlocked ? "Verrouiller la ligne (lecture seule)" : "Deverrouiller pour editer les valeurs",
+                                  style: { background: unlocked ? "rgba(251,191,36,0.15)" : "rgba(255,255,255,0.05)", border: unlocked ? "1px solid rgba(251,191,36,0.4)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: 4, cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0 }
+                                }, h(Icon, { name: unlocked ? "unlock" : "lock", size: 13, color: unlocked ? "#fcd34d" : "#a1a1aa" }))
+                              ),
+                              Array.apply(null, Array(daysInMonth)).map(function(_, di) {
+                                var dayNum = di + 1;
+                                var dayCellDate = new Date(year, monthIdx, dayNum);
+                                var isWE2 = dayCellDate.getDay() === 0 || dayCellDate.getDay() === 6;
+                                var val = m.dailyMetrage[dayNum] || 0;
+                                var ds2 = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayNum < 10 ? "0" : "") + dayNum;
+                                // Etat brush pour visualisation et application
+                                var entry2 = (saisies[chantier.id] && saisies[chantier.id][ds2]) ? saisies[chantier.id][ds2] : null;
+                                var typeJ2 = getSaisieType(entry2);
+                                var isSpecial2 = typeJ2 !== "normal";
+                                var brushBg = isSpecial2 ? (TYPE_COLORS_BR[typeJ2] || "#f59e0b") + "20" : null;
+                                var cellBg = brushBg ? brushBg : (isWE2 ? "rgba(255,255,255,0.02)" : (unlocked ? "rgba(251,191,36,0.06)" : "transparent"));
+                                var cellHandlers = chantierBrush ? {
+                                  onClick: function(e) { e.stopPropagation(); paintBrushOnDate(ds2); },
+                                  onMouseDown: function(e) { e.preventDefault(); setChPainting(true); paintBrushOnDate(ds2); },
+                                  onMouseEnter: chPainting ? function() { paintBrushOnDate(ds2); } : undefined
+                                } : {};
+                                return h("div", Object.assign({
+                                  key: "msrc_" + m.key + "_" + dayNum,
+                                  style: { position: "relative", width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.04)", background: cellBg, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 0", cursor: chantierBrush ? "pointer" : "default" }
+                                }, cellHandlers),
+                                  isSpecial2 ? h("div", { style: { position: "absolute", top: 1, left: 3, fontSize: 8, fontWeight: 800, color: TYPE_COLORS_BR[typeJ2], textTransform: "uppercase", zIndex: 1 } }, TYPE_LABELS_BR[typeJ2]) : null,
+                                  unlocked ? h("input", {
+                                    type: "number",
+                                    defaultValue: val > 0 ? val : "",
+                                    onBlur: function(e) {
+                                      var newV = e.target.value === "" ? 0 : parseFloat(e.target.value) || 0;
+                                      if (newV !== val) updateMachineMetrage(chantier.id, m.equipementId, ds2, newV);
+                                    },
+                                    onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); },
+                                    onFocus: function(e) { e.target.select(); },
+                                    onClick: function(e) { if (!chantierBrush) e.stopPropagation(); },
+                                    onMouseDown: function(e) { if (!chantierBrush) e.stopPropagation(); },
+                                    disabled: !!chantierBrush,
+                                    style: { width: 40, height: 26, padding: 0, textAlign: "center", fontSize: 13, fontWeight: 700, border: "1px solid rgba(251,191,36,0.4)", borderRadius: 4, background: "rgba(0,0,0,0.3)", color: "#fde68a", outline: "none", MozAppearance: "textfield", boxSizing: "border-box", pointerEvents: chantierBrush ? "none" : "auto" }
+                                  }) : h("div", { style: { fontSize: 13, fontWeight: 600, color: val > 0 ? "#86efac" : "rgba(255,255,255,0.15)" } }, val > 0 ? fmtNum(val) : "·")
+                                );
+                              }),
+                              h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: unlocked ? "rgba(251,191,36,0.15)" : "rgba(129,140,248,0.10)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 0" } },
+                                h("div", { style: { fontSize: 9, fontWeight: 600, color: "#a1a1aa", marginBottom: 2 } }, "Total"),
+                                h("div", { style: { fontSize: 13, fontWeight: 700, color: unlocked ? "#fde68a" : "#a5b4fc" } }, fmtNum(m.totalMois))
+                              )
+                            )
+                          );
+                        });
+                      }
+                      return children;
                     }())
                   )
                 )
