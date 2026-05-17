@@ -7044,7 +7044,15 @@
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
+        { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
         { key: "administration", label: "Administration", icon: "user-cog", adminOnly: true }
+      ];
+      // Sous-pages de "Soumissions employes" - actives seulement quand la page parente est cochee
+      var SOUMISSIONS_SUBPAGES = [
+        { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days" },
+        { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart" },
+        { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench" },
+        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text" }
       ];
 
       var allPageKeys = ALL_PAGES.map(function(p) { return p.key; });
@@ -7093,6 +7101,8 @@
       };
       var closeModal = function() { setShowModal(false); setEditing(null); };
 
+      var subKeys = SOUMISSIONS_SUBPAGES.map(function(s) { return s.key; });
+
       var togglePage = function(pageKey) {
         if (!editing) return;
         var current = editing.pagesAutorisees || [];
@@ -7100,6 +7110,10 @@
         var copy;
         if (idx >= 0) {
           copy = current.filter(function(k) { return k !== pageKey; });
+          // Si on decoche "soumissions", on retire aussi toutes ses sous-pages
+          if (pageKey === "soumissions") {
+            copy = copy.filter(function(k) { return subKeys.indexOf(k) < 0; });
+          }
         } else {
           copy = current.concat(pageKey);
         }
@@ -7112,7 +7126,9 @@
           if (editing.role !== "Administrateur" && p.key === "administration") return false;
           return true;
         }).map(function(p) { return p.key; });
-        setEditing(Object.assign({}, editing, { pagesAutorisees: pages }));
+        // Inclure aussi toutes les sous-pages de soumissions
+        var all = pages.concat(subKeys);
+        setEditing(Object.assign({}, editing, { pagesAutorisees: all }));
       };
 
       var deselectAllPages = function() {
@@ -7178,13 +7194,42 @@
                   return true;
                 }).map(function(page) {
                   var checked = (f.pagesAutorisees || []).indexOf(page.key) >= 0;
-                  return h("label", { key: page.key, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 6, border: "1px solid " + (checked ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), background: checked ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.04)", color: "#e5e7eb", cursor: "pointer", fontSize: 12, fontWeight: checked ? 600 : 400, transition: "all 0.15s" } },
-                    h("input", { type: "checkbox", checked: checked, onChange: function() { togglePage(page.key); }, style: { accentColor: "#818cf8" } }),
-                    h(Icon, { name: page.icon, size: 14, color: checked ? "#a78bfa" : "#71717a" }),
-                    h("span", null, page.label)
+                  var isSoumissions = page.key === "soumissions";
+                  var cardStyle = isSoumissions
+                    ? { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, border: "1px solid " + (checked ? "rgba(236,72,153,0.60)" : "rgba(236,72,153,0.30)"), background: checked ? "linear-gradient(135deg, rgba(236,72,153,0.25), rgba(236,72,153,0.08))" : "linear-gradient(135deg, rgba(236,72,153,0.12), rgba(236,72,153,0.04))", color: "#e5e7eb", cursor: "pointer", fontSize: 13, fontWeight: 700, gridColumn: "1 / -1", transition: "all 0.15s" }
+                    : { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 6, border: "1px solid " + (checked ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), background: checked ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.04)", color: "#e5e7eb", cursor: "pointer", fontSize: 12, fontWeight: checked ? 600 : 400, transition: "all 0.15s" };
+                  var iconColor = isSoumissions ? "#f9a8d4" : (checked ? "#a78bfa" : "#71717a");
+                  return h("label", { key: page.key, style: cardStyle },
+                    h("input", { type: "checkbox", checked: checked, onChange: function() { togglePage(page.key); }, style: { accentColor: isSoumissions ? "#ec4899" : "#818cf8" } }),
+                    h(Icon, { name: page.icon, size: isSoumissions ? 16 : 14, color: iconColor }),
+                    h("span", null, page.label),
+                    isSoumissions ? h("span", { style: { marginLeft: "auto", background: "rgba(236,72,153,0.20)", border: "1px solid rgba(236,72,153,0.40)", color: "#f9a8d4", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.3 } }, "Nouveau") : null
                   );
                 })
-              )
+              ),
+              // Sous-options Soumissions employes (affichees uniquement si la page parente est cochee)
+              (f.pagesAutorisees || []).indexOf("soumissions") >= 0
+                ? h("div", { style: { marginTop: 12, padding: "16px 18px", background: "rgba(236,72,153,0.06)", border: "1px solid rgba(236,72,153,0.30)", borderLeft: "3px solid #f9a8d4", borderRadius: "0 10px 10px 0" } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 800, color: "#f9a8d4", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 } },
+                      h(Icon, { name: "key-round", size: 14, color: "#f9a8d4" }),
+                      h("span", null, "Detail Soumissions employes - quelles sections cet utilisateur peut traiter ?")
+                    ),
+                    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 } },
+                      SOUMISSIONS_SUBPAGES.map(function(sub) {
+                        var subChecked = (f.pagesAutorisees || []).indexOf(sub.key) >= 0;
+                        return h("label", { key: sub.key, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: subChecked ? "rgba(236,72,153,0.12)" : "rgba(0,0,0,0.30)", border: "1px solid " + (subChecked ? "rgba(236,72,153,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#e5e7eb", transition: "all 0.15s" } },
+                          h("input", { type: "checkbox", checked: subChecked, onChange: function() { togglePage(sub.key); }, style: { accentColor: "#ec4899" } }),
+                          h(Icon, { name: sub.icon, size: 14, color: subChecked ? "#f9a8d4" : "#71717a" }),
+                          h("span", null, sub.label)
+                        );
+                      })
+                    ),
+                    h("div", { style: { fontSize: 11, color: "#a1a1aa", fontStyle: "italic", marginTop: 10, padding: "8px 12px", background: "rgba(99,102,241,0.05)", borderRadius: 6, display: "flex", gap: 8, alignItems: "flex-start" } },
+                      h(Icon, { name: "info", size: 12, color: "#a78bfa" }),
+                      h("div", null, "Si la page parente est cochee mais aucune sous-section : l'utilisateur verra la page mais sans aucun onglet (aucun acces effectif). Coche au moins une sous-section pour qu'il puisse traiter quelque chose.")
+                    )
+                  )
+                : null
             ),
             h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 } },
               h(Button, { onClick: closeModal, variant: "secondary" }, "Annuler"),
@@ -7565,6 +7610,65 @@
       );
     }
 
+    // ─── Ecran Soumissions employes (placeholder - sera rempli a l'etape 2) ──
+    function EcranSoumissions() {
+      var ctx = useAppData();
+      var allowedPages = ctx.allowedPages || [];
+      var isAdmin = ctx.isAdmin;
+
+      var SUBS = [
+        { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days" },
+        { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart" },
+        { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench" },
+        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text" }
+      ];
+
+      // Quelles sous-sections cet utilisateur peut voir
+      var visibleSubs = SUBS.filter(function(s) {
+        if (isAdmin) return true;
+        return allowedPages.indexOf(s.key) >= 0;
+      });
+
+      var _tab = useState(visibleSubs.length > 0 ? visibleSubs[0].key : null);
+      var tab = _tab[0]; var setTab = _tab[1];
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "inbox", size: 20 }, "Soumissions employes"),
+          subtitle: "Demandes et rapports envoyes depuis l'app Employes"
+        }),
+        visibleSubs.length === 0
+          ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } },
+              h(Icon, { name: "lock", size: 36, color: "#71717a" }),
+              h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucune sous-section autorisee"),
+              h("div", { style: { marginTop: 6, fontSize: 12 } }, "Demande a un administrateur d'activer au moins une sous-section dans tes acces.")
+            ))
+          : h("div", null,
+              // Onglets
+              h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 12 } },
+                visibleSubs.map(function(s) {
+                  var active = tab === s.key;
+                  return h("button", { key: s.key, onClick: function() { setTab(s.key); },
+                    style: { padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit",
+                             border: "1px solid " + (active ? "rgba(236,72,153,0.5)" : "rgba(255,255,255,0.1)"),
+                             background: active ? "rgba(236,72,153,0.15)" : "rgba(255,255,255,0.04)",
+                             color: active ? "#f9a8d4" : "#a1a1aa",
+                             display: "inline-flex", alignItems: "center", gap: 6 } },
+                    h(Icon, { name: s.icon, size: 14, color: active ? "#f9a8d4" : "#a1a1aa" }),
+                    s.label);
+                })
+              ),
+              // Placeholder content
+              h(Card, null, h("div", { style: { padding: 60, textAlign: "center" } },
+                h(Icon, { name: "hard-hat", size: 48, color: "#a78bfa" }),
+                h("div", { style: { marginTop: 16, fontSize: 16, fontWeight: 700, color: "#e5e7eb" } }, "Page en construction"),
+                h("div", { style: { marginTop: 8, fontSize: 13, color: "#a1a1aa" } }, "Le contenu de cette section sera ajoute a l'etape 2."),
+                h("div", { style: { marginTop: 16, fontSize: 12, color: "#71717a", fontStyle: "italic" } }, "Onglet actif : " + (visibleSubs.find(function(s) { return s.key === tab; }) || {}).label)
+              ))
+            )
+      );
+    }
+
     // ─── Ecran Administration (Parametres / Validations / Utilisateurs) ──
     function EcranAdministration({ onNavigate, pendingCount }) {
       const ctx = useAppData();
@@ -7630,6 +7734,9 @@
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
+        ]},
+        { name: "Soumissions", pages: [
+          { key: "soumissions", label: "Soumissions employes", lucide: "inbox" },
         ]},
         { name: "Administration", pages: [
           { key: "administration", label: "Administration", lucide: "user-cog" },
@@ -8368,7 +8475,7 @@
 
       const contextValue = {
         interventions, equipements, plans, pieces, releves, piecesEquipements, parametres, setParametres,
-        isAdmin, userEmail, pendingValidations, validationLog,
+        isAdmin, userEmail, pendingValidations, validationLog, allowedPages,
         dbChantiers, setDbChantiers, dbSaisies, setDbSaisies,
         dbDeclarations, setDbDeclarations, dbRenouvellements, setDbRenouvellements,
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
@@ -8415,6 +8522,7 @@
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
         if (currentPage === "primes") return h(EcranPrimes, null);
+        if (currentPage === "soumissions") return h(EcranSoumissions, null);
         if (currentPage === "administration") return h(EcranAdministration, { onNavigate: navigate, pendingCount: pendingValidations.length });
         return h(EcranAccueil, { onNavigate: navigate });
       };
