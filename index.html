@@ -7610,20 +7610,23 @@
       );
     }
 
-    // ─── Ecran Soumissions employes (placeholder - sera rempli a l'etape 2) ──
+    // ─── Ecran Soumissions employes ───────────────────────────────────
     function EcranSoumissions() {
       var ctx = useAppData();
       var allowedPages = ctx.allowedPages || [];
       var isAdmin = ctx.isAdmin;
+      var parametres = ctx.parametres || [];
+      var dbChantiers = ctx.dbChantiers || [];
+      var equipements = ctx.equipements || [];
+      var showToast = ctx.showToast;
 
       var SUBS = [
-        { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days" },
-        { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart" },
-        { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench" },
-        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text" }
+        { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days", color: "#86efac" },
+        { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart", color: "#fde68a" },
+        { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench",        color: "#fdba74" },
+        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text",     color: "#f9a8d4" }
       ];
 
-      // Quelles sous-sections cet utilisateur peut voir
       var visibleSubs = SUBS.filter(function(s) {
         if (isAdmin) return true;
         return allowedPages.indexOf(s.key) >= 0;
@@ -7631,41 +7634,541 @@
 
       var _tab = useState(visibleSubs.length > 0 ? visibleSubs[0].key : null);
       var tab = _tab[0]; var setTab = _tab[1];
+      var _loading = useState(true);
+      var loading = _loading[0]; var setLoading = _loading[1];
+      var _conges = useState([]);     var conges = _conges[0];     var setConges = _conges[1];
+      var _cmds = useState([]);       var cmds = _cmds[0];         var setCmds = _cmds[1];
+      var _ints = useState([]);       var ints = _ints[0];         var setInts = _ints[1];
+      var _raps = useState([]);       var raps = _raps[0];         var setRaps = _raps[1];
+      var _expanded = useState(null); var expanded = _expanded[0]; var setExpanded = _expanded[1];
+      var _filtStatut = useState("tous"); var filtStatut = _filtStatut[0]; var setFiltStatut = _filtStatut[1];
+      var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
+
+      // ── Personnel index (id -> { nom, prenom, lieu_contrat }) depuis parametres ──
+      var personnelMap = (function() {
+        var map = {};
+        try {
+          var row = parametres.find(function(p) { return p.categorie === "personnel_data"; });
+          if (row && row.valeur) {
+            var list = JSON.parse(row.valeur);
+            (list || []).forEach(function(p) { if (p && p.id != null) map[String(p.id)] = p; });
+          }
+        } catch(e) {}
+        return map;
+      }());
+      var resolvePersonnel = function(id) {
+        if (id == null) return null;
+        return personnelMap[String(id)] || null;
+      };
+      var personnelLabel = function(id) {
+        var p = resolvePersonnel(id);
+        if (!p) return "#" + (id != null ? id : "?");
+        var parts = [p.prenom, p.nom].filter(Boolean);
+        if (parts.length === 0) return "#" + id;
+        return parts.join(" ");
+      };
+      var chantierLabel = function(id) {
+        if (id == null) return null;
+        var c = dbChantiers.find(function(x) { return String(x.id) === String(id); });
+        if (!c) return "#" + id;
+        return c.nom || c.code || ("#" + id);
+      };
+      var equipementLabel = function(id) {
+        if (id == null) return null;
+        var e = equipements.find(function(x) { return String(x.Id) === String(id) || String(x.id) === String(id); });
+        if (!e) return "#" + id;
+        return e.Nom || e.nom || ("#" + id);
+      };
+
+      // ── Chargement des 4 tables ──
+      useEffect(function() {
+        var cancelled = false;
+        setLoading(true);
+        Promise.all([
+          supabase.from("demandes_conge").select("*").order("created_at", { ascending: false }),
+          supabase.from("bons_commande").select("*").order("created_at", { ascending: false }),
+          supabase.from("demandes_intervention").select("*").order("created_at", { ascending: false }),
+          supabase.from("rapports_forage").select("*").order("created_at", { ascending: false })
+        ]).then(function(results) {
+          if (cancelled) return;
+          if (results[0].error) console.warn("[soumissions] conges:", results[0].error.message);
+          if (results[1].error) console.warn("[soumissions] commandes:", results[1].error.message);
+          if (results[2].error) console.warn("[soumissions] interventions:", results[2].error.message);
+          if (results[3].error) console.warn("[soumissions] rapports:", results[3].error.message);
+          setConges(results[0].data || []);
+          setCmds(results[1].data || []);
+          setInts(results[2].data || []);
+          setRaps(results[3].data || []);
+          setLoading(false);
+        }).catch(function(err) {
+          if (cancelled) return;
+          console.error("[soumissions] fetch error:", err);
+          setLoading(false);
+        });
+        return function() { cancelled = true; };
+      }, [refreshFlag]);
+
+      // Quand on change d'onglet, on reset le filtre et l'expand
+      useEffect(function() {
+        setFiltStatut("tous");
+        setExpanded(null);
+      }, [tab]);
+
+      // ── Helpers UI ──
+      var fmtDate = function(d) {
+        if (!d) return "-";
+        try {
+          var dt = new Date(d);
+          if (isNaN(dt.getTime())) return String(d);
+          return dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+        } catch(e) { return String(d); }
+      };
+      var fmtDateTime = function(d) {
+        if (!d) return "-";
+        try {
+          var dt = new Date(d);
+          if (isNaN(dt.getTime())) return String(d);
+          return dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) + " " + dt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+        } catch(e) { return String(d); }
+      };
+
+      var STATUT_LABEL = {
+        en_attente: "En attente", approuvee: "Approuvee", refusee: "Refusee",
+        soumis: "Soumis", traite: "Traite", refuse: "Refuse", envoye_fournisseur: "Envoye fournisseur",
+        planifiee: "Planifiee", en_cours: "En cours", terminee: "Terminee",
+        signe_client: "Signe par client", valide_admin: "Valide"
+      };
+      var statutStyle = function(s) {
+        var base = { display: "inline-block", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.3, border: "1px solid rgba(255,255,255,0.1)" };
+        if (s === "en_attente" || s === "soumis") return Object.assign(base, { background: "rgba(251,191,36,0.15)", color: "#fde68a", borderColor: "rgba(251,191,36,0.35)" });
+        if (s === "approuvee" || s === "terminee" || s === "valide_admin" || s === "traite" || s === "envoye_fournisseur") return Object.assign(base, { background: "rgba(34,197,94,0.15)", color: "#86efac", borderColor: "rgba(34,197,94,0.35)" });
+        if (s === "refusee" || s === "refuse") return Object.assign(base, { background: "rgba(220,38,38,0.15)", color: "#fda4af", borderColor: "rgba(220,38,38,0.35)" });
+        if (s === "planifiee" || s === "en_cours") return Object.assign(base, { background: "rgba(99,102,241,0.15)", color: "#c7d2fe", borderColor: "rgba(99,102,241,0.35)" });
+        if (s === "signe_client") return Object.assign(base, { background: "rgba(167,139,250,0.15)", color: "#c4b5fd", borderColor: "rgba(167,139,250,0.35)" });
+        return Object.assign(base, { background: "rgba(148,163,184,0.15)", color: "#cbd5e1" });
+      };
+
+      // ── Action helpers ──
+      var updateStatut = function(table, id, newStatut, onLocalUpdate) {
+        supabase.from(table).update({ statut: newStatut }).eq("id", id).select().single().then(function(res) {
+          if (res.error) {
+            alert("Erreur mise a jour : " + res.error.message);
+            return;
+          }
+          if (onLocalUpdate) onLocalUpdate(res.data);
+          if (showToast) showToast("Statut mis a jour", "success");
+        });
+      };
+
+      var updateCongeStatut = function(id, st) {
+        updateStatut("demandes_conge", id, st, function(updated) {
+          setConges(conges.map(function(x) { return x.id === id ? updated : x; }));
+        });
+      };
+      var updateCommandeStatut = function(id, st) {
+        updateStatut("bons_commande", id, st, function(updated) {
+          setCmds(cmds.map(function(x) { return x.id === id ? updated : x; }));
+        });
+      };
+      var updateInterventionStatut = function(id, st) {
+        updateStatut("demandes_intervention", id, st, function(updated) {
+          setInts(ints.map(function(x) { return x.id === id ? updated : x; }));
+        });
+      };
+      var updateRapportStatut = function(id, st) {
+        updateStatut("rapports_forage", id, st, function(updated) {
+          setRaps(raps.map(function(x) { return x.id === id ? updated : x; }));
+        });
+      };
+
+      // ── Filtres statut par onglet ──
+      var STATUTS_BY_TAB = {
+        soumissions_conges:        ["tous", "en_attente", "approuvee", "refusee"],
+        soumissions_commandes:     ["tous", "soumis", "traite", "envoye_fournisseur", "refuse"],
+        soumissions_interventions: ["tous", "soumis", "planifiee", "en_cours", "terminee", "refusee"],
+        soumissions_rapports:      ["tous", "soumis", "signe_client", "valide_admin"]
+      };
+
+      var applyFilter = function(list) {
+        if (filtStatut === "tous") return list;
+        return list.filter(function(r) { return r.statut === filtStatut; });
+      };
+
+      // ── KPIs par onglet ──
+      var kpis = [
+        { key: "soumissions_conges", label: "Demandes de conges", sub: "en attente", count: conges.filter(function(c) { return c.statut === "en_attente"; }).length, icon: "calendar-days", color: "#86efac", bg: "rgba(34,197,94,0.15)" },
+        { key: "soumissions_commandes", label: "Bons de commande", sub: "a traiter", count: cmds.filter(function(c) { return c.statut === "soumis"; }).length, icon: "shopping-cart", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
+        { key: "soumissions_interventions", label: "Demandes intervention", sub: "a planifier", count: ints.filter(function(c) { return c.statut === "soumis"; }).length, icon: "wrench", color: "#fdba74", bg: "rgba(249,115,22,0.15)" },
+        { key: "soumissions_rapports", label: "Rapports de forage", sub: "non valides", count: raps.filter(function(c) { return c.statut !== "valide_admin"; }).length, icon: "file-text", color: "#f9a8d4", bg: "rgba(236,72,153,0.15)" }
+      ].filter(function(k) { return visibleSubs.find(function(s) { return s.key === k.key; }); });
+
+      // ── Rendu commun de la ligne d'entete d'une carte ──
+      var rowHeader = function(opts) {
+        var initials = (opts.name || "?").split(" ").map(function(w) { return w[0]; }).filter(Boolean).slice(0, 2).join("").toUpperCase();
+        return h("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
+          onClick: opts.onClick },
+          h("div", { style: { width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, color: "white", flexShrink: 0 } }, initials),
+          h("div", { style: { minWidth: 0 } },
+            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#e5e7eb" } }, opts.name),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2 } }, opts.sub)
+          ),
+          h("div", { style: { fontSize: 12, color: "#a1a1aa", whiteSpace: "nowrap" } }, opts.right || ""),
+          h("div", null, h("span", { style: statutStyle(opts.statut) }, STATUT_LABEL[opts.statut] || opts.statut || "-"))
+        );
+      };
+
+      // ── Detail box generique ──
+      var detailWrap = function(children) {
+        return h("div", { style: { padding: 20, background: "rgba(99,102,241,0.04)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 10, marginBottom: 12, marginTop: -4 } }, children);
+      };
+      var detailGrid = function(items) {
+        return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12, fontSize: 13 } },
+          items.filter(function(it) { return it && it.value != null && it.value !== ""; }).map(function(it, i) {
+            return h("div", { key: i },
+              h("div", { style: { color: "#a1a1aa", fontSize: 11, marginBottom: 2 } }, it.label),
+              h("div", { style: { fontWeight: 600 } }, it.value)
+            );
+          })
+        );
+      };
+      var sectionTitle = function(text) {
+        return h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a78bfa", textTransform: "uppercase", letterSpacing: 1, margin: "14px 0 8px" } }, text);
+      };
+      var sigBox = function(png) {
+        if (!png) return null;
+        return h("div", { style: { background: "white", padding: 6, borderRadius: 6, display: "inline-block", maxWidth: 180 } },
+          h("img", { src: png, alt: "Signature", style: { maxHeight: 50, width: "auto", display: "block" } })
+        );
+      };
+
+      // ── Boutons actions ──
+      var actionBtn = function(opts) {
+        var bg = opts.color === "green" ? "linear-gradient(135deg, #22c55e, #16a34a)" :
+                 opts.color === "red"   ? "linear-gradient(135deg, #dc2626, #b91c1c)" :
+                 opts.color === "indigo"? "linear-gradient(135deg, #6366f1, #8b5cf6)" :
+                                          "rgba(255,255,255,0.05)";
+        var col = opts.color === "neutral" ? "#e5e7eb" : "white";
+        var border = opts.color === "neutral" ? "1px solid rgba(255,255,255,0.1)" : "none";
+        return h("button", { onClick: opts.onClick, style: { padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: border, background: bg, color: col, display: "inline-flex", alignItems: "center", gap: 6 } },
+          opts.icon ? h(Icon, { name: opts.icon, size: 14, color: col }) : null,
+          opts.label
+        );
+      };
+
+      // ── Render onglet "Conges" ──
+      var renderConges = function() {
+        var list = applyFilter(conges);
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune demande de conge.");
+        return h("div", null, list.map(function(c) {
+          var isExp = expanded === ("c-" + c.id);
+          var name = personnelLabel(c.demandeur_id);
+          return h(React.Fragment, { key: "c-" + c.id },
+            rowHeader({
+              name: name + (c.lieu ? " - " + c.lieu : ""),
+              sub: (c.type_conge || "conge") + " - " + c.nombre_jours + " jour" + (c.nombre_jours > 1 ? "s" : "") + " du " + fmtDate(c.date_debut) + " au " + fmtDate(c.date_reprise),
+              right: "Demande le " + fmtDate(c.date_demande),
+              statut: c.statut,
+              isExpanded: isExp,
+              onClick: function() { setExpanded(isExp ? null : "c-" + c.id); }
+            }),
+            isExp ? detailWrap([
+              detailGrid([
+                { label: "Demandeur", value: name },
+                { label: "Classification", value: c.classification },
+                { label: "Lieu de contrat", value: c.lieu },
+                { label: "Type de conge", value: c.type_conge },
+                { label: "Date de debut", value: fmtDate(c.date_debut) },
+                { label: "Date de reprise", value: fmtDate(c.date_reprise) },
+                { label: "Nombre de jours", value: c.nombre_jours }
+              ]),
+              c.raison ? h("div", null, sectionTitle("Raison"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8 } }, c.raison)) : null,
+              c.signature_employe_png ? h("div", null, sectionTitle("Signature employe"), sigBox(c.signature_employe_png)) : null,
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                c.statut === "en_attente" ? actionBtn({ label: "Approuver", icon: "check", color: "green", onClick: function() { updateCongeStatut(c.id, "approuvee"); setExpanded(null); } }) : null,
+                c.statut === "en_attente" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette demande ?")) { updateCongeStatut(c.id, "refusee"); setExpanded(null); } } }) : null,
+                c.statut !== "en_attente" ? actionBtn({ label: "Re-mettre en attente", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCongeStatut(c.id, "en_attente"); } }) : null
+              )
+            ]) : null
+          );
+        }));
+      };
+
+      // ── Render onglet "Commandes" ──
+      var renderCommandes = function() {
+        var list = applyFilter(cmds);
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun bon de commande.");
+        return h("div", null, list.map(function(c) {
+          var isExp = expanded === ("k-" + c.id);
+          var lignes = Array.isArray(c.lignes) ? c.lignes : [];
+          var name = personnelLabel(c.demandeur_id);
+          var chant = chantierLabel(c.chantier_id);
+          return h(React.Fragment, { key: "k-" + c.id },
+            rowHeader({
+              name: name,
+              sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
+              right: "Demande le " + fmtDate(c.date_demande),
+              statut: c.statut,
+              isExpanded: isExp,
+              onClick: function() { setExpanded(isExp ? null : "k-" + c.id); }
+            }),
+            isExp ? detailWrap([
+              detailGrid([
+                { label: "Demandeur", value: name },
+                { label: "Telephone", value: c.tel },
+                { label: "Chantier", value: chant },
+                { label: "Machine / Lieu", value: c.machine_lieu },
+                { label: "Date demande", value: fmtDate(c.date_demande) }
+              ]),
+              lignes.length > 0 ? h("div", null,
+                sectionTitle("Articles demandes"),
+                h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
+                  lignes.map(function(l, i) {
+                    return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13 } },
+                      h("div", null,
+                        h("span", { style: { fontWeight: 600 } }, l.designation || l.description || "-"),
+                        l.reference || l.ref ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, l.reference || l.ref) : null
+                      ),
+                      h("div", { style: { fontWeight: 700, color: "#a78bfa" } }, (l.quantite || l.qte || l.qty || 0) + " " + (l.unite || l.unit || ""))
+                    );
+                  })
+                )
+              ) : null,
+              c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null,
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                c.statut === "soumis" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
+                c.statut === "soumis" || c.statut === "traite" ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
+                c.statut === "soumis" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser ce bon de commande ?")) { updateCommandeStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
+                c.statut !== "soumis" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCommandeStatut(c.id, "soumis"); } }) : null
+              )
+            ]) : null
+          );
+        }));
+      };
+
+      // ── Render onglet "Interventions" ──
+      var URG_LABEL = { critique: "Critique", elevee: "Elevee", normale: "Normale", planifiee: "Planifiee" };
+      var URG_COLOR = { critique: "#dc2626", elevee: "#f97316", normale: "#3b82f6", planifiee: "#94a3b8" };
+      var renderInterventions = function() {
+        var list = applyFilter(ints);
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune demande d'intervention.");
+        return h("div", null, list.map(function(c) {
+          var isExp = expanded === ("i-" + c.id);
+          var photos = Array.isArray(c.photos) ? c.photos : [];
+          var name = personnelLabel(c.demandeur_id);
+          var mat = c.materiel_modele || equipementLabel(c.equipement_id) || "Materiel ?";
+          return h(React.Fragment, { key: "i-" + c.id },
+            rowHeader({
+              name: name + " - " + mat,
+              sub: h("span", null,
+                c.urgence ? h("span", null, h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: URG_COLOR[c.urgence] || "#94a3b8", marginRight: 6, verticalAlign: "middle" } }), URG_LABEL[c.urgence] || c.urgence, " - ") : null,
+                (c.type_panne ? c.type_panne + " - " : "") + (c.description ? c.description.substring(0, 80) + (c.description.length > 80 ? "..." : "") : "")
+              ),
+              right: "Soumis " + fmtDate(c.date_demande),
+              statut: c.statut,
+              isExpanded: isExp,
+              onClick: function() { setExpanded(isExp ? null : "i-" + c.id); }
+            }),
+            isExp ? detailWrap([
+              detailGrid([
+                { label: "Demandeur", value: name },
+                { label: "Date demande", value: fmtDate(c.date_demande) },
+                { label: "Materiel", value: c.materiel_modele },
+                { label: "No de serie", value: c.materiel_no_serie },
+                { label: "Immatriculation", value: c.immatriculation },
+                { label: "Horametre", value: c.horametre != null ? c.horametre + " h" : null },
+                { label: "Type de panne", value: c.type_panne },
+                { label: "Urgence", value: URG_LABEL[c.urgence] || c.urgence },
+                { label: "Chantier", value: chantierLabel(c.chantier_id) },
+                { label: "Equipement (fiche)", value: equipementLabel(c.equipement_id) }
+              ]),
+              c.description ? h("div", null, sectionTitle("Description"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8, whiteSpace: "pre-wrap" } }, c.description)) : null,
+              photos.length > 0 ? h("div", null,
+                sectionTitle("Photos (" + photos.length + ")"),
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8 } },
+                  photos.map(function(p, i) {
+                    var url = typeof p === "string" ? p : (p && p.url) || "";
+                    return h("a", { key: i, href: url, target: "_blank", rel: "noopener", style: { display: "block" } },
+                      h("img", { src: url, alt: "Photo " + (i + 1), style: { width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)" } })
+                    );
+                  })
+                )
+              ) : null,
+              c.signature_employe_png ? h("div", null, sectionTitle("Signature employe"), sigBox(c.signature_employe_png)) : null,
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                c.statut === "soumis" ? actionBtn({ label: "Planifier", icon: "calendar-plus", color: "indigo", onClick: function() { updateInterventionStatut(c.id, "planifiee"); setExpanded(null); } }) : null,
+                c.statut === "planifiee" ? actionBtn({ label: "Demarrer", icon: "play", color: "indigo", onClick: function() { updateInterventionStatut(c.id, "en_cours"); } }) : null,
+                c.statut === "en_cours" ? actionBtn({ label: "Terminer", icon: "check", color: "green", onClick: function() { updateInterventionStatut(c.id, "terminee"); } }) : null,
+                c.statut === "soumis" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette demande ?")) { updateInterventionStatut(c.id, "refusee"); setExpanded(null); } } }) : null,
+                c.statut !== "soumis" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateInterventionStatut(c.id, "soumis"); } }) : null
+              )
+            ]) : null
+          );
+        }));
+      };
+
+      // ── Render onglet "Rapports" ──
+      var renderRapports = function() {
+        var list = applyFilter(raps);
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage.");
+        return h("div", null, list.map(function(r) {
+          var isExp = expanded === ("r-" + r.id);
+          var sondages = Array.isArray(r.sondages) ? r.sondages : [];
+          var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+          var activites = Array.isArray(r.activites) ? r.activites : [];
+          var conso = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+          var sondeurName = personnelLabel(r.personnel_id);
+          var sondLabel = r.sondeuse_code || equipementLabel(r.equipement_id) || "-";
+          return h(React.Fragment, { key: "r-" + r.id },
+            rowHeader({
+              name: sondLabel + " - " + (r.client || "Client ?") + (r.lieu ? " - " + r.lieu : ""),
+              sub: "Sondeur " + sondeurName + " - " + (r.total_metres || 0) + " m / " + (r.total_heures || 0) + " h" + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
+              right: fmtDate(r.date_rapport),
+              statut: r.statut,
+              isExpanded: isExp,
+              onClick: function() { setExpanded(isExp ? null : "r-" + r.id); }
+            }),
+            isExp ? detailWrap([
+              detailGrid([
+                { label: "Sondeuse", value: sondLabel },
+                { label: "Date rapport", value: fmtDate(r.date_rapport) },
+                { label: "Quart", value: r.quart },
+                { label: "Client", value: r.client },
+                { label: "Lieu", value: r.lieu },
+                { label: "Sondeur (responsable)", value: sondeurName },
+                { label: "Chantier", value: chantierLabel(r.chantier_id) },
+                { label: "Total metres", value: (r.total_metres || 0) + " m" },
+                { label: "Total heures", value: (r.total_heures || 0) + " h" },
+                { label: "Controles OK", value: r.controles_ok ? "Oui" : "Non" }
+              ]),
+              equipe.length > 0 ? h("div", null,
+                sectionTitle("Equipe (" + equipe.length + ")"),
+                h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, equipe.map(function(m, i) {
+                  return h("div", { key: i, style: { padding: "6px 12px", background: "rgba(99,102,241,0.10)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 999, fontSize: 12, fontWeight: 600 } }, (m.nom || m.prenom || personnelLabel(m.id) || "-") + (m.role ? " (" + m.role + ")" : ""));
+                }))
+              ) : null,
+              sondages.length > 0 ? h("div", null,
+                sectionTitle("Sondages (" + sondages.length + ")"),
+                h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
+                  sondages.map(function(s, i) {
+                    return h("div", { key: i, style: { padding: "8px 0", borderBottom: i < sondages.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, display: "flex", justifyContent: "space-between", gap: 12 } },
+                      h("div", null,
+                        h("span", { style: { fontWeight: 700 } }, s.nom || s.id || ("S" + (i + 1))),
+                        s.type ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11 } }, s.type) : null
+                      ),
+                      h("div", { style: { color: "#a78bfa", fontWeight: 600 } },
+                        (s.metresDe != null ? s.metresDe : (s.de != null ? s.de : "?")) + " - " + (s.metresA != null ? s.metresA : (s.a != null ? s.a : "?")) + " m"
+                      )
+                    );
+                  })
+                )
+              ) : null,
+              activites.length > 0 ? h("div", null,
+                sectionTitle("Activites (" + activites.length + ")"),
+                h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, fontSize: 13 } },
+                  activites.map(function(a, i) {
+                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between" } },
+                      h("span", null, a.type || a.libelle || "Activite"),
+                      h("span", { style: { color: "#a1a1aa" } }, (a.duree || a.heures || 0) + " h")
+                    );
+                  })
+                )
+              ) : null,
+              conso.length > 0 ? h("div", null,
+                sectionTitle("Consommables perdus / casses (" + conso.length + ")"),
+                h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, fontSize: 13 } },
+                  conso.map(function(k, i) {
+                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < conso.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between" } },
+                      h("span", null, k.designation || k.nom || "-"),
+                      h("span", { style: { color: "#a1a1aa", fontWeight: 700 } }, (k.quantite || k.qte || 0) + " " + (k.unite || ""))
+                    );
+                  })
+                )
+              ) : null,
+              r.remarques ? h("div", null, sectionTitle("Remarques"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8, whiteSpace: "pre-wrap" } }, r.remarques)) : null,
+              h("div", { style: { display: "flex", gap: 24, marginTop: 14, flexWrap: "wrap" } },
+                r.signature_sondeur_png ? h("div", null, sectionTitle("Signature sondeur"), sigBox(r.signature_sondeur_png)) : null,
+                r.signature_client_png ? h("div", null,
+                  sectionTitle("Signature client"),
+                  sigBox(r.signature_client_png),
+                  r.client_signataire_nom ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 4 } }, "Signe par " + r.client_signataire_nom + (r.signed_client_at ? " le " + fmtDateTime(r.signed_client_at) : "")) : null
+                ) : null
+              ),
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                r.statut !== "valide_admin" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
+                r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
+                actionBtn({ label: "Edition complete (a venir)", icon: "edit-3", color: "neutral", onClick: function() { if (showToast) showToast("Edition complete disponible bientot", "info"); } })
+              )
+            ]) : null
+          );
+        }));
+      };
+
+      // ── Rendu principal ──
+      if (visibleSubs.length === 0) {
+        return h("div", null,
+          h(PageHeader, { title: h(IconText, { icon: "inbox", size: 20 }, "Soumissions employes"), subtitle: "Demandes et rapports envoyes depuis l'app Employes" }),
+          h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } },
+            h(Icon, { name: "lock", size: 36, color: "#71717a" }),
+            h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucune sous-section autorisee"),
+            h("div", { style: { marginTop: 6, fontSize: 12 } }, "Demande a un administrateur d'activer au moins une sous-section dans tes acces.")
+          ))
+        );
+      }
+
+      var currentStatuts = STATUTS_BY_TAB[tab] || ["tous"];
+      var currentList = tab === "soumissions_conges" ? conges :
+                        tab === "soumissions_commandes" ? cmds :
+                        tab === "soumissions_interventions" ? ints :
+                        tab === "soumissions_rapports" ? raps : [];
 
       return h("div", null,
         h(PageHeader, {
           title: h(IconText, { icon: "inbox", size: 20 }, "Soumissions employes"),
-          subtitle: "Demandes et rapports envoyes depuis l'app Employes"
+          subtitle: "Validation et traitement des soumissions venant de l'app Employes",
+          action: h(Button, { onClick: function() { setRefreshFlag(refreshFlag + 1); }, variant: "secondary" }, h(IconText, { icon: "refresh-cw", size: 14 }, "Actualiser"))
         }),
-        visibleSubs.length === 0
-          ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } },
-              h(Icon, { name: "lock", size: 36, color: "#71717a" }),
-              h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucune sous-section autorisee"),
-              h("div", { style: { marginTop: 6, fontSize: 12 } }, "Demande a un administrateur d'activer au moins une sous-section dans tes acces.")
-            ))
-          : h("div", null,
-              // Onglets
-              h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 12 } },
-                visibleSubs.map(function(s) {
-                  var active = tab === s.key;
-                  return h("button", { key: s.key, onClick: function() { setTab(s.key); },
-                    style: { padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit",
-                             border: "1px solid " + (active ? "rgba(236,72,153,0.5)" : "rgba(255,255,255,0.1)"),
-                             background: active ? "rgba(236,72,153,0.15)" : "rgba(255,255,255,0.04)",
-                             color: active ? "#f9a8d4" : "#a1a1aa",
-                             display: "inline-flex", alignItems: "center", gap: 6 } },
-                    h(Icon, { name: s.icon, size: 14, color: active ? "#f9a8d4" : "#a1a1aa" }),
-                    s.label);
-                })
-              ),
-              // Placeholder content
-              h(Card, null, h("div", { style: { padding: 60, textAlign: "center" } },
-                h(Icon, { name: "hard-hat", size: 48, color: "#a78bfa" }),
-                h("div", { style: { marginTop: 16, fontSize: 16, fontWeight: 700, color: "#e5e7eb" } }, "Page en construction"),
-                h("div", { style: { marginTop: 8, fontSize: 13, color: "#a1a1aa" } }, "Le contenu de cette section sera ajoute a l'etape 2."),
-                h("div", { style: { marginTop: 16, fontSize: 12, color: "#71717a", fontStyle: "italic" } }, "Onglet actif : " + (visibleSubs.find(function(s) { return s.key === tab; }) || {}).label)
-              ))
+        // KPIs - cliquables comme onglets
+        kpis.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 } },
+          kpis.map(function(k) {
+            var active = tab === k.key;
+            return h("div", { key: k.key, onClick: function() { setTab(k.key); },
+              style: { background: active ? "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))" : "rgba(36,40,60,0.55)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid " + (active ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 14, padding: 18, cursor: "pointer", transition: "all 0.15s", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
+              h("div", { style: { width: 40, height: 40, borderRadius: 10, background: k.bg, border: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 } },
+                h(Icon, { name: k.icon, size: 22, color: k.color })),
+              h("div", { style: { fontSize: 26, fontWeight: 900, lineHeight: 1, marginBottom: 4 } }, String(k.count)),
+              h("div", { style: { fontSize: 12, color: "#a1a1aa", fontWeight: 600 } }, k.label),
+              h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, k.sub)
+            );
+          })
+        ) : null,
+        // Section liste
+        h("div", { style: { background: "rgba(36,40,60,0.55)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 20, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
+          h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 12 } },
+            h("h2", { style: { fontSize: 16, fontWeight: 800, display: "flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: (visibleSubs.find(function(s) { return s.key === tab; }) || {}).icon || "inbox", size: 18, color: "#a78bfa" }),
+              (visibleSubs.find(function(s) { return s.key === tab; }) || {}).label || "-"
+            ),
+            // Filtres statut
+            h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+              currentStatuts.map(function(s) {
+                var active = filtStatut === s;
+                var count = s === "tous" ? currentList.length : currentList.filter(function(r) { return r.statut === s; }).length;
+                return h("button", { key: s, onClick: function() { setFiltStatut(s); },
+                  style: { padding: "5px 11px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), background: active ? "rgba(99,102,241,0.18)" : "rgba(255,255,255,0.04)", color: active ? "#e0e7ff" : "#a1a1aa" } },
+                  (s === "tous" ? "Tous" : (STATUT_LABEL[s] || s)) + " (" + count + ")");
+              })
             )
+          ),
+          loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } },
+            h("div", { className: "loader", style: { margin: "0 auto 12px" } }),
+            "Chargement des soumissions..."
+          ) :
+          tab === "soumissions_conges" ? renderConges() :
+          tab === "soumissions_commandes" ? renderCommandes() :
+          tab === "soumissions_interventions" ? renderInterventions() :
+          tab === "soumissions_rapports" ? renderRapports() :
+          h("div", null, "Aucun onglet selectionne.")
+        )
       );
     }
 
