@@ -7711,12 +7711,13 @@
       var _refresh = useState(0);
       var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
 
-      // ── Fetch des rapports (silencieux apres le premier chargement) ──
+      // ── Fetch des rapports (light : sans signatures base64 pour rester sous le quota egress) ──
+      // Note : on n'affiche pas les signatures dans Stats, donc inutile de les ramener.
+      var STATS_COLS = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at";
       useEffect(function() {
         var cancelled = false;
-        // setLoading(true) uniquement au tout premier chargement
         if (refreshFlag === 0) setLoading(true);
-        supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(function(res) {
+        supabase.from("rapports_forage").select(STATS_COLS).order("date_rapport", { ascending: false }).then(function(res) {
           if (cancelled) return;
           if (res.error) console.warn("[stats] fetch rapports:", res.error.message);
           setRapports(res.data || []);
@@ -8651,12 +8652,20 @@
       useEffect(function() {
         var cancelled = false;
         setLoading(true);
+        // Cols light : on exclut les signatures base64 (lourdes) du fetch en boucle.
+        // Elles sont charges a la demande quand l'utilisateur expand une ligne (cf. fetchSignatures()).
+        var RELEVES_COLS = "id,personnel_id,date_releve,sondeuse_code,equipement_id,fonction,heure_debut,heure_fin,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,remarques,source,created_at";
+        var CONGES_COLS  = "id,demandeur_id,date_demande,lieu,classification,type_conge,nombre_jours,date_debut,date_reprise,raison,statut,created_at";
+        var CMDS_COLS    = "id,demandeur_id,date_demande,tel,chantier_id,machine_lieu,lignes,statut,created_at";
+        var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,created_at";
+        var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at";
+
         Promise.all([
-          supabase.from("releves_heures").select("*").order("created_at", { ascending: false }),
-          supabase.from("demandes_conge").select("*").order("created_at", { ascending: false }),
-          supabase.from("bons_commande").select("*").order("created_at", { ascending: false }),
-          supabase.from("demandes_intervention").select("*").order("created_at", { ascending: false }),
-          supabase.from("rapports_forage").select("*").order("created_at", { ascending: false })
+          supabase.from("releves_heures").select(RELEVES_COLS).order("created_at", { ascending: false }),
+          supabase.from("demandes_conge").select(CONGES_COLS).order("created_at", { ascending: false }),
+          supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }),
+          supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }),
+          supabase.from("rapports_forage").select(RAPS_COLS).order("created_at", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -8683,6 +8692,36 @@
         setFiltStatut("tous");
         setExpanded(null);
       }, [tab]);
+
+      // ── Lazy-load des signatures (charge a la demande lors de l'expand) ──
+      // Evite de fetcher 50-100 KB de base64 par ligne dans le fetch en boucle.
+      var loadSignatures = function(type, id) {
+        var config = {
+          'r': { table: 'rapports_forage',       cols: 'id,signature_sondeur_png,signature_client_png', setter: setRaps,   current: raps },
+          'c': { table: 'demandes_conge',        cols: 'id,signature_employe_png',                       setter: setConges, current: conges },
+          'k': { table: 'bons_commande',         cols: 'id,signature_png',                               setter: setCmds,   current: cmds },
+          'i': { table: 'demandes_intervention', cols: 'id,signature_employe_png',                       setter: setInts,   current: ints },
+          'h': { table: 'releves_heures',        cols: 'id,signature_png',                               setter: setRels,   current: rels }
+        };
+        var c = config[type];
+        if (!c) return;
+        // Skip si la signature est deja chargee localement
+        var row = (c.current || []).find(function(x) { return x.id === id; });
+        if (row && (row.signature_sondeur_png || row.signature_client_png || row.signature_employe_png || row.signature_png)) return;
+        supabase.from(c.table).select(c.cols).eq('id', id).single().then(function(res) {
+          if (res.error || !res.data) return;
+          c.setter(function(prev) {
+            return (prev || []).map(function(x) { return x.id === id ? Object.assign({}, x, res.data) : x; });
+          });
+        });
+      };
+      // Wrapper pour les click handlers : si on ouvre, on lazy-load
+      var toggleExpand = function(type, id) {
+        var key = type + "-" + id;
+        var isExp = expanded === key;
+        if (!isExp) loadSignatures(type, id);
+        setExpanded(isExp ? null : key);
+      };
 
       // ── Auto-refresh toutes les 60 secondes (pause pendant l'edition d'un rapport) ──
       useEffect(function() {
@@ -8859,7 +8898,7 @@
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : fmtDate(c.date_releve),
               statut: c.absence_type ? "refusee" : "approuvee",
               isExpanded: isExp,
-              onClick: function() { setExpanded(isExp ? null : "h-" + c.id); }
+              onClick: function() { toggleExpand("h", c.id); }
             }),
             isExp ? detailWrap([
               detailGrid([
@@ -8898,7 +8937,7 @@
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
-              onClick: function() { setExpanded(isExp ? null : "c-" + c.id); }
+              onClick: function() { toggleExpand("c", c.id); }
             }),
             isExp ? detailWrap([
               detailGrid([
@@ -8938,7 +8977,7 @@
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
-              onClick: function() { setExpanded(isExp ? null : "k-" + c.id); }
+              onClick: function() { toggleExpand("k", c.id); }
             }),
             isExp ? detailWrap([
               detailGrid([
@@ -9005,7 +9044,7 @@
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Soumis " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
-              onClick: function() { setExpanded(isExp ? null : "i-" + c.id); }
+              onClick: function() { toggleExpand("i", c.id); }
             }),
             isExp ? detailWrap([
               detailGrid([
@@ -9067,7 +9106,7 @@
               right: r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : fmtDate(r.date_rapport),
               statut: r.statut,
               isExpanded: isExp,
-              onClick: function() { setExpanded(isExp ? null : "r-" + r.id); }
+              onClick: function() { toggleExpand("r", r.id); }
             }),
             isExp ? detailWrap([
               detailGrid([
