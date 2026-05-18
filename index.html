@@ -2360,26 +2360,69 @@
       }
     }
 
-    function PersonnelForm({ onSave, onCancel, editItem }) {
+    function PersonnelForm({ onSave, onCancel, editItem, allPersonnel }) {
       var _nom = useState(editItem ? editItem.nom : "");
       var _prenom = useState(editItem ? editItem.prenom : "");
       var _dateNaissance = useState(editItem ? editItem.dateNaissance : "");
       var _lieuContrat = useState(editItem ? editItem.lieuContrat : "");
       var _salaire = useState(editItem ? editItem.salaire : "");
       var _dateEmbauche = useState(editItem ? editItem.dateEmbauche : "");
+      var _role = useState(editItem && editItem.role ? editItem.role : "Aide sondeur");
+      var _pin = useState(editItem && editItem.pin ? editItem.pin : "");
+      var _acces = useState(editItem ? !!editItem.accesAppEmploye : false);
+      var _code = useState(editItem && editItem.code ? editItem.code : "");
+
+      // Auto-generate code "p{N+1}" pour un nouvel employe
+      useEffect(function() {
+        if (editItem || _code[0]) return;
+        var maxN = 0;
+        (allPersonnel || []).forEach(function(p) {
+          var m = String(p.code || "").match(/^p(\d+)$/);
+          if (m) { var n = parseInt(m[1]); if (n > maxN) maxN = n; }
+        });
+        _code[1]("p" + (maxN + 1));
+      }, []);
+
+      var generatePin = function() {
+        // PIN aleatoire 6 chiffres, unique parmi les employes actifs
+        var existingPins = (allPersonnel || [])
+          .filter(function(p) { return p.accesAppEmploye && (!editItem || p.id !== editItem.id); })
+          .map(function(p) { return p.pin; });
+        var pin;
+        var tries = 0;
+        do {
+          pin = String(Math.floor(100000 + Math.random() * 900000));
+          tries++;
+        } while (existingPins.indexOf(pin) >= 0 && tries < 100);
+        _pin[1](pin);
+      };
 
       function handleSubmit() {
         if (!_nom[0].trim() || !_prenom[0].trim()) { alert("Nom et prenom sont obligatoires."); return; }
+        if (_acces[0]) {
+          if (!_pin[0] || !/^\d{6}$/.test(_pin[0])) { alert("Si l'employe a acces a l'app, le PIN doit etre 6 chiffres."); return; }
+          // Verifie unicite du PIN parmi les employes actifs
+          var pinConflict = (allPersonnel || []).find(function(p) {
+            return p.accesAppEmploye && p.pin === _pin[0] && (!editItem || p.id !== editItem.id);
+          });
+          if (pinConflict) { alert("Ce PIN est deja utilise par " + pinConflict.prenom + " " + pinConflict.nom + ". Genere un autre PIN."); return; }
+        }
         onSave({
           id: editItem ? editItem.id : Date.now(),
+          code: _code[0] || ("p" + Date.now()),
           nom: _nom[0].trim(),
           prenom: _prenom[0].trim(),
           dateNaissance: _dateNaissance[0],
           lieuContrat: _lieuContrat[0].trim(),
           salaire: _salaire[0],
-          dateEmbauche: _dateEmbauche[0]
+          dateEmbauche: _dateEmbauche[0],
+          role: _role[0],
+          pin: _pin[0] || "",
+          accesAppEmploye: !!_acces[0]
         });
       }
+
+      var ROLES = ["Sondeur", "Aide sondeur", "Chauffeur", "Mecanicien", "Atelier", "Bureau", "Autre"];
 
       return h("div", null,
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } },
@@ -2388,7 +2431,27 @@
           h(FormField, { label: "Date de naissance" }, h("input", { type: "date", style: inputStyle, value: _dateNaissance[0], onChange: function(e) { _dateNaissance[1](e.target.value); } })),
           h(FormField, { label: "Date d'embauche" }, h("input", { type: "date", style: inputStyle, value: _dateEmbauche[0], onChange: function(e) { _dateEmbauche[1](e.target.value); } })),
           h(FormField, { label: "Lieu de contrat" }, h("input", { style: inputStyle, value: _lieuContrat[0], onChange: function(e) { _lieuContrat[1](e.target.value); }, placeholder: "Ex: Noumea, Bourail..." })),
-          h(FormField, { label: "Salaire (XPF)" }, h("input", { type: "number", style: inputStyle, value: _salaire[0], onChange: function(e) { _salaire[1](e.target.value); }, placeholder: "Montant mensuel" }))
+          h(FormField, { label: "Salaire (XPF)" }, h("input", { type: "number", style: inputStyle, value: _salaire[0], onChange: function(e) { _salaire[1](e.target.value); }, placeholder: "Montant mensuel" })),
+          h(FormField, { label: "Role" }, h("select", { style: selectStyle, value: _role[0], onChange: function(e) { _role[1](e.target.value); } },
+            ROLES.map(function(r) { return h("option", { key: r, value: r }, r); })
+          )),
+          h(FormField, { label: "Code interne" }, h("input", { style: Object.assign({}, inputStyle, { fontFamily: "monospace" }), value: _code[0], onChange: function(e) { _code[1](e.target.value); }, placeholder: "p19, p20...", readOnly: !!editItem })),
+        ),
+        // Section dediee acces app Employes
+        h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(167,139,250,0.08), rgba(167,139,250,0.02))", border: "1px solid rgba(167,139,250,0.30)", borderRadius: 12 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } },
+            h(Icon, { name: "key-round", size: 18, color: "#c4b5fd" }),
+            h("div", { style: { fontSize: 14, fontWeight: 800, color: "#c4b5fd" } }, "Acces app Employes")
+          ),
+          h("label", { style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (_acces[0] ? "rgba(167,139,250,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 8, cursor: "pointer", marginBottom: 12 } },
+            h("input", { type: "checkbox", checked: _acces[0], onChange: function(e) { _acces[1](e.target.checked); }, style: { accentColor: "#a78bfa" } }),
+            h("span", { style: { fontSize: 13, fontWeight: 600, color: _acces[0] ? "#e5e7eb" : "#a1a1aa" } }, "Autoriser cet employe a se connecter a l'app Employes")
+          ),
+          _acces[0] ? h("div", { style: { display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" } },
+            h(FormField, { label: "PIN (6 chiffres)" }, h("input", { type: "text", inputMode: "numeric", maxLength: 6, pattern: "\\d{6}", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 16, letterSpacing: 4, textAlign: "center" }), value: _pin[0], onChange: function(e) { _pin[1](e.target.value.replace(/\D/g, '').slice(0, 6)); }, placeholder: "------" })),
+            h(Button, { onClick: generatePin, variant: "secondary" }, h(IconText, { icon: "dice-6", size: 14 }, "Generer"))
+          ) : null,
+          _acces[0] ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } }, "Ce PIN sera necessaire pour que l'employe se connecte sur la tablette terrain. Il sera visible dans la liste du personnel.") : null
         ),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
           h(Button, { variant: "secondary", onClick: onCancel }, "Annuler"),
@@ -2516,12 +2579,12 @@
           h("div", { style: { overflowX: "auto" } },
             h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
               h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
-                ["", "Nom", "Prenom", "Lieu de contrat", "Date d'embauche", "Anciennete", "Salaire", ""].map(function(x, i) {
+                ["", "Nom", "Prenom", "Role", "Lieu de contrat", "Anciennete", "Salaire", "Acces app", "PIN", ""].map(function(x, i) {
                   return h("th", { key: i, style: { padding: "12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.07)" } }, x);
                 })
               )),
               h("tbody", null, filtered.length === 0 ?
-                h("tr", null, h("td", { colSpan: 8, style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun employe enregistre")) :
+                h("tr", null, h("td", { colSpan: 10, style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun employe enregistre")) :
                 sortByField(filtered, "nom").map(function(emp) {
                   var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
                   return h("tr", { key: emp.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer" }, onClick: function() { setViewFiche(emp); } },
@@ -2530,10 +2593,22 @@
                     ),
                     h("td", { style: { padding: "10px 12px", fontWeight: 700 } }, emp.nom),
                     h("td", { style: { padding: "10px 12px" } }, emp.prenom),
+                    h("td", { style: { padding: "10px 12px", fontSize: 12 } },
+                      emp.role
+                        ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: emp.role === "Sondeur" ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.10)", color: emp.role === "Sondeur" ? "#fcd34d" : "#c7d2fe", border: "1px solid " + (emp.role === "Sondeur" ? "rgba(245,158,11,0.35)" : "rgba(99,102,241,0.25)") } }, emp.role)
+                        : "-"
+                    ),
                     h("td", { style: { padding: "10px 12px" } }, emp.lieuContrat || "-"),
-                    h("td", { style: { padding: "10px 12px" } }, formatDate(emp.dateEmbauche)),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } }, getAnciennete(emp.dateEmbauche)),
                     h("td", { style: { padding: "10px 12px", fontWeight: 600, color: "#059669" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
+                    h("td", { style: { padding: "10px 12px", textAlign: "center" } },
+                      emp.accesAppEmploye
+                        ? h(Icon, { name: "check-circle", size: 16, color: "#86efac" })
+                        : h(Icon, { name: "x-circle", size: 16, color: "#71717a" })
+                    ),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: emp.accesAppEmploye && emp.pin ? "#c4b5fd" : "#71717a", letterSpacing: 1 } },
+                      emp.accesAppEmploye && emp.pin ? emp.pin : "-"
+                    ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
                       h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
@@ -2545,7 +2620,7 @@
           )
         ),
         showModal && h(Modal, { title: editing ? "Modifier l'employe" : "Nouvel employe", onClose: function() { setShowModal(false); setEditing(null); } },
-          h(PersonnelForm, { onSave: handleSave, onCancel: function() { setShowModal(false); setEditing(null); }, editItem: editing })),
+          h(PersonnelForm, { onSave: handleSave, onCancel: function() { setShowModal(false); setEditing(null); }, editItem: editing, allPersonnel: personnel })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'employe ?", message: "Confirmer la suppression de \"" + toDelete.prenom + " " + toDelete.nom + "\" ?", onConfirm: function() { handleDelete(toDelete.id); }, onCancel: function() { setToDelete(null); } }),
         viewFiche && renderFiche(viewFiche)
       );
@@ -7916,17 +7991,27 @@
         return h || 1;
       };
       // Map : bigint -> employe
+      // 1) Index les 18 employes hardcodes (p1..p18) par strToBigintMA(code) pour la compatibilite avec les FK existantes
+      // 2) Index aussi tous les employes saisis dans Personnel (avec code "pXX") par strToBigintMA(code)
+      // 3) En dernier recours, index par l'id numerique brut (pour les entrees sans code)
       var personnelMap = (function() {
         var map = {};
         EMPLOYE_LIST.forEach(function(p) {
           map[String(strToBigintMA(p.id))] = p;
         });
-        // Fallback : ajouter aussi le personnel custom de parametres si present
         try {
           var row = parametres.find(function(pr) { return pr.categorie === "personnel_data"; });
           if (row && row.valeur) {
             var extras = JSON.parse(row.valeur) || [];
-            extras.forEach(function(p) { if (p && p.id != null) map[String(p.id)] = p; });
+            extras.forEach(function(p) {
+              if (!p) return;
+              // Adapte le format au format attendu (nom = prenom + nom pour les nouveaux)
+              var adapted = Object.assign({}, p, {
+                nom: ((p.prenom || '') + ' ' + (p.nom || '')).trim() || p.nom || ''
+              });
+              if (p.code) map[String(strToBigintMA(p.code))] = adapted;
+              if (p.id != null) map[String(p.id)] = adapted;
+            });
           }
         } catch(e) {}
         return map;
