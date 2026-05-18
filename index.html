@@ -7711,10 +7711,11 @@
       var _refresh = useState(0);
       var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
 
-      // ── Fetch des rapports ──
+      // ── Fetch des rapports (silencieux apres le premier chargement) ──
       useEffect(function() {
         var cancelled = false;
-        setLoading(true);
+        // setLoading(true) uniquement au tout premier chargement
+        if (refreshFlag === 0) setLoading(true);
         supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(function(res) {
           if (cancelled) return;
           if (res.error) console.warn("[stats] fetch rapports:", res.error.message);
@@ -7723,6 +7724,12 @@
         });
         return function() { cancelled = true; };
       }, [refreshFlag]);
+
+      // ── Auto-refresh toutes les 60 secondes (silencieux : pas de loader, pas de saut) ──
+      useEffect(function() {
+        var timer = setInterval(function() { setRefreshFlag(function(f) { return f + 1; }); }, 60000);
+        return function() { clearInterval(timer); };
+      }, []);
 
       // ── Helpers ──
       var timeToMin = function(t) {
@@ -8676,6 +8683,13 @@
         setFiltStatut("tous");
         setExpanded(null);
       }, [tab]);
+
+      // ── Auto-refresh toutes les 60 secondes (pause pendant l'edition d'un rapport) ──
+      useEffect(function() {
+        if (editingRapportId != null) return; // pas de refresh pendant l'edition
+        var timer = setInterval(function() { setRefreshFlag(function(f) { return f + 1; }); }, 60000);
+        return function() { clearInterval(timer); };
+      }, [editingRapportId]);
 
       // ── Helpers UI ──
       var fmtDate = function(d) {
