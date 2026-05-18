@@ -7872,6 +7872,89 @@
 
           // ── Section Activites ──
           h("h3", { style: sectionTitleStyle }, h(Icon, { name: "activity", size: 14, color: "#a78bfa" }), "Activites (" + (form.activites || []).length + ")"),
+          // Timeline visuelle (frise horaire 0h-24h auto-zoomee sur la journee)
+          (function() {
+            var valid = (form.activites || []).filter(function(a) { return a.debut && a.fin; });
+            var activityColor = function(libelle) {
+              var c = String(libelle || '').toUpperCase();
+              if (c === 'FORATION') return '#ec4899';
+              if (c === 'TRAJET') return '#818cf8';
+              if (c === 'MAINTENANCE') return '#f59e0b';
+              if (c === 'DEPLACEMENT') return '#a78bfa';
+              if (c === 'PCC') return '#22c55e';
+              if (c === 'PAUSE') return '#71717a';
+              if (c === 'ATTENTE') return '#0ea5e9';
+              if (c === 'REMPLISSAGE RAPPORT TABLETTE') return '#06b6d4';
+              return '#94a3b8';
+            };
+            var timeToMin = function(t) {
+              if (!t) return 0;
+              var p = String(t).split(':');
+              return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+            };
+
+            if (valid.length === 0) {
+              return h("div", { style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: 12, marginBottom: 14, textAlign: "center", color: "#a1a1aa", fontSize: 11, fontStyle: "italic" } },
+                "Renseigne au moins une activite (debut + fin) pour voir la frise");
+            }
+
+            var TOTAL = 24 * 60;
+            var minStart = TOTAL, maxEnd = 0;
+            valid.forEach(function(a) {
+              var s = timeToMin(a.debut);
+              var dur = computeMins(a.debut, a.fin);
+              if (s < minStart) minStart = s;
+              if (s + dur > maxEnd) maxEnd = s + dur;
+            });
+            minStart = Math.max(0, Math.floor((minStart - 60) / 60) * 60);
+            maxEnd = Math.min(TOTAL, Math.ceil((maxEnd + 60) / 60) * 60);
+            if (maxEnd - minStart < 8 * 60) maxEnd = Math.min(TOTAL, minStart + 8 * 60);
+            var span = maxEnd - minStart;
+
+            var blocks = valid.map(function(a, i) {
+              var s = timeToMin(a.debut);
+              var dur = computeMins(a.debut, a.fin);
+              var leftPct = ((s - minStart) / span) * 100;
+              var widthPct = (dur / span) * 100;
+              if (leftPct + widthPct > 100) widthPct = 100 - leftPct;
+              if (widthPct < 0.5) widthPct = 0.5;
+              return h("div", { key: "blk-" + i, title: a.libelle + ' ' + a.debut + ' a ' + a.fin + ' (' + minToTime(dur) + ')',
+                style: { position: "absolute", top: 0, bottom: 0, left: leftPct + "%", width: widthPct + "%", background: activityColor(a.libelle), borderRight: "1px solid rgba(0,0,0,0.30)", display: "flex", alignItems: "center", padding: "0 4px", overflow: "hidden" } },
+                h("span", { style: { fontSize: 9, color: "white", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1, textShadow: "0 1px 2px rgba(0,0,0,0.4)" } }, a.libelle)
+              );
+            });
+
+            // Marqueurs horaires
+            var marks = [];
+            for (var h2 = Math.ceil(minStart / 60) * 60; h2 <= maxEnd; h2 += 60) {
+              var leftPct2 = ((h2 - minStart) / span) * 100;
+              var hh = ("0" + Math.floor(h2 / 60)).slice(-2);
+              marks.push(h("div", { key: "tick-" + h2, style: { position: "absolute", top: -8, width: 1, height: 6, background: "rgba(255,255,255,0.15)", left: leftPct2 + "%", transform: "translateX(-50%)" } }));
+              if (Math.floor(h2 / 60) % 2 === 0) {
+                marks.push(h("div", { key: "lbl-" + h2, style: { position: "absolute", left: leftPct2 + "%", transform: "translateX(-50%)", fontSize: 9, color: "#a1a1aa", fontWeight: 600, fontFamily: "monospace" } }, hh + "h"));
+              }
+            }
+
+            var presentTypes = [];
+            valid.forEach(function(a) { if (presentTypes.indexOf(a.libelle) < 0) presentTypes.push(a.libelle); });
+
+            return h("div", { style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px 24px", marginBottom: 14, position: "relative" } },
+              h("div", { style: { fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 } },
+                h(Icon, { name: "clock", size: 12, color: "#a1a1aa" }),
+                "Frise de la journee"
+              ),
+              h("div", { style: { position: "relative", height: 32, background: "rgba(255,255,255,0.03)", borderRadius: 6, overflow: "hidden" } }, blocks),
+              h("div", { style: { position: "relative", marginTop: 8, height: 14 } }, marks),
+              presentTypes.length > 0 ? h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.05)" } },
+                presentTypes.map(function(t, i) {
+                  return h("span", { key: "leg-" + i, style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "#a1a1aa" } },
+                    h("span", { style: { width: 8, height: 8, borderRadius: 2, background: activityColor(t), display: "inline-block" } }),
+                    t
+                  );
+                })
+              ) : null
+            );
+          }()),
           (form.activites || []).map(function(a, idx) {
             var total = computeMins(a.debut, a.fin);
             return h("div", { key: "ac-" + idx, style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 80px auto", gap: 8, alignItems: "center", marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
