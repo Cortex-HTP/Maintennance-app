@@ -7108,7 +7108,8 @@
     // ─── EcranAdminUtilisateurs ────────────────────────────────────────
     function EcranAdminUtilisateurs() {
       var ALL_PAGES = [
-        { key: "accueil", label: "Accueil", icon: "home" },
+        { key: "statistiques", label: "Accueil (Statistiques)", icon: "bar-chart-3" },
+        { key: "accueil", label: "Maintenance", icon: "home" },
         { key: "equipements", label: "Equipements", icon: "settings" },
         { key: "plans", label: "Plans", icon: "clipboard-list" },
         { key: "interventions", label: "Interventions", icon: "wrench" },
@@ -7686,6 +7687,463 @@
       );
     }
 
+    // ─── Ecran Statistiques (dashboard business : forage, productivite, consommables) ──
+    function EcranStatistiques() {
+      var ctx = useAppData();
+      var pieces = ctx.pieces || [];
+      var dbChantiers = ctx.dbChantiers || [];
+      var equipements = ctx.equipements || [];
+      var parametres = ctx.parametres || [];
+
+      var _period = useState("6mois");
+      var period = _period[0]; var setPeriod = _period[1];
+      var _chantierF = useState("all");
+      var chantierF = _chantierF[0]; var setChantierF = _chantierF[1];
+      var _sondeuseF = useState("all");
+      var sondeuseF = _sondeuseF[0]; var setSondeuseF = _sondeuseF[1];
+      var _sondeurF = useState("all");
+      var sondeurF = _sondeurF[0]; var setSondeurF = _sondeurF[1];
+
+      var _rapports = useState([]);
+      var rapports = _rapports[0]; var setRapports = _rapports[1];
+      var _loading = useState(true);
+      var loading = _loading[0]; var setLoading = _loading[1];
+      var _refresh = useState(0);
+      var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
+
+      // ── Fetch des rapports ──
+      useEffect(function() {
+        var cancelled = false;
+        setLoading(true);
+        supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(function(res) {
+          if (cancelled) return;
+          if (res.error) console.warn("[stats] fetch rapports:", res.error.message);
+          setRapports(res.data || []);
+          setLoading(false);
+        });
+        return function() { cancelled = true; };
+      }, [refreshFlag]);
+
+      // ── Helpers ──
+      var timeToMin = function(t) {
+        if (!t) return 0;
+        var p = String(t).split(":");
+        return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+      };
+      var durBtw = function(d, f) {
+        if (!d || !f) return 0;
+        var m = timeToMin(f) - timeToMin(d);
+        if (m < 0) m += 24 * 60;
+        return m;
+      };
+      var fmtH = function(min) {
+        if (!min) return "0h";
+        var h = Math.floor(min / 60);
+        return h + " h";
+      };
+      var fmtXPF = function(v) {
+        if (!v) return "0 XPF";
+        return Math.round(v).toLocaleString("fr-FR") + " XPF";
+      };
+
+      // ── Index pieces : designation/ref -> prix ──
+      var pieceIndex = (function() {
+        var idx = {};
+        (pieces || []).forEach(function(p) {
+          var d = (p.Designation || "").trim().toLowerCase();
+          var r = (p.Reference || "").trim().toLowerCase();
+          var prix = parseFloat(p.PrixUnitaire) || 0;
+          if (d) idx[d] = prix;
+          if (r) idx["ref:" + r] = prix;
+        });
+        return idx;
+      }());
+      var lookupPrix = function(designation, ref) {
+        var d = (designation || "").trim().toLowerCase();
+        var r = (ref || "").trim().toLowerCase();
+        if (d && pieceIndex[d] != null) return pieceIndex[d];
+        if (r && pieceIndex["ref:" + r] != null) return pieceIndex["ref:" + r];
+        return 0;
+      };
+
+      // ── Application des filtres ──
+      var now = new Date();
+      var periodStart = null;
+      if (period === "30j") periodStart = new Date(now.getTime() - 30 * 86400000);
+      else if (period === "3mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+      else if (period === "6mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      // "all" => null
+
+      var filtered = (rapports || []).filter(function(r) {
+        if (periodStart && r.date_rapport && new Date(r.date_rapport) < periodStart) return false;
+        if (chantierF !== "all" && String(r.chantier_id || "") !== chantierF) return false;
+        if (sondeuseF !== "all" && (r.sondeuse_code || "") !== sondeuseF) return false;
+        if (sondeurF !== "all") {
+          var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+          var sondeur = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
+          var sondeurName = sondeur ? (sondeur.nom || "") : "";
+          if (sondeurName !== sondeurF) return false;
+        }
+        return true;
+      });
+
+      // ── KPIs principaux ──
+      var totalMetres = filtered.reduce(function(s, r) { return s + (parseFloat(r.total_metres) || 0); }, 0);
+      // total_heures du rapport est en minutes (selon insertRapportForage)
+      var totalMinutes = filtered.reduce(function(s, r) { return s + (parseFloat(r.total_heures) || 0); }, 0);
+      // Cout consommables : sum (qty * prix) sur toutes les consos
+      var totalCoutConso = 0;
+      var consoMap = {}; // designation -> { qty, cout }
+      filtered.forEach(function(r) {
+        var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+        consos.forEach(function(c) {
+          var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0;
+          var prix = lookupPrix(c.designation || c.nom, c.ref);
+          var cout = qty * prix;
+          totalCoutConso += cout;
+          var k = (c.designation || c.nom || "—").trim();
+          if (!consoMap[k]) consoMap[k] = { qty: 0, cout: 0 };
+          consoMap[k].qty += qty;
+          consoMap[k].cout += cout;
+        });
+      });
+      // Productivite : metres / heures de foration uniquement
+      var minutesForation = 0;
+      var minutesByActivite = {};
+      filtered.forEach(function(r) {
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+        activites.forEach(function(a) {
+          var d = durBtw(a.debut, a.fin);
+          var lib = (a.libelle || "AUTRE").toUpperCase();
+          minutesByActivite[lib] = (minutesByActivite[lib] || 0) + d;
+          if (lib === "FORATION") minutesForation += d;
+        });
+      });
+      var productivite = minutesForation > 0 ? (totalMetres / (minutesForation / 60)) : 0;
+
+      // ── Evolution mensuelle ──
+      var moisMap = {}; // "YYYY-MM" -> metres
+      filtered.forEach(function(r) {
+        if (!r.date_rapport) return;
+        var d = new Date(r.date_rapport);
+        if (isNaN(d.getTime())) return;
+        var key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+        moisMap[key] = (moisMap[key] || 0) + (parseFloat(r.total_metres) || 0);
+      });
+      var moisKeys = Object.keys(moisMap).sort();
+      var moisLabels = ["Janv", "Fev", "Mars", "Avr", "Mai", "Juin", "Juil", "Aout", "Sept", "Oct", "Nov", "Dec"];
+      var moisData = moisKeys.map(function(k) {
+        var parts = k.split("-");
+        var label = moisLabels[parseInt(parts[1]) - 1] + " " + parts[0].substring(2);
+        return { key: k, label: label, value: moisMap[k] };
+      });
+      var maxMois = Math.max.apply(null, moisData.map(function(m) { return m.value; }).concat(1));
+
+      // ── Top consommables ──
+      var topConsos = Object.keys(consoMap).map(function(k) {
+        return { name: k, qty: consoMap[k].qty, cout: consoMap[k].cout };
+      }).sort(function(a, b) { return b.cout - a.cout; }).slice(0, 10);
+      var maxCout = topConsos.length > 0 ? topConsos[0].cout : 1;
+
+      // ── Top sondeurs ──
+      var sondeursMap = {}; // nom -> { metres, minutesForation, rapports }
+      filtered.forEach(function(r) {
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        var sondeur = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
+        if (!sondeur) return;
+        var nom = sondeur.nom || "—";
+        if (!sondeursMap[nom]) sondeursMap[nom] = { metres: 0, minutesForation: 0, rapports: 0 };
+        sondeursMap[nom].metres += parseFloat(r.total_metres) || 0;
+        sondeursMap[nom].rapports += 1;
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+        activites.forEach(function(a) {
+          if ((a.libelle || "").toUpperCase() === "FORATION") {
+            sondeursMap[nom].minutesForation += durBtw(a.debut, a.fin);
+          }
+        });
+      });
+      var topSondeurs = Object.keys(sondeursMap).map(function(nom) {
+        var s = sondeursMap[nom];
+        return {
+          nom: nom,
+          metres: s.metres,
+          heuresForation: s.minutesForation / 60,
+          rapports: s.rapports,
+          productivite: s.minutesForation > 0 ? s.metres / (s.minutesForation / 60) : 0
+        };
+      }).sort(function(a, b) { return b.metres - a.metres; });
+
+      // ── Detail par sondeuse ──
+      var sondeusesMap = {}; // code -> stats
+      filtered.forEach(function(r) {
+        var code = r.sondeuse_code || "—";
+        if (!sondeusesMap[code]) sondeusesMap[code] = { rapports: 0, metres: 0, minutes: 0, minutesForation: 0, coutConso: 0 };
+        sondeusesMap[code].rapports += 1;
+        sondeusesMap[code].metres += parseFloat(r.total_metres) || 0;
+        sondeusesMap[code].minutes += parseFloat(r.total_heures) || 0;
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+        activites.forEach(function(a) {
+          if ((a.libelle || "").toUpperCase() === "FORATION") {
+            sondeusesMap[code].minutesForation += durBtw(a.debut, a.fin);
+          }
+        });
+        var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+        consos.forEach(function(c) {
+          var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0;
+          var prix = lookupPrix(c.designation || c.nom, c.ref);
+          sondeusesMap[code].coutConso += qty * prix;
+        });
+      });
+      var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
+        var s = sondeusesMap[code];
+        return {
+          code: code,
+          rapports: s.rapports,
+          metres: s.metres,
+          heures: s.minutes / 60,
+          heuresForation: s.minutesForation / 60,
+          productivite: s.minutesForation > 0 ? s.metres / (s.minutesForation / 60) : 0,
+          coutConso: s.coutConso,
+          coutParMetre: s.metres > 0 ? s.coutConso / s.metres : 0
+        };
+      }).sort(function(a, b) { return b.metres - a.metres; });
+
+      // ── Listes pour les filtres ──
+      var allSondeuses = Array.from(new Set(rapports.map(function(r) { return r.sondeuse_code; }).filter(Boolean))).sort();
+      var allSondeurs = Array.from(new Set(rapports.flatMap(function(r) {
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        return equipe.filter(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); }).map(function(m) { return m.nom; });
+      }).filter(Boolean))).sort();
+
+      // ── Activites couleurs ──
+      var actColor = function(libelle) {
+        var c = String(libelle || '').toUpperCase();
+        if (c === 'FORATION') return '#ec4899';
+        if (c === 'TRAJET') return '#818cf8';
+        if (c === 'MAINTENANCE') return '#f59e0b';
+        if (c === 'DEPLACEMENT') return '#a78bfa';
+        if (c === 'PCC') return '#22c55e';
+        if (c === 'PAUSE') return '#71717a';
+        if (c === 'ATTENTE') return '#0ea5e9';
+        return '#94a3b8';
+      };
+      var activitesAffichees = Object.keys(minutesByActivite).map(function(k) {
+        return { libelle: k, minutes: minutesByActivite[k] };
+      }).sort(function(a, b) { return b.minutes - a.minutes; });
+      var sumActivites = activitesAffichees.reduce(function(s, a) { return s + a.minutes; }, 0);
+
+      // ── Styles communs ──
+      var sectionStyle = { background: "rgba(36,40,60,0.55)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 20, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" };
+      var sectionTitleStyle = { fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", gap: 8, marginBottom: 14 };
+      var thStyle = { textAlign: "left", padding: "10px 12px", fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)" };
+      var thRightStyle = Object.assign({}, thStyle, { textAlign: "right" });
+      var tdStyle = { padding: "12px", borderBottom: "1px solid rgba(255,255,255,0.04)", fontSize: 13 };
+      var tdRightStyle = Object.assign({}, tdStyle, { textAlign: "right", fontFamily: "monospace", fontWeight: 700 });
+
+      // ── KPI card factory ──
+      var kpiCard = function(color, icon, value, label) {
+        var colors = {
+          indigo: { bg: "rgba(129,140,248,0.15)", border: "rgba(129,140,248,0.35)", icon: "#818cf8", bar: "linear-gradient(90deg, #818cf8, #a78bfa)" },
+          green:  { bg: "rgba(34,197,94,0.15)",  border: "rgba(34,197,94,0.35)",  icon: "#86efac", bar: "linear-gradient(90deg, #22c55e, #10b981)" },
+          pink:   { bg: "rgba(236,72,153,0.15)", border: "rgba(236,72,153,0.35)", icon: "#f9a8d4", bar: "linear-gradient(90deg, #f9a8d4, #ec4899)" },
+          amber:  { bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.35)", icon: "#fde68a", bar: "linear-gradient(90deg, #fde68a, #f59e0b)" }
+        };
+        var c = colors[color] || colors.indigo;
+        return h("div", { style: { background: "rgba(36,40,60,0.55)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 18, boxShadow: "0 8px 24px rgba(0,0,0,0.2)", position: "relative", overflow: "hidden" } },
+          h("div", { style: { position: "absolute", top: 0, left: 0, right: 0, height: 3, background: c.bar } }),
+          h("div", { style: { width: 42, height: 42, borderRadius: 11, background: c.bg, border: "1px solid " + c.border, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 } },
+            h(Icon, { name: icon, size: 22, color: c.icon })),
+          h("div", { style: { fontSize: 26, fontWeight: 900, lineHeight: 1, marginBottom: 4 } }, value),
+          h("div", { style: { fontSize: 12, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, label)
+        );
+      };
+
+      var ddStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "8px 12px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
+      var lblStyle = { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginRight: 6 };
+
+      // ── Rendu principal ──
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "bar-chart-3", size: 20 }, "Statistiques"),
+          subtitle: "Vue d'ensemble des rapports de forage, activites et consommables",
+          action: h(Button, { onClick: function() { setRefreshFlag(refreshFlag + 1); }, variant: "secondary" }, h(IconText, { icon: "refresh-cw", size: 14 }, "Actualiser"))
+        }),
+        // Filtres
+        h("div", { style: { display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap", alignItems: "center" } },
+          h("span", { style: lblStyle }, "Periode"),
+          h("select", { value: period, onChange: function(e) { setPeriod(e.target.value); }, style: ddStyle },
+            h("option", { value: "30j" }, "30 derniers jours"),
+            h("option", { value: "3mois" }, "3 mois"),
+            h("option", { value: "6mois" }, "6 mois"),
+            h("option", { value: "1an" }, "1 an"),
+            h("option", { value: "all" }, "Tout l'historique")
+          ),
+          h("span", { style: lblStyle }, "Chantier"),
+          h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: ddStyle },
+            h("option", { value: "all" }, "Tous chantiers"),
+            (dbChantiers || []).map(function(c) { return h("option", { key: c.id, value: String(c.id) }, c.titre || c.nom || ("Chantier #" + c.id)); })
+          ),
+          h("span", { style: lblStyle }, "Sondeuse"),
+          h("select", { value: sondeuseF, onChange: function(e) { setSondeuseF(e.target.value); }, style: ddStyle },
+            h("option", { value: "all" }, "Toutes"),
+            allSondeuses.map(function(s) { return h("option", { key: s, value: s }, s); })
+          ),
+          h("span", { style: lblStyle }, "Sondeur"),
+          h("select", { value: sondeurF, onChange: function(e) { setSondeurF(e.target.value); }, style: ddStyle },
+            h("option", { value: "all" }, "Tous"),
+            allSondeurs.map(function(s) { return h("option", { key: s, value: s }, s); })
+          )
+        ),
+        loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } }, h("div", { className: "loader", style: { margin: "0 auto 12px" } }), "Chargement des statistiques...") :
+        filtered.length === 0 ? h(Card, null, h("div", { style: { padding: 60, textAlign: "center", color: "#71717a" } },
+          h(Icon, { name: "inbox", size: 36, color: "#71717a" }),
+          h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucun rapport sur cette periode"),
+          h("div", { style: { marginTop: 6, fontSize: 12 } }, "Elargis les filtres ou attends les premieres soumissions des sondeurs.")
+        )) :
+        h(React.Fragment, null,
+          // KPIs
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 28 } },
+            kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total"),
+            kpiCard("green", "clock", Math.round(totalMinutes / 60).toLocaleString("fr-FR") + " h", "Heures totales"),
+            kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables"),
+            kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration")
+          ),
+          // Evolution + Activites
+          h("div", { style: { display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16, marginBottom: 16 } },
+            h("div", { style: sectionStyle },
+              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trending-up", size: 16, color: "#a78bfa" }), "Evolution metrage mensuel"),
+              moisData.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Pas assez de donnees") :
+              h("div", null,
+                h("div", { style: { display: "flex", gap: 6, alignItems: "flex-end", height: 180, padding: "10px 4px", borderBottom: "1px solid rgba(255,255,255,0.05)" } },
+                  moisData.map(function(m) {
+                    var hPct = maxMois > 0 ? Math.max(2, (m.value / maxMois) * 100) : 0;
+                    return h("div", { key: m.key, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 } },
+                      h("div", { style: { width: "100%", height: hPct + "%", background: "linear-gradient(180deg, #a78bfa, #6366f1)", borderRadius: "4px 4px 0 0", position: "relative", display: "flex", justifyContent: "center" } },
+                        h("span", { style: { position: "absolute", top: -18, fontSize: 10, fontWeight: 700, color: "#e5e7eb", whiteSpace: "nowrap" } }, Math.round(m.value).toLocaleString("fr-FR"))
+                      )
+                    );
+                  })
+                ),
+                h("div", { style: { display: "flex", gap: 6, padding: "6px 4px 0" } },
+                  moisData.map(function(m) { return h("span", { key: m.key + "-l", style: { flex: 1, fontSize: 10, color: "#a1a1aa", textAlign: "center", fontWeight: 600 } }, m.label); })
+                )
+              )
+            ),
+            h("div", { style: sectionStyle },
+              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "pie-chart", size: 16, color: "#a78bfa" }), "Repartition activites"),
+              activitesAffichees.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Aucune activite") :
+              h("div", { style: { display: "flex", gap: 18, alignItems: "center" } },
+                (function() {
+                  // Donut SVG
+                  var offset = 0;
+                  var segments = activitesAffichees.map(function(a) {
+                    var pct = sumActivites > 0 ? (a.minutes / sumActivites) * 100 : 0;
+                    var dasharray = pct + " " + (100 - pct);
+                    var seg = h("circle", { key: a.libelle, cx: 18, cy: 18, r: 15.92, fill: "none", stroke: actColor(a.libelle), strokeWidth: 5, strokeDasharray: dasharray, strokeDashoffset: -offset });
+                    offset += pct;
+                    return seg;
+                  });
+                  return h("div", { style: { width: 140, height: 140, flexShrink: 0, position: "relative" } },
+                    h("svg", { viewBox: "0 0 36 36", style: { width: "100%", height: "100%", transform: "rotate(-90deg)" } }, segments),
+                    h("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" } },
+                      h("div", { style: { fontSize: 18, fontWeight: 800 } }, fmtH(sumActivites)),
+                      h("div", { style: { fontSize: 9, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 1 } }, "Total")
+                    )
+                  );
+                }()),
+                h("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 8, minWidth: 0 } },
+                  activitesAffichees.slice(0, 7).map(function(a) {
+                    var pct = sumActivites > 0 ? (a.minutes / sumActivites) * 100 : 0;
+                    return h("div", { key: a.libelle, style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 } },
+                      h("div", { style: { width: 10, height: 10, borderRadius: 3, background: actColor(a.libelle), flexShrink: 0 } }),
+                      h("div", { style: { flex: 1, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, a.libelle),
+                      h("div", { style: { color: "#a1a1aa", fontFamily: "monospace" } }, pct.toFixed(0) + "% · " + fmtH(a.minutes))
+                    );
+                  })
+                )
+              )
+            )
+          ),
+          // Top consommables + Top sondeurs
+          h("div", { style: { display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16, marginBottom: 16 } },
+            h("div", { style: sectionStyle },
+              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "package-x", size: 16, color: "#a78bfa" }), "Top consommables utilises"),
+              topConsos.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Aucun consommable") :
+              h("div", null, topConsos.map(function(c, i) {
+                var widthPct = maxCout > 0 ? (c.cout / maxCout) * 100 : 0;
+                return h("div", { key: c.name + i, style: { display: "grid", gridTemplateColumns: "1.5fr 3fr auto", gap: 12, alignItems: "center", fontSize: 12, padding: "8px 0", borderBottom: i < topConsos.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                  h("div", { style: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name),
+                  h("div", { style: { background: "rgba(255,255,255,0.06)", height: 8, borderRadius: 999, overflow: "hidden" } },
+                    h("div", { style: { width: Math.max(2, widthPct) + "%", height: "100%", background: "linear-gradient(90deg, #f9a8d4, #ec4899)", borderRadius: 999 } })
+                  ),
+                  h("div", { style: { fontWeight: 700, fontFamily: "monospace", fontSize: 11, color: "#f9a8d4", whiteSpace: "nowrap" } }, Math.round(c.qty) + " · " + Math.round(c.cout).toLocaleString("fr-FR"))
+                );
+              }))
+            ),
+            h("div", { style: sectionStyle },
+              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trophy", size: 16, color: "#a78bfa" }), "Top sondeurs"),
+              topSondeurs.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Aucun sondeur identifie") :
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", null,
+                  h("th", { style: thStyle }, "Sondeur"),
+                  h("th", { style: thRightStyle }, "Metres"),
+                  h("th", { style: thRightStyle }, "H fo."),
+                  h("th", { style: thRightStyle }, "Prod.")
+                )),
+                h("tbody", null, topSondeurs.slice(0, 8).map(function(s, i) {
+                  var initials = (s.nom || "?").split(" ").map(function(w) { return w[0]; }).filter(Boolean).slice(0, 2).join("").toUpperCase();
+                  var rankBg = i === 0 ? "rgba(245,158,11,0.20)" : (i === 1 ? "rgba(148,163,184,0.20)" : (i === 2 ? "rgba(180,83,9,0.20)" : "transparent"));
+                  var rankColor = i === 0 ? "#fcd34d" : (i === 1 ? "#cbd5e1" : (i === 2 ? "#fed7aa" : "#a1a1aa"));
+                  return h("tr", { key: s.nom, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: tdStyle },
+                      h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                        i < 3 ? h("span", { style: { display: "inline-block", padding: "2px 6px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: rankBg, color: rankColor, border: "1px solid " + rankBg.replace("0.20", "0.40") } }, "#" + (i + 1)) : null,
+                        h("div", { style: { width: 28, height: 28, borderRadius: "50%", background: i < 3 ? "linear-gradient(135deg, #f59e0b, #f97316)" : "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 10, color: "white", flexShrink: 0 } }, initials),
+                        h("span", { style: { fontWeight: 700, fontSize: 12 } }, s.nom)
+                      )
+                    ),
+                    h("td", { style: tdRightStyle }, Math.round(s.metres) + " m"),
+                    h("td", { style: tdRightStyle }, s.heuresForation.toFixed(0) + " h"),
+                    h("td", { style: Object.assign({}, tdRightStyle, { color: "#86efac" }) }, s.productivite.toFixed(1) + " m/h")
+                  );
+                }))
+              )
+            )
+          ),
+          // Detail par sondeuse
+          h("div", { style: sectionStyle },
+            h("h3", { style: sectionTitleStyle }, h(Icon, { name: "hard-hat", size: 16, color: "#a78bfa" }), "Detail par sondeuse"),
+            sondeusesDetail.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Aucune donnee") :
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", null,
+                  h("th", { style: thStyle }, "Sondeuse"),
+                  h("th", { style: thRightStyle }, "Nb rapports"),
+                  h("th", { style: thRightStyle }, "Metres"),
+                  h("th", { style: thRightStyle }, "Heures"),
+                  h("th", { style: thRightStyle }, "Prod. fo."),
+                  h("th", { style: thRightStyle }, "Consommables"),
+                  h("th", { style: thRightStyle }, "Cout / metre")
+                )),
+                h("tbody", null, sondeusesDetail.map(function(s) {
+                  return h("tr", { key: s.code, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: Object.assign({}, tdStyle, { fontWeight: 700, color: "#a78bfa" }) }, s.code),
+                    h("td", { style: tdRightStyle }, s.rapports),
+                    h("td", { style: tdRightStyle }, Math.round(s.metres) + " m"),
+                    h("td", { style: tdRightStyle }, s.heures.toFixed(0) + " h"),
+                    h("td", { style: Object.assign({}, tdRightStyle, { color: "#86efac" }) }, s.productivite.toFixed(1) + " m/h"),
+                    h("td", { style: tdRightStyle }, Math.round(s.coutConso).toLocaleString("fr-FR")),
+                    h("td", { style: tdRightStyle }, Math.round(s.coutParMetre).toLocaleString("fr-FR") + " /m")
+                  );
+                }))
+              )
+            )
+          )
+        )
+      );
+    }
+
     // ─── Vue d'edition complete d'un rapport de forage ─────────────────
     function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, onClose, onSaved, showToast }) {
       var _form = useState(function() {
@@ -8012,7 +8470,56 @@
       var parametres = ctx.parametres || [];
       var dbChantiers = ctx.dbChantiers || [];
       var equipements = ctx.equipements || [];
+      var pieces = ctx.pieces || [];
+      var addPiece = ctx.addPiece;
       var showToast = ctx.showToast;
+
+      // ── State pour la modal "Nouvelle piece" (transfert depuis une soumission) ──
+      var _newPiece = useState(null);
+      var newPiece = _newPiece[0]; var setNewPiece = _newPiece[1];
+
+      // Verifie si une designation ou ref existe deja dans la table pieces (case-insensitive)
+      var isPieceKnown = function(designation, ref) {
+        var d = (designation || '').trim().toLowerCase();
+        var r = (ref || '').trim().toLowerCase();
+        if (!d && !r) return true; // rien a transferer
+        return (pieces || []).some(function(p) {
+          var pd = (p.Designation || '').trim().toLowerCase();
+          var pr = (p.Reference || '').trim().toLowerCase();
+          return (d && pd && pd === d) || (r && pr && pr === r);
+        });
+      };
+
+      // Ouvre la modal de creation d'une nouvelle piece a partir d'une ligne soumission
+      var openCreatePiece = function(designation, ref, suggestedCat) {
+        setNewPiece({
+          Reference: ref || '',
+          Designation: designation || '',
+          Categorie: suggestedCat || 'Autre',
+          Fournisseur: '',
+          PrixUnitaire: '0',
+          Stock: '0',
+          StockMin: '1',
+          Emplacement: '',
+          Compatible: ''
+        });
+      };
+      var saveNewPiece = function() {
+        if (!newPiece || !newPiece.Reference || !newPiece.Designation) {
+          alert("Reference et designation sont obligatoires.");
+          return;
+        }
+        if (!addPiece) { alert("addPiece indisponible dans ce contexte"); return; }
+        addPiece(newPiece).then(function() {
+          if (showToast) showToast("Piece ajoutee aux Pieces detachees", "success");
+          setNewPiece(null);
+        }).catch(function(err) {
+          alert("Erreur : " + (err && err.message ? err.message : err));
+        });
+      };
+      var updNewPiece = function(k, v) {
+        setNewPiece(Object.assign({}, newPiece, (function() { var o = {}; o[k] = v; return o; }())));
+      };
 
       var SUBS = [
         { key: "soumissions_releves",       label: "Releves d'heure",         icon: "clock",         color: "#c7d2fe" },
@@ -8431,12 +8938,22 @@
                 sectionTitle("Articles demandes"),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
                   lignes.map(function(l, i) {
-                    return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13 } },
-                      h("div", null,
-                        h("span", { style: { fontWeight: 600 } }, l.designation || l.description || "-"),
-                        l.reference || l.ref ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, l.reference || l.ref) : null
+                    var designation = l.designation || l.description || "-";
+                    var refStr = l.reference || l.ref || "";
+                    var known = isPieceKnown(designation, refStr);
+                    return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, gap: 10 } },
+                      h("div", { style: { flex: 1, minWidth: 0 } },
+                        h("div", null,
+                          h("span", { style: { fontWeight: 600 } }, designation),
+                          refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
+                        ),
+                        !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
+                          style: { marginTop: 4, fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 } },
+                          h(Icon, { name: "plus", size: 10, color: "#fde68a" }),
+                          "Ajouter aux Pieces detachees"
+                        ) : null
                       ),
-                      h("div", { style: { fontWeight: 700, color: "#a78bfa" } }, (l.quantite || l.qte || l.qty || 0) + " " + (l.unite || l.unit || ""))
+                      h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap" } }, (l.quantite || l.qte || l.qty || 0) + " " + (l.unite || l.unit || ""))
                     );
                   })
                 )
@@ -8676,9 +9193,22 @@
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, fontSize: 13 } },
                   conso.map(function(k, i) {
                     var qte = k.qty != null ? k.qty : (k.quantite != null ? k.quantite : (k.qte != null ? k.qte : 0));
-                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < conso.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between", gap: 8 } },
-                      h("span", { style: { flex: 1 } }, (k.designation || k.nom || "-"), k.ref ? h("span", { style: { color: "#71717a", fontSize: 11, marginLeft: 8, fontFamily: "monospace" } }, k.ref) : null),
-                      h("span", { style: { color: "#a1a1aa", fontWeight: 700 } }, qte + (k.unite ? " " + k.unite : ""))
+                    var designation = k.designation || k.nom || "-";
+                    var refStr = k.ref || "";
+                    var known = isPieceKnown(designation, refStr);
+                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < conso.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
+                      h("div", { style: { flex: 1, minWidth: 0 } },
+                        h("div", null,
+                          h("span", null, designation),
+                          refStr ? h("span", { style: { color: "#71717a", fontSize: 11, marginLeft: 8, fontFamily: "monospace" } }, refStr) : null
+                        ),
+                        !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Consommable"); },
+                          style: { marginTop: 4, fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(236,72,153,0.15)", color: "#f9a8d4", border: "1px solid rgba(236,72,153,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 } },
+                          h(Icon, { name: "plus", size: 10, color: "#f9a8d4" }),
+                          "Ajouter aux Pieces detachees"
+                        ) : null
+                      ),
+                      h("span", { style: { color: "#a1a1aa", fontWeight: 700, whiteSpace: "nowrap" } }, qte + (k.unite ? " " + k.unite : ""))
                     );
                   })
                 )
@@ -8794,7 +9324,27 @@
           tab === "soumissions_interventions" ? renderInterventions() :
           tab === "soumissions_rapports" ? renderRapports() :
           h("div", null, "Aucun onglet selectionne.")
-        )
+        ),
+        // Modal "Ajouter aux Pieces detachees" depuis une soumission
+        newPiece ? h(Modal, { title: "Ajouter aux Pieces detachees", onClose: function() { setNewPiece(null); } },
+          h("div", { style: { display: "grid", gap: 12 } },
+            h("p", { style: { fontSize: 12, color: "#a1a1aa", margin: 0 } }, "Cet article n'existe pas encore dans Pieces detachees. Complete les infos puis Enregistrer pour l'ajouter au catalogue."),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 } },
+              h(FormField, { label: "Reference *" }, h("input", { style: inputStyle, value: newPiece.Reference, onChange: function(e) { updNewPiece("Reference", e.target.value.toUpperCase()); }, placeholder: "Ex: FIL-003" })),
+              h(FormField, { label: "Designation *" }, h("input", { style: inputStyle, value: newPiece.Designation, onChange: function(e) { updNewPiece("Designation", e.target.value); } })),
+              h(FormField, { label: "Categorie" }, h("input", { style: inputStyle, value: newPiece.Categorie, onChange: function(e) { updNewPiece("Categorie", e.target.value); }, placeholder: "Ex: Consommable, Filtre, EPI..." })),
+              h(FormField, { label: "Fournisseur" }, h("input", { style: inputStyle, value: newPiece.Fournisseur, onChange: function(e) { updNewPiece("Fournisseur", e.target.value); } })),
+              h(FormField, { label: "Prix unitaire (XPF)" }, h("input", { type: "number", style: inputStyle, value: newPiece.PrixUnitaire, onChange: function(e) { updNewPiece("PrixUnitaire", e.target.value); } })),
+              h(FormField, { label: "Stock initial" }, h("input", { type: "number", style: inputStyle, value: newPiece.Stock, onChange: function(e) { updNewPiece("Stock", e.target.value); } })),
+              h(FormField, { label: "Stock minimum" }, h("input", { type: "number", style: inputStyle, value: newPiece.StockMin, onChange: function(e) { updNewPiece("StockMin", e.target.value); } })),
+              h(FormField, { label: "Emplacement" }, h("input", { style: inputStyle, value: newPiece.Emplacement, onChange: function(e) { updNewPiece("Emplacement", e.target.value); } }))
+            ),
+            h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 } },
+              h(Button, { variant: "secondary", onClick: function() { setNewPiece(null); } }, "Annuler"),
+              h(Button, { onClick: saveNewPiece }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
+            )
+          )
+        ) : null
       );
     }
 
@@ -8846,7 +9396,8 @@
     function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, demandesFinPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
-          { key: "accueil", label: "Accueil", lucide: "home" },
+          { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
+          { key: "accueil", label: "Maintenance", lucide: "wrench" },
         ]},
         { name: "Maintenance", pages: [
           { key: "equipements", label: "Equipements", lucide: "settings" },
@@ -8920,7 +9471,7 @@
       const [recoveryMode, setRecoveryMode] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
       const [dataLoading, setDataLoading] = useState(false);
-      const [currentPage, setCurrentPage] = useState("accueil");
+      const [currentPage, setCurrentPage] = useState("statistiques");
       const [pageData, setPageData] = useState(null);
       const [interventions, setInterventions] = useState([]);
       const [equipements, setEquipements] = useState([]);
@@ -9652,6 +10203,7 @@
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
         if (currentPage === "primes") return h(EcranPrimes, null);
         if (currentPage === "soumissions") return h(EcranSoumissions, null);
+        if (currentPage === "statistiques") return h(EcranStatistiques, null);
         if (currentPage === "administration") return h(EcranAdministration, { onNavigate: navigate, pendingCount: pendingValidations.length });
         return h(EcranAccueil, { onNavigate: navigate });
       };
