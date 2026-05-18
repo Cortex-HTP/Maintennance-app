@@ -7049,6 +7049,7 @@
       ];
       // Sous-pages de "Soumissions employes" - actives seulement quand la page parente est cochee
       var SOUMISSIONS_SUBPAGES = [
+        { key: "soumissions_releves",       label: "Releves d'heure",         icon: "clock" },
         { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days" },
         { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart" },
         { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench" },
@@ -7856,6 +7857,7 @@
       var showToast = ctx.showToast;
 
       var SUBS = [
+        { key: "soumissions_releves",       label: "Releves d'heure",         icon: "clock",         color: "#c7d2fe" },
         { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days", color: "#86efac" },
         { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart", color: "#fde68a" },
         { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench",        color: "#fdba74" },
@@ -7871,6 +7873,7 @@
       var tab = _tab[0]; var setTab = _tab[1];
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
+      var _rels = useState([]);       var rels = _rels[0];         var setRels = _rels[1];
       var _conges = useState([]);     var conges = _conges[0];     var setConges = _conges[1];
       var _cmds = useState([]);       var cmds = _cmds[0];         var setCmds = _cmds[1];
       var _ints = useState([]);       var ints = _ints[0];         var setInts = _ints[1];
@@ -7967,20 +7970,23 @@
         var cancelled = false;
         setLoading(true);
         Promise.all([
-          supabase.from("demandes_conge").select("*").order("id", { ascending: false }),
-          supabase.from("bons_commande").select("*").order("id", { ascending: false }),
-          supabase.from("demandes_intervention").select("*").order("id", { ascending: false }),
-          supabase.from("rapports_forage").select("*").order("id", { ascending: false })
+          supabase.from("releves_heures").select("*").order("created_at", { ascending: false }),
+          supabase.from("demandes_conge").select("*").order("created_at", { ascending: false }),
+          supabase.from("bons_commande").select("*").order("created_at", { ascending: false }),
+          supabase.from("demandes_intervention").select("*").order("created_at", { ascending: false }),
+          supabase.from("rapports_forage").select("*").order("created_at", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
-          if (results[0].error) console.warn("[soumissions] conges:", results[0].error.message);
-          if (results[1].error) console.warn("[soumissions] commandes:", results[1].error.message);
-          if (results[2].error) console.warn("[soumissions] interventions:", results[2].error.message);
-          if (results[3].error) console.warn("[soumissions] rapports:", results[3].error.message);
-          setConges(results[0].data || []);
-          setCmds(results[1].data || []);
-          setInts(results[2].data || []);
-          setRaps(results[3].data || []);
+          if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
+          if (results[1].error) console.warn("[soumissions] conges:", results[1].error.message);
+          if (results[2].error) console.warn("[soumissions] commandes:", results[2].error.message);
+          if (results[3].error) console.warn("[soumissions] interventions:", results[3].error.message);
+          if (results[4].error) console.warn("[soumissions] rapports:", results[4].error.message);
+          setRels(results[0].data || []);
+          setConges(results[1].data || []);
+          setCmds(results[2].data || []);
+          setInts(results[3].data || []);
+          setRaps(results[4].data || []);
           setLoading(false);
         }).catch(function(err) {
           if (cancelled) return;
@@ -8065,6 +8071,7 @@
 
       // ── Filtres statut par onglet ──
       var STATUTS_BY_TAB = {
+        soumissions_releves:       ["tous"],
         soumissions_conges:        ["tous", "en_attente", "approuvee", "refusee"],
         soumissions_commandes:     ["tous", "soumis", "traite", "envoye_fournisseur", "refuse"],
         soumissions_interventions: ["tous", "soumis", "planifiee", "en_cours", "terminee", "refusee"],
@@ -8078,6 +8085,7 @@
 
       // ── KPIs par onglet ──
       var kpis = [
+        { key: "soumissions_releves", label: "Releves d'heure", sub: "soumis", count: rels.length, icon: "clock", color: "#c7d2fe", bg: "rgba(99,102,241,0.15)" },
         { key: "soumissions_conges", label: "Demandes de conges", sub: "en attente", count: conges.filter(function(c) { return c.statut === "en_attente"; }).length, icon: "calendar-days", color: "#86efac", bg: "rgba(34,197,94,0.15)" },
         { key: "soumissions_commandes", label: "Bons de commande", sub: "a traiter", count: cmds.filter(function(c) { return c.statut === "soumis"; }).length, icon: "shopping-cart", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
         { key: "soumissions_interventions", label: "Demandes intervention", sub: "a planifier", count: ints.filter(function(c) { return c.statut === "soumis"; }).length, icon: "wrench", color: "#fdba74", bg: "rgba(249,115,22,0.15)" },
@@ -8140,6 +8148,53 @@
         );
       };
 
+      // ── Render onglet "Releves d'heure" ──
+      var minToHHMM = function(min) {
+        if (!min || min < 0) min = 0;
+        var hh = Math.floor(min / 60); var mm = min % 60;
+        return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+      };
+      var renderReleves = function() {
+        var list = applyFilter(rels);
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun releve d'heure.");
+        return h("div", null, list.map(function(c) {
+          var isExp = expanded === ("h-" + c.id);
+          var name = personnelLabel(c.personnel_id);
+          var totalStr = minToHHMM(c.total_minutes || 0);
+          var sondLabel = c.sondeuse_code || equipementLabel(c.equipement_id) || "-";
+          var heureRange = (c.heure_debut || "") + (c.heure_fin ? " - " + c.heure_fin : "");
+          return h(React.Fragment, { key: "h-" + c.id },
+            rowHeader({
+              name: name + " - " + sondLabel,
+              sub: (c.fonction ? c.fonction + " - " : "") + (heureRange || "Heures non renseignees") + " (" + totalStr + ")" + (c.absence_type ? " - " + c.absence_type : ""),
+              right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : fmtDate(c.date_releve),
+              statut: c.absence_type ? "refusee" : "approuvee",
+              isExpanded: isExp,
+              onClick: function() { setExpanded(isExp ? null : "h-" + c.id); }
+            }),
+            isExp ? detailWrap([
+              detailGrid([
+                { label: "Employe", value: name },
+                { label: "Date du releve", value: fmtDate(c.date_releve) },
+                { label: "Sondeuse", value: sondLabel },
+                { label: "Fonction", value: c.fonction },
+                { label: "Heure debut", value: c.heure_debut },
+                { label: "Heure fin", value: c.heure_fin },
+                { label: "Total", value: totalStr },
+                { label: "Pause dejeuner", value: c.pause_dejeuner },
+                { label: "Route chauffeur", value: c.route_chauffeur },
+                { label: "Route passager", value: c.route_passager },
+                { label: "Eloignement", value: c.eloignement },
+                { label: "Absence", value: c.absence_type },
+                { label: "Prime panier", value: c.prime_panier }
+              ]),
+              c.remarques ? h("div", null, sectionTitle("Remarques"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8, whiteSpace: "pre-wrap" } }, c.remarques)) : null,
+              c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null
+            ]) : null
+          );
+        }));
+      };
+
       // ── Render onglet "Conges" ──
       var renderConges = function() {
         var list = applyFilter(conges);
@@ -8151,7 +8206,7 @@
             rowHeader({
               name: name + (c.lieu ? " - " + c.lieu : ""),
               sub: (c.type_conge || "conge") + " - " + c.nombre_jours + " jour" + (c.nombre_jours > 1 ? "s" : "") + " du " + fmtDate(c.date_debut) + " au " + fmtDate(c.date_reprise),
-              right: "Demande le " + fmtDate(c.date_demande),
+              right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
               onClick: function() { setExpanded(isExp ? null : "c-" + c.id); }
@@ -8191,7 +8246,7 @@
             rowHeader({
               name: name,
               sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
-              right: "Demande le " + fmtDate(c.date_demande),
+              right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
               onClick: function() { setExpanded(isExp ? null : "k-" + c.id); }
@@ -8248,7 +8303,7 @@
                 c.urgence ? h("span", null, h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: URG_COLOR[c.urgence] || "#94a3b8", marginRight: 6, verticalAlign: "middle" } }), URG_LABEL[c.urgence] || c.urgence, " - ") : null,
                 (c.type_panne ? c.type_panne + " - " : "") + (c.description ? c.description.substring(0, 80) + (c.description.length > 80 ? "..." : "") : "")
               ),
-              right: "Soumis " + fmtDate(c.date_demande),
+              right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Soumis " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
               onClick: function() { setExpanded(isExp ? null : "i-" + c.id); }
@@ -8310,7 +8365,7 @@
               avatarText: sondLabel,
               name: sondLabel + " - " + sondeurName,
               sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.total_metres || 0) + " m / " + (r.total_heures || 0) + " h" + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
-              right: fmtDate(r.date_rapport),
+              right: r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : fmtDate(r.date_rapport),
               statut: r.statut,
               isExpanded: isExp,
               onClick: function() { setExpanded(isExp ? null : "r-" + r.id); }
@@ -8354,9 +8409,21 @@
                 sectionTitle("Activites (" + activites.length + ")"),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, fontSize: 13 } },
                   activites.map(function(a, i) {
-                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between" } },
-                      h("span", null, a.type || a.libelle || "Activite"),
-                      h("span", { style: { color: "#a1a1aa" } }, (a.duree || a.heures || 0) + " h")
+                    // Calcul de duree depuis debut/fin (HH:MM)
+                    var dureeMins = 0;
+                    if (a.debut && a.fin) {
+                      var p1 = String(a.debut).split(":"); var p2 = String(a.fin).split(":");
+                      var h1 = parseInt(p1[0]) || 0; var m1 = parseInt(p1[1]) || 0;
+                      var h2 = parseInt(p2[0]) || 0; var m2 = parseInt(p2[1]) || 0;
+                      dureeMins = (h2 * 60 + m2) - (h1 * 60 + m1);
+                      if (dureeMins < 0) dureeMins += 24 * 60;
+                    }
+                    var hh = Math.floor(dureeMins / 60); var mm = dureeMins % 60;
+                    var dureeStr = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+                    var horaireStr = (a.debut && a.fin) ? (a.debut + " - " + a.fin) : "";
+                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between", gap: 8 } },
+                      h("span", { style: { flex: 1 } }, (a.libelle || a.type || "Activite") + (horaireStr ? " " : ""), horaireStr ? h("span", { style: { color: "#71717a", fontSize: 11 } }, horaireStr) : null),
+                      h("span", { style: { color: "#a78bfa", fontWeight: 700, fontFamily: "monospace" } }, dureeStr)
                     );
                   })
                 )
@@ -8365,9 +8432,10 @@
                 sectionTitle("Consommables perdus / casses (" + conso.length + ")"),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, fontSize: 13 } },
                   conso.map(function(k, i) {
-                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < conso.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between" } },
-                      h("span", null, k.designation || k.nom || "-"),
-                      h("span", { style: { color: "#a1a1aa", fontWeight: 700 } }, (k.quantite || k.qte || 0) + " " + (k.unite || ""))
+                    var qte = k.qty != null ? k.qty : (k.quantite != null ? k.quantite : (k.qte != null ? k.qte : 0));
+                    return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < conso.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between", gap: 8 } },
+                      h("span", { style: { flex: 1 } }, (k.designation || k.nom || "-"), k.ref ? h("span", { style: { color: "#71717a", fontSize: 11, marginLeft: 8, fontFamily: "monospace" } }, k.ref) : null),
+                      h("span", { style: { color: "#a1a1aa", fontWeight: 700 } }, qte + (k.unite ? " " + k.unite : ""))
                     );
                   })
                 )
@@ -8429,7 +8497,8 @@
       }
 
       var currentStatuts = STATUTS_BY_TAB[tab] || ["tous"];
-      var currentList = tab === "soumissions_conges" ? conges :
+      var currentList = tab === "soumissions_releves" ? rels :
+                        tab === "soumissions_conges" ? conges :
                         tab === "soumissions_commandes" ? cmds :
                         tab === "soumissions_interventions" ? ints :
                         tab === "soumissions_rapports" ? raps : [];
@@ -8476,6 +8545,7 @@
             h("div", { className: "loader", style: { margin: "0 auto 12px" } }),
             "Chargement des soumissions..."
           ) :
+          tab === "soumissions_releves" ? renderReleves() :
           tab === "soumissions_conges" ? renderConges() :
           tab === "soumissions_commandes" ? renderCommandes() :
           tab === "soumissions_interventions" ? renderInterventions() :
