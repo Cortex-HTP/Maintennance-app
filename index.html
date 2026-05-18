@@ -7610,6 +7610,241 @@
       );
     }
 
+    // ─── Vue d'edition complete d'un rapport de forage ─────────────────
+    function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, onClose, onSaved, showToast }) {
+      var _form = useState(function() {
+        // Copie profonde minimale pour eviter de muter la prop
+        var deep = function(o) { try { return JSON.parse(JSON.stringify(o)); } catch(e) { return o; } };
+        return {
+          date_rapport: rapport.date_rapport || "",
+          sondeuse_code: rapport.sondeuse_code || "",
+          client: rapport.client || "",
+          lieu: rapport.lieu || "",
+          quart: rapport.quart || "jour",
+          remarques: rapport.remarques || "",
+          controles_ok: !!rapport.controles_ok,
+          equipe: Array.isArray(rapport.equipe) ? deep(rapport.equipe) : [],
+          sondages: Array.isArray(rapport.sondages) ? deep(rapport.sondages) : [],
+          activites: Array.isArray(rapport.activites) ? deep(rapport.activites) : [],
+          consommables_perdus: Array.isArray(rapport.consommables_perdus) ? deep(rapport.consommables_perdus) : [],
+          horametre: Array.isArray(rapport.horametre) ? deep(rapport.horametre) : []
+        };
+      });
+      var form = _form[0]; var setForm = _form[1];
+      var _saving = useState(false);
+      var saving = _saving[0]; var setSaving = _saving[1];
+
+      var update = function(key, val) { var copy = Object.assign({}, form); copy[key] = val; setForm(copy); };
+      var updateList = function(key, idx, field, val) {
+        var list = (form[key] || []).slice();
+        list[idx] = Object.assign({}, list[idx], (function() { var o = {}; o[field] = val; return o; }()));
+        var copy = Object.assign({}, form); copy[key] = list; setForm(copy);
+      };
+      var removeFromList = function(key, idx) {
+        var list = (form[key] || []).slice(); list.splice(idx, 1);
+        var copy = Object.assign({}, form); copy[key] = list; setForm(copy);
+      };
+      var addToList = function(key, blank) {
+        var list = (form[key] || []).slice(); list.push(blank);
+        var copy = Object.assign({}, form); copy[key] = list; setForm(copy);
+      };
+
+      // Calculs derives
+      var computeMins = function(d, f) {
+        if (!d || !f) return 0;
+        var p1 = String(d).split(":"); var p2 = String(f).split(":");
+        var h1 = parseInt(p1[0]) || 0; var m1 = parseInt(p1[1]) || 0;
+        var h2 = parseInt(p2[0]) || 0; var m2 = parseInt(p2[1]) || 0;
+        var mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+        if (mins < 0) mins += 24 * 60;
+        return mins;
+      };
+      var minToTime = function(min) {
+        if (!min || min < 0) min = 0;
+        var hh = Math.floor(min / 60); var mm = min % 60;
+        return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+      };
+      var totalMetres = (form.sondages || []).reduce(function(s, x) {
+        var de = parseFloat(x.de); var a = parseFloat(x.a);
+        if (isNaN(de)) de = 0; if (isNaN(a)) a = 0;
+        return s + Math.max(0, a - de);
+      }, 0);
+      var totalMinutes = (form.activites || []).reduce(function(s, x) { return s + computeMins(x.debut, x.fin); }, 0);
+
+      var inputStyleEdit = { width: "100%", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: "7px 10px", color: "#e5e7eb", fontSize: 12, fontWeight: 600, fontFamily: "inherit", marginTop: 3 };
+      var labelStyleEdit = { display: "block", fontSize: 11, color: "#a1a1aa", marginBottom: 0 };
+      var sectionTitleStyle = { fontSize: 13, fontWeight: 800, color: "#a78bfa", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10, marginTop: 18, display: "flex", alignItems: "center", gap: 8 };
+
+      var save = function() {
+        setSaving(true);
+        var payload = {
+          date_rapport: form.date_rapport || null,
+          sondeuse_code: form.sondeuse_code || null,
+          client: form.client || null,
+          lieu: form.lieu || null,
+          quart: form.quart || null,
+          remarques: form.remarques || null,
+          controles_ok: !!form.controles_ok,
+          equipe: form.equipe || [],
+          sondages: form.sondages || [],
+          activites: form.activites || [],
+          consommables_perdus: form.consommables_perdus || [],
+          horametre: form.horametre || [],
+          total_metres: Math.round(totalMetres * 10) / 10,
+          total_heures: totalMinutes
+        };
+        supabase.from("rapports_forage").update(payload).eq("id", rapport.id).select().single().then(function(res) {
+          setSaving(false);
+          if (res.error) {
+            alert("Erreur sauvegarde : " + res.error.message);
+            return;
+          }
+          if (showToast) showToast("Rapport mis a jour", "success");
+          if (onSaved) onSaved(res.data);
+        });
+      };
+
+      var QUARTS = [
+        { value: "jour", label: "Jour" },
+        { value: "nuit", label: "Nuit" }
+      ];
+
+      return h("div", null,
+        // Header
+        h("div", { style: { display: "flex", alignItems: "center", gap: 14, marginBottom: 18, paddingBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.07)" } },
+          h(Button, { onClick: onClose, variant: "secondary" }, h(IconText, { icon: "chevron-left", size: 14 }, "Retour")),
+          h("div", { style: { flex: 1 } },
+            h("h2", { style: { fontSize: 18, fontWeight: 800, display: "flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: "edit-3", size: 18, color: "#f9a8d4" }),
+              "Edition rapport #" + rapport.id + (form.sondeuse_code ? " - " + form.sondeuse_code : "")
+            ),
+            h("p", { style: { fontSize: 12, color: "#a1a1aa", marginTop: 2 } }, (form.client || "Client ?") + " / " + (form.lieu || "Lieu ?") + " - Quart " + (form.quart || "?"))
+          ),
+          h("span", { style: { fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, textTransform: "uppercase", background: "rgba(167,139,250,0.15)", color: "#c4b5fd", border: "1px solid rgba(167,139,250,0.35)" } }, rapport.statut || "-")
+        ),
+
+        // Warning si rapport deja signe
+        rapport.statut === "signe_client" || rapport.signature_client_png
+          ? h("div", { style: { background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 10, padding: "12px 14px", fontSize: 12, color: "#fcd34d", display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 18 } },
+              h(Icon, { name: "alert-triangle", size: 14, color: "#fcd34d" }),
+              h("div", null, "Ce rapport est deja signe par le client. Modifier les donnees ne supprime pas automatiquement la signature - a faire manuellement si la modification est materielle (passe par 'Re-mettre soumis' ensuite).")
+            )
+          : null,
+
+        h("div", { style: { background: "rgba(36,40,60,0.55)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 24, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
+
+          // ── Section Chantier ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "briefcase", size: 14, color: "#a78bfa" }), "Chantier"),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 12 } },
+            h("label", { style: labelStyleEdit }, "Client", h("input", { type: "text", value: form.client, onChange: function(e) { update("client", e.target.value); }, style: inputStyleEdit })),
+            h("label", { style: labelStyleEdit }, "Lieu", h("input", { type: "text", value: form.lieu, onChange: function(e) { update("lieu", e.target.value); }, style: inputStyleEdit })),
+            h("label", { style: labelStyleEdit }, "Sondeuse (code)", h("input", { type: "text", value: form.sondeuse_code, onChange: function(e) { update("sondeuse_code", e.target.value); }, style: inputStyleEdit })),
+            h("label", { style: labelStyleEdit }, "Date", h("input", { type: "date", value: form.date_rapport, onChange: function(e) { update("date_rapport", e.target.value); }, style: inputStyleEdit })),
+            h("label", { style: labelStyleEdit }, "Quart", h("select", { value: form.quart, onChange: function(e) { update("quart", e.target.value); }, style: inputStyleEdit }, QUARTS.map(function(q) { return h("option", { key: q.value, value: q.value }, q.label); })))
+          ),
+          h("label", { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "#cbd5e1", marginTop: 6 } },
+            h("input", { type: "checkbox", checked: form.controles_ok, onChange: function(e) { update("controles_ok", e.target.checked); }, style: { accentColor: "#818cf8" } }),
+            "Controle des niveaux et maintenance journaliere effectues"
+          ),
+
+          // ── Section Equipe ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "users", size: 14, color: "#a78bfa" }), "Equipe (" + (form.equipe || []).length + ")"),
+          (form.equipe || []).map(function(m, idx) {
+            var isSondeur = m.isSondeur || (m.role && String(m.role).toLowerCase() === "sondeur");
+            return h("div", { key: "eq-" + idx, style: { display: "grid", gridTemplateColumns: "auto 1fr 1fr 90px auto", alignItems: "center", gap: 10, padding: 10, background: isSondeur ? "rgba(245,158,11,0.08)" : "rgba(99,102,241,0.06)", border: "1px solid " + (isSondeur ? "rgba(245,158,11,0.30)" : "rgba(129,140,248,0.30)"), borderRadius: 8, marginBottom: 6 } },
+              h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: isSondeur ? "linear-gradient(135deg,#f59e0b,#f97316)" : "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 800, fontSize: 11 } }, ((m.nom || "?").split(" ").map(function(w) { return w[0]; }).filter(Boolean).slice(0, 2).join("")).toUpperCase()),
+              h("input", { type: "text", value: m.nom || "", placeholder: "Nom", onChange: function(e) { updateList("equipe", idx, "nom", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontWeight: 700 }) }),
+              h("input", { type: "text", value: m.role || "", placeholder: "Role", onChange: function(e) { updateList("equipe", idx, "role", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0 }) }),
+              h("input", { type: "text", value: m.hours || "", placeholder: "00:00", onChange: function(e) { updateList("equipe", idx, "hours", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontFamily: "monospace", textAlign: "center" }) }),
+              h("button", { onClick: function() { removeFromList("equipe", idx); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 28, height: 28, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
+                h(Icon, { name: "x", size: 14, color: "#fda4af" }))
+            );
+          }),
+          h("button", { onClick: function() { addToList("equipe", { nom: "", role: "Aide sondeur", hours: "", isSondeur: false }); }, style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e5e7eb", padding: "7px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4 } },
+            h(Icon, { name: "plus", size: 14, color: "#a1a1aa" }), "Ajouter un membre"),
+
+          // ── Section Sondages ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "layers", size: 14, color: "#a78bfa" }), "Sondages (" + (form.sondages || []).length + ")"),
+          (form.sondages || []).map(function(s, idx) {
+            var de = parseFloat(s.de); var a = parseFloat(s.a);
+            if (isNaN(de)) de = 0; if (isNaN(a)) a = 0;
+            var total = Math.max(0, a - de);
+            return h("div", { key: "sd-" + idx, style: { background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: 12, marginBottom: 8 } },
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+                h("span", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", background: "rgba(236,72,153,0.15)", border: "1px solid rgba(236,72,153,0.35)", padding: "2px 8px", borderRadius: 999 } }, "#" + (idx + 1) + " Sondage"),
+                h("button", { onClick: function() { removeFromList("sondages", idx); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 24, height: 24, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
+                  h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
+              ),
+              h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8, marginBottom: 8 } },
+                h("label", { style: labelStyleEdit }, "No sondage", h("input", { type: "text", value: s.num || "", onChange: function(e) { updateList("sondages", idx, "num", e.target.value); }, style: inputStyleEdit })),
+                h("label", { style: labelStyleEdit }, "Angle", h("input", { type: "number", value: s.angle != null ? s.angle : "", onChange: function(e) { updateList("sondages", idx, "angle", e.target.value); }, style: inputStyleEdit })),
+                h("label", { style: labelStyleEdit }, "Type", h("input", { type: "text", value: s.type || "", onChange: function(e) { updateList("sondages", idx, "type", e.target.value); }, style: inputStyleEdit }))
+              ),
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 } },
+                h("label", { style: labelStyleEdit }, "De (m)", h("input", { type: "number", value: s.de != null ? s.de : "", onChange: function(e) { updateList("sondages", idx, "de", e.target.value); }, style: inputStyleEdit })),
+                h("label", { style: labelStyleEdit }, "A (m)", h("input", { type: "number", value: s.a != null ? s.a : "", onChange: function(e) { updateList("sondages", idx, "a", e.target.value); }, style: inputStyleEdit })),
+                h("label", { style: labelStyleEdit }, "Total", h("input", { type: "text", value: total.toFixed(1), readOnly: true, style: Object.assign({}, inputStyleEdit, { color: "#f9a8d4", fontWeight: 800 }) }))
+              )
+            );
+          }),
+          h("button", { onClick: function() { addToList("sondages", { num: "", angle: 90, type: "AIRCORE", de: 0, a: 0 }); }, style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e5e7eb", padding: "7px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4 } },
+            h(Icon, { name: "plus", size: 14, color: "#a1a1aa" }), "Ajouter un sondage"),
+          h("div", { style: { background: "linear-gradient(135deg,rgba(236,72,153,0.20),rgba(236,72,153,0.05))", border: "1px solid rgba(236,72,153,0.40)", borderRadius: 10, padding: "12px 14px", margin: "10px 0 0", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            h("span", { style: { fontSize: 11, fontWeight: 700, color: "#f9a8d4", textTransform: "uppercase" } }, "Total metres journee"),
+            h("span", { style: { fontSize: 18, fontWeight: 900, color: "#fff" } }, totalMetres.toFixed(1) + " m")
+          ),
+
+          // ── Section Activites ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "activity", size: 14, color: "#a78bfa" }), "Activites (" + (form.activites || []).length + ")"),
+          (form.activites || []).map(function(a, idx) {
+            var total = computeMins(a.debut, a.fin);
+            return h("div", { key: "ac-" + idx, style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 80px auto", gap: 8, alignItems: "center", marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+              h("input", { type: "text", value: a.libelle || "", placeholder: "Activite", onChange: function(e) { updateList("activites", idx, "libelle", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontWeight: 600 }) }),
+              h("input", { type: "text", value: a.debut || "", placeholder: "00:00", onChange: function(e) { updateList("activites", idx, "debut", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontFamily: "monospace", textAlign: "center" }) }),
+              h("input", { type: "text", value: a.fin || "", placeholder: "00:00", onChange: function(e) { updateList("activites", idx, "fin", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontFamily: "monospace", textAlign: "center" }) }),
+              h("input", { type: "text", value: minToTime(total), readOnly: true, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontFamily: "monospace", textAlign: "center", color: "#a78bfa" }) }),
+              h("button", { onClick: function() { removeFromList("activites", idx); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 28, height: 28, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
+                h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
+            );
+          }),
+          h("button", { onClick: function() { addToList("activites", { libelle: "FORATION", debut: "", fin: "" }); }, style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e5e7eb", padding: "7px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4 } },
+            h(Icon, { name: "plus", size: 14, color: "#a1a1aa" }), "Ajouter une activite"),
+          h("div", { style: { background: "linear-gradient(135deg,rgba(236,72,153,0.20),rgba(236,72,153,0.05))", border: "1px solid rgba(236,72,153,0.40)", borderRadius: 10, padding: "12px 14px", margin: "10px 0 0", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            h("span", { style: { fontSize: 11, fontWeight: 700, color: "#f9a8d4", textTransform: "uppercase" } }, "Total heures journee"),
+            h("span", { style: { fontSize: 18, fontWeight: 900, color: "#fff", fontFamily: "monospace" } }, minToTime(totalMinutes))
+          ),
+
+          // ── Section Remarques ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "message-square", size: 14, color: "#a78bfa" }), "Remarques"),
+          h("textarea", { value: form.remarques, onChange: function(e) { update("remarques", e.target.value); }, rows: 3, style: Object.assign({}, inputStyleEdit, { minHeight: 70, marginTop: 0, fontWeight: 500, fontFamily: "inherit" }) }),
+
+          // ── Section Consommables ──
+          h("h3", { style: sectionTitleStyle }, h(Icon, { name: "package-x", size: 14, color: "#a78bfa" }), "Consommables perdus / casses (" + (form.consommables_perdus || []).length + ")"),
+          (form.consommables_perdus || []).length === 0 ? h("p", { style: { color: "#a1a1aa", fontStyle: "italic", fontSize: 12, marginBottom: 8 } }, "Aucun") :
+          (form.consommables_perdus || []).map(function(c, idx) {
+            return h("div", { key: "co-" + idx, style: { display: "grid", gridTemplateColumns: "2fr 1fr 80px auto", gap: 8, alignItems: "center", marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+              h("input", { type: "text", value: c.designation || c.nom || "", placeholder: "Designation", onChange: function(e) { updateList("consommables_perdus", idx, "designation", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0 }) }),
+              h("input", { type: "text", value: c.ref || "", placeholder: "Reference", onChange: function(e) { updateList("consommables_perdus", idx, "ref", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontFamily: "monospace", fontSize: 11 }) }),
+              h("input", { type: "number", value: c.qty != null ? c.qty : (c.quantite != null ? c.quantite : ""), placeholder: "Qte", onChange: function(e) { updateList("consommables_perdus", idx, "qty", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, textAlign: "center" }) }),
+              h("button", { onClick: function() { removeFromList("consommables_perdus", idx); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 28, height: 28, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
+                h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
+            );
+          }),
+          h("button", { onClick: function() { addToList("consommables_perdus", { designation: "", ref: "", qty: 1 }); }, style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e5e7eb", padding: "7px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4 } },
+            h(Icon, { name: "plus", size: 14, color: "#a1a1aa" }), "Ajouter un consommable")
+        ),
+
+        // ── Footer actions ──
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, padding: "16px 0", borderTop: "1px solid rgba(255,255,255,0.07)" } },
+          h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, "Rapport #" + rapport.id + " - " + (rapport.signature_client_png ? "Signe par le client" : "Non signe par le client")),
+          h("div", { style: { display: "flex", gap: 10 } },
+            h(Button, { onClick: onClose, variant: "secondary", disabled: saving }, "Annuler"),
+            h(Button, { onClick: save, disabled: saving }, h(IconText, { icon: saving ? "loader" : "save", size: 14, color: "white" }, saving ? "Sauvegarde..." : "Enregistrer"))
+          )
+        )
+      );
+    }
+
     // ─── Ecran Soumissions employes ───────────────────────────────────
     function EcranSoumissions() {
       var ctx = useAppData();
@@ -7643,15 +7878,52 @@
       var _expanded = useState(null); var expanded = _expanded[0]; var setExpanded = _expanded[1];
       var _filtStatut = useState("tous"); var filtStatut = _filtStatut[0]; var setFiltStatut = _filtStatut[1];
       var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
+      var _editingRapportId = useState(null); var editingRapportId = _editingRapportId[0]; var setEditingRapportId = _editingRapportId[1];
 
-      // ── Personnel index (id -> { nom, prenom, lieu_contrat }) depuis parametres ──
+      // ── Personnel index ──
+      // L'app Employes utilise une liste hardcodee d'employes avec des string ids ("p1", "p2", ...)
+      // qui sont hashes vers des bigints via strToBigint() avant insertion dans la DB.
+      // Pour resoudre les noms cote main app, on reproduit le meme hash sur la meme liste.
+      var EMPLOYE_LIST = [
+        { id: "p1",  nom: "Sebastien DESONNEVILLE", role: "Sondeur" },
+        { id: "p2",  nom: "Mathieu MACE",           role: "Aide sondeur" },
+        { id: "p3",  nom: "Bryan STUART",           role: "Aide sondeur" },
+        { id: "p4",  nom: "Fabien NUNEWAIE",        role: "Aide sondeur" },
+        { id: "p5",  nom: "Rodolphe POUMALI",       role: "Aide sondeur" },
+        { id: "p6",  nom: "Emmanuel MUSSILLON",     role: "Aide sondeur" },
+        { id: "p7",  nom: "Arnold DELHUMEAU",       role: "Sondeur" },
+        { id: "p8",  nom: "Steeve METZDORF",        role: "Aide sondeur" },
+        { id: "p9",  nom: "Ulrick NEPAMOINDOU",     role: "Aide sondeur" },
+        { id: "p10", nom: "Matthieu TAUATITI",      role: "Aide sondeur" },
+        { id: "p11", nom: "Jean-Pierre KAVAREO",    role: "Aide sondeur" },
+        { id: "p12", nom: "Yvon GORODE",            role: "Aide sondeur" },
+        { id: "p13", nom: "Loic WAEHNRICK",         role: "Aide sondeur" },
+        { id: "p14", nom: "Patrick PADIGNAGNE",     role: "Aide sondeur" },
+        { id: "p15", nom: "Frederic NEXEMIE",       role: "Aide sondeur" },
+        { id: "p16", nom: "Bernard COULIBALY",      role: "Aide sondeur" },
+        { id: "p17", nom: "Ahmed DJEDDOUI",         role: "Aide sondeur" },
+        { id: "p18", nom: "Marcel TANE",            role: "Aide sondeur" }
+      ];
+      // Reproduction exacte du strToBigint() de l'app Employes
+      var strToBigintMA = function(s) {
+        if (typeof s === "number") return s;
+        if (/^\d+$/.test(String(s))) return parseInt(s, 10);
+        var h = 0; var str = String(s);
+        for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) & 0x7fffffff;
+        return h || 1;
+      };
+      // Map : bigint -> employe
       var personnelMap = (function() {
         var map = {};
+        EMPLOYE_LIST.forEach(function(p) {
+          map[String(strToBigintMA(p.id))] = p;
+        });
+        // Fallback : ajouter aussi le personnel custom de parametres si present
         try {
-          var row = parametres.find(function(p) { return p.categorie === "personnel_data"; });
+          var row = parametres.find(function(pr) { return pr.categorie === "personnel_data"; });
           if (row && row.valeur) {
-            var list = JSON.parse(row.valeur);
-            (list || []).forEach(function(p) { if (p && p.id != null) map[String(p.id)] = p; });
+            var extras = JSON.parse(row.valeur) || [];
+            extras.forEach(function(p) { if (p && p.id != null) map[String(p.id)] = p; });
           }
         } catch(e) {}
         return map;
@@ -7666,6 +7938,16 @@
         var parts = [p.prenom, p.nom].filter(Boolean);
         if (parts.length === 0) return "#" + id;
         return parts.join(" ");
+      };
+      // Initiales propres : 2 premieres lettres alphabetiques des 2 premiers mots
+      var initialsOf = function(name) {
+        if (!name) return "?";
+        var words = String(name).split(/[\s\-_]+/).filter(Boolean);
+        var letters = words.map(function(w) {
+          var m = w.match(/[A-Za-zA-Za-zàâéèêëïîôöùûüç]/);
+          return m ? m[0] : "";
+        }).filter(Boolean).slice(0, 2).join("");
+        return (letters || "?").toUpperCase();
       };
       var chantierLabel = function(id) {
         if (id == null) return null;
@@ -7804,7 +8086,7 @@
 
       // ── Rendu commun de la ligne d'entete d'une carte ──
       var rowHeader = function(opts) {
-        var initials = (opts.name || "?").split(" ").map(function(w) { return w[0]; }).filter(Boolean).slice(0, 2).join("").toUpperCase();
+        var initials = initialsOf(opts.avatarName || opts.name);
         return h("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
           onClick: opts.onClick },
           h("div", { style: { width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, color: "white", flexShrink: 0 } }, initials),
@@ -8016,12 +8298,15 @@
           var equipe = Array.isArray(r.equipe) ? r.equipe : [];
           var activites = Array.isArray(r.activites) ? r.activites : [];
           var conso = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
-          var sondeurName = personnelLabel(r.personnel_id);
+          // Trouver le sondeur dans l'equipe (pour l'avatar et le nom affiche)
+          var sondeurMember = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
+          var sondeurName = (sondeurMember && sondeurMember.nom) || personnelLabel(r.personnel_id);
           var sondLabel = r.sondeuse_code || equipementLabel(r.equipement_id) || "-";
           return h(React.Fragment, { key: "r-" + r.id },
             rowHeader({
-              name: sondLabel + " - " + (r.client || "Client ?") + (r.lieu ? " - " + r.lieu : ""),
-              sub: "Sondeur " + sondeurName + " - " + (r.total_metres || 0) + " m / " + (r.total_heures || 0) + " h" + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
+              avatarName: sondeurName,
+              name: sondeurName + " - " + sondLabel,
+              sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.total_metres || 0) + " m / " + (r.total_heures || 0) + " h" + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
               right: fmtDate(r.date_rapport),
               statut: r.statut,
               isExpanded: isExp,
@@ -8096,7 +8381,7 @@
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
                 r.statut !== "valide_admin" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
                 r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
-                actionBtn({ label: "Edition complete (a venir)", icon: "edit-3", color: "neutral", onClick: function() { if (showToast) showToast("Edition complete disponible bientot", "info"); } })
+                actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingRapportId(r.id); } })
               )
             ]) : null
           );
@@ -8113,6 +8398,31 @@
             h("div", { style: { marginTop: 6, fontSize: 12 } }, "Demande a un administrateur d'activer au moins une sous-section dans tes acces.")
           ))
         );
+      }
+
+      // Si on est en mode edition d'un rapport, on remplace toute la vue
+      if (editingRapportId != null) {
+        var rapportEnEdition = raps.find(function(x) { return x.id === editingRapportId; });
+        if (!rapportEnEdition) {
+          // Si on ne trouve plus le rapport (refresh inattendu), on ferme
+          return h("div", null,
+            h(PageHeader, { title: h(IconText, { icon: "inbox", size: 20 }, "Soumissions employes") }),
+            h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Rapport introuvable")),
+            h(Button, { onClick: function() { setEditingRapportId(null); }, variant: "secondary" }, "Retour")
+          );
+        }
+        return h(RapportEditView, {
+          rapport: rapportEnEdition,
+          personnelMap: personnelMap,
+          dbChantiers: dbChantiers,
+          equipements: equipements,
+          showToast: showToast,
+          onClose: function() { setEditingRapportId(null); },
+          onSaved: function(updated) {
+            setRaps(raps.map(function(x) { return x.id === updated.id ? updated : x; }));
+            setEditingRapportId(null);
+          }
+        });
       }
 
       var currentStatuts = STATUTS_BY_TAB[tab] || ["tous"];
