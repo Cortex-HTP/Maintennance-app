@@ -10437,9 +10437,15 @@
             }
           }
         });
-        // Map equipement_id -> equipement (pour resolution code sondeuse)
+        // Map equipement_id -> equipement, et map code (immatriculation) -> equipement_id
+        // pour normaliser les rapports importes en SQL (qui n'ont que sondeuse_code) avec
+        // ceux soumis via l'app (qui ont equipement_id rempli). Cle de regroupement coherente.
         var equipById = {};
-        (equipements || []).forEach(function(e) { equipById[String(e.Id)] = e; });
+        var equipIdByCode = {};
+        (equipements || []).forEach(function(e) {
+          equipById[String(e.Id)] = e;
+          if (e.Title) equipIdByCode[String(e.Title).toUpperCase().trim()] = e.Id;
+        });
 
         var out = [];
         function hhmmToHours(s) {
@@ -10459,9 +10465,18 @@
             var sk = String(r.lieu).toUpperCase().trim();
             if (chantierBySite[sk]) chId = chantierBySite[sk].id;
           }
-          // Resolution sondeuse / equipement
+          // Resolution sondeuse / equipement : on remplit les 2 champs pour cle de regroupement coherente
           var sondeuseCode = r.sondeuse_code || "";
           var equipementId = r.equipement_id || null;
+          // Si equipement_id manque mais sondeuse_code existe, on cherche l'equipement correspondant
+          if (equipementId == null && sondeuseCode) {
+            var lookupKey = String(sondeuseCode).toUpperCase().trim();
+            if (equipIdByCode[lookupKey]) equipementId = equipIdByCode[lookupKey];
+          }
+          // Si sondeuse_code manque mais equipement_id existe, on prend le Title de l'equipement
+          if (!sondeuseCode && equipementId != null && equipById[String(equipementId)]) {
+            sondeuseCode = equipById[String(equipementId)].Title || "";
+          }
           var equipe = Array.isArray(r.equipe) ? r.equipe : [];
           equipe.forEach(function(m) {
             if (!m) return;
