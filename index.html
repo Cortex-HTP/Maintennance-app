@@ -7800,9 +7800,28 @@
       var totalMetres = filtered.reduce(function(s, r) { return s + (parseFloat(r.total_metres) || 0); }, 0);
       // total_heures du rapport est en minutes (selon insertRapportForage)
       var totalMinutes = filtered.reduce(function(s, r) { return s + (parseFloat(r.total_heures) || 0); }, 0);
-      // Cout consommables : sum (qty * prix) sur toutes les consos
+      // Cout consommables : sum (qty * prix) sur toutes les consos.
+      // Regroupement case-insensitive + utilisation de la designation officielle de la table pieces
+      // pour eviter les doublons "MAZOUT/L" vs "Mazout/l".
+      var pieceDesignationOfficielle = function(rawName, rawRef) {
+        var lowerName = (rawName || "").trim().toLowerCase();
+        var lowerRef = (rawRef || "").trim().toLowerCase();
+        var match = (pieces || []).find(function(p) {
+          var pd = (p.Designation || "").trim().toLowerCase();
+          var pr = (p.Reference || "").trim().toLowerCase();
+          return (lowerName && pd === lowerName) || (lowerRef && pr === lowerRef);
+        });
+        if (match) return match.Designation;
+        // Sinon : capitalisation propre (premier caractere en maj, reste en min)
+        if (!rawName) return "—";
+        var s = String(rawName).trim();
+        if (s.length === 0) return "—";
+        // Si le nom est en MAJUSCULES, on le met en TitleCase
+        if (s === s.toUpperCase()) return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+        return s;
+      };
       var totalCoutConso = 0;
-      var consoMap = {}; // designation -> { qty, cout }
+      var consoMap = {}; // key lowercase -> { qty, cout, displayName }
       filtered.forEach(function(r) {
         var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
         consos.forEach(function(c) {
@@ -7810,10 +7829,12 @@
           var prix = lookupPrix(c.designation || c.nom, c.ref);
           var cout = qty * prix;
           totalCoutConso += cout;
-          var k = (c.designation || c.nom || "—").trim();
-          if (!consoMap[k]) consoMap[k] = { qty: 0, cout: 0 };
-          consoMap[k].qty += qty;
-          consoMap[k].cout += cout;
+          var rawName = (c.designation || c.nom || "—").trim();
+          var displayName = pieceDesignationOfficielle(rawName, c.ref);
+          var keyNorm = displayName.toLowerCase();
+          if (!consoMap[keyNorm]) consoMap[keyNorm] = { qty: 0, cout: 0, displayName: displayName };
+          consoMap[keyNorm].qty += qty;
+          consoMap[keyNorm].cout += cout;
         });
       });
       // Productivite : metres / heures de foration uniquement
@@ -7850,7 +7871,7 @@
 
       // ── Top consommables ──
       var topConsos = Object.keys(consoMap).map(function(k) {
-        return { name: k, qty: consoMap[k].qty, cout: consoMap[k].cout };
+        return { name: consoMap[k].displayName || k, qty: consoMap[k].qty, cout: consoMap[k].cout };
       }).sort(function(a, b) { return b.cout - a.cout; }).slice(0, 10);
       var maxCout = topConsos.length > 0 ? topConsos[0].cout : 1;
 
