@@ -7860,7 +7860,23 @@
       // Mois / 3 mois : barres journalieres
       // 6 mois / 1 an / Tout : barres mensuelles
       var isMonthlyView = (period === "6mois" || period === "1an" || period === "all");
-      var chartData = []; // [{ label, value, jsDate, isWE }]
+      var chartData = []; // [{ label, value, ca, jsDate, isWE }]
+
+      // Index chantier_id -> prixMetre (pour calcul CA)
+      var prixMetreByChantier = {};
+      (dbChantiers || []).forEach(function(c) {
+        prixMetreByChantier[String(c.id)] = parseFloat(c.prixMetre) || 0;
+      });
+      var caByDate = {}; // "YYYY-MM-DD" ou "YYYY-MM" -> CA total
+      filtered.forEach(function(r) {
+        if (!r.date_rapport) return;
+        var prix = prixMetreByChantier[String(r.chantier_id || "")] || 0;
+        var ca = (parseFloat(r.total_metres) || 0) * prix;
+        var keyDay = String(r.date_rapport).substring(0, 10);
+        var keyMonth = keyDay.substring(0, 7);
+        caByDate[keyDay] = (caByDate[keyDay] || 0) + ca;
+        caByDate[keyMonth] = (caByDate[keyMonth] || 0) + ca;
+      });
 
       if (isMonthlyView) {
         // Agregation par mois
@@ -7894,6 +7910,7 @@
           chartData.push({
             label: monthLabels[dd.getMonth()] + " " + String(dd.getFullYear()).substring(2),
             value: monthMap[k] || 0,
+            ca: caByDate[k] || 0,
             jsDate: dd,
             isWE: false
           });
@@ -7923,6 +7940,7 @@
           chartData.push({
             label: String(cur.getDate()),
             value: dayMap[dStr] || 0,
+            ca: caByDate[dStr] || 0,
             jsDate: new Date(cur),
             isWE: (dow === 0 || dow === 6)
           });
@@ -8101,7 +8119,7 @@
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration")
           ),
           // Evolution + Activites
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: sectionStyle },
               h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trending-up", size: 16, color: "#a78bfa" }), isMonthlyView ? "Evolution metrage mensuel" : "Evolution metrage journalier"),
               chartData.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Pas assez de donnees") :
@@ -8111,11 +8129,13 @@
                 var n = chartData.length;
                 var chartH = 140;
                 var topPad = isMonthlyView ? 8 : 26; // place pour pills "Sem" en vue journaliere
-                // ViewBox fixe : la SVG remplit la card et le browser scale
                 var totalW = 600;
                 var paddingLR = 16;
                 var gap = 2;
                 var barW = Math.max((totalW - paddingLR * 2 - (n - 1) * gap) / n, 2);
+                // Cumul journalier sur la periode (running total des metres)
+                var cumul = 0;
+                var cumulData = chartData.map(function(d) { cumul += d.value; return cumul; });
 
                 // Pills "Sem" pour vue journaliere uniquement (regroupe par semaine lundi->dimanche)
                 var weeks = [];
@@ -8125,33 +8145,42 @@
                     var dow = chartData[wj].jsDate.getDay();
                     if (curW === null || dow === 1) {
                       if (curW) weeks.push(curW);
-                      curW = { startIdx: wj, endIdx: wj, total: chartData[wj].value };
+                      curW = { startIdx: wj, endIdx: wj, total: chartData[wj].value, totalCa: chartData[wj].ca || 0 };
                     } else {
                       curW.endIdx = wj;
                       curW.total += chartData[wj].value;
+                      curW.totalCa += (chartData[wj].ca || 0);
                     }
                   }
                   if (curW) weeks.push(curW);
                 }
+                // Format compact XPF : 1234567 -> "1.2M" / 12345 -> "12.3K" / sinon brut
+                var fmtCompactXPF = function(v) {
+                  if (!v) return "0";
+                  if (v >= 1000000) return (v / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+                  if (v >= 1000) return Math.round(v / 1000) + "K";
+                  return String(Math.round(v));
+                };
 
-                return h("svg", { viewBox: "0 0 " + totalW + " " + (chartH + topPad + 28), preserveAspectRatio: "none", style: { width: "100%", height: 180, display: "block" } },
+                return h("svg", { viewBox: "0 0 " + totalW + " " + (chartH + topPad + 42), preserveAspectRatio: "none", style: { width: "100%", height: 200, display: "block" } },
                   // Bandes de fond par semaine (vue jour seulement)
                   !isMonthlyView ? weeks.map(function(w, wi) {
                     var x1 = paddingLR + w.startIdx * (barW + gap) - 1;
                     var x2 = paddingLR + w.endIdx * (barW + gap) + barW + 1;
                     return h("rect", { key: "wbg" + wi, x: x1, y: topPad, width: x2 - x1, height: chartH - topPad, fill: wi % 2 === 0 ? "rgba(99,102,241,0.04)" : "rgba(99,102,241,0.10)" });
                   }) : null,
-                  // Pills "Sem" en haut (jour uniquement)
+                  // Pills "Sem" en haut (jour uniquement) - affiche le CA en XPF
                   !isMonthlyView ? weeks.map(function(w, wi) {
                     if (w.total <= 0) return null;
                     var x1 = paddingLR + w.startIdx * (barW + gap);
                     var x2 = paddingLR + w.endIdx * (barW + gap) + barW;
                     var cx = (x1 + x2) / 2;
-                    var pillW = Math.min(x2 - x1 - 2, 80);
-                    if (pillW < 24) return null; // trop petit pour afficher
+                    var pillW = Math.min(x2 - x1 - 2, 110);
+                    if (pillW < 28) return null;
+                    var labelTxt = w.totalCa > 0 ? "Sem : " + fmtCompactXPF(w.totalCa) + " XPF" : "Sem : " + Math.round(w.total) + " m";
                     return h("g", { key: "wca" + wi },
                       h("rect", { x: cx - pillW / 2, y: 2, width: pillW, height: 16, rx: 8, fill: "rgba(167,139,250,0.15)", stroke: "rgba(167,139,250,0.45)", strokeWidth: 1 }),
-                      h("text", { x: cx, y: 13, textAnchor: "middle", fontSize: 8, fill: "#c4b5fd", fontWeight: 700 }, "Sem " + Math.round(w.total))
+                      h("text", { x: cx, y: 13, textAnchor: "middle", fontSize: 8, fill: "#c4b5fd", fontWeight: 700 }, labelTxt)
                     );
                   }) : null,
                   // Barres
@@ -8162,10 +8191,14 @@
                     // Label sous la barre : tous les jours en vue mois courant (n=30), 1er du mois en vue 3 mois (n=90),
                     // toujours en vue mensuelle (n=6-24)
                     var showLabel = isMonthlyView || n <= 31 || d.jsDate.getDate() === 1 || idx === 0 || idx === n - 1;
+                    var cumulVal = cumulData[idx];
+                    // Cumul affiche : si la barre est assez large pour lire le texte
+                    var showCumul = cumulVal > 0 && barW > 14 && (isMonthlyView || n <= 35);
                     return h("g", { key: "b" + idx },
                       h("rect", { x: x, y: chartH - barH, width: Math.max(barW, 1), height: Math.max(barH, 0), rx: 1.5, fill: barColor, opacity: d.value > 0 ? 1 : 0.15 }),
                       d.value > 0 && barH > 12 && barW > 18 ? h("text", { x: x + barW / 2, y: chartH - barH + 10, textAnchor: "middle", fontSize: 7, fill: "white", fontWeight: 700 }, Math.round(d.value)) : null,
-                      showLabel ? h("text", { x: x + barW / 2, y: chartH + 12, textAnchor: "middle", fontSize: 8, fill: (d.isWE ? "#a78bfa" : "#a1a1aa"), fontWeight: isMonthlyView ? 700 : 400 }, d.label) : null
+                      showLabel ? h("text", { x: x + barW / 2, y: chartH + 12, textAnchor: "middle", fontSize: 8, fill: (d.isWE ? "#a78bfa" : "#a1a1aa"), fontWeight: isMonthlyView ? 700 : 400 }, d.label) : null,
+                      showCumul ? h("text", { x: x + barW / 2, y: chartH + 24, textAnchor: "middle", fontSize: 7, fill: "#86efac", fontWeight: 700, fontFamily: "monospace" }, Math.round(cumulVal)) : null
                     );
                   }),
                   h("line", { x1: paddingLR - 2, x2: totalW - paddingLR + 2, y1: chartH, y2: chartH, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 })
@@ -8208,7 +8241,7 @@
             )
           ),
           // Top consommables + Top sondeurs
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: sectionStyle },
               h("h3", { style: sectionTitleStyle }, h(Icon, { name: "package-x", size: 16, color: "#a78bfa" }), "Top consommables utilises"),
               topConsos.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12 } }, "Aucun consommable") :
