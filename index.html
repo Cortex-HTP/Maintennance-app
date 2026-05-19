@@ -5189,6 +5189,8 @@
       var setSaisiesState = ctxAv.setDbSaisies;
       var affectationsAv = ctxAv.dbAffectations || [];
       var setAffectationsAv = ctxAv.setDbAffectations;
+      // dbRelevesJourn du contexte est deja la fusion rapports + CSV (cf. App contextValue).
+      // Plus besoin de fetch local des rapports_forage : le mapping est fait au niveau global.
 
       // Wrapper setSaisies that also persists to Supabase
       var setSaisies = function(newSaisies) {
@@ -5421,8 +5423,8 @@
         return out;
       })();
 
-      // Metrage chantier+date : priorite aux releves_journaliers (MAX/machine puis somme),
-      // fallback sur les saisies manuelles si aucun releve.
+      // Metrage chantier+date : relevesIdx contient deja les rapports (via fusion globale au niveau App).
+      // Priorite : releves (incl. rapports) > saisies manuelles.
       function getDailyMetrageChantier(chId, dateStr) {
         var ck = String(chId);
         if (relevesIdx[ck] && relevesIdx[ck][dateStr] != null) return relevesIdx[ck][dateStr];
@@ -5433,7 +5435,7 @@
       function getRealise(chId) {
         var total = 0;
         var ck = String(chId);
-        // Cumule depuis releves_journaliers (toutes dates)
+        // relevesIdx contient deja la fusion rapports + CSV (niveau App)
         var seen = {};
         if (relevesIdx[ck]) {
           var dks = Object.keys(relevesIdx[ck]);
@@ -5442,7 +5444,7 @@
             seen[dks[i]] = true;
           }
         }
-        // Complete avec saisies manuelles pour les dates sans releve
+        // Complete avec saisies manuelles pour les dates sans releve/rapport
         if (saisies[chId]) {
           var ks = Object.keys(saisies[chId]);
           for (var j = 0; j < ks.length; j++) {
@@ -9725,6 +9727,7 @@
       const [dbChantierEquipements, setDbChantierEquipements] = useState([]);
       const [dbDemandesFin, setDbDemandesFin] = useState([]);
       const [dbRelevesJourn, setDbRelevesJourn] = useState([]);
+      const [dbRapportsForage, setDbRapportsForage] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -9766,6 +9769,7 @@
           var ceRes = { data: [], error: null };
           var dfRes = { data: [], error: null };
           var rjRes = { data: [], error: null };
+          var rfRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
@@ -9773,12 +9777,15 @@
               supabase.from("chantier_equipements").select("*"),
               supabase.from("demandes_financement").select("*").order("created_at", { ascending: false }),
               supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }),
+              // Rapports forage : light fetch (sans signatures lourdes en base64)
+              supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at").order("date_rapport", { ascending: false }),
             ]);
             afRes = results[0];
             ppRes = results[1];
             ceRes = results[2];
             dfRes = results[3];
             rjRes = results[4];
+            rfRes = results[5];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -9829,11 +9836,27 @@
           setDbChantierEquipements((ceRes.data || []).map(chantierEquipementFromDb));
           setDbDemandesFin((dfRes.data || []).map(demandeFinFromDb));
           setDbRelevesJourn((rjRes.data || []).map(releveJournFromDb));
+          setDbRapportsForage(rfRes.data || []);
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
 
       useEffect(() => { if (session) loadAll(); }, [session, loadAll]);
+
+      // ── Auto-refresh des rapports_forage toutes les 60s ──
+      // (Avancement, Planning, Primes lisent depuis le contexte global, contrairement a
+      //  Stats qui a son propre fetch. Cet intervalle assure qu'ils voient les nouveaux
+      //  rapports soumis par les sondeurs sans recharger la page.)
+      useEffect(() => {
+        if (!session) return;
+        var timer = setInterval(() => {
+          supabase.from("rapports_forage")
+            .select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at")
+            .order("date_rapport", { ascending: false })
+            .then(res => { if (res.data) setDbRapportsForage(res.data); });
+        }, 60000);
+        return () => clearInterval(timer);
+      }, [session]);
 
       // Auto-generation des interventions preventives : une seule visite par (equipement, plan)
       // correspondant au DERNIER cycle atteint. Exemple : machine a 1000h avec plan 250h
@@ -10388,6 +10411,91 @@
       const wrappedAddPiece = isAdmin ? addPiece : async (item) => { addPendingItem("add", "piece", item); };
       const wrappedUpdatePiece = isAdmin ? updatePiece : async (item) => { addPendingItem("update", "piece", item, pieces.find((p) => p.Id === item.Id)); };
 
+      // ── rapportsAsReleves : transforme les rapports_forage en format "releves_journaliers" ──
+      // Un rapport = 1 jour + 1 machine + 1 chantier + 1 equipe. On genere 1 ligne par membre,
+      // avec metrage du rapport et heures du membre. Ca permet aux ecrans existants (Avancement,
+      // Planning, Primes) de continuer a fonctionner sans toucher leur logique de calcul.
+      const rapportsAsReleves = React.useMemo(function() {
+        if (!dbRapportsForage || dbRapportsForage.length === 0) return [];
+        // Map code "p1" -> numeric personnel id (depuis parametres.personnel_data)
+        var codeToId = {};
+        try {
+          var row = (parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
+          if (row && row.valeur) {
+            (JSON.parse(row.valeur) || []).forEach(function(p) {
+              if (p && p.code && p.id != null) codeToId[String(p.code)] = p.id;
+            });
+          }
+        } catch (e) {}
+        // Map site (uppercase) -> chantier le plus recent
+        var chantierBySite = {};
+        (dbChantiers || []).forEach(function(c) {
+          if (c.site) {
+            var sk = String(c.site).toUpperCase().trim();
+            if (!chantierBySite[sk] || (c.dateDebut || "") > (chantierBySite[sk].dateDebut || "")) {
+              chantierBySite[sk] = c;
+            }
+          }
+        });
+        // Map equipement_id -> equipement (pour resolution code sondeuse)
+        var equipById = {};
+        (equipements || []).forEach(function(e) { equipById[String(e.Id)] = e; });
+
+        var out = [];
+        function hhmmToHours(s) {
+          if (!s) return 0;
+          var p = String(s).split(":");
+          var h = parseInt(p[0]) || 0; var m = parseInt(p[1]) || 0;
+          return h + m / 60;
+        }
+
+        dbRapportsForage.forEach(function(r) {
+          if (!r.date_rapport) return;
+          var date = String(r.date_rapport).substring(0, 10);
+          var metres = parseFloat(r.total_metres) || 0;
+          // Resolution chantier_id : explicite ou fallback par lieu/site
+          var chId = r.chantier_id;
+          if (chId == null && r.lieu) {
+            var sk = String(r.lieu).toUpperCase().trim();
+            if (chantierBySite[sk]) chId = chantierBySite[sk].id;
+          }
+          // Resolution sondeuse / equipement
+          var sondeuseCode = r.sondeuse_code || "";
+          var equipementId = r.equipement_id || null;
+          var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+          equipe.forEach(function(m) {
+            if (!m) return;
+            var pid = m.id ? codeToId[String(m.id)] : null;
+            // Si on ne trouve pas le mapping numerique, on garde le code tel quel pour le nom mais sans personnelId
+            out.push({
+              id: "rf-" + r.id + "-" + (m.id || "x"),
+              personnelId: pid,
+              employeNom: m.nom || "",
+              dateReleve: date,
+              chantierId: chId,
+              equipementId: equipementId,
+              sondeuseCode: sondeuseCode,
+              metrage: metres,
+              heures: hhmmToHours(m.hours),
+              source: "rapport_forage"
+            });
+          });
+        });
+        return out;
+      }, [dbRapportsForage, parametres, dbChantiers, equipements]);
+
+      // ── relevesUnifies : merge rapports (priorite) + CSV legacy ──
+      // Pour chaque (personnelId, dateReleve, chantierId), si un rapport existe il prevaut sur le releve CSV.
+      const relevesUnifies = React.useMemo(function() {
+        if (rapportsAsReleves.length === 0) return dbRelevesJourn || [];
+        // Key d'unicite : personnelId-date-chantier-equipement
+        function kf(r) { return String(r.personnelId || r.employeNom || "") + "-" + r.dateReleve + "-" + String(r.chantierId || "") + "-" + String(r.equipementId || ""); }
+        var rapportKeys = {};
+        rapportsAsReleves.forEach(function(r) { rapportKeys[kf(r)] = true; });
+        var fallback = (dbRelevesJourn || []).filter(function(r) { return !rapportKeys[kf(r)]; });
+        return rapportsAsReleves.concat(fallback);
+      }, [rapportsAsReleves, dbRelevesJourn]);
+
       const contextValue = {
         interventions, equipements, plans, pieces, releves, piecesEquipements, parametres, setParametres,
         isAdmin, userEmail, pendingValidations, validationLog, allowedPages,
@@ -10396,7 +10504,9 @@
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
         dbChantierEquipements, setDbChantierEquipements, addChantierEquipement, updateChantierEquipement, deleteChantierEquipement,
         dbDemandesFin, setDbDemandesFin, addDemandeFin, updateDemandeFin, deleteDemandeFin,
-        dbRelevesJourn, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn, updateReleveJourn, createReleveJourn,
+        dbRelevesJourn: relevesUnifies, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn, updateReleveJourn, createReleveJourn,
+        dbRelevesJournRaw: dbRelevesJourn, // acces brut au CSV legacy si besoin
+        dbRapportsForage, rapportsAsReleves,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
