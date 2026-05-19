@@ -7864,13 +7864,35 @@
 
       // Index chantier_id -> prixMetre (pour calcul CA)
       var prixMetreByChantier = {};
+      var prixMetreBySite = {}; // fallback : par site (lieu du rapport)
       (dbChantiers || []).forEach(function(c) {
-        prixMetreByChantier[String(c.id)] = parseFloat(c.prixMetre) || 0;
+        var prix = parseFloat(c.prixMetre) || 0;
+        prixMetreByChantier[String(c.id)] = prix;
+        if (c.site && prix > 0) {
+          var siteKey = String(c.site).toUpperCase().trim();
+          // Si plusieurs chantiers sur le meme site, garde celui avec le prix le plus recent (= dateDebut max)
+          if (!prixMetreBySite[siteKey] || (c.dateDebut || "") > (prixMetreBySite[siteKey].dateDebut || "")) {
+            prixMetreBySite[siteKey] = { prix: prix, dateDebut: c.dateDebut || "" };
+          }
+        }
       });
+      var lookupPrixMetre = function(r) {
+        // 1. chantier_id explicite
+        if (r.chantier_id != null) {
+          var p = prixMetreByChantier[String(r.chantier_id)];
+          if (p) return p;
+        }
+        // 2. Fallback : match par site/lieu
+        if (r.lieu) {
+          var key = String(r.lieu).toUpperCase().trim();
+          if (prixMetreBySite[key]) return prixMetreBySite[key].prix;
+        }
+        return 0;
+      };
       var caByDate = {}; // "YYYY-MM-DD" ou "YYYY-MM" -> CA total
       filtered.forEach(function(r) {
         if (!r.date_rapport) return;
-        var prix = prixMetreByChantier[String(r.chantier_id || "")] || 0;
+        var prix = lookupPrixMetre(r);
         var ca = (parseFloat(r.total_metres) || 0) * prix;
         var keyDay = String(r.date_rapport).substring(0, 10);
         var keyMonth = keyDay.substring(0, 7);
