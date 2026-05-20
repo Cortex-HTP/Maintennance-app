@@ -7789,16 +7789,52 @@
       else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
       // "all" => null (tout l'historique)
 
+      // Resolution chantier_id par lieu (fallback pour les rapports SQL importes avec chantier_id=null)
+      var statsChantierBySite = {};
+      (dbChantiers || []).forEach(function(c) {
+        if (c.site) {
+          var sk = String(c.site).toUpperCase().trim();
+          if (!statsChantierBySite[sk] || (c.dateDebut || "") > (statsChantierBySite[sk].dateDebut || "")) {
+            statsChantierBySite[sk] = c;
+          }
+        }
+      });
+      var statsFindChantierByLieu = function(lieu) {
+        if (!lieu) return null;
+        var lk = String(lieu).toUpperCase().trim();
+        if (statsChantierBySite[lk]) return statsChantierBySite[lk];
+        var best = null; var bestLen = 0;
+        var keys = Object.keys(statsChantierBySite);
+        for (var i = 0; i < keys.length; i++) {
+          var sk = keys[i];
+          if (sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) {
+            var matchLen = Math.min(sk.length, lk.length);
+            if (matchLen > bestLen) { best = statsChantierBySite[sk]; bestLen = matchLen; }
+          }
+        }
+        return best;
+      };
+      var sondeurFLower = String(sondeurF || "").toLowerCase();
+
       var filtered = (rapports || []).filter(function(r) {
         if (periodStart && r.date_rapport && new Date(r.date_rapport) < periodStart) return false;
         if (periodEnd && r.date_rapport && new Date(r.date_rapport) > periodEnd) return false;
-        if (chantierF !== "all" && String(r.chantier_id || "") !== chantierF) return false;
+        if (chantierF !== "all") {
+          // Resolution avec fallback lieu si chantier_id est null
+          var effectiveChId = r.chantier_id;
+          if (effectiveChId == null) {
+            var fb = statsFindChantierByLieu(r.lieu);
+            if (fb) effectiveChId = fb.id;
+          }
+          if (String(effectiveChId || "") !== chantierF) return false;
+        }
         if (sondeuseF !== "all" && (r.sondeuse_code || "") !== sondeuseF) return false;
         if (sondeurF !== "all") {
           var equipe = Array.isArray(r.equipe) ? r.equipe : [];
           var sondeur = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
           var sondeurName = sondeur ? (sondeur.nom || "") : "";
-          if (sondeurName !== sondeurF) return false;
+          // Comparaison case-insensitive pour tolerer "Sebastien" vs "SEBASTIEN" vs "sebastien"
+          if (String(sondeurName).toLowerCase() !== sondeurFLower) return false;
         }
         return true;
       });
@@ -7990,26 +8026,28 @@
       var maxCout = topConsos.length > 0 ? topConsos[0].cout : 1;
 
       // ── Top sondeurs ──
-      var sondeursMap = {}; // nom -> { metres, minutesForation, rapports }
+      // Cle de regroupement case-insensitive pour ne pas separer "Sebastien" / "SEBASTIEN" / "sebastien"
+      var sondeursMap = {}; // key lowercase -> { displayName, metres, minutesForation, rapports }
       filtered.forEach(function(r) {
         var equipe = Array.isArray(r.equipe) ? r.equipe : [];
         var sondeur = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
         if (!sondeur) return;
         var nom = sondeur.nom || "—";
-        if (!sondeursMap[nom]) sondeursMap[nom] = { metres: 0, minutesForation: 0, rapports: 0 };
-        sondeursMap[nom].metres += parseFloat(r.total_metres) || 0;
-        sondeursMap[nom].rapports += 1;
+        var key = String(nom).toLowerCase().trim();
+        if (!sondeursMap[key]) sondeursMap[key] = { displayName: nom, metres: 0, minutesForation: 0, rapports: 0 };
+        sondeursMap[key].metres += parseFloat(r.total_metres) || 0;
+        sondeursMap[key].rapports += 1;
         var activites = Array.isArray(r.activites) ? r.activites : [];
         activites.forEach(function(a) {
           if ((a.libelle || "").toUpperCase() === "FORATION") {
-            sondeursMap[nom].minutesForation += durBtw(a.debut, a.fin);
+            sondeursMap[key].minutesForation += durBtw(a.debut, a.fin);
           }
         });
       });
-      var topSondeurs = Object.keys(sondeursMap).map(function(nom) {
-        var s = sondeursMap[nom];
+      var topSondeurs = Object.keys(sondeursMap).map(function(key) {
+        var s = sondeursMap[key];
         return {
-          nom: nom,
+          nom: s.displayName,
           metres: s.metres,
           heuresForation: s.minutesForation / 60,
           rapports: s.rapports,
@@ -8054,10 +8092,23 @@
 
       // ── Listes pour les filtres ──
       var allSondeuses = Array.from(new Set(rapports.map(function(r) { return r.sondeuse_code; }).filter(Boolean))).sort();
-      var allSondeurs = Array.from(new Set(rapports.flatMap(function(r) {
-        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
-        return equipe.filter(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); }).map(function(m) { return m.nom; });
-      }).filter(Boolean))).sort();
+      // Deduplication case-insensitive des sondeurs : on garde la 1ere casse rencontree
+      // pour eviter "Sebastien" / "SEBASTIEN" / "sebastien" en triple dans le filtre.
+      var allSondeurs = (function() {
+        var seen = {};
+        var out = [];
+        rapports.forEach(function(r) {
+          var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+          equipe.forEach(function(m) {
+            if (!m || !m.nom) return;
+            var isSondeur = m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0);
+            if (!isSondeur) return;
+            var key = String(m.nom).toLowerCase().trim();
+            if (!seen[key]) { seen[key] = true; out.push(m.nom); }
+          });
+        });
+        return out.sort();
+      }());
 
       // ── Activites couleurs ──
       var actColor = function(libelle) {
@@ -8348,7 +8399,7 @@
 
     // ─── Vue d'edition complete d'un rapport de forage ─────────────────
     // Constantes types (identiques a l'app Employes)
-    var RF_TYPES_SONDAGE = ["AIRCORE", "RC", "DIAMOND", "CAROTTE", "AUTRE"];
+    var RF_TYPES_SONDAGE = ["AIRCORE", "RC", "DIAMOND", "CAROTTE", "MFT", "AUTRE"];
     var RF_TYPES_ACTIVITE = ["TRAJET","MAINTENANCE","FORATION","DEPLACEMENT","PCC","REMPLISSAGE RAPPORT TABLETTE","ATTENTE","PAUSE","AUTRE"];
     var RF_ROLES = ["Sondeur", "Aide sondeur", "Chauffeur", "Mecanicien", "Atelier", "Bureau", "Autre"];
 
@@ -8927,7 +8978,7 @@
           supabase.from("demandes_conge").select(CONGES_COLS).order("created_at", { ascending: false }),
           supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }),
           supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }),
-          supabase.from("rapports_forage").select(RAPS_COLS).order("created_at", { ascending: false })
+          supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("created_at", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -9365,7 +9416,7 @@
               avatarText: sondLabel,
               name: sondLabel + " - " + sondeurName,
               sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.total_metres || 0) + " m / " + (r.total_heures || 0) + " h" + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
-              right: r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : fmtDate(r.date_rapport),
+              right: r.date_rapport ? "Rapport du " + fmtDate(r.date_rapport) : (r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : "-"),
               statut: r.statut,
               isExpanded: isExp,
               onClick: function() { toggleExpand("r", r.id); }
