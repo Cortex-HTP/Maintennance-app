@@ -1923,14 +1923,15 @@
     }
 
     // ─── Editeur Destinataires emails (categorie speciale de Parametres) ─
-    // Stocke dans la table destinataires_emails (pas dans parametres) car structure
-    // multi-colonnes (email/role/scope/type_doc/actif). Affiche en sous-onglets par type_doc.
+    // Stocke dans la table destinataires_emails (1 ligne DB = 1 (email + role + scope + type_doc)).
+    // UI : regroupe par (email + role + scope_type + scope_id + actif), avec 5 cases a cocher
+    // pour les types_doc => evite de saisir le meme email 5 fois.
     var DOC_TYPES = [
-      { key: "rapport_forage",       label: "Rapports de forage",     icon: "file-text" },
-      { key: "releve_heure",         label: "Releves d'heures",       icon: "clock" },
-      { key: "bon_commande",         label: "Bons de commande",       icon: "shopping-cart" },
-      { key: "demande_conge",        label: "Demandes de conges",     icon: "calendar-days" },
-      { key: "demande_intervention", label: "Demandes intervention",  icon: "wrench" }
+      { key: "rapport_forage",       label: "Rapports forage",      short: "Rapports",      icon: "file-text" },
+      { key: "releve_heure",         label: "Releves d'heures",     short: "Releves",       icon: "clock" },
+      { key: "bon_commande",         label: "Bons de commande",     short: "Commandes",     icon: "shopping-cart" },
+      { key: "demande_conge",        label: "Demandes de conges",   short: "Conges",        icon: "calendar-days" },
+      { key: "demande_intervention", label: "Demandes intervention", short: "Interventions", icon: "wrench" }
     ];
     function DestinatairesEmailsEditor() {
       var ctx = useAppData();
@@ -1938,14 +1939,12 @@
       var showToast = ctx.showToast;
       var _list = useState([]);
       var list = _list[0]; var setList = _list[1];
-      var _docType = useState("rapport_forage");
-      var docType = _docType[0]; var setDocType = _docType[1];
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
 
       var loadAll = function() {
         setLoading(true);
-        supabase.from("destinataires_emails").select("*").order("type_doc").order("id").then(function(res) {
+        supabase.from("destinataires_emails").select("*").order("email").order("type_doc").then(function(res) {
           if (res.error) { if (showToast) showToast("Erreur chargement destinataires : " + res.error.message, "error"); setLoading(false); return; }
           setList(res.data || []);
           setLoading(false);
@@ -1953,113 +1952,187 @@
       };
       useEffect(function() { loadAll(); }, []);
 
-      var filtered = list.filter(function(d) { return d.type_doc === docType; });
-      var countByDoc = function(k) { return list.filter(function(d) { return d.type_doc === k; }).length; };
+      // ── Groupement : on regroupe par (email + role + scope_type + scope_id + actif) ──
+      // Pour chaque groupe, on memorise les ids des lignes DB par type_doc (utile pour update/delete).
+      var groupKeyOf = function(d) {
+        return [
+          String(d.email || "").trim().toLowerCase(),
+          d.role || "to",
+          d.scope_type || "global",
+          String(d.scope_id == null ? "" : d.scope_id),
+          d.actif ? "1" : "0"
+        ].join("|");
+      };
+      var groups = (function() {
+        var byKey = {};
+        list.forEach(function(d) {
+          var k = groupKeyOf(d);
+          if (!byKey[k]) {
+            byKey[k] = {
+              key: k,
+              email: d.email || "",
+              role: d.role || "to",
+              scope_type: d.scope_type || "global",
+              scope_id: d.scope_id,
+              actif: !!d.actif,
+              typeIds: {} // type_doc -> row id dans la DB
+            };
+          }
+          byKey[k].typeIds[d.type_doc] = d.id;
+        });
+        var arr = [];
+        Object.keys(byKey).forEach(function(k) { arr.push(byKey[k]); });
+        // Tri par email puis role
+        arr.sort(function(a, b) { return String(a.email).localeCompare(String(b.email)) || String(a.role).localeCompare(String(b.role)); });
+        return arr;
+      }());
 
-      var addRow = function() {
-        var payload = { email: "", role: "to", scope_type: "global", scope_id: null, type_doc: docType, actif: true };
+      // ── Operations ──
+      var addEmail = function() {
+        var email = prompt("Email du destinataire :");
+        if (!email || !email.trim()) return;
+        // Par defaut, on coche rapport_forage. L'utilisateur cochera les autres ensuite.
+        var payload = { email: email.trim(), role: "to", scope_type: "global", scope_id: null, type_doc: "rapport_forage", actif: true };
         supabase.from("destinataires_emails").insert(payload).select().single().then(function(res) {
           if (res.error) { if (showToast) showToast("Erreur ajout : " + res.error.message, "error"); return; }
           setList(list.concat(res.data));
         });
       };
-      var updateRow = function(id, patch) {
-        // Optimistic update local
-        setList(list.map(function(d) { return d.id === id ? Object.assign({}, d, patch) : d; }));
-        supabase.from("destinataires_emails").update(patch).eq("id", id).then(function(res) {
+
+      var toggleType = function(group, typeKey, checked) {
+        if (checked) {
+          // Insert nouvelle ligne pour ce type_doc
+          var payload = {
+            email: group.email,
+            role: group.role,
+            scope_type: group.scope_type,
+            scope_id: group.scope_id,
+            type_doc: typeKey,
+            actif: group.actif
+          };
+          supabase.from("destinataires_emails").insert(payload).select().single().then(function(res) {
+            if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); return; }
+            setList(list.concat(res.data));
+          });
+        } else {
+          var rowId = group.typeIds[typeKey];
+          if (!rowId) return;
+          var nbCoches = Object.keys(group.typeIds).length;
+          if (nbCoches === 1) {
+            if (!confirm("Decocher le dernier type supprime ce destinataire (" + group.email + "). Confirmer ?")) return;
+          }
+          supabase.from("destinataires_emails").delete().eq("id", rowId).then(function(res) {
+            if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); return; }
+            setList(list.filter(function(d) { return d.id !== rowId; }));
+          });
+        }
+      };
+
+      // Update toutes les lignes d'un groupe en meme temps (changement email/role/scope/actif)
+      var updateGroup = function(group, patch) {
+        var ids = [];
+        Object.keys(group.typeIds).forEach(function(k) { ids.push(group.typeIds[k]); });
+        // Optimistic local
+        setList(list.map(function(d) { return ids.indexOf(d.id) >= 0 ? Object.assign({}, d, patch) : d; }));
+        supabase.from("destinataires_emails").update(patch).in("id", ids).then(function(res) {
           if (res.error) { if (showToast) showToast("Erreur sauvegarde : " + res.error.message, "error"); loadAll(); }
         });
       };
-      var deleteRow = function(id) {
-        if (!confirm("Supprimer ce destinataire ?")) return;
-        supabase.from("destinataires_emails").delete().eq("id", id).then(function(res) {
+
+      var deleteGroup = function(group) {
+        if (!confirm("Supprimer ce destinataire (" + group.email + ") de tous les types ?")) return;
+        var ids = [];
+        Object.keys(group.typeIds).forEach(function(k) { ids.push(group.typeIds[k]); });
+        supabase.from("destinataires_emails").delete().in("id", ids).then(function(res) {
           if (res.error) { if (showToast) showToast("Erreur suppression : " + res.error.message, "error"); return; }
-          setList(list.filter(function(d) { return d.id !== id; }));
+          setList(list.filter(function(d) { return ids.indexOf(d.id) < 0; }));
         });
       };
 
       var inputSm = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: "6px 10px", color: "#e5e7eb", fontSize: 12, fontFamily: "inherit", width: "100%" };
-      var subTabStyle = function(active) {
-        return {
-          padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600,
-          background: active ? "linear-gradient(135deg, rgba(167,139,250,0.20), rgba(167,139,250,0.08))" : "rgba(255,255,255,0.04)",
-          border: "1px solid " + (active ? "rgba(167,139,250,0.50)" : "rgba(255,255,255,0.07)"),
-          color: active ? "#c4b5fd" : "#a1a1aa",
-          borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 6
-        };
-      };
+      var thStyle = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", whiteSpace: "nowrap" };
+      var tdStyle = { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", verticalAlign: "middle" };
 
       return h("div", null,
         // Bandeau info
         h("div", { style: { background: "rgba(14,165,233,0.10)", border: "1px solid rgba(14,165,233,0.30)", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#7dd3fc", marginBottom: 14, display: "flex", gap: 10, alignItems: "flex-start" } },
           h(Icon, { name: "info", size: 14, color: "#7dd3fc" }),
-          h("div", null, "Definir qui recoit l'email automatique pour chaque type de soumission. ",
-            h("strong", null, "Scope Global"), " = pour toutes les soumissions de ce type. ",
-            h("strong", null, "Scope Chantier"), " = uniquement pour le chantier choisi. ",
-            h("strong", null, "Role TO"), " = principal, ",
+          h("div", null,
+            "1 ligne = 1 destinataire. Coche les types de soumissions qu'il doit recevoir. ",
+            h("strong", null, "Scope Global"), " = toutes les soumissions du type coche. ",
+            h("strong", null, "Scope Chantier"), " = uniquement le chantier choisi. ",
+            h("strong", null, "TO"), " = principal, ",
             h("strong", null, "CC"), " = copie."
           )
         ),
-        // Sous-onglets par type_doc
-        h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 } },
-          DOC_TYPES.map(function(t) {
-            return h("div", { key: t.key, onClick: function() { setDocType(t.key); }, style: subTabStyle(docType === t.key) },
-              h(Icon, { name: t.icon, size: 12, color: docType === t.key ? "#c4b5fd" : "#a1a1aa" }),
-              t.label,
-              h("span", { style: { background: docType === t.key ? "rgba(167,139,250,0.30)" : "rgba(255,255,255,0.08)", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700, color: docType === t.key ? "#ddd6fe" : "#a1a1aa" } }, countByDoc(t.key))
-            );
-          })
-        ),
         // Tableau
         loading ? h("div", { style: { padding: 30, textAlign: "center", color: "#a1a1aa" } }, "Chargement...") :
-        filtered.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontStyle: "italic" } }, "Aucun destinataire configure pour ce type. Clique sur 'Ajouter' ci-dessous.") :
+        groups.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontStyle: "italic" } }, "Aucun destinataire configure. Clique sur 'Ajouter' ci-dessous.") :
         h("div", { style: { overflowX: "auto" } },
-          h("table", { style: { width: "100%", borderCollapse: "collapse" } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 980 } },
             h("thead", null,
               h("tr", null,
-                h("th", { style: { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)" } }, "Email"),
-                h("th", { style: { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", width: 90 } }, "Role"),
-                h("th", { style: { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", width: 110 } }, "Scope"),
-                h("th", { style: { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)" } }, "Chantier"),
-                h("th", { style: { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", width: 80 } }, "Actif"),
-                h("th", { style: { textAlign: "right", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", width: 50 } }, "")
+                h("th", { style: thStyle }, "Email"),
+                h("th", { style: Object.assign({}, thStyle, { width: 80 }) }, "Role"),
+                h("th", { style: Object.assign({}, thStyle, { width: 100 }) }, "Scope"),
+                h("th", { style: Object.assign({}, thStyle, { width: 160 }) }, "Chantier"),
+                h("th", { style: Object.assign({}, thStyle, { width: 70 }) }, "Actif"),
+                DOC_TYPES.map(function(t) {
+                  return h("th", { key: t.key, style: Object.assign({}, thStyle, { textAlign: "center", width: 90 }), title: t.label },
+                    h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2 } },
+                      h(Icon, { name: t.icon, size: 12, color: "#a78bfa" }),
+                      h("span", null, t.short)
+                    )
+                  );
+                }),
+                h("th", { style: Object.assign({}, thStyle, { width: 40, textAlign: "right" }) }, "")
               )
             ),
             h("tbody", null,
-              filtered.map(function(d) {
-                var isChantier = d.scope_type === "chantier";
-                return h("tr", { key: d.id },
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
-                    h("input", { type: "email", style: inputSm, value: d.email || "", placeholder: "email@exemple.com", onChange: function(e) { updateRow(d.id, { email: e.target.value }); } })
+              groups.map(function(g) {
+                var isChantier = g.scope_type === "chantier";
+                return h("tr", { key: g.key },
+                  // Email
+                  h("td", { style: tdStyle },
+                    h("input", { type: "email", style: inputSm, value: g.email || "", placeholder: "email@exemple.com", onChange: function(e) { updateGroup(g, { email: e.target.value }); } })
                   ),
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
-                    h("select", { style: inputSm, value: d.role || "to", onChange: function(e) { updateRow(d.id, { role: e.target.value }); } },
+                  // Role
+                  h("td", { style: tdStyle },
+                    h("select", { style: inputSm, value: g.role || "to", onChange: function(e) { updateGroup(g, { role: e.target.value }); } },
                       h("option", { value: "to" }, "TO"),
                       h("option", { value: "cc" }, "CC")
                     )
                   ),
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
-                    h("select", { style: inputSm, value: d.scope_type || "global", onChange: function(e) { var v = e.target.value; updateRow(d.id, v === "global" ? { scope_type: "global", scope_id: null } : { scope_type: "chantier" }); } },
+                  // Scope
+                  h("td", { style: tdStyle },
+                    h("select", { style: inputSm, value: g.scope_type || "global", onChange: function(e) { var v = e.target.value; updateGroup(g, v === "global" ? { scope_type: "global", scope_id: null } : { scope_type: "chantier" }); } },
                       h("option", { value: "global" }, "Global"),
                       h("option", { value: "chantier" }, "Chantier")
                     )
                   ),
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                  // Chantier (si scope = chantier)
+                  h("td", { style: tdStyle },
                     isChantier
-                      ? h("select", { style: inputSm, value: d.scope_id || "", onChange: function(e) { updateRow(d.id, { scope_id: parseInt(e.target.value) || null }); } },
+                      ? h("select", { style: inputSm, value: g.scope_id || "", onChange: function(e) { updateGroup(g, { scope_id: parseInt(e.target.value) || null }); } },
                           h("option", { value: "" }, "-- Choisir --"),
                           dbChantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre || c.nom || ("Chantier #" + c.id)); })
                         )
-                      : h("span", { style: { color: "#71717a", fontStyle: "italic", fontSize: 11 } }, "N/A (global)")
+                      : h("span", { style: { color: "#71717a", fontStyle: "italic", fontSize: 11 } }, "N/A")
                   ),
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
-                    h("label", { style: { display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 11 } },
-                      h("input", { type: "checkbox", checked: !!d.actif, onChange: function(e) { updateRow(d.id, { actif: e.target.checked }); }, style: { accentColor: "#22c55e" } }),
-                      d.actif ? "Oui" : "Non"
-                    )
+                  // Actif
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+                    h("input", { type: "checkbox", checked: !!g.actif, onChange: function(e) { updateGroup(g, { actif: e.target.checked }); }, style: { accentColor: "#22c55e", width: 16, height: 16, cursor: "pointer" } })
                   ),
-                  h("td", { style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } },
-                    h("button", { onClick: function() { deleteRow(d.id); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 28, height: 28, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }, title: "Supprimer" },
+                  // 5 checkboxes pour les types_doc
+                  DOC_TYPES.map(function(t) {
+                    var coche = !!g.typeIds[t.key];
+                    return h("td", { key: t.key, style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+                      h("input", { type: "checkbox", checked: coche, onChange: function(e) { toggleType(g, t.key, e.target.checked); }, style: { accentColor: "#a78bfa", width: 16, height: 16, cursor: "pointer" }, title: t.label })
+                    );
+                  }),
+                  // Action delete
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) },
+                    h("button", { onClick: function() { deleteGroup(g); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 28, height: 28, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }, title: "Supprimer ce destinataire" },
                       h(Icon, { name: "trash-2", size: 12, color: "#fda4af" })
                     )
                   )
@@ -2069,7 +2142,7 @@
           )
         ),
         h("div", { style: { marginTop: 14 } },
-          h(Button, { onClick: addRow }, h(IconText, { icon: "plus", size: 14 }, "Ajouter un destinataire"))
+          h(Button, { onClick: addEmail }, h(IconText, { icon: "plus", size: 14 }, "Ajouter un destinataire"))
         )
       );
     }
