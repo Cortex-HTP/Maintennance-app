@@ -2098,7 +2098,18 @@
                   ),
                   // Role (TO = recoit, CC = copie, Signataire = recoit + signe le rapport)
                   h("td", { style: tdStyle },
-                    h("select", { style: inputSm, value: g.role || "to", onChange: function(e) { updateGroup(g, { role: e.target.value }); }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapport forage uniquement)" },
+                    h("select", { style: inputSm, value: g.role || "to", onChange: function(e) {
+                      var newRole = e.target.value;
+                      updateGroup(g, { role: newRole });
+                      // Si on passe en signataire, decoche les types autres que rapport_forage
+                      if (newRole === "signataire") {
+                        Object.keys(g.typeIds).forEach(function(k) {
+                          if (k !== "rapport_forage") {
+                            toggleType(Object.assign({}, g, { role: newRole }), k, false);
+                          }
+                        });
+                      }
+                    }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapport forage uniquement)" },
                       h("option", { value: "to" }, "TO"),
                       h("option", { value: "cc" }, "CC"),
                       h("option", { value: "signataire" }, "Signataire")
@@ -2125,10 +2136,23 @@
                     h("input", { type: "checkbox", checked: !!g.actif, onChange: function(e) { updateGroup(g, { actif: e.target.checked }); }, style: { accentColor: "#22c55e", width: 16, height: 16, cursor: "pointer" } })
                   ),
                   // 5 checkboxes pour les types_doc
+                  // Si role = signataire, seul rapport_forage est activable (les autres types n'ont pas de signature client)
                   DOC_TYPES.map(function(t) {
                     var coche = !!g.typeIds[t.key];
+                    var isSignataire = g.role === "signataire";
+                    var disabled = isSignataire && t.key !== "rapport_forage";
+                    var tooltip = disabled
+                      ? "Le role 'Signataire' ne s'applique qu'au rapport de forage (seul type avec signature client)"
+                      : t.label;
                     return h("td", { key: t.key, style: Object.assign({}, tdStyle, { textAlign: "center" }) },
-                      h("input", { type: "checkbox", checked: coche, onChange: function(e) { toggleType(g, t.key, e.target.checked); }, style: { accentColor: "#a78bfa", width: 16, height: 16, cursor: "pointer" }, title: t.label })
+                      h("input", {
+                        type: "checkbox",
+                        checked: coche,
+                        disabled: disabled,
+                        onChange: function(e) { toggleType(g, t.key, e.target.checked); },
+                        style: { accentColor: "#a78bfa", width: 16, height: 16, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.3 : 1 },
+                        title: tooltip
+                      })
                     );
                   }),
                   // Action delete
