@@ -2154,6 +2154,7 @@
         { key: "type_engin", label: "Types d'engin", lucide: "hard-hat" },
         { key: "type_vl", label: "Types de vehicule", lucide: "car" },
         { key: "rf_types_sondage", label: "Types de forage", lucide: "layers" },
+        { key: "clients", label: "Clients", lucide: "briefcase" },
         { key: "localisation", label: "Localisations", lucide: "map-pin" },
         { key: "cat_piece", label: "Categories de piece", lucide: "package" },
         { key: "frequence_plan", label: "Frequences de plan", lucide: "calendar" },
@@ -9070,6 +9071,24 @@
       // ── State pour la modal "Nouvelle piece" (transfert depuis une soumission) ──
       var _newPiece = useState(null);
       var newPiece = _newPiece[0]; var setNewPiece = _newPiece[1];
+      // Listes pour les dropdowns de la modal (categories, fournisseurs, emplacements)
+      var catPieceParams = useParams("cat_piece");
+      var pieceCategories = (function() {
+        var set = {};
+        (catPieceParams || []).forEach(function(c) { if (c) set[c] = true; });
+        (pieces || []).forEach(function(p) { if (p.Categorie) set[p.Categorie] = true; });
+        return Object.keys(set).sort();
+      }());
+      var pieceFournisseurs = (function() {
+        var set = {};
+        (pieces || []).forEach(function(p) { if (p.Fournisseur) set[p.Fournisseur] = true; });
+        return Object.keys(set).sort();
+      }());
+      var pieceEmplacements = (function() {
+        var set = {};
+        (pieces || []).forEach(function(p) { if (p.Emplacement) set[p.Emplacement] = true; });
+        return Object.keys(set).sort();
+      }());
 
       // Verifie si une designation ou ref existe deja dans la table pieces (case-insensitive)
       var isPieceKnown = function(designation, ref) {
@@ -9976,16 +9995,31 @@
         // Modal "Ajouter aux Pieces detachees" depuis une soumission
         newPiece ? h(Modal, { title: "Ajouter aux Pieces detachees", onClose: function() { setNewPiece(null); } },
           h("div", { style: { display: "grid", gap: 12 } },
+            // Datalists pour autocomplete fournisseur / emplacement (utilisent les valeurs existantes)
+            h("datalist", { id: "np-fournisseurs" },
+              pieceFournisseurs.map(function(f) { return h("option", { key: f, value: f }); })
+            ),
+            h("datalist", { id: "np-emplacements" },
+              pieceEmplacements.map(function(e) { return h("option", { key: e, value: e }); })
+            ),
             h("p", { style: { fontSize: 12, color: "#a1a1aa", margin: 0 } }, "Cet article n'existe pas encore dans Pieces detachees. Complete les infos puis Enregistrer pour l'ajouter au catalogue."),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 } },
               h(FormField, { label: "Reference *" }, h("input", { style: inputStyle, value: newPiece.Reference, onChange: function(e) { updNewPiece("Reference", e.target.value.toUpperCase()); }, placeholder: "Ex: FIL-003" })),
               h(FormField, { label: "Designation *" }, h("input", { style: inputStyle, value: newPiece.Designation, onChange: function(e) { updNewPiece("Designation", e.target.value); } })),
-              h(FormField, { label: "Categorie" }, h("input", { style: inputStyle, value: newPiece.Categorie, onChange: function(e) { updNewPiece("Categorie", e.target.value); }, placeholder: "Ex: Consommable, Filtre, EPI..." })),
-              h(FormField, { label: "Fournisseur" }, h("input", { style: inputStyle, value: newPiece.Fournisseur, onChange: function(e) { updNewPiece("Fournisseur", e.target.value); } })),
+              h(FormField, { label: "Categorie" }, h("select", { style: selectStyle, value: newPiece.Categorie || "", onChange: function(e) { updNewPiece("Categorie", e.target.value); } },
+                pieceCategories.length === 0
+                  ? h("option", { value: "" }, "(aucune categorie - ajoutez dans Parametres)")
+                  : pieceCategories.map(function(c) { return h("option", { key: c, value: c }, c); }),
+                // Permet de garder la valeur courante si non standard
+                newPiece.Categorie && pieceCategories.indexOf(newPiece.Categorie) < 0
+                  ? h("option", { key: "_custom", value: newPiece.Categorie }, newPiece.Categorie)
+                  : null
+              )),
+              h(FormField, { label: "Fournisseur" }, h("input", { style: inputStyle, list: "np-fournisseurs", value: newPiece.Fournisseur, onChange: function(e) { updNewPiece("Fournisseur", e.target.value); } })),
               h(FormField, { label: "Prix unitaire (XPF)" }, h("input", { type: "number", style: inputStyle, value: newPiece.PrixUnitaire, onChange: function(e) { updNewPiece("PrixUnitaire", e.target.value); } })),
               h(FormField, { label: "Stock initial" }, h("input", { type: "number", style: inputStyle, value: newPiece.Stock, onChange: function(e) { updNewPiece("Stock", e.target.value); } })),
               h(FormField, { label: "Stock minimum" }, h("input", { type: "number", style: inputStyle, value: newPiece.StockMin, onChange: function(e) { updNewPiece("StockMin", e.target.value); } })),
-              h(FormField, { label: "Emplacement" }, h("input", { style: inputStyle, value: newPiece.Emplacement, onChange: function(e) { updNewPiece("Emplacement", e.target.value); } }))
+              h(FormField, { label: "Emplacement" }, h("input", { style: inputStyle, list: "np-emplacements", value: newPiece.Emplacement, onChange: function(e) { updNewPiece("Emplacement", e.target.value); } }))
             ),
             h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 } },
               h(Button, { variant: "secondary", onClick: function() { setNewPiece(null); } }, "Annuler"),
