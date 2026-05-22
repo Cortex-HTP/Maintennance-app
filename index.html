@@ -6970,10 +6970,34 @@
             var byMachine = {};
             empReleves.forEach(function(r) {
               var key = r.equipementId || r.sondeuseCode || "_no_machine";
-              if (!byMachine[key]) byMachine[key] = { metrage: 0, heures: 0, jours: 0, sondeuseCode: r.sondeuseCode, equipementId: r.equipementId, chantierId: r.chantierId };
+              if (!byMachine[key]) byMachine[key] = { metrage: 0, heures: 0, jours: 0, sondeuseCode: r.sondeuseCode, equipementId: r.equipementId, chantierId: r.chantierId, datesCovered: {} };
               byMachine[key].metrage += parseFloat(r.metrage) || 0;
               byMachine[key].heures += parseFloat(r.heures) || 0; // garde pour info / affichage mais pas utilise dans mhRealise
               byMachine[key].jours += 1;
+              if (r.dateReleve) byMachine[key].datesCovered[r.dateReleve] = true;
+            });
+            // ── Mode hybride : ajoute les jours panne/ferie/conge/chomage/intemperies/non_productif/maladie ──
+            // saisis dans Avancement (saisies_metrage avec typeJour) mais sans releve correspondant.
+            // Permet d'inclure les jours non-productifs dans le calcul des primes meme si le sondeur
+            // n'a pas envoye de rapport ce jour-la.
+            Object.keys(byMachine).forEach(function(mkey) {
+              var b = byMachine[mkey];
+              if (!b.chantierId) return;
+              var sCh = saisies[b.chantierId] || {};
+              Object.keys(sCh).forEach(function(dateStr) {
+                if (!isDateInPeriod(dateStr, period.start, period.end)) return;
+                if (b.datesCovered[dateStr]) return; // un releve existe deja ce jour, on n'ajoute pas
+                var saisieEntry = sCh[dateStr];
+                var saisieType = getSaisieType(saisieEntry);
+                if (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif" ||
+                    saisieType === "ferie" || saisieType === "conge" || saisieType === "chomage") {
+                  b.metrage += siteMoyenne; // rattrapage
+                  b.jours += 1;
+                } else if (saisieType === "maladie") {
+                  b.jours += 1; // 0 metrage
+                }
+                // saisieType "normal" sans releve : on ne compte pas (l'employe n'etait pas la)
+              });
             });
             Object.keys(byMachine).forEach(function(k) {
               var b = byMachine[k];
