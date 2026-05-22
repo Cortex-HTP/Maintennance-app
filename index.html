@@ -8333,11 +8333,55 @@
         };
       }).sort(function(a, b) { return b.metres - a.metres; });
 
+      // ── Personnel lookup (pour calcul cout salaires) ──
+      // Index : code -> personnel data, nom_normalise -> personnel data
+      var personnelByCode = {};
+      var personnelByName = {};
+      (function() {
+        var pdRow = (parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
+        if (!pdRow || !pdRow.valeur) return;
+        try {
+          var list = JSON.parse(pdRow.valeur) || [];
+          list.forEach(function(p) {
+            if (!p) return;
+            if (p.code) personnelByCode[String(p.code)] = p;
+            var nm = ((p.prenom || "") + " " + (p.nom || "")).toLowerCase().trim();
+            if (nm) personnelByName[nm] = p;
+            // Aussi nom inverse (cas DESONNEVILLE SEBASTIEN)
+            var nmRev = ((p.nom || "") + " " + (p.prenom || "")).toLowerCase().trim();
+            if (nmRev) personnelByName[nmRev] = p;
+          });
+        } catch(e) {}
+      }());
+      // Lookup salaire MENSUEL d'un membre d'equipe -> divise par 22 (jours ouvres)
+      // pour obtenir un cout journalier. Charges patronales : 30% du salaire brut.
+      function getSalaireJour(memberName, memberId) {
+        var p = null;
+        if (memberId && personnelByCode[String(memberId)]) p = personnelByCode[String(memberId)];
+        if (!p && memberName) {
+          var nm = String(memberName).toLowerCase().trim();
+          p = personnelByName[nm];
+          if (!p) {
+            // Tente normalisation tri des mots
+            var sorted = nm.split(/\s+/).filter(Boolean).sort().join(" ");
+            Object.keys(personnelByName).forEach(function(k) {
+              if (k.split(/\s+/).filter(Boolean).sort().join(" ") === sorted) p = personnelByName[k];
+            });
+          }
+        }
+        if (!p) return 0;
+        var salaireMensuel = parseFloat(p.salaire) || 0;
+        return salaireMensuel / 22;
+      }
+
       // ── Detail par sondeuse ──
       var sondeusesMap = {}; // code -> stats
       filtered.forEach(function(r) {
         var code = r.sondeuse_code || "—";
-        if (!sondeusesMap[code]) sondeusesMap[code] = { rapports: 0, metres: 0, minutes: 0, minutesForation: 0, coutConso: 0 };
+        if (!sondeusesMap[code]) sondeusesMap[code] = {
+          rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
+          coutConso: 0, coutPersonnel: 0
+        };
         sondeusesMap[code].rapports += 1;
         sondeusesMap[code].metres += parseFloat(r.total_metres) || 0;
         sondeusesMap[code].minutes += parseFloat(r.total_heures) || 0;
@@ -8353,9 +8397,17 @@
           var prix = lookupPrix(c.designation || c.nom, c.ref);
           sondeusesMap[code].coutConso += qty * prix;
         });
+        // Cout salaire personnel : pour chaque membre de l'equipe, salaire/jour ouvre
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        equipe.forEach(function(m) {
+          if (!m) return;
+          sondeusesMap[code].coutPersonnel += getSalaireJour(m.nom, m.id);
+        });
       });
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
+        var coutCharges = s.coutPersonnel * 0.30;  // 30% charges patronales
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges;
         return {
           code: code,
           rapports: s.rapports,
@@ -8364,7 +8416,10 @@
           heuresForation: s.minutesForation / 60,
           productivite: s.minutesForation > 0 ? s.metres / (s.minutesForation / 60) : 0,
           coutConso: s.coutConso,
-          coutParMetre: s.metres > 0 ? s.coutConso / s.metres : 0
+          coutPersonnel: s.coutPersonnel,
+          coutCharges: coutCharges,
+          coutTotal: coutTotal,
+          coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0
         };
       }).sort(function(a, b) { return b.metres - a.metres; });
 
@@ -8654,12 +8709,15 @@
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                 h("thead", null, h("tr", null,
                   h("th", { style: thStyle }, "Sondeuse"),
-                  h("th", { style: thRightStyle }, "Nb rapports"),
+                  h("th", { style: thRightStyle, title: "Nombre de rapports envoyes" }, "Nb rapports"),
                   h("th", { style: thRightStyle }, "Metres"),
                   h("th", { style: thRightStyle }, "Heures"),
-                  h("th", { style: thRightStyle }, "Prod. fo."),
-                  h("th", { style: thRightStyle }, "Consommables"),
-                  h("th", { style: thRightStyle }, "Cout / metre")
+                  h("th", { style: thRightStyle, title: "Metres par heure de foration uniquement" }, "Prod. fo."),
+                  h("th", { style: thRightStyle, title: "Cout des consommables perdus / casses" }, "Consos"),
+                  h("th", { style: thRightStyle, title: "Salaires journaliers cumules des membres d'equipe" }, "Salaires"),
+                  h("th", { style: thRightStyle, title: "Charges patronales (30% des salaires)" }, "Charges 30%"),
+                  h("th", { style: thRightStyle, title: "Total : consos + salaires + charges" }, "Cout total"),
+                  h("th", { style: thRightStyle, title: "Cout total / metres fores" }, "Cout / metre")
                 )),
                 h("tbody", null, sondeusesDetail.map(function(s) {
                   return h("tr", { key: s.code, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
@@ -8669,7 +8727,10 @@
                     h("td", { style: tdRightStyle }, s.heures.toFixed(0) + " h"),
                     h("td", { style: Object.assign({}, tdRightStyle, { color: "#86efac" }) }, s.productivite.toFixed(1) + " m/h"),
                     h("td", { style: tdRightStyle }, Math.round(s.coutConso).toLocaleString("fr-FR")),
-                    h("td", { style: tdRightStyle }, Math.round(s.coutParMetre).toLocaleString("fr-FR") + " /m")
+                    h("td", { style: tdRightStyle }, Math.round(s.coutPersonnel).toLocaleString("fr-FR")),
+                    h("td", { style: tdRightStyle }, Math.round(s.coutCharges).toLocaleString("fr-FR")),
+                    h("td", { style: Object.assign({}, tdRightStyle, { fontWeight: 700 }) }, Math.round(s.coutTotal).toLocaleString("fr-FR")),
+                    h("td", { style: Object.assign({}, tdRightStyle, { color: "#fcd34d", fontWeight: 700 }) }, Math.round(s.coutParMetre).toLocaleString("fr-FR") + " /m")
                   );
                 }))
               )
