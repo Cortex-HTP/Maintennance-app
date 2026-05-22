@@ -6964,19 +6964,22 @@
           });
 
           if (empReleves.length > 0) {
-            // Calcul par machine + site, base sur le metrage et heures reels
+            // Calcul par machine + site, base sur le metrage reel et un volume de
+            // 9h/jour fixe (regle metier validee : on ignore le champ heures variable
+            // qui contient parfois 0 ou des valeurs incoherentes).
             var byMachine = {};
             empReleves.forEach(function(r) {
               var key = r.equipementId || r.sondeuseCode || "_no_machine";
               if (!byMachine[key]) byMachine[key] = { metrage: 0, heures: 0, jours: 0, sondeuseCode: r.sondeuseCode, equipementId: r.equipementId, chantierId: r.chantierId };
               byMachine[key].metrage += parseFloat(r.metrage) || 0;
-              byMachine[key].heures += parseFloat(r.heures) || 0;
+              byMachine[key].heures += parseFloat(r.heures) || 0; // garde pour info / affichage mais pas utilise dans mhRealise
               byMachine[key].jours += 1;
             });
             Object.keys(byMachine).forEach(function(k) {
               var b = byMachine[k];
-              if (b.heures <= 0) return;
-              var mhRealise = b.metrage / b.heures;
+              if (b.jours <= 0) return;
+              // Volume horaire fixe : 9h par jour, identique a la Strategy 2
+              var mhRealise = b.metrage / (b.jours * 9);
               var coef = lookupCoefficient(paliers, site, mhRealise);
               var diff = mhRealise - objectif;
               var prime = diff > 0 && coef > 0 ? diff * coef : 0;
