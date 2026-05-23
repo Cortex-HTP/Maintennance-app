@@ -6890,15 +6890,35 @@
         return C * tm / (1 - Math.pow(1 + tm, -n));
       }
 
-      // Helper : date_fin auto = date_debut + duree_mois (au dernier jour du mois)
+      // Helpers : les 3 champs date_debut / date_fin / duree_mois sont inter-lies.
+      // Si 2 sont saisis, le 3e se calcule automatiquement.
       function calcDateFin(dateDebut, dureeMois) {
         if (!dateDebut || !dureeMois) return "";
         var d = new Date(dateDebut);
         if (isNaN(d.getTime())) return "";
         var n = parseInt(dureeMois) || 0;
+        if (n <= 0) return "";
         d.setMonth(d.getMonth() + n);
-        d.setDate(d.getDate() - 1); // dernier jour du mois precedent
         return d.toISOString().slice(0, 10);
+      }
+      function calcDateDebut(dateFin, dureeMois) {
+        if (!dateFin || !dureeMois) return "";
+        var d = new Date(dateFin);
+        if (isNaN(d.getTime())) return "";
+        var n = parseInt(dureeMois) || 0;
+        if (n <= 0) return "";
+        d.setMonth(d.getMonth() - n);
+        return d.toISOString().slice(0, 10);
+      }
+      function calcDureeMois(dateDebut, dateFin) {
+        if (!dateDebut || !dateFin) return "";
+        var d1 = new Date(dateDebut);
+        var d2 = new Date(dateFin);
+        if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return "";
+        if (d2 < d1) return "";
+        var months = (d2.getFullYear() - d1.getFullYear()) * 12 + (d2.getMonth() - d1.getMonth());
+        if (d2.getDate() < d1.getDate()) months -= 1;
+        return Math.max(0, months);
       }
 
       function openNew() { setEditing(null); setShowForm(true); }
@@ -7005,7 +7025,7 @@
           )
         ),
         // Form Modal
-        showForm ? h(EmpruntForm, { editing: editing, onSave: saveEmprunt, onCancel: closeForm, calcMensualite: calcMensualite, calcDateFin: calcDateFin }) : null,
+        showForm ? h(EmpruntForm, { editing: editing, onSave: saveEmprunt, onCancel: closeForm, calcMensualite: calcMensualite, calcDateFin: calcDateFin, calcDateDebut: calcDateDebut, calcDureeMois: calcDureeMois }) : null,
         // Delete confirm
         toDelete ? h(ConfirmDialog, {
           title: "Supprimer cet emprunt ?",
@@ -7017,23 +7037,19 @@
     }
 
     // ─── Formulaire emprunt (modale) ────────────────────────────────────
-    function EmpruntForm({ editing, onSave, onCancel, calcMensualite, calcDateFin }) {
-      // Dates 100% automatiques :
-      //   date_debut = aujourd'hui a la creation (ou date existante en edition)
-      //   date_fin   = date_debut + duree_mois (auto, recalculee a chaque changement)
-      // Champs affiches en lecture seule pour clarte.
+    function EmpruntForm({ editing, onSave, onCancel, calcMensualite, calcDateFin, calcDateDebut, calcDureeMois }) {
+      // Dates et duree inter-liees : remplir 2 des 3 champs (date_debut, date_fin,
+      // duree_mois) suffit, le 3e se calcule automatiquement.
+      // Au nouveau, date_debut est pre-remplie a aujourd'hui pour faciliter la saisie.
       var todayIso = new Date().toISOString().slice(0, 10);
-      var initDebut = (editing && editing.date_debut) || todayIso;
-      var initDuree = (editing && editing.duree_mois) || "";
-      var initFin = (editing && editing.date_fin) || calcDateFin(initDebut, initDuree) || "";
       var _form = useState({
         libelle: (editing && editing.libelle) || "",
         montant_total: (editing && editing.montant_total) || "",
         taux_interet: (editing && editing.taux_interet) || "",
-        duree_mois: initDuree,
+        duree_mois: (editing && editing.duree_mois) || "",
         mensualite: (editing && editing.mensualite) || "",
-        date_debut: initDebut,
-        date_fin: initFin,
+        date_debut: (editing && editing.date_debut) || todayIso,
+        date_fin: (editing && editing.date_fin) || "",
         statut: (editing && editing.statut) || "actif",
         notes: (editing && editing.notes) || ""
       });
@@ -7043,16 +7059,45 @@
         setForm(function(prev) {
           var nf = Object.assign({}, prev);
           nf[key] = val;
-          // Auto-calc mensualite si montant, taux, duree changent (sauf si user a edite manuellement)
+
+          // Auto-calc mensualite si montant, taux, duree changent
           if (key === "montant_total" || key === "taux_interet" || key === "duree_mois") {
-            var m = calcMensualite(key === "montant_total" ? val : prev.montant_total, key === "taux_interet" ? val : prev.taux_interet, key === "duree_mois" ? val : prev.duree_mois);
+            var m = calcMensualite(
+              key === "montant_total" ? val : prev.montant_total,
+              key === "taux_interet" ? val : prev.taux_interet,
+              key === "duree_mois" ? val : prev.duree_mois
+            );
             if (m > 0) nf.mensualite = Math.round(m);
           }
-          // Auto-calc date_fin si date_debut + duree changent
-          if (key === "date_debut" || key === "duree_mois") {
-            var df = calcDateFin(key === "date_debut" ? val : prev.date_debut, key === "duree_mois" ? val : prev.duree_mois);
-            if (df) nf.date_fin = df;
+
+          // Dates inter-liees : si on modifie un champ et qu'un autre est rempli,
+          // on calcule le 3e (priorite a la duree si elle est connue).
+          if (key === "date_debut") {
+            if (nf.duree_mois) {
+              var df = calcDateFin(val, nf.duree_mois);
+              if (df) nf.date_fin = df;
+            } else if (nf.date_fin) {
+              var dur = calcDureeMois(val, nf.date_fin);
+              if (dur !== "") nf.duree_mois = dur;
+            }
+          } else if (key === "date_fin") {
+            if (nf.duree_mois) {
+              var dd = calcDateDebut(val, nf.duree_mois);
+              if (dd) nf.date_debut = dd;
+            } else if (nf.date_debut) {
+              var dur2 = calcDureeMois(nf.date_debut, val);
+              if (dur2 !== "") nf.duree_mois = dur2;
+            }
+          } else if (key === "duree_mois") {
+            if (nf.date_debut) {
+              var df2 = calcDateFin(nf.date_debut, val);
+              if (df2) nf.date_fin = df2;
+            } else if (nf.date_fin) {
+              var dd2 = calcDateDebut(nf.date_fin, val);
+              if (dd2) nf.date_debut = dd2;
+            }
           }
+
           return nf;
         });
       }
@@ -7092,14 +7137,17 @@
               h("input", { type: "number", min: 0, step: 100, value: form.mensualite, onChange: function(e) { update("mensualite", e.target.value); }, style: Object.assign({}, inputStyle, { fontWeight: 700, color: "#a5b4fc" }) })
             )
           ),
+          h("div", { style: { fontSize: 11, color: "#a78bfa", marginBottom: 8, fontStyle: "italic" } },
+            "Astuce : remplis 2 des 3 champs (debut, fin, duree), le 3e se calcule automatiquement."
+          ),
           h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
             h("div", null,
-              h("label", { style: labelStyle }, "Date debut (auto = aujourd'hui)"),
-              h("input", { type: "date", value: form.date_debut, readOnly: true, style: Object.assign({}, inputStyle, { color: "#a1a1aa", cursor: "not-allowed", background: "rgba(255,255,255,0.02)" }) })
+              h("label", { style: labelStyle }, "Date debut"),
+              h("input", { type: "date", value: form.date_debut, onChange: function(e) { update("date_debut", e.target.value); }, style: inputStyle })
             ),
             h("div", null,
-              h("label", { style: labelStyle }, "Date fin (auto = debut + duree)"),
-              h("input", { type: "date", value: form.date_fin, readOnly: true, style: Object.assign({}, inputStyle, { color: "#a1a1aa", cursor: "not-allowed", background: "rgba(255,255,255,0.02)" }) })
+              h("label", { style: labelStyle }, "Date fin"),
+              h("input", { type: "date", value: form.date_fin, onChange: function(e) { update("date_fin", e.target.value); }, style: inputStyle })
             )
           ),
           h("div", { style: { marginBottom: 14 } },
