@@ -6937,6 +6937,8 @@
           date_debut: form.date_debut || null,
           date_fin: form.date_fin || null,
           statut: form.statut || "actif",
+          mutualise: form.mutualise !== false,
+          equipement_id: (form.mutualise === false && form.equipement_id) ? form.equipement_id : null,
           notes: form.notes || ""
         };
         var res;
@@ -6965,6 +6967,29 @@
       var totalMensActifs = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
       var totalCapital = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.montant_total) || 0); }, 0);
 
+      // Taux d'endettement operationnel : mensualites actives / CA mensuel moyen (3 derniers mois)
+      var rapportsCtx = ctx.dbRapportsForage || [];
+      var dbChantiers = ctx.dbChantiers || [];
+      var prixByCh = {};
+      dbChantiers.forEach(function(c) { prixByCh[String(c.id)] = parseFloat(c.prixMetre) || 0; });
+      var todayTx = new Date();
+      var startCA = new Date(todayTx.getFullYear(), todayTx.getMonth() - 3, 1);
+      var caTotal3M = 0;
+      rapportsCtx.forEach(function(r) {
+        if (!r.date_rapport) return;
+        var d = new Date(r.date_rapport);
+        if (d < startCA || d > todayTx) return;
+        var prix = prixByCh[String(r.chantier_id)] || 0;
+        caTotal3M += (parseFloat(r.total_metres) || 0) * prix;
+      });
+      var caMensuelMoyen = caTotal3M / 3;
+      var tauxEndettement = caMensuelMoyen > 0 ? (totalMensActifs / caMensuelMoyen * 100) : null;
+      var tauxColor = tauxEndettement === null ? "#71717a" : tauxEndettement < 30 ? "#10b981" : tauxEndettement < 50 ? "#f59e0b" : "#f43f5e";
+      var tauxLabel = tauxEndettement === null ? "n/a" : tauxEndettement.toFixed(1) + " %";
+
+      // Notification : nb d'emprunts a terme dans les 30 jours
+      var nbFinProche = countEmpruntsFinProche(emprunts);
+
       var statutLabels = { actif: "Actif", rembourse: "Rembourse", suspendu: "Suspendu" };
       var statutColors = { actif: "#10b981", rembourse: "#71717a", suspendu: "#f59e0b" };
 
@@ -6977,10 +7002,12 @@
           subtitle: "Mutualises au prorata sur toutes les machines actives (calcul cout au metre)"
         }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "landmark", size: 32, color: "#818cf8" }), label: "Emprunts actifs", value: String(emprunts.filter(function(e) { return e.statut === "actif"; }).length), color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#f59e0b" }), label: "Mensualites totales / mois", value: fmtNum(Math.round(totalMensActifs)) + " XPF", color: "#f59e0b" }),
-          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#a78bfa" }), label: "Capital initial cumule", value: fmtNum(Math.round(totalCapital)) + " XPF", color: "#a78bfa" })
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#a78bfa" }), label: "Capital initial cumule", value: fmtNum(Math.round(totalCapital)) + " XPF", color: "#a78bfa" }),
+          h(KPICard, { icon: h(Icon, { name: "activity", size: 32, color: tauxColor }), label: "Taux d'endettement (mens / CA moyen 3 mois)", value: tauxLabel, color: tauxColor }),
+          nbFinProche > 0 ? h(KPICard, { icon: h(Icon, { name: "alert-circle", size: 32, color: "#fcd34d" }), label: "Pret(s) a terme dans 30j", value: String(nbFinProche), color: "#fcd34d" }) : null
         ),
         // TabBar
         h("div", { style: { display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.08)", overflowX: "auto" } },
@@ -7014,10 +7041,10 @@
               h("thead", null,
                 h("tr", null,
                   h("th", { style: thStyle }, "Libelle"),
+                  h("th", { style: thStyle }, "Imputation"),
                   h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Montant"),
-                  h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Taux"),
-                  h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Duree"),
                   h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Mensualite"),
+                  h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Restant du"),
                   h("th", { style: thStyle }, "Periode"),
                   h("th", { style: thStyle }, "Statut"),
                   h("th", { style: thStyle }, "")
@@ -7025,12 +7052,18 @@
               ),
               h("tbody", null,
                 emprunts.map(function(e) {
+                  var eq = e.equipement_id ? (ctx.equipements || []).find(function(x) { return x.Id === e.equipement_id; }) : null;
+                  var restant = getCapitalRestantAujourdhui(e);
                   return h("tr", { key: e.id, style: { transition: "background 0.15s" }, onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(255,255,255,0.02)"; }, onMouseLeave: function(ev) { ev.currentTarget.style.background = "transparent"; } },
                     h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, color: "#fafafa" }) }, e.libelle || "—"),
+                    h("td", { style: tdStyle },
+                      e.mutualise === false && eq ?
+                        h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 700, color: "#a5b4fc", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.4)", borderRadius: 999 } }, h(IconText, { icon: "truck", size: 11, color: "#a5b4fc" }, eq.Title || "?")) :
+                        h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 600, color: "#86efac", background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.35)", borderRadius: 999 } }, h(IconText, { icon: "share-2", size: 11, color: "#86efac" }, "Mutualise"))
+                    ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtNum(Math.round(e.montant_total || 0)) + " XPF"),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, (parseFloat(e.taux_interet) || 0).toFixed(2) + " %"),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, (e.duree_mois || 0) + " mois"),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: "#a5b4fc" }) }, fmtNum(Math.round(e.mensualite || 0)) + " XPF"),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: restant > 0 ? "#fcd34d" : "#86efac" }) }, fmtNum(Math.round(restant)) + " XPF"),
                     h("td", { style: tdStyle }, (e.date_debut ? new Date(e.date_debut).toLocaleDateString("fr-FR") : "—") + " → " + (e.date_fin ? new Date(e.date_fin).toLocaleDateString("fr-FR") : "—")),
                     h("td", { style: tdStyle },
                       h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 700, color: statutColors[e.statut] || "#a1a1aa", background: (statutColors[e.statut] || "#a1a1aa") + "22", border: "1px solid " + (statutColors[e.statut] || "#a1a1aa") + "55", borderRadius: 999 } }, statutLabels[e.statut] || e.statut)
@@ -7064,6 +7097,8 @@
 
     // ─── Formulaire emprunt (modale) ────────────────────────────────────
     function EmpruntForm({ editing, onSave, onCancel, calcMensualite, calcDateFin, calcDateDebut, calcDureeMois }) {
+      var ctx = useAppData();
+      var equipements = ctx.equipements || [];
       // Dates et duree inter-liees : remplir 2 des 3 champs (date_debut, date_fin,
       // duree_mois) suffit, le 3e se calcule automatiquement.
       // Au nouveau, date_debut est pre-remplie a aujourd'hui pour faciliter la saisie.
@@ -7077,6 +7112,8 @@
         date_debut: (editing && editing.date_debut) || todayIso,
         date_fin: (editing && editing.date_fin) || "",
         statut: (editing && editing.statut) || "actif",
+        mutualise: editing ? (editing.mutualise !== false) : true,
+        equipement_id: (editing && editing.equipement_id) || "",
         notes: (editing && editing.notes) || ""
       });
       var form = _form[0]; var setForm = _form[1];
@@ -7176,6 +7213,26 @@
               h("input", { type: "date", value: form.date_fin, onChange: function(e) { update("date_fin", e.target.value); }, style: inputStyle })
             )
           ),
+          // Mutualisation : checkbox + dropdown machine si decoche
+          h("div", { style: { marginBottom: 14, padding: 12, background: "rgba(124,58,237,0.06)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: 8 } },
+            h("label", { style: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#cbd5e1" } },
+              h("input", { type: "checkbox", checked: form.mutualise, onChange: function(e) { update("mutualise", e.target.checked); if (e.target.checked) update("equipement_id", ""); }, style: { width: 16, height: 16, cursor: "pointer" } }),
+              "Mutualise sur toutes les machines actives"
+            ),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 6, marginLeft: 26 } },
+              form.mutualise ? "La mensualite sera repartie equitablement sur toutes les sondeuses actives du mois (calcul cout au metre)."
+                : "La mensualite sera imputee uniquement a la machine selectionnee ci-dessous."
+            ),
+            !form.mutualise ? h("div", { style: { marginTop: 10 } },
+              h("label", { style: Object.assign({}, labelStyle, { marginLeft: 26 }) }, "Machine concernee"),
+              h("select", { value: form.equipement_id || "", onChange: function(e) { update("equipement_id", e.target.value); }, style: Object.assign({}, inputStyle, { marginLeft: 26, width: "calc(100% - 26px)" }) },
+                h("option", { value: "" }, "— Choisir une machine —"),
+                equipements.filter(function(eq) { return eq.Categorie === "Engin"; }).map(function(eq) {
+                  return h("option", { key: eq.Id, value: eq.Id }, (eq.Title || "—") + (eq.Nom ? " (" + eq.Nom + ")" : ""));
+                })
+              )
+            ) : null
+          ),
           h("div", { style: { marginBottom: 14 } },
             h("label", { style: labelStyle }, "Statut"),
             h("select", { value: form.statut, onChange: function(e) { update("statut", e.target.value); }, style: inputStyle },
@@ -7239,6 +7296,41 @@
         });
       }
       return rows;
+    }
+
+    // Helper : capital restant du a aujourd'hui pour un emprunt actif
+    function getCapitalRestantAujourdhui(emprunt) {
+      if (!emprunt) return 0;
+      var total = parseFloat(emprunt.montant_total) || 0;
+      if (emprunt.statut === "rembourse") return 0;
+      if (emprunt.statut !== "actif") return total;
+      var dStart = emprunt.date_debut ? new Date(emprunt.date_debut) : null;
+      if (!dStart) return total;
+      var today = new Date();
+      var moisEcoules = (today.getFullYear() - dStart.getFullYear()) * 12 + (today.getMonth() - dStart.getMonth());
+      if (today.getDate() < dStart.getDate()) moisEcoules -= 1;
+      moisEcoules = Math.max(0, moisEcoules);
+      var n = parseInt(emprunt.duree_mois) || 0;
+      if (n === 0) return total;
+      if (moisEcoules >= n) return 0;
+      if (moisEcoules <= 0) return total;
+      var amort = buildAmortissement(emprunt);
+      if (amort.length === 0) return total;
+      var idx = Math.min(moisEcoules - 1, amort.length - 1);
+      return amort[idx].restant;
+    }
+
+    // Helper : nombre d'emprunts actifs arrivant a terme dans les 30 jours
+    function countEmpruntsFinProche(emprunts) {
+      if (!emprunts || emprunts.length === 0) return 0;
+      var today = new Date();
+      var seuil = new Date(); seuil.setDate(seuil.getDate() + 30);
+      return emprunts.filter(function(e) {
+        if (e.statut !== "actif") return false;
+        if (!e.date_fin) return false;
+        var df = new Date(e.date_fin);
+        return df >= today && df <= seuil;
+      }).length;
     }
 
     // ─── Vue Amortissement ───────────────────────────────────────────────
@@ -9150,56 +9242,82 @@
         return salaireMensuel / divJours;
       }
 
-      // ── Cout emprunts mutualises par jour Lun-Jeu, par machine, par mois ──
-      // Logique :
-      //   1. Pour chaque mois, somme des mensualites des emprunts actifs ce mois-la
-      //   2. Repartition egale entre toutes les machines (sondeuses) actives ce mois
-      //      (= ayant >=1 rapport ; on prend l'etat *complet* des rapports, pas filtered,
-      //      pour ne pas se faire piper par un filtre sondeuse=X qui mettrait nbMachines=1)
-      //   3. Cout par jour ouvre = quote-part_machine_mois / jours_Lun-Jeu_mois
-      //   4. Pour chaque rapport : on ajoute cout_jour au coutEmprunt de la sondeuse
-      // Resultat : si la machine bosse tous les Lun-Jeu, elle absorbe sa quote-part entiere.
-      // Si elle bosse moitie moins, elle absorbe moitie moins (le reste n'est pas absorbe,
-      // c'est un cout analytique, pas comptable).
-      var empruntCacheByMois = {};
-      function getEmpruntCoutJourPourMois(yyyymm) {
-        if (empruntCacheByMois[yyyymm] != null) return empruntCacheByMois[yyyymm];
+      // ── Cout emprunts : mutualises + dedies ──
+      // Mutualises : mensualite repartie sur toutes les machines actives du mois.
+      // Dedies : mensualite imputee uniquement a la machine equipement_id (ne touche pas les autres).
+      // Imputation par jour Lun-Jeu (meme logique que salaires).
+      // Cache par mois pour eviter recalcul.
+      var empruntCacheMutByMois = {};       // yyyymm -> cout_par_jour_par_machine (part mutualisee)
+      var empruntCacheDediesByMois = {};    // yyyymm -> { equipementId -> cout_par_jour (part dediee) }
+      var equipByCode = {}; // resolution sondeuse_code -> equipement.Id
+      (equipements || []).forEach(function(eq) {
+        if (eq && eq.Title) equipByCode[String(eq.Title).trim().toUpperCase()] = eq.Id;
+      });
+      function getEmpruntCoutJourPourMoisMutualise(yyyymm) {
+        if (empruntCacheMutByMois[yyyymm] != null) return empruntCacheMutByMois[yyyymm];
         var parts = yyyymm.split("-");
         var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
         var firstDay = new Date(y, m, 1);
         var lastDay = new Date(y, m + 1, 0);
-        // 1) Mensualites des emprunts actifs sur ce mois
         var totalMens = 0;
         (emprunts || []).forEach(function(e) {
           if (!e || e.statut !== "actif") return;
+          if (e.mutualise === false) return; // ignorer dedies
           var db = e.date_debut ? new Date(e.date_debut) : null;
           var df = e.date_fin ? new Date(e.date_fin) : null;
-          if (db && db > lastDay) return; // commence apres ce mois
-          if (df && df < firstDay) return; // fini avant ce mois
+          if (db && db > lastDay) return;
+          if (df && df < firstDay) return;
           totalMens += parseFloat(e.mensualite) || 0;
         });
-        if (totalMens <= 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
-        // 2) Machines actives ce mois (sur la TOTALITE des rapports, pas filtered)
+        if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
         var machinesSet = {};
         (rapports || []).forEach(function(r) {
           if (!r.date_rapport) return;
           if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
-          var code = r.sondeuse_code || "_";
-          machinesSet[code] = true;
+          machinesSet[r.sondeuse_code || "_"] = true;
         });
         var nbMachines = Object.keys(machinesSet).length;
-        if (nbMachines === 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
-        // 3) Jours Lun-Jeu du mois
-        var nbJoursMois = lastDay.getDate();
+        if (nbMachines === 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
         var nbLunJeu = 0;
+        var nbJoursMois = lastDay.getDate();
         for (var d = 1; d <= nbJoursMois; d++) {
           var dow = new Date(y, m, d).getDay();
           if (dow >= 1 && dow <= 4) nbLunJeu++;
         }
-        if (nbLunJeu === 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
+        if (nbLunJeu === 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
         var coutJour = totalMens / nbMachines / nbLunJeu;
-        empruntCacheByMois[yyyymm] = coutJour;
+        empruntCacheMutByMois[yyyymm] = coutJour;
         return coutJour;
+      }
+      function getEmpruntCoutJourPourMoisDedie(yyyymm, equipementId) {
+        if (!equipementId) return 0;
+        if (!empruntCacheDediesByMois[yyyymm]) {
+          empruntCacheDediesByMois[yyyymm] = {};
+          var parts = yyyymm.split("-");
+          var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
+          var firstDay = new Date(y, m, 1);
+          var lastDay = new Date(y, m + 1, 0);
+          var nbLunJeu = 0;
+          var nbJoursMois = lastDay.getDate();
+          for (var d = 1; d <= nbJoursMois; d++) {
+            var dow = new Date(y, m, d).getDay();
+            if (dow >= 1 && dow <= 4) nbLunJeu++;
+          }
+          if (nbLunJeu === 0) return 0;
+          (emprunts || []).forEach(function(e) {
+            if (!e || e.statut !== "actif") return;
+            if (e.mutualise !== false) return; // ignorer mutualises
+            if (!e.equipement_id) return;
+            var db = e.date_debut ? new Date(e.date_debut) : null;
+            var df = e.date_fin ? new Date(e.date_fin) : null;
+            if (db && db > lastDay) return;
+            if (df && df < firstDay) return;
+            var mens = parseFloat(e.mensualite) || 0;
+            if (mens <= 0) return;
+            empruntCacheDediesByMois[yyyymm][e.equipement_id] = (empruntCacheDediesByMois[yyyymm][e.equipement_id] || 0) + (mens / nbLunJeu);
+          });
+        }
+        return empruntCacheDediesByMois[yyyymm][equipementId] || 0;
       }
 
       // ── Detail par sondeuse ──
@@ -9232,9 +9350,14 @@
           if (!m) return;
           sondeusesMap[code].coutPersonnel += getSalaireJour(m.nom, m.id, r.date_rapport);
         });
-        // Cout emprunt mutualise : 1 jour de rapport = 1 quote-part journaliere absorbee
+        // Cout emprunt : mutualise (toutes machines) + dedie (cette machine uniquement)
         var moisR = String(r.date_rapport || "").substring(0, 7);
-        if (moisR) sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMois(moisR);
+        if (moisR) {
+          sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMoisMutualise(moisR);
+          // Resolution machine : via r.equipement_id sinon via sondeuse_code -> equipements
+          var eqId = r.equipement_id || equipByCode[String(r.sondeuse_code || "").trim().toUpperCase()] || null;
+          if (eqId) sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMoisDedie(moisR, eqId);
+        }
       });
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
@@ -11011,7 +11134,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, demandesFinPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, demandesFinPending, empruntsFinProche, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -11078,7 +11201,8 @@
               },
                 h(Icon, { name: p.lucide, size: 16, color: isActive ? "#a5b4fc" : "#71717a" }), p.label,
                 p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" } }, pendingCount) : null,
-                p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null
+                p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
+                p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -12007,7 +12131,7 @@
         h("div", { style: { display: "flex", minHeight: "100vh", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: "auto", maxHeight: "100vh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: 12, left: 12, width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
