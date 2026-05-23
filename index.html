@@ -6862,6 +6862,258 @@
       );
     }
 
+    // ─── EcranEmprunts ────────────────────────────────────────────────
+    // CRUD des emprunts bancaires. Imputation au cout/metre dans EcranStatistiques :
+    // les mensualites des emprunts actifs sont mutualisees sur toutes les machines
+    // actives du mois, divisees par jours Lun-Jeu (meme logique que salaires).
+    function EcranEmprunts() {
+      var ctx = useAppData();
+      var emprunts = ctx.dbEmprunts || [];
+      var isAdmin = ctx.isAdmin;
+
+      var _show = useState(false);
+      var showForm = _show[0]; var setShowForm = _show[1];
+      var _editing = useState(null);
+      var editing = _editing[0]; var setEditing = _editing[1];
+      var _toDelete = useState(null);
+      var toDelete = _toDelete[0]; var setToDelete = _toDelete[1];
+
+      // Helper : calcul mensualite d'un pret a annuites constantes
+      // M = C * (t/12) / (1 - (1 + t/12)^(-n))
+      function calcMensualite(capital, tauxAnnuelPct, dureeMois) {
+        var C = parseFloat(capital) || 0;
+        var t = (parseFloat(tauxAnnuelPct) || 0) / 100;
+        var n = parseInt(dureeMois) || 0;
+        if (C <= 0 || n <= 0) return 0;
+        if (t === 0) return C / n;
+        var tm = t / 12;
+        return C * tm / (1 - Math.pow(1 + tm, -n));
+      }
+
+      // Helper : date_fin auto = date_debut + duree_mois (au dernier jour du mois)
+      function calcDateFin(dateDebut, dureeMois) {
+        if (!dateDebut || !dureeMois) return "";
+        var d = new Date(dateDebut);
+        if (isNaN(d.getTime())) return "";
+        var n = parseInt(dureeMois) || 0;
+        d.setMonth(d.getMonth() + n);
+        d.setDate(d.getDate() - 1); // dernier jour du mois precedent
+        return d.toISOString().slice(0, 10);
+      }
+
+      function openNew() { setEditing(null); setShowForm(true); }
+      function openEdit(e) { setEditing(e); setShowForm(true); }
+      function closeForm() { setShowForm(false); setEditing(null); }
+
+      async function saveEmprunt(form) {
+        var payload = {
+          libelle: form.libelle || "",
+          montant_total: parseFloat(form.montant_total) || 0,
+          taux_interet: parseFloat(form.taux_interet) || 0,
+          duree_mois: parseInt(form.duree_mois) || 0,
+          mensualite: parseFloat(form.mensualite) || 0,
+          date_debut: form.date_debut || null,
+          date_fin: form.date_fin || null,
+          statut: form.statut || "actif",
+          notes: form.notes || ""
+        };
+        var res;
+        if (editing && editing.id) {
+          res = await supabase.from("emprunts").update(payload).eq("id", editing.id).select().single();
+        } else {
+          res = await supabase.from("emprunts").insert(payload).select().single();
+        }
+        if (res.error) { ctx.showToast("Erreur: " + res.error.message, "error"); return; }
+        // Refresh liste
+        var all = await supabase.from("emprunts").select("*").order("date_debut", { ascending: false });
+        ctx.setDbEmprunts(all.data || []);
+        ctx.showToast(editing ? "Emprunt modifie" : "Emprunt cree", "success");
+        closeForm();
+      }
+
+      async function deleteEmprunt(id) {
+        var res = await supabase.from("emprunts").delete().eq("id", id);
+        if (res.error) { ctx.showToast("Erreur: " + res.error.message, "error"); return; }
+        ctx.setDbEmprunts(emprunts.filter(function(e) { return e.id !== id; }));
+        ctx.showToast("Emprunt supprime", "success");
+        setToDelete(null);
+      }
+
+      // Stats
+      var totalMensActifs = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+      var totalCapital = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.montant_total) || 0); }, 0);
+
+      var statutLabels = { actif: "Actif", rembourse: "Rembourse", suspendu: "Suspendu" };
+      var statutColors = { actif: "#10b981", rembourse: "#71717a", suspendu: "#f59e0b" };
+
+      var thStyle = { padding: "10px 12px", textAlign: "left", fontWeight: 700, fontSize: 12, color: "#e5e7eb", borderBottom: "2px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" };
+      var tdStyle = { padding: "10px 12px", borderBottom: "1px solid rgba(255,255,255,0.04)", fontSize: 13, color: "#cbd5e1" };
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "landmark", size: 20 }, "Emprunts machines"),
+          subtitle: "Mutualises au prorata sur toutes les machines actives (calcul cout au metre)"
+        }),
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 20 } },
+          h(KPICard, { icon: h(Icon, { name: "landmark", size: 32, color: "#818cf8" }), label: "Emprunts actifs", value: String(emprunts.filter(function(e) { return e.statut === "actif"; }).length), color: "#818cf8" }),
+          h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#f59e0b" }), label: "Mensualites totales / mois", value: fmtNum(Math.round(totalMensActifs)) + " XPF", color: "#f59e0b" }),
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#a78bfa" }), label: "Capital initial cumule", value: fmtNum(Math.round(totalCapital)) + " XPF", color: "#a78bfa" })
+        ),
+        // Bouton Nouvel emprunt
+        isAdmin ? h("div", { style: { marginBottom: 16 } },
+          h(Button, { variant: "primary", onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvel emprunt"))
+        ) : null,
+        // Liste
+        emprunts.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", fontSize: 14, background: "rgba(36, 40, 60, 0.55)", borderRadius: 12, border: "1px solid var(--border)" } },
+          "Aucun emprunt enregistre. Cliquez sur \"Nouvel emprunt\" pour en ajouter un."
+        ) : h("div", { style: { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12, border: "1px solid var(--border)", overflowX: "auto" } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", fontFamily: "inherit" } },
+            h("thead", null,
+              h("tr", null,
+                h("th", { style: thStyle }, "Libelle"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Montant"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Taux"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Duree"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Mensualite"),
+                h("th", { style: thStyle }, "Periode"),
+                h("th", { style: thStyle }, "Statut"),
+                h("th", { style: thStyle }, "")
+              )
+            ),
+            h("tbody", null,
+              emprunts.map(function(e) {
+                return h("tr", { key: e.id, style: { transition: "background 0.15s" }, onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(255,255,255,0.02)"; }, onMouseLeave: function(ev) { ev.currentTarget.style.background = "transparent"; } },
+                  h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, color: "#fafafa" }) }, e.libelle || "—"),
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtNum(Math.round(e.montant_total || 0)) + " XPF"),
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, (parseFloat(e.taux_interet) || 0).toFixed(2) + " %"),
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, (e.duree_mois || 0) + " mois"),
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: "#a5b4fc" }) }, fmtNum(Math.round(e.mensualite || 0)) + " XPF"),
+                  h("td", { style: tdStyle }, (e.date_debut ? new Date(e.date_debut).toLocaleDateString("fr-FR") : "—") + " → " + (e.date_fin ? new Date(e.date_fin).toLocaleDateString("fr-FR") : "—")),
+                  h("td", { style: tdStyle },
+                    h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 700, color: statutColors[e.statut] || "#a1a1aa", background: (statutColors[e.statut] || "#a1a1aa") + "22", border: "1px solid " + (statutColors[e.statut] || "#a1a1aa") + "55", borderRadius: 999 } }, statutLabels[e.statut] || e.statut)
+                  ),
+                  h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) },
+                    isAdmin ? h("div", { style: { display: "inline-flex", gap: 4 } },
+                      h("button", { onClick: function() { openEdit(e); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
+                      h("button", { onClick: function() { setToDelete(e); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
+                    ) : null
+                  )
+                );
+              })
+            )
+          )
+        ),
+        // Form Modal
+        showForm ? h(EmpruntForm, { editing: editing, onSave: saveEmprunt, onCancel: closeForm, calcMensualite: calcMensualite, calcDateFin: calcDateFin }) : null,
+        // Delete confirm
+        toDelete ? h(ConfirmDialog, {
+          title: "Supprimer cet emprunt ?",
+          message: "L'emprunt \"" + (toDelete.libelle || "") + "\" sera supprime definitivement. Le calcul cout au metre ne l'inclura plus.",
+          onConfirm: function() { deleteEmprunt(toDelete.id); },
+          onCancel: function() { setToDelete(null); }
+        }) : null
+      );
+    }
+
+    // ─── Formulaire emprunt (modale) ────────────────────────────────────
+    function EmpruntForm({ editing, onSave, onCancel, calcMensualite, calcDateFin }) {
+      var _form = useState({
+        libelle: (editing && editing.libelle) || "",
+        montant_total: (editing && editing.montant_total) || "",
+        taux_interet: (editing && editing.taux_interet) || "",
+        duree_mois: (editing && editing.duree_mois) || "",
+        mensualite: (editing && editing.mensualite) || "",
+        date_debut: (editing && editing.date_debut) || "",
+        date_fin: (editing && editing.date_fin) || "",
+        statut: (editing && editing.statut) || "actif",
+        notes: (editing && editing.notes) || ""
+      });
+      var form = _form[0]; var setForm = _form[1];
+
+      function update(key, val) {
+        setForm(function(prev) {
+          var nf = Object.assign({}, prev);
+          nf[key] = val;
+          // Auto-calc mensualite si montant, taux, duree changent (sauf si user a edite manuellement)
+          if (key === "montant_total" || key === "taux_interet" || key === "duree_mois") {
+            var m = calcMensualite(key === "montant_total" ? val : prev.montant_total, key === "taux_interet" ? val : prev.taux_interet, key === "duree_mois" ? val : prev.duree_mois);
+            if (m > 0) nf.mensualite = Math.round(m);
+          }
+          // Auto-calc date_fin si date_debut + duree changent
+          if (key === "date_debut" || key === "duree_mois") {
+            var df = calcDateFin(key === "date_debut" ? val : prev.date_debut, key === "duree_mois" ? val : prev.duree_mois);
+            if (df) nf.date_fin = df;
+          }
+          return nf;
+        });
+      }
+
+      function handleSave() {
+        if (!form.libelle) { alert("Le libelle est obligatoire"); return; }
+        onSave(form);
+      }
+
+      var labelStyle = { display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 };
+      var inputStyle = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+
+      return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+        h("div", { style: { background: "rgba(36, 40, 60, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: 28, maxWidth: 560, width: "100%", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 12px 60px rgba(0,0,0,0.6)" } },
+          h("div", { style: { fontSize: 17, fontWeight: 700, color: "#fafafa", marginBottom: 20 } }, editing ? "Modifier l'emprunt" : "Nouvel emprunt"),
+          h("div", { style: { marginBottom: 14 } },
+            h("label", { style: labelStyle }, "Libelle *"),
+            h("input", { type: "text", value: form.libelle, onChange: function(e) { update("libelle", e.target.value); }, placeholder: "ex: Pret BCI Sondeuse D38", style: inputStyle, required: true })
+          ),
+          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+            h("div", null,
+              h("label", { style: labelStyle }, "Montant total (XPF)"),
+              h("input", { type: "number", min: 0, step: 1000, value: form.montant_total, onChange: function(e) { update("montant_total", e.target.value); }, style: inputStyle })
+            ),
+            h("div", null,
+              h("label", { style: labelStyle }, "Taux d'interet annuel (%)"),
+              h("input", { type: "number", min: 0, step: 0.01, value: form.taux_interet, onChange: function(e) { update("taux_interet", e.target.value); }, style: inputStyle })
+            )
+          ),
+          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+            h("div", null,
+              h("label", { style: labelStyle }, "Duree (mois)"),
+              h("input", { type: "number", min: 0, step: 1, value: form.duree_mois, onChange: function(e) { update("duree_mois", e.target.value); }, style: inputStyle })
+            ),
+            h("div", null,
+              h("label", { style: labelStyle }, "Mensualite (XPF) - auto-calculee, editable"),
+              h("input", { type: "number", min: 0, step: 100, value: form.mensualite, onChange: function(e) { update("mensualite", e.target.value); }, style: Object.assign({}, inputStyle, { fontWeight: 700, color: "#a5b4fc" }) })
+            )
+          ),
+          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+            h("div", null,
+              h("label", { style: labelStyle }, "Date debut"),
+              h("input", { type: "date", value: form.date_debut, onChange: function(e) { update("date_debut", e.target.value); }, style: inputStyle })
+            ),
+            h("div", null,
+              h("label", { style: labelStyle }, "Date fin (auto)"),
+              h("input", { type: "date", value: form.date_fin, onChange: function(e) { update("date_fin", e.target.value); }, style: inputStyle })
+            )
+          ),
+          h("div", { style: { marginBottom: 14 } },
+            h("label", { style: labelStyle }, "Statut"),
+            h("select", { value: form.statut, onChange: function(e) { update("statut", e.target.value); }, style: inputStyle },
+              h("option", { value: "actif" }, "Actif (impute au cout)"),
+              h("option", { value: "rembourse" }, "Rembourse"),
+              h("option", { value: "suspendu" }, "Suspendu (non impute)")
+            )
+          ),
+          h("div", { style: { marginBottom: 20 } },
+            h("label", { style: labelStyle }, "Notes (optionnel)"),
+            h("textarea", { value: form.notes, onChange: function(e) { update("notes", e.target.value); }, rows: 2, style: Object.assign({}, inputStyle, { resize: "vertical" }) })
+          ),
+          h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end" } },
+            h(Button, { variant: "secondary", onClick: onCancel }, "Annuler"),
+            h(Button, { variant: "primary", onClick: handleSave }, editing ? "Enregistrer" : "Creer l'emprunt")
+          )
+        )
+      );
+    }
+
     // ─── EcranPrimes ──────────────────────────────────────────────────
     function EcranPrimes() {
       var ctx = useAppData();
@@ -7946,6 +8198,7 @@
       var equipements = ctx.equipements || [];
       var parametres = ctx.parametres || [];
       var affectations = ctx.dbAffectations || [];
+      var emprunts = ctx.dbEmprunts || [];
 
       var _period = useState("mois");
       var period = _period[0]; var setPeriod = _period[1];
@@ -8411,13 +8664,65 @@
         return salaireMensuel / divJours;
       }
 
+      // ── Cout emprunts mutualises par jour Lun-Jeu, par machine, par mois ──
+      // Logique :
+      //   1. Pour chaque mois, somme des mensualites des emprunts actifs ce mois-la
+      //   2. Repartition egale entre toutes les machines (sondeuses) actives ce mois
+      //      (= ayant >=1 rapport ; on prend l'etat *complet* des rapports, pas filtered,
+      //      pour ne pas se faire piper par un filtre sondeuse=X qui mettrait nbMachines=1)
+      //   3. Cout par jour ouvre = quote-part_machine_mois / jours_Lun-Jeu_mois
+      //   4. Pour chaque rapport : on ajoute cout_jour au coutEmprunt de la sondeuse
+      // Resultat : si la machine bosse tous les Lun-Jeu, elle absorbe sa quote-part entiere.
+      // Si elle bosse moitie moins, elle absorbe moitie moins (le reste n'est pas absorbe,
+      // c'est un cout analytique, pas comptable).
+      var empruntCacheByMois = {};
+      function getEmpruntCoutJourPourMois(yyyymm) {
+        if (empruntCacheByMois[yyyymm] != null) return empruntCacheByMois[yyyymm];
+        var parts = yyyymm.split("-");
+        var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
+        var firstDay = new Date(y, m, 1);
+        var lastDay = new Date(y, m + 1, 0);
+        // 1) Mensualites des emprunts actifs sur ce mois
+        var totalMens = 0;
+        (emprunts || []).forEach(function(e) {
+          if (!e || e.statut !== "actif") return;
+          var db = e.date_debut ? new Date(e.date_debut) : null;
+          var df = e.date_fin ? new Date(e.date_fin) : null;
+          if (db && db > lastDay) return; // commence apres ce mois
+          if (df && df < firstDay) return; // fini avant ce mois
+          totalMens += parseFloat(e.mensualite) || 0;
+        });
+        if (totalMens <= 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
+        // 2) Machines actives ce mois (sur la TOTALITE des rapports, pas filtered)
+        var machinesSet = {};
+        (rapports || []).forEach(function(r) {
+          if (!r.date_rapport) return;
+          if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
+          var code = r.sondeuse_code || "_";
+          machinesSet[code] = true;
+        });
+        var nbMachines = Object.keys(machinesSet).length;
+        if (nbMachines === 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
+        // 3) Jours Lun-Jeu du mois
+        var nbJoursMois = lastDay.getDate();
+        var nbLunJeu = 0;
+        for (var d = 1; d <= nbJoursMois; d++) {
+          var dow = new Date(y, m, d).getDay();
+          if (dow >= 1 && dow <= 4) nbLunJeu++;
+        }
+        if (nbLunJeu === 0) { empruntCacheByMois[yyyymm] = 0; return 0; }
+        var coutJour = totalMens / nbMachines / nbLunJeu;
+        empruntCacheByMois[yyyymm] = coutJour;
+        return coutJour;
+      }
+
       // ── Detail par sondeuse ──
       var sondeusesMap = {}; // code -> stats
       filtered.forEach(function(r) {
         var code = r.sondeuse_code || "—";
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
-          coutConso: 0, coutPersonnel: 0
+          coutConso: 0, coutPersonnel: 0, coutEmprunt: 0
         };
         sondeusesMap[code].rapports += 1;
         sondeusesMap[code].metres += parseFloat(r.total_metres) || 0;
@@ -8441,11 +8746,14 @@
           if (!m) return;
           sondeusesMap[code].coutPersonnel += getSalaireJour(m.nom, m.id, r.date_rapport);
         });
+        // Cout emprunt mutualise : 1 jour de rapport = 1 quote-part journaliere absorbee
+        var moisR = String(r.date_rapport || "").substring(0, 7);
+        if (moisR) sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMois(moisR);
       });
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
         var coutCharges = s.coutPersonnel * 0.30;  // 30% charges patronales
-        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges;
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt;
         return {
           code: code,
           rapports: s.rapports,
@@ -8456,6 +8764,7 @@
           coutConso: s.coutConso,
           coutPersonnel: s.coutPersonnel,
           coutCharges: coutCharges,
+          coutEmprunt: s.coutEmprunt,
           coutTotal: coutTotal,
           coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0
         };
@@ -8754,7 +9063,8 @@
                   h("th", { style: thRightStyle, title: "Cout des consommables perdus / casses" }, "Consos"),
                   h("th", { style: thRightStyle, title: "Salaires journaliers cumules des membres d'equipe" }, "Salaires"),
                   h("th", { style: thRightStyle, title: "Charges patronales (30% des salaires)" }, "Charges 30%"),
-                  h("th", { style: thRightStyle, title: "Total : consos + salaires + charges" }, "Cout total"),
+                  h("th", { style: thRightStyle, title: "Quote-part des emprunts mutualises (mensualites repartis entre machines actives, par jour Lun-Jeu)" }, "Emprunts"),
+                  h("th", { style: thRightStyle, title: "Total : consos + salaires + charges + emprunts" }, "Cout total"),
                   h("th", { style: thRightStyle, title: "Cout total / metres fores" }, "Cout / metre")
                 )),
                 h("tbody", null, sondeusesDetail.map(function(s) {
@@ -8767,6 +9077,7 @@
                     h("td", { style: tdRightStyle }, Math.round(s.coutConso).toLocaleString("fr-FR")),
                     h("td", { style: tdRightStyle }, Math.round(s.coutPersonnel).toLocaleString("fr-FR")),
                     h("td", { style: tdRightStyle }, Math.round(s.coutCharges).toLocaleString("fr-FR")),
+                    h("td", { style: Object.assign({}, tdRightStyle, { color: "#c4b5fd" }) }, Math.round(s.coutEmprunt).toLocaleString("fr-FR")),
                     h("td", { style: Object.assign({}, tdRightStyle, { fontWeight: 700 }) }, Math.round(s.coutTotal).toLocaleString("fr-FR")),
                     h("td", { style: Object.assign({}, tdRightStyle, { color: "#fcd34d", fontWeight: 700 }) }, Math.round(s.coutParMetre).toLocaleString("fr-FR") + " /m")
                   );
@@ -10232,6 +10543,7 @@
           { key: "planning-employes", label: "Planning Employes", lucide: "users" },
           { key: "primes", label: "Primes", lucide: "trophy" },
           { key: "financement", label: "Financement", lucide: "wallet" },
+          { key: "emprunts", label: "Emprunts", lucide: "landmark" },
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
@@ -10312,6 +10624,7 @@
       const [dbDemandesFin, setDbDemandesFin] = useState([]);
       const [dbRelevesJourn, setDbRelevesJourn] = useState([]);
       const [dbRapportsForage, setDbRapportsForage] = useState([]);
+      const [dbEmprunts, setDbEmprunts] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -10354,6 +10667,7 @@
           var dfRes = { data: [], error: null };
           var rjRes = { data: [], error: null };
           var rfRes = { data: [], error: null };
+          var emRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
@@ -10363,6 +10677,7 @@
               supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }),
               // Rapports forage : light fetch (sans signatures lourdes en base64)
               supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at").order("date_rapport", { ascending: false }),
+              supabase.from("emprunts").select("*").order("date_debut", { ascending: false }),
             ]);
             afRes = results[0];
             ppRes = results[1];
@@ -10370,6 +10685,7 @@
             dfRes = results[3];
             rjRes = results[4];
             rfRes = results[5];
+            emRes = results[6];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -10389,6 +10705,7 @@
           if (ceRes.error) console.error("Table chantier_equipements:", ceRes.error.message);
           if (dfRes.error) console.error("Table demandes_financement:", dfRes.error.message);
           if (rjRes.error) console.error("Table releves_journaliers:", rjRes.error.message);
+          if (emRes.error) console.error("Table emprunts:", emRes.error.message);
 
           const eqList = (eqRes.data || []).map(equipementFromDb);
           const eqCodeById = {}; const eqIdByCode = {};
@@ -10421,6 +10738,7 @@
           setDbDemandesFin((dfRes.data || []).map(demandeFinFromDb));
           setDbRelevesJourn((rjRes.data || []).map(releveJournFromDb));
           setDbRapportsForage(rfRes.data || []);
+          setDbEmprunts(emRes.data || []);
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -11146,6 +11464,7 @@
         dbRelevesJourn: relevesUnifies, setDbRelevesJourn, upsertRelevesJourn, deleteReleveJourn, updateReleveJourn, createReleveJourn,
         dbRelevesJournRaw: dbRelevesJourn, // acces brut au CSV legacy si besoin
         dbRapportsForage, setDbRapportsForage, rapportsAsReleves,
+        dbEmprunts, setDbEmprunts,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
@@ -11182,6 +11501,7 @@
         if (currentPage === "personnel") return h(EcranPersonnel, { onNavigate: navigate });
         if (currentPage === "pieces") return h(EcranPieces, null);
         if (currentPage === "financement") return h(EcranFinancement, { onNavigate: navigate });
+        if (currentPage === "emprunts") return h(EcranEmprunts, null);
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
