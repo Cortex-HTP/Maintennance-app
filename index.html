@@ -9275,27 +9275,30 @@
         return salaireMensuel / divJours;
       }
 
-      // ── Cout emprunts : mutualises + dedies ──
-      // Mutualises : mensualite repartie sur toutes les machines actives du mois.
-      // Dedies : mensualite imputee uniquement a la machine equipement_id (ne touche pas les autres).
-      // Imputation par jour Lun-Jeu (meme logique que salaires).
+      // ── Cout emprunts : mutualises + dedies, au PRORATA DES METRES FORES ──
+      // Mutualises : total mensualites / total metres du mois = taux XPF par metre.
+      //              Chaque rapport absorbe metres_rapport * taux. Resultat : 100% des
+      //              mensualites absorbees (si au moins 1 metre est fore dans le mois).
+      // Dedies : pour la machine X, total des mensualites dediees X / total metres X
+      //          du mois = taux specifique a la machine.
       // Cache par mois pour eviter recalcul.
-      var empruntCacheMutByMois = {};       // yyyymm -> cout_par_jour_par_machine (part mutualisee)
-      var empruntCacheDediesByMois = {};    // yyyymm -> { equipementId -> cout_par_jour (part dediee) }
-      var equipByCode = {}; // resolution sondeuse_code -> equipement.Id
+      var empruntCacheMutByMois = {};       // yyyymm -> taux_par_metre (mutualise)
+      var empruntCacheDediesByMois = {};    // yyyymm -> { equipementId -> taux_par_metre (dedie) }
+      var equipByCode = {};                 // sondeuse_code -> equipement.Id
       (equipements || []).forEach(function(eq) {
         if (eq && eq.Title) equipByCode[String(eq.Title).trim().toUpperCase()] = eq.Id;
       });
-      function getEmpruntCoutJourPourMoisMutualise(yyyymm) {
+      function getEmpruntTauxParMetreMutualise(yyyymm) {
         if (empruntCacheMutByMois[yyyymm] != null) return empruntCacheMutByMois[yyyymm];
         var parts = yyyymm.split("-");
         var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
         var firstDay = new Date(y, m, 1);
         var lastDay = new Date(y, m + 1, 0);
+        // Total mensualites mutualisees actives sur ce mois
         var totalMens = 0;
         (emprunts || []).forEach(function(e) {
           if (!e || e.statut !== "actif") return;
-          if (e.mutualise === false) return; // ignorer dedies
+          if (e.mutualise === false) return;
           var db = e.date_debut ? new Date(e.date_debut) : null;
           var df = e.date_fin ? new Date(e.date_fin) : null;
           if (db && db > lastDay) return;
@@ -9303,26 +9306,19 @@
           totalMens += parseFloat(e.mensualite) || 0;
         });
         if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
-        var machinesSet = {};
+        // Total metres fores ce mois (toutes machines confondues)
+        var totalMetres = 0;
         (rapports || []).forEach(function(r) {
           if (!r.date_rapport) return;
           if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
-          machinesSet[r.sondeuse_code || "_"] = true;
+          totalMetres += parseFloat(r.total_metres) || 0;
         });
-        var nbMachines = Object.keys(machinesSet).length;
-        if (nbMachines === 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
-        var nbLunJeu = 0;
-        var nbJoursMois = lastDay.getDate();
-        for (var d = 1; d <= nbJoursMois; d++) {
-          var dow = new Date(y, m, d).getDay();
-          if (dow >= 1 && dow <= 4) nbLunJeu++;
-        }
-        if (nbLunJeu === 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
-        var coutJour = totalMens / nbMachines / nbLunJeu;
-        empruntCacheMutByMois[yyyymm] = coutJour;
-        return coutJour;
+        if (totalMetres <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
+        var taux = totalMens / totalMetres;
+        empruntCacheMutByMois[yyyymm] = taux;
+        return taux;
       }
-      function getEmpruntCoutJourPourMoisDedie(yyyymm, equipementId) {
+      function getEmpruntTauxParMetreDedie(yyyymm, equipementId) {
         if (!equipementId) return 0;
         if (!empruntCacheDediesByMois[yyyymm]) {
           empruntCacheDediesByMois[yyyymm] = {};
@@ -9330,16 +9326,11 @@
           var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
           var firstDay = new Date(y, m, 1);
           var lastDay = new Date(y, m + 1, 0);
-          var nbLunJeu = 0;
-          var nbJoursMois = lastDay.getDate();
-          for (var d = 1; d <= nbJoursMois; d++) {
-            var dow = new Date(y, m, d).getDay();
-            if (dow >= 1 && dow <= 4) nbLunJeu++;
-          }
-          if (nbLunJeu === 0) return 0;
+          // 1) Total mensualites dediees par equipement_id
+          var mensParEq = {};
           (emprunts || []).forEach(function(e) {
             if (!e || e.statut !== "actif") return;
-            if (e.mutualise !== false) return; // ignorer mutualises
+            if (e.mutualise !== false) return;
             if (!e.equipement_id) return;
             var db = e.date_debut ? new Date(e.date_debut) : null;
             var df = e.date_fin ? new Date(e.date_fin) : null;
@@ -9347,7 +9338,21 @@
             if (df && df < firstDay) return;
             var mens = parseFloat(e.mensualite) || 0;
             if (mens <= 0) return;
-            empruntCacheDediesByMois[yyyymm][e.equipement_id] = (empruntCacheDediesByMois[yyyymm][e.equipement_id] || 0) + (mens / nbLunJeu);
+            mensParEq[e.equipement_id] = (mensParEq[e.equipement_id] || 0) + mens;
+          });
+          // 2) Total metres par equipement (pour le mois)
+          var metresParEq = {};
+          (rapports || []).forEach(function(r) {
+            if (!r.date_rapport) return;
+            if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
+            var eqId = r.equipement_id || equipByCode[String(r.sondeuse_code || "").trim().toUpperCase()] || null;
+            if (!eqId) return;
+            metresParEq[eqId] = (metresParEq[eqId] || 0) + (parseFloat(r.total_metres) || 0);
+          });
+          // 3) Taux XPF par metre = total mensualites dediees / total metres pour cette machine
+          Object.keys(mensParEq).forEach(function(eqId) {
+            var metres = metresParEq[eqId] || 0;
+            empruntCacheDediesByMois[yyyymm][eqId] = metres > 0 ? mensParEq[eqId] / metres : 0;
           });
         }
         return empruntCacheDediesByMois[yyyymm][equipementId] || 0;
@@ -9383,13 +9388,14 @@
           if (!m) return;
           sondeusesMap[code].coutPersonnel += getSalaireJour(m.nom, m.id, r.date_rapport);
         });
-        // Cout emprunt : mutualise (toutes machines) + dedie (cette machine uniquement)
+        // Cout emprunt : prorata des metres fores ce mois
+        // mutualise -> taux global mois | dedie -> taux specifique machine
         var moisR = String(r.date_rapport || "").substring(0, 7);
-        if (moisR) {
-          sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMoisMutualise(moisR);
-          // Resolution machine : via r.equipement_id sinon via sondeuse_code -> equipements
+        var metresR = parseFloat(r.total_metres) || 0;
+        if (moisR && metresR > 0) {
+          sondeusesMap[code].coutEmprunt += metresR * getEmpruntTauxParMetreMutualise(moisR);
           var eqId = r.equipement_id || equipByCode[String(r.sondeuse_code || "").trim().toUpperCase()] || null;
-          if (eqId) sondeusesMap[code].coutEmprunt += getEmpruntCoutJourPourMoisDedie(moisR, eqId);
+          if (eqId) sondeusesMap[code].coutEmprunt += metresR * getEmpruntTauxParMetreDedie(moisR, eqId);
         }
       });
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
@@ -9705,7 +9711,7 @@
                   h("th", { style: thRightStyle, title: "Cout des consommables perdus / casses" }, "Consos"),
                   h("th", { style: thRightStyle, title: "Salaires journaliers cumules des membres d'equipe" }, "Salaires"),
                   h("th", { style: thRightStyle, title: "Charges patronales (30% des salaires)" }, "Charges 30%"),
-                  h("th", { style: thRightStyle, title: "Quote-part des emprunts mutualises (mensualites repartis entre machines actives, par jour Lun-Jeu)" }, "Emprunts"),
+                  h("th", { style: thRightStyle, title: "Quote-part des emprunts au prorata des metres fores. 100% des mensualites du mois sont absorbees ; une machine qui fore plus absorbe plus." }, "Emprunts"),
                   h("th", { style: thRightStyle, title: "Total : consos + salaires + charges + emprunts" }, "Cout total"),
                   h("th", { style: thRightStyle, title: "Cout total / metres fores" }, "Cout / metre")
                 )),
