@@ -236,6 +236,23 @@
     };
     const fmtMoney = (n) => fmtNum(n) + " XPF";
 
+    // ─── Normalisation libelles activites pour matching par mot-cle ──────
+    // Permet de reconnaitre "Attente intemperie" comme contenant "intemperie",
+    // "FORATION CAROTTE" comme FORATION, etc. Tolere accents et casse.
+    function normalizeActivite(str) {
+      return String(str || "").toLowerCase()
+        .normalize("NFD").replace(/[̀-ͯ]/g, "") // retire accents (combinings marks U+0300-U+036F)
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ").trim();
+    }
+    // True si le libelle contient le mot-cle (insensible casse/accents).
+    // Ex: activiteMatch("Attente intemperie", "intemperie") -> true
+    //     activiteMatch("FORATION CAROTTE", "foration") -> true
+    function activiteMatch(libelle, keyword) {
+      if (!libelle || !keyword) return false;
+      return normalizeActivite(libelle).indexOf(normalizeActivite(keyword)) >= 0;
+    }
+
     // ─── Mappers (DB snake_case <-> UI PascalCase) ──────────────────────
     const STATUT_EQ_TO_UI = { actif: "En service", en_panne: "En panne", en_maintenance: "En maintenance", reforme: "Reforme" };
     const STATUT_EQ_TO_DB = { "En service": "actif", "En panne": "en_panne", "En maintenance": "en_maintenance", "Reforme": "reforme" };
@@ -516,7 +533,10 @@
     function useAppData() { return useContext(AppContext); }
     function useParams(categorie) {
       const { parametres } = useAppData();
-      const list = (parametres || []).filter((p) => p.categorie === categorie).sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+      // Tri alphabetique par defaut sur la valeur (avec sensibilite accents/casse FR).
+      // Les anciennes proprietes "ordre" sont ignorees pour uniformiser tous les dropdowns.
+      const list = (parametres || []).filter((p) => p.categorie === categorie)
+        .sort((a, b) => String(a.valeur || "").localeCompare(String(b.valeur || ""), "fr", { sensitivity: "base" }));
       return list.map((p) => p.valeur);
     }
 
@@ -2551,7 +2571,16 @@
     function loadPersonnelFromParametres(parametres) {
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
       if (row && row.valeur) {
-        try { return JSON.parse(row.valeur); } catch(e) { return []; }
+        try {
+          var list = JSON.parse(row.valeur) || [];
+          // Tri alphabetique par nom puis prenom pour tous les dropdowns
+          list.sort(function(a, b) {
+            var na = ((a.nom || "") + " " + (a.prenom || "")).trim();
+            var nb = ((b.nom || "") + " " + (b.prenom || "")).trim();
+            return na.localeCompare(nb, "fr", { sensitivity: "base" });
+          });
+          return list;
+        } catch(e) { return []; }
       }
       return [];
     }
@@ -9149,7 +9178,7 @@
         sondeursMap[key].rapports += 1;
         var activites = Array.isArray(r.activites) ? r.activites : [];
         activites.forEach(function(a) {
-          if ((a.libelle || "").toUpperCase() === "FORATION") {
+          if (activiteMatch(a.libelle, "FORATION")) {
             sondeursMap[key].minutesForation += durBtw(a.debut, a.fin);
           }
         });
@@ -9333,7 +9362,7 @@
         sondeusesMap[code].minutes += parseFloat(r.total_heures) || 0;
         var activites = Array.isArray(r.activites) ? r.activites : [];
         activites.forEach(function(a) {
-          if ((a.libelle || "").toUpperCase() === "FORATION") {
+          if (activiteMatch(a.libelle, "FORATION")) {
             sondeusesMap[code].minutesForation += durBtw(a.debut, a.fin);
           }
         });
@@ -9710,9 +9739,12 @@
       var listFromParametres = function(categorie, fallback) {
         var list = _parametres
           .filter(function(p) { return p.categorie === categorie; })
-          .sort(function(a, b) { return (a.ordre || 0) - (b.ordre || 0); })
+          .sort(function(a, b) { return String(a.valeur || "").localeCompare(String(b.valeur || ""), "fr", { sensitivity: "base" }); })
           .map(function(p) { return p.valeur; });
-        return list.length > 0 ? list : fallback;
+        if (list.length === 0) list = (fallback || []).slice();
+        // Tri alphabetique aussi le fallback (au cas ou)
+        list.sort(function(a, b) { return String(a).localeCompare(String(b), "fr", { sensitivity: "base" }); });
+        return list;
       };
       var RF_TYPES_SONDAGE = listFromParametres("rf_types_sondage", RF_TYPES_SONDAGE_FALLBACK);
       var RF_TYPES_ACTIVITE = listFromParametres("rf_types_activite", RF_TYPES_ACTIVITE_FALLBACK);
