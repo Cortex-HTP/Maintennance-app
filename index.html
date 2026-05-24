@@ -11139,10 +11139,12 @@
       const ctx = useAppData();
       const isAdmin = ctx.isAdmin;
       const [tab, setTab] = useState("parametres");
+      const bugsUnresolved = (ctx.dbBugLogs || []).filter(function(b) { return !b.resolved; }).length;
       const tabs = [
         { key: "parametres", label: "Parametres", icon: "sliders-horizontal", adminOnly: false },
         { key: "validations", label: "Validations", icon: "shield-check", adminOnly: true, badge: pendingCount },
         { key: "utilisateurs", label: "Utilisateurs", icon: "user-cog", adminOnly: true },
+        { key: "bugs", label: "Journal des bugs", icon: "alert-triangle", adminOnly: true, badge: bugsUnresolved },
       ];
       const visibleTabs = tabs.filter(function(t) { return !t.adminOnly || isAdmin; });
       // Si l'onglet actif n'est pas accessible, retomber sur le premier visible
@@ -11174,7 +11176,140 @@
         ),
         tab === "parametres" ? h(EcranParametres, null) : null,
         tab === "validations" && isAdmin ? h(EcranValidations, { onNavigate: onNavigate }) : null,
-        tab === "utilisateurs" && isAdmin ? h(EcranAdminUtilisateurs, null) : null
+        tab === "utilisateurs" && isAdmin ? h(EcranAdminUtilisateurs, null) : null,
+        tab === "bugs" && isAdmin ? h(EcranBugs, null) : null
+      );
+    }
+
+    // ─── EcranBugs : Journal des erreurs API & sync ────────────────────
+    function EcranBugs() {
+      const ctx = useAppData();
+      const bugs = ctx.dbBugLogs || [];
+      const [filterSev, setFilterSev] = useState("all");
+      const [filterResolved, setFilterResolved] = useState("unresolved");
+      const [expandedId, setExpandedId] = useState(null);
+
+      async function reload() {
+        var res = await supabase.from("bug_logs").select("*").order("created_at", { ascending: false }).limit(500);
+        if (!res.error) ctx.setDbBugLogs(res.data || []);
+      }
+      async function markResolved(id, resolved) {
+        var payload = resolved
+          ? { resolved: true, resolved_at: new Date().toISOString(), resolved_by: ctx.userEmail || "admin" }
+          : { resolved: false, resolved_at: null, resolved_by: null };
+        var res = await supabase.from("bug_logs").update(payload).eq("id", id);
+        if (res.error) { ctx.showToast("Erreur : " + res.error.message, "error"); return; }
+        await reload();
+        ctx.showToast(resolved ? "Bug marque comme resolu" : "Bug re-ouvert", "success");
+      }
+      async function deleteBug(id) {
+        if (!confirm("Supprimer definitivement cette entree du journal ?")) return;
+        var res = await supabase.from("bug_logs").delete().eq("id", id);
+        if (res.error) { ctx.showToast("Erreur : " + res.error.message, "error"); return; }
+        await reload();
+        ctx.showToast("Entree supprimee", "success");
+      }
+
+      var filtered = bugs.filter(function(b) {
+        if (filterSev !== "all" && b.severity !== filterSev) return false;
+        if (filterResolved === "unresolved" && b.resolved) return false;
+        if (filterResolved === "resolved" && !b.resolved) return false;
+        return true;
+      });
+
+      var sevColors = { info: "#0ea5e9", warning: "#f59e0b", error: "#f43f5e", critical: "#dc2626" };
+      var sevLabels = { info: "Info", warning: "Warning", error: "Erreur", critical: "Critique" };
+
+      var nbCritiques = bugs.filter(function(b) { return !b.resolved && b.severity === "critical"; }).length;
+      var nbErrors = bugs.filter(function(b) { return !b.resolved && b.severity === "error"; }).length;
+      var nbWarnings = bugs.filter(function(b) { return !b.resolved && b.severity === "warning"; }).length;
+      var nbResolved = bugs.filter(function(b) { return b.resolved; }).length;
+
+      var btnStyle = function(active, color) {
+        return {
+          padding: "6px 12px", borderRadius: 8, border: "1px solid " + (active ? color : "rgba(255,255,255,0.1)"),
+          background: active ? color + "22" : "rgba(255,255,255,0.04)",
+          color: active ? color : "#a1a1aa", cursor: "pointer", fontSize: 12, fontWeight: 600,
+          fontFamily: "inherit", transition: "all 0.15s"
+        };
+      };
+
+      return h("div", null,
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 } },
+          h("div", { style: { padding: 14, background: "rgba(220, 38, 38, 0.10)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: 10 } },
+            h("div", { style: { fontSize: 11, color: "#fca5a5", textTransform: "uppercase", fontWeight: 700 } }, "Critiques"),
+            h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fca5a5", marginTop: 4 } }, nbCritiques)),
+          h("div", { style: { padding: 14, background: "rgba(244, 63, 94, 0.10)", border: "1px solid rgba(244,63,94,0.3)", borderRadius: 10 } },
+            h("div", { style: { fontSize: 11, color: "#fda4af", textTransform: "uppercase", fontWeight: 700 } }, "Erreurs"),
+            h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fda4af", marginTop: 4 } }, nbErrors)),
+          h("div", { style: { padding: 14, background: "rgba(245, 158, 11, 0.10)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 10 } },
+            h("div", { style: { fontSize: 11, color: "#fcd34d", textTransform: "uppercase", fontWeight: 700 } }, "Warnings"),
+            h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fcd34d", marginTop: 4 } }, nbWarnings)),
+          h("div", { style: { padding: 14, background: "rgba(16, 185, 129, 0.10)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 10 } },
+            h("div", { style: { fontSize: 11, color: "#86efac", textTransform: "uppercase", fontWeight: 700 } }, "Resolus"),
+            h("div", { style: { fontSize: 22, fontWeight: 800, color: "#86efac", marginTop: 4 } }, nbResolved))
+        ),
+
+        // Filtres
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" } },
+          h("button", { onClick: function() { setFilterResolved("unresolved"); }, style: btnStyle(filterResolved === "unresolved", "#f43f5e") }, "Non resolus"),
+          h("button", { onClick: function() { setFilterResolved("resolved"); }, style: btnStyle(filterResolved === "resolved", "#10b981") }, "Resolus"),
+          h("button", { onClick: function() { setFilterResolved("all"); }, style: btnStyle(filterResolved === "all", "#818cf8") }, "Tous"),
+          h("div", { style: { width: 1, background: "rgba(255,255,255,0.1)", margin: "0 4px" } }),
+          h("button", { onClick: function() { setFilterSev("all"); }, style: btnStyle(filterSev === "all", "#a1a1aa") }, "Toutes severites"),
+          h("button", { onClick: function() { setFilterSev("critical"); }, style: btnStyle(filterSev === "critical", "#dc2626") }, "Critique"),
+          h("button", { onClick: function() { setFilterSev("error"); }, style: btnStyle(filterSev === "error", "#f43f5e") }, "Erreur"),
+          h("button", { onClick: function() { setFilterSev("warning"); }, style: btnStyle(filterSev === "warning", "#f59e0b") }, "Warning"),
+          h("button", { onClick: function() { setFilterSev("info"); }, style: btnStyle(filterSev === "info", "#0ea5e9") }, "Info"),
+          h("div", { style: { marginLeft: "auto" } },
+            h(Button, { variant: "secondary", onClick: reload }, h(IconText, { icon: "refresh-cw", size: 12 }, "Rafraichir"))
+          )
+        ),
+
+        // Liste
+        filtered.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", fontSize: 14, background: "rgba(36, 40, 60, 0.55)", borderRadius: 12, border: "1px solid var(--border)" } },
+          filterResolved === "unresolved" ? "Aucun bug non resolu. Tout va bien." :
+          filterResolved === "resolved" ? "Aucun bug resolu dans le filtre actuel." :
+          "Aucune entree dans le journal."
+        ) : h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          filtered.map(function(b) {
+            var sevColor = sevColors[b.severity] || "#a1a1aa";
+            var isExpanded = expandedId === b.id;
+            return h("div", { key: b.id, style: { background: "rgba(36, 40, 60, 0.55)", border: "1px solid " + sevColor + "44", borderLeft: "4px solid " + sevColor, borderRadius: 10, overflow: "hidden" } },
+              h("div", { onClick: function() { setExpandedId(isExpanded ? null : b.id); }, style: { display: "flex", alignItems: "center", gap: 12, padding: 12, cursor: "pointer", userSelect: "none" } },
+                h("span", { style: { display: "inline-flex", alignItems: "center", padding: "2px 8px", fontSize: 10, fontWeight: 700, color: sevColor, background: sevColor + "22", border: "1px solid " + sevColor + "55", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.5 } }, sevLabels[b.severity] || b.severity),
+                b.resolved ? h("span", { style: { display: "inline-flex", alignItems: "center", padding: "2px 8px", fontSize: 10, fontWeight: 700, color: "#86efac", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.4)", borderRadius: 999, textTransform: "uppercase" } }, "Resolu") : null,
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("div", { style: { fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, b.message),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2 } },
+                    (b.source || "?") + " - " + (b.type || "?") + " - " + (b.created_at ? new Date(b.created_at).toLocaleString("fr-FR") : "?")
+                  )
+                ),
+                h(Icon, { name: isExpanded ? "chevron-up" : "chevron-down", size: 16, color: "#a1a1aa" })
+              ),
+              isExpanded ? h("div", { style: { padding: 14, borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,0,0,0.20)" } },
+                b.context ? h("div", { style: { marginBottom: 12 } },
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", fontWeight: 700, marginBottom: 4 } }, "Contexte"),
+                  h("pre", { style: { fontSize: 11, color: "#cbd5e1", background: "rgba(0,0,0,0.4)", padding: 10, borderRadius: 6, overflow: "auto", margin: 0, fontFamily: "monospace" } }, JSON.stringify(b.context, null, 2))
+                ) : null,
+                b.details ? h("div", { style: { marginBottom: 12 } },
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", fontWeight: 700, marginBottom: 4 } }, "Details techniques"),
+                  h("pre", { style: { fontSize: 11, color: "#cbd5e1", background: "rgba(0,0,0,0.4)", padding: 10, borderRadius: 6, overflow: "auto", margin: 0, fontFamily: "monospace" } }, JSON.stringify(b.details, null, 2))
+                ) : null,
+                b.resolved && b.resolved_at ? h("div", { style: { fontSize: 11, color: "#86efac", marginBottom: 12 } },
+                  "Resolu le " + new Date(b.resolved_at).toLocaleString("fr-FR") + (b.resolved_by ? " par " + b.resolved_by : "")
+                ) : null,
+                h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+                  b.resolved
+                    ? h(Button, { variant: "secondary", onClick: function() { markResolved(b.id, false); } }, h(IconText, { icon: "rotate-ccw", size: 12 }, "Re-ouvrir"))
+                    : h(Button, { variant: "primary", onClick: function() { markResolved(b.id, true); } }, h(IconText, { icon: "check", size: 12 }, "Marquer resolu")),
+                  h(Button, { variant: "danger", onClick: function() { deleteBug(b.id); } }, h(IconText, { icon: "trash-2", size: 12 }, "Supprimer"))
+                )
+              ) : null
+            );
+          })
+        )
       );
     }
 
@@ -11282,6 +11417,7 @@
       const [dbRelevesJourn, setDbRelevesJourn] = useState([]);
       const [dbRapportsForage, setDbRapportsForage] = useState([]);
       const [dbEmprunts, setDbEmprunts] = useState([]);
+      const [dbBugLogs, setDbBugLogs] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -11325,6 +11461,7 @@
           var rjRes = { data: [], error: null };
           var rfRes = { data: [], error: null };
           var emRes = { data: [], error: null };
+          var blRes = { data: [], error: null };
           try {
             var results = await Promise.all([
               supabase.from("affectations").select("*"),
@@ -11335,6 +11472,7 @@
               // Rapports forage : light fetch (sans signatures lourdes en base64)
               supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at").order("date_rapport", { ascending: false }),
               supabase.from("emprunts").select("*").order("date_debut", { ascending: false }),
+              supabase.from("bug_logs").select("*").order("created_at", { ascending: false }).limit(500),
             ]);
             afRes = results[0];
             ppRes = results[1];
@@ -11343,6 +11481,7 @@
             rjRes = results[4];
             rfRes = results[5];
             emRes = results[6];
+            blRes = results[7];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -11396,6 +11535,7 @@
           setDbRelevesJourn((rjRes.data || []).map(releveJournFromDb));
           setDbRapportsForage(rfRes.data || []);
           setDbEmprunts(emRes.data || []);
+          setDbBugLogs(blRes.data || []);
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -12122,6 +12262,7 @@
         dbRelevesJournRaw: dbRelevesJourn, // acces brut au CSV legacy si besoin
         dbRapportsForage, setDbRapportsForage, rapportsAsReleves,
         dbEmprunts, setDbEmprunts,
+        dbBugLogs, setDbBugLogs,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
