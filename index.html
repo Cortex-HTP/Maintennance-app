@@ -7726,10 +7726,14 @@
     }
 
     // ─── MetrageView : matrice sondeurs x jours, groupee par site ──────
-    // Affiche pour chaque site les metres fores par chaque sondeur sur chaque
-    // jour de la periode 26 -> 25. Source : rapports_forage (total_metres
-    // attribue a chaque membre d'equipe).
-    function MetrageView({ rapports, chantiers, chantiersBySite, period }) {
+    // 2 sources de donnees combinees :
+    //   1. rapports_forage : prioritaire (1 rapport = 1 machine + equipe, metres
+    //      attribues a chaque membre)
+    //   2. saisies_metrage + affectations : fallback pour les jours sans rapport
+    //      (typique : avril 2026 ou les rapports forage digitaux n'existaient pas
+    //      encore). Pour chaque jour de saisie chantier, on liste les employes
+    //      affectes a ce chantier ce jour et on leur attribue le metrage du chantier.
+    function MetrageView({ rapports, chantiers, chantiersBySite, period, saisies, affectations, personnel }) {
       // Construire la liste des jours de la periode (inclusif)
       var days = [];
       var cur = new Date(period.start);
@@ -7762,16 +7766,25 @@
         return null;
       }
 
+      // personnel : map id -> nom
+      var pidToNom = {};
+      (personnel || []).forEach(function(p) {
+        if (p && p.id) pidToNom[p.id] = ((p.prenom || "") + " " + (p.nom || "")).trim();
+      });
+
+      // Set : jours+site pour lesquels un rapport existe (on n'utilisera pas le fallback)
+      var rapportSetByDaySite = {};
+
       // Pour chaque site : matrice { sondeurNom : { iso : metres, total : metres, nbRapports : N } }
       var sitesData = {};
       (rapports || []).forEach(function(r) {
         if (!r.date_rapport) return;
         var iso = String(r.date_rapport).substring(0, 10);
-        // Verif dans periode
         var d = new Date(iso + "T00:00:00");
         if (d < period.start || d > period.end) return;
         var site = siteOfRapport(r);
         if (!site) return;
+        rapportSetByDaySite[iso + "|" + site] = true;
         var metres = parseFloat(r.total_metres) || 0;
         var eq = Array.isArray(r.equipe) ? r.equipe : [];
         if (eq.length === 0) return;
@@ -7780,10 +7793,47 @@
           if (!m || !m.nom) return;
           var key = m.nom;
           if (!sitesData[site][key]) sitesData[site][key] = { byDay: {}, total: 0, nbR: 0 };
-          // Si plusieurs rapports le meme jour pour le meme sondeur (rare), on somme
           sitesData[site][key].byDay[iso] = (sitesData[site][key].byDay[iso] || 0) + metres;
           sitesData[site][key].total += metres;
           sitesData[site][key].nbR += 1;
+        });
+      });
+
+      // FALLBACK : pour chaque (jour, site) SANS rapport, utiliser saisies + affectations.
+      // saisies : { chantier_id : { iso : { valeur, typeJour } } } - format ctx.dbSaisies
+      Object.keys(chantiersBySite || {}).forEach(function(site) {
+        var siteCh = chantiersBySite[site];
+        days.forEach(function(day) {
+          if (rapportSetByDaySite[day.iso + "|" + site]) return; // rapport existe deja
+          // Cumuler le metrage des chantiers de ce site pour ce jour
+          var totalMetresJour = 0;
+          siteCh.forEach(function(c) {
+            var entry = saisies && saisies[c.id] && saisies[c.id][day.iso];
+            if (!entry) return;
+            var v = (typeof entry === "object") ? (parseFloat(entry.valeur) || 0) : (parseFloat(entry) || 0);
+            if (v > 0) totalMetresJour += v;
+          });
+          if (totalMetresJour === 0) return;
+          // Lister les employes affectes a ce site ce jour (type travail)
+          var workerNoms = [];
+          siteCh.forEach(function(c) {
+            (affectations || []).forEach(function(a) {
+              if (a.dateAffectation !== day.iso) return;
+              if (a.chantierId !== c.id) return;
+              if ((a.typeJour || "travail") !== "travail") return;
+              var nom = pidToNom[a.personnelId];
+              if (nom && workerNoms.indexOf(nom) < 0) workerNoms.push(nom);
+            });
+          });
+          if (workerNoms.length === 0) return;
+          // Attribuer le total a chaque worker (meme metrage pour tous, comme dans les rapports)
+          if (!sitesData[site]) sitesData[site] = {};
+          workerNoms.forEach(function(nom) {
+            if (!sitesData[site][nom]) sitesData[site][nom] = { byDay: {}, total: 0, nbR: 0 };
+            sitesData[site][nom].byDay[day.iso] = (sitesData[site][nom].byDay[day.iso] || 0) + totalMetresJour;
+            sitesData[site][nom].total += totalMetresJour;
+            sitesData[site][nom].nbR += 1;
+          });
         });
       });
 
@@ -8122,7 +8172,10 @@
           rapports: ctx.dbRapportsForage || [],
           chantiers: chantiers,
           chantiersBySite: chantiersBySite,
-          period: currentPeriod
+          period: currentPeriod,
+          saisies: saisies,
+          affectations: affectations,
+          personnel: personnel
         }) : null,
         // KPIs (onglet Primes)
         primesTab === "primes" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
