@@ -7898,6 +7898,32 @@
         }
       });
 
+      // Index : nameKey -> personnel_id (pour retrouver les affectations a partir du nom canon)
+      var nameKeyToPid = {};
+      (personnel || []).forEach(function(p) {
+        if (p && p.id) {
+          var k = normNameKey(((p.prenom || "") + " " + (p.nom || "")).trim());
+          if (k) nameKeyToPid[k] = p.id;
+        }
+      });
+      // Index affectations : pid|date -> { type, chantier_id }
+      var affByPidDate = {};
+      (affectations || []).forEach(function(a) {
+        if (!a.personnelId || !a.dateAffectation) return;
+        var k = a.personnelId + "|" + a.dateAffectation;
+        // Si plusieurs affectations meme jour (rare), garder la 1ere
+        if (!affByPidDate[k]) affByPidDate[k] = { type: a.typeJour || "travail", chantier: a.chantierId };
+      });
+      // Labels et couleurs des types d'affectation manuelle (cases vides)
+      var typeShortLabels = {
+        ferie: "F", panne: "P", conge: "C", chomage: "Ch",
+        non_productif: "NP", intemperies: "INT", maladie: "M", travail: ""
+      };
+      var typeShortColors = {
+        ferie: "#a78bfa", panne: "#fb923c", conge: "#60a5fa",
+        chomage: "#94a3b8", non_productif: "#fbbf24", intemperies: "#22d3ee", maladie: "#f472b6"
+      };
+
       var siteOrder = Object.keys(sitesData).sort();
       var thStyle = { padding: "6px 8px", fontSize: 10, fontWeight: 700, color: "#e5e7eb", borderBottom: "2px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", whiteSpace: "nowrap", textAlign: "center" };
       var tdStyle = { padding: "6px 8px", borderBottom: "1px solid rgba(255,255,255,0.04)", fontSize: 11, color: "#cbd5e1", textAlign: "center", whiteSpace: "nowrap" };
@@ -7933,16 +7959,37 @@
                 h("tbody", null,
                   sondeurs.map(function(nom) {
                     var data = sitesData[site][nom];
+                    var pidForNom = nameKeyToPid[normNameKey(nom)];
                     return h("tr", { key: nom },
                       h("td", { style: Object.assign({}, tdStyle, { textAlign: "left", fontWeight: 600, color: "#fafafa", position: "sticky", left: 0, background: "rgba(36,40,60,0.95)" }) }, nom),
                       days.map(function(day) {
                         var v = data.byDay[day.iso] || 0;
                         var isWE = day.dow === 0 || day.dow === 6;
+                        // Si case vide, regarde si une affectation manuelle existe ce jour pour cet employe
+                        var badgeType = null;
+                        if (v === 0 && pidForNom) {
+                          var aff = affByPidDate[pidForNom + "|" + day.iso];
+                          if (aff && aff.type && aff.type !== "travail" && typeShortLabels[aff.type]) {
+                            badgeType = aff.type;
+                          }
+                        }
                         return h("td", { key: day.iso, style: Object.assign({}, tdStyle, {
                           color: v > 0 ? "#86efac" : (isWE ? "#52525b" : "#52525b"),
                           background: isWE ? "rgba(0,0,0,0.10)" : "transparent",
                           fontWeight: v > 0 ? 600 : 400
-                        }) }, v > 0 ? Math.round(v) : "");
+                        }) },
+                          v > 0 ? Math.round(v) :
+                          (badgeType ? h("span", {
+                            style: {
+                              display: "inline-block", padding: "1px 5px", fontSize: 9, fontWeight: 700,
+                              color: typeShortColors[badgeType] || "#94a3b8",
+                              background: (typeShortColors[badgeType] || "#94a3b8") + "22",
+                              border: "1px solid " + (typeShortColors[badgeType] || "#94a3b8") + "55",
+                              borderRadius: 4, letterSpacing: 0.3
+                            },
+                            title: badgeType
+                          }, typeShortLabels[badgeType]) : "")
+                        );
                       }),
                       h("td", { style: Object.assign({}, tdStyle, { fontWeight: 700, color: "#a78bfa", borderLeft: "2px solid rgba(167,139,250,0.3)" }) }, fmtNum(Math.round(data.total)))
                     );
