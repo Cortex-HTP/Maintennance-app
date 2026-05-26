@@ -8079,6 +8079,10 @@
       var periodLabel = "du 26/" + (prevM < 10 ? "0" : "") + prevM + "/" + prevY + " au 25/" + (curM < 10 ? "0" : "") + curM + "/" + sy;
 
       // Calculate prime for a site in a given period
+      // Index : chantier_id -> site (pour determiner le site d'une affectation)
+      var chantierToSite = {};
+      (chantiers || []).forEach(function(c) { chantierToSite[c.id] = c.site || ""; });
+
       function calcPrimesForSitePeriod(site, period) {
         var siteCh = chantiersBySite[site] || [];
         if (siteCh.length === 0) return [];
@@ -8090,6 +8094,32 @@
         personnel.forEach(function(emp) {
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
+
+          // ── STRATEGIE MULTI-SITES : determine le site PRINCIPAL de cet employe ──
+          // Compte les jours de travail sur chaque site pendant la periode.
+          // Le site avec le plus de jours travail = site principal.
+          // L'employe est rattache UNIQUEMENT a son site principal pour le calcul
+          // de la prime (evite les primes "gonflees" sur 1 ou 2 jours de passage
+          // sur un site avec des paliers plus eleves).
+          var sitesDays = {};
+          (affectations || []).forEach(function(a) {
+            if (a.personnelId !== emp.id) return;
+            if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
+            if ((a.typeJour || "travail") !== "travail") return;
+            if (!a.chantierId) return;
+            var s = chantierToSite[a.chantierId];
+            if (s) sitesDays[s] = (sitesDays[s] || 0) + 1;
+          });
+          var siteKeys = Object.keys(sitesDays);
+          if (siteKeys.length === 0) return; // pas de jour travail = pas de prime
+          // Tri par nb jours decroissant ; tie-breaker : objectif_mh decroissant
+          siteKeys.sort(function(a, b) {
+            if (sitesDays[b] !== sitesDays[a]) return sitesDays[b] - sitesDays[a];
+            return (getObjectifForSite(paliers, b) || 0) - (getObjectifForSite(paliers, a) || 0);
+          });
+          var sitePrincipal = siteKeys[0];
+          // Si ce site n'est pas le site principal de cet employe, on ne le calcule pas ici.
+          if (sitePrincipal !== site) return;
 
           // ── Strategie unifiee : base de comptage = AFFECTATIONS (planning) ──
           // 1) Recupere les affectations de l'employe sur les chantiers du site (ou null)
@@ -8171,6 +8201,49 @@
               adjMetrage += dayMetrage;
               adjJours += 1;
             }
+          });
+
+          // INTEGRATION MULTI-SITES : pour chaque autre site ou l'employe a travaille,
+          // on ajoute ses jours+metres convertis en EQUIVALENT du site principal.
+          // Conversion : metres_equivalent = metres_secondaire * (objectif_principal / objectif_secondaire)
+          // -> un sondeur qui fait 200m sur un site avec objectif 19m/h vaut 200*3.33/19 = 35m
+          //    sur un site avec objectif 3.33m/h. Coherent : la performance relative est preservee.
+          siteKeys.forEach(function(otherSite) {
+            if (otherSite === site) return; // deja traite ci-dessus
+            var otherObj = getObjectifForSite(paliers, otherSite);
+            if (otherObj <= 0) return;
+            var ratio = objectif / otherObj;
+            var otherChIds = (chantiersBySite[otherSite] || []).map(function(c) { return c.id; });
+            var otherReleves = releves.filter(function(r) {
+              if (!r.dateReleve) return false;
+              if (!isDateInPeriod(r.dateReleve, period.start, period.end)) return false;
+              if (!r.chantierId || otherChIds.indexOf(r.chantierId) < 0) return false;
+              if (r.personnelId === emp.id) return true;
+              var rNom = (r.employeNom || "").toUpperCase().trim();
+              return rNom === empNom || rNom === empNomRev;
+            });
+            var otherReleveByDate = {};
+            otherReleves.forEach(function(r) {
+              if (!otherReleveByDate[r.dateReleve]) otherReleveByDate[r.dateReleve] = [];
+              otherReleveByDate[r.dateReleve].push(r);
+            });
+            (affectations || []).forEach(function(a) {
+              if (a.personnelId !== emp.id) return;
+              if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
+              if ((a.typeJour || "travail") !== "travail") return;
+              if (!a.chantierId || otherChIds.indexOf(a.chantierId) < 0) return;
+              var dateStr2 = a.dateAffectation;
+              var dayMetrage2 = 0;
+              if (otherReleveByDate[dateStr2] && otherReleveByDate[dateStr2].length > 0) {
+                otherReleveByDate[dateStr2].forEach(function(r) { dayMetrage2 += parseFloat(r.metrage) || 0; });
+              } else {
+                var sentry = (saisies[a.chantierId] && saisies[a.chantierId][dateStr2]) || null;
+                var sval = sentry ? (parseFloat(getSaisieVal(sentry)) || 0) : 0;
+                if (sval > 0) dayMetrage2 = sval;
+              }
+              adjMetrage += dayMetrage2 * ratio;
+              adjJours += 1;
+            });
           });
 
           if (adjJours === 0) return;
