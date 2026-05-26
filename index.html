@@ -1124,11 +1124,11 @@
           var reste = result.nextDue - currentVal;
           if (result.isDue) {
             var depassement = currentVal - result.nextDue;
-            infosOverdue.push({ text: p.Title + " depasse de " + Math.round(depassement) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
+            infosOverdue.push({ text: p.Title + " depasse de " + Math.round(depassement) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType, planTitle: p.Title });
           } else if (result.atThreshold) {
-            infosPreventive.push({ text: p.Title + " a faire maintenant (" + result.nextDue + (freqType === "h" ? "h" : "km") + ")", freqVal: freqVal, freqType: freqType });
+            infosPreventive.push({ text: p.Title + " a faire maintenant (" + result.nextDue + (freqType === "h" ? "h" : "km") + ")", freqVal: freqVal, freqType: freqType, planTitle: p.Title });
           } else if (reste > 0 && reste <= seuil) {
-            infosPreventive.push({ text: p.Title + " dans " + Math.round(reste) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType });
+            infosPreventive.push({ text: p.Title + " dans " + Math.round(reste) + (freqType === "h" ? "h" : "km"), freqVal: freqVal, freqType: freqType, planTitle: p.Title });
           }
         });
         // Hierarchie : absorber les petits plans quand un plus gros du meme type est aussi du
@@ -1140,8 +1140,18 @@
             return !absorbed;
           });
         }
-        var filteredPreventive = filterHierarchy(infosPreventive).map(function(x) { return x.text; });
-        var filteredOverdue = filterHierarchy(infosOverdue).map(function(x) { return x.text; });
+        // Filtre : si une intervention [Auto] pending existe deja pour ce plan/equipement,
+        // on ne re-affiche pas le depassement dans detailOverdue (sinon doublon avec urgents)
+        function hasAutoPendingFor(plnTitle) {
+          return interventions.some(function(i) {
+            return (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
+                   (i.Plan || "").toLowerCase() === String(plnTitle || "").toLowerCase() &&
+                   (i.Title || "").toLowerCase().indexOf("[auto]") === 0 &&
+                   computeIntervStatus(i) !== "Termine";
+          });
+        }
+        var filteredPreventive = filterHierarchy(infosPreventive).filter(function(o) { return !hasAutoPendingFor(o.planTitle); }).map(function(x) { return x.text; });
+        var filteredOverdue = filterHierarchy(infosOverdue).filter(function(o) { return !hasAutoPendingFor(o.planTitle); }).map(function(x) { return x.text; });
         if (filteredPreventive.length > 0) {
           detailVisitesDecl.push({ equipement: eq.Title, equipementId: eq.Id, eqObj: eq, infos: filteredPreventive });
         }
