@@ -5622,7 +5622,8 @@
       var CHANTIER_EVENT_TYPES = [
         { key: "ferie", label: "Ferie", color: "#dc2626", icon: "calendar-off" },
         { key: "panne", label: "Panne", color: "#f59e0b", icon: "alert-triangle" },
-        { key: "intemperies", label: "Intemperies", color: "#3b82f6", icon: "cloud-rain" }
+        { key: "intemperies", label: "Intemperies", color: "#3b82f6", icon: "cloud-rain" },
+        { key: "arret", label: "Arret", color: "#52525b", icon: "octagon-x" }
       ];
 
       var nextIdAv = function() { return Date.now() + Math.floor(Math.random() * 1000); };
@@ -6487,7 +6488,8 @@
         { key: "chomage", label: "Chomage", color: "#8b5cf6", initial: "Ch" },
         { key: "panne", label: "Panne", color: "#f59e0b", initial: "P" },
         { key: "intemperies", label: "Intemperies", color: "#3b82f6", initial: "I" },
-        { key: "non_productif", label: "Non productif", color: "#78716c", initial: "NP" }
+        { key: "non_productif", label: "Non productif", color: "#78716c", initial: "NP" },
+        { key: "arret", label: "Arret", color: "#52525b", initial: "A" }
       ];
 
       function addMonthsPe(d, n) {
@@ -6674,7 +6676,7 @@
       }
 
       function isPersonnelEvent(b) {
-        return b === "ferie" || b === "maladie" || b === "conge" || b === "chomage" || b === "non_productif";
+        return b === "ferie" || b === "maladie" || b === "conge" || b === "chomage" || b === "non_productif" || b === "arret";
       }
       function handleCellClick(empId, dateStr) {
         if (brush === "eraser") {
@@ -8091,6 +8093,37 @@
         var siteMoyenne = getMoyenneForSite(paliers, site);
         var objectif = getObjectifForSite(paliers, site);
 
+        // Pre-calcul du metrage TOTAL du site pour chaque date de la periode.
+        // Utilise pour le rattrapage des conges/panne/etc. (regle : min(metrage_jour, moyenne_site)).
+        // Source 1 : saisies_metrage de chaque chantier du site
+        // Source 2 (fallback) : somme total_metres des rapports forage du site ce jour
+        var rapportsCtx = ctx.dbRapportsForage || [];
+        var metrageSiteByDate = {};
+        siteChIds.forEach(function(cId) {
+          var saisiesCh = saisies[cId] || {};
+          Object.keys(saisiesCh).forEach(function(d) {
+            var v = (typeof saisiesCh[d] === "object") ? (parseFloat(saisiesCh[d].valeur) || 0) : (parseFloat(saisiesCh[d]) || 0);
+            if (v > 0) metrageSiteByDate[d] = (metrageSiteByDate[d] || 0) + v;
+          });
+        });
+        // Ajout fallback rapports forage si pas de saisie pour cette date
+        rapportsCtx.forEach(function(r) {
+          if (!r.date_rapport) return;
+          var d = String(r.date_rapport).substring(0, 10);
+          var ch = r.chantier_id;
+          // resoudre via lieu si chantier_id null
+          if (!ch && r.lieu) {
+            var lk = String(r.lieu).toUpperCase().trim();
+            for (var i = 0; i < siteCh.length; i++) {
+              var sk = String(siteCh[i].site || "").toUpperCase().trim();
+              if (sk === lk || sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) { ch = siteCh[i].id; break; }
+            }
+          }
+          if (siteChIds.indexOf(ch) < 0) return;
+          if (!metrageSiteByDate[d]) metrageSiteByDate[d] = parseFloat(r.total_metres) || 0;
+          // Si deja une saisie pour ce jour, on ne re-additionne pas (priorite saisie)
+        });
+
         personnel.forEach(function(emp) {
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
@@ -8176,15 +8209,19 @@
             var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
             var saisieType = saisieEntry ? getSaisieType(saisieEntry) : "normal";
             var saisieVal = saisieEntry ? (parseFloat(getSaisieVal(saisieEntry)) || 0) : 0;
-            var effectiveType = (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif") ? saisieType : tj;
+            var effectiveType = (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif" || saisieType === "arret") ? saisieType : tj;
             // Les jours feries sont COMPLETEMENT EXCLUS du calcul (comme un weekend) :
             // ni metres ajoutes, ni jour ajoute au diviseur. Sortie immediate.
             if (effectiveType === "ferie") return;
-            if (effectiveType === "panne" || effectiveType === "intemperies" || effectiveType === "non_productif") {
-              adjMetrage += siteMoyenne;
+            // Arret : journee explicitement "rien ne se passe" -> 0m, +1j
+            if (effectiveType === "arret") {
               adjJours += 1;
-            } else if (effectiveType === "conge" || effectiveType === "chomage") {
-              adjMetrage += siteMoyenne;
+            } else if (effectiveType === "panne" || effectiveType === "intemperies" || effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
+              // Nouvelle regle : rattrapage = min(metrage_jour, moyenne_site)
+              // L'employe absent ne touche jamais plus que ce que les autres ont realement fait
+              var metrageJour = metrageSiteByDate[dateStr];
+              if (metrageJour === undefined || metrageJour === null) metrageJour = siteMoyenne; // fallback si rien
+              adjMetrage += Math.min(metrageJour, siteMoyenne);
               adjJours += 1;
             } else if (effectiveType === "maladie") {
               adjJours += 1;
