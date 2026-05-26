@@ -7799,42 +7799,85 @@
         });
       });
 
-      // FALLBACK : pour chaque (jour, site) SANS rapport, utiliser saisies + affectations.
+      // FALLBACK 1 : pour chaque (jour, site) SANS rapport, utiliser saisies + affectations.
       // saisies : { chantier_id : { iso : { valeur, typeJour } } } - format ctx.dbSaisies
       Object.keys(chantiersBySite || {}).forEach(function(site) {
         var siteCh = chantiersBySite[site];
+        var siteChIds = siteCh.map(function(c) { return c.id; });
         days.forEach(function(day) {
-          if (rapportSetByDaySite[day.iso + "|" + site]) return; // rapport existe deja
-          // Cumuler le metrage des chantiers de ce site pour ce jour
-          var totalMetresJour = 0;
-          siteCh.forEach(function(c) {
-            var entry = saisies && saisies[c.id] && saisies[c.id][day.iso];
-            if (!entry) return;
-            var v = (typeof entry === "object") ? (parseFloat(entry.valeur) || 0) : (parseFloat(entry) || 0);
-            if (v > 0) totalMetresJour += v;
-          });
-          if (totalMetresJour === 0) return;
-          // Lister les employes affectes a ce site ce jour (type travail)
-          var workerNoms = [];
-          siteCh.forEach(function(c) {
-            (affectations || []).forEach(function(a) {
-              if (a.dateAffectation !== day.iso) return;
-              if (a.chantierId !== c.id) return;
-              if ((a.typeJour || "travail") !== "travail") return;
-              var nom = pidToNom[a.personnelId];
-              if (nom && workerNoms.indexOf(nom) < 0) workerNoms.push(nom);
+          if (!rapportSetByDaySite[day.iso + "|" + site]) {
+            // Pas de rapport pour (site, jour) -> tenter le metrage via saisies
+            var totalMetresJour = 0;
+            siteCh.forEach(function(c) {
+              var entry = saisies && saisies[c.id] && saisies[c.id][day.iso];
+              if (!entry) return;
+              var v = (typeof entry === "object") ? (parseFloat(entry.valeur) || 0) : (parseFloat(entry) || 0);
+              if (v > 0) totalMetresJour += v;
             });
-          });
-          if (workerNoms.length === 0) return;
-          // Attribuer le total a chaque worker (meme metrage pour tous, comme dans les rapports)
-          if (!sitesData[site]) sitesData[site] = {};
-          workerNoms.forEach(function(nom) {
-            if (!sitesData[site][nom]) sitesData[site][nom] = { byDay: {}, total: 0, nbR: 0 };
-            sitesData[site][nom].byDay[day.iso] = (sitesData[site][nom].byDay[day.iso] || 0) + totalMetresJour;
-            sitesData[site][nom].total += totalMetresJour;
-            sitesData[site][nom].nbR += 1;
-          });
+            if (totalMetresJour > 0) {
+              var workerNoms = [];
+              siteCh.forEach(function(c) {
+                (affectations || []).forEach(function(a) {
+                  if (a.dateAffectation !== day.iso) return;
+                  if (a.chantierId !== c.id) return;
+                  if ((a.typeJour || "travail") !== "travail") return;
+                  var nom = pidToNom[a.personnelId];
+                  if (nom && workerNoms.indexOf(nom) < 0) workerNoms.push(nom);
+                });
+              });
+              if (workerNoms.length > 0) {
+                if (!sitesData[site]) sitesData[site] = {};
+                workerNoms.forEach(function(nom) {
+                  if (!sitesData[site][nom]) sitesData[site][nom] = { byDay: {}, total: 0, nbR: 0 };
+                  sitesData[site][nom].byDay[day.iso] = (sitesData[site][nom].byDay[day.iso] || 0) + totalMetresJour;
+                  sitesData[site][nom].total += totalMetresJour;
+                  sitesData[site][nom].nbR += 1;
+                });
+              }
+            }
+          }
         });
+      });
+
+      // FALLBACK 2 : pour chaque affectation type=travail avec chantier_id=NULL,
+      // on rattache au "dernier chantier travaille" (meme logique que calcPrimesForSitePeriod).
+      // Permet d'afficher Mussillon/Rodolphe/Nunewaie sur Tiebaghi meme quand leur affectation
+      // est chantier_id=null mais qu'ils y travaillaient avant.
+      (affectations || []).forEach(function(a) {
+        if (!a.dateAffectation) return;
+        var d = new Date(a.dateAffectation + "T00:00:00");
+        if (d < period.start || d > period.end) return;
+        if (a.chantierId) return; // deja traite par le scan principal
+        if ((a.typeJour || "travail") !== "travail") return;
+        // Cherche le dernier chantier travaille AVANT cette date
+        var prevs = (affectations || []).filter(function(x) {
+          return x.personnelId === a.personnelId && x.chantierId
+              && x.dateAffectation < a.dateAffectation
+              && (x.typeJour === "travail" || !x.typeJour);
+        }).sort(function(x, y) { return x.dateAffectation < y.dateAffectation ? 1 : -1; });
+        if (prevs.length === 0) return;
+        var lastCh = prevs[0].chantierId;
+        var lastSite = chSiteById[lastCh];
+        if (!lastSite) return;
+        var nom = pidToNom[a.personnelId];
+        if (!nom) return;
+        // Metrage du jour : rapport sur ce site (deja attribue) ou saisie chantier
+        var siteCh2 = chantiersBySite[lastSite] || [];
+        var totalMet = 0;
+        siteCh2.forEach(function(c) {
+          var entry = saisies && saisies[c.id] && saisies[c.id][a.dateAffectation];
+          if (!entry) return;
+          var v = (typeof entry === "object") ? (parseFloat(entry.valeur) || 0) : (parseFloat(entry) || 0);
+          if (v > 0) totalMet += v;
+        });
+        if (totalMet === 0) return;
+        if (!sitesData[lastSite]) sitesData[lastSite] = {};
+        if (!sitesData[lastSite][nom]) sitesData[lastSite][nom] = { byDay: {}, total: 0, nbR: 0 };
+        if (!sitesData[lastSite][nom].byDay[a.dateAffectation]) {
+          sitesData[lastSite][nom].byDay[a.dateAffectation] = totalMet;
+          sitesData[lastSite][nom].total += totalMet;
+          sitesData[lastSite][nom].nbR += 1;
+        }
       });
 
       var siteOrder = Object.keys(sitesData).sort();
