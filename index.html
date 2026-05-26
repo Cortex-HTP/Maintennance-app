@@ -8256,20 +8256,21 @@
             // Arret : journee explicitement "rien ne se passe" -> 0m, +1j
             if (effectiveType === "arret") {
               adjJours += 1;
-            } else if (effectiveType === "panne" || effectiveType === "intemperies" || effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
-              // Nouvelle regle : rattrapage base sur la MACHINE HABITUELLE de l'employe
-              // - On trouve sa derniere machine (avant ou ce jour) via les rapports
-              // - On prend le metrage de cette machine ce jour-la (depuis les rapports)
-              // - Plafonne a moyenne_jour_site
-              // Si machine non identifiable -> fallback siteMoyenne
+            } else if (effectiveType === "panne" || effectiveType === "intemperies") {
+              // Cause externe (panne machine / meteo) -> rattrapage = moyenne_jour_site fixe.
+              // L'employe n'est pas responsable, il merite la moyenne complete.
+              adjMetrage += siteMoyenne;
+              adjJours += 1;
+            } else if (effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
+              // Absence liee a l'employe (decision RH ou volontaire) -> rattrapage limite
+              // par la performance reelle de SA machine ce jour-la, plafonne a moyenne_site.
               var machineEmp = getMachineEmpForDate(emp.id, dateStr);
               var metrageMachine = machineEmp ? getMetrageMachineForDate(machineEmp, dateStr) : null;
               var rattrapage;
               if (metrageMachine !== null) {
-                // On connait le metrage exact de sa machine ce jour : on cap a moyenne_site
                 rattrapage = Math.min(metrageMachine, siteMoyenne);
               } else {
-                // Pas d'info sur sa machine ce jour -> fallback siteMoyenne (comportement ancien)
+                // Pas d'info sur sa machine ce jour -> fallback siteMoyenne
                 rattrapage = siteMoyenne;
               }
               adjMetrage += rattrapage;
