@@ -8132,10 +8132,29 @@
           var k = normNK(((p.prenom || "") + " " + (p.nom || "")));
           if (k && p.id != null) nameKeyToPid[k] = p.id;
         });
+        // Resolution site d'un rapport : via chantier_id ou via lieu (match approximatif)
+        var siteByLieu = {};
+        (chantiers || []).forEach(function(c) {
+          if (c.site) siteByLieu[String(c.site).toUpperCase().trim()] = c.site;
+        });
+        function siteOfRapport(r) {
+          if (r.chantier_id && chantierToSite[r.chantier_id]) return chantierToSite[r.chantier_id];
+          if (r.lieu) {
+            var lk = String(r.lieu).toUpperCase().trim();
+            if (siteByLieu[lk]) return siteByLieu[lk];
+            var keys = Object.keys(siteByLieu);
+            for (var i = 0; i < keys.length; i++) {
+              if (keys[i].indexOf(lk) >= 0 || lk.indexOf(keys[i]) >= 0) return siteByLieu[keys[i]];
+            }
+          }
+          return null;
+        }
+        // empRapportsList : maintenant stocke aussi le site pour pouvoir filtrer par site
         var empRapportsList = {};
         rapportsCtx.forEach(function(r) {
           if (!r.date_rapport || !r.sondeuse_code) return;
           var d = String(r.date_rapport).substring(0, 10);
+          var rSite = siteOfRapport(r);
           if (!rapportByMachineDate[r.sondeuse_code]) rapportByMachineDate[r.sondeuse_code] = {};
           rapportByMachineDate[r.sondeuse_code][d] = (rapportByMachineDate[r.sondeuse_code][d] || 0) + (parseFloat(r.total_metres) || 0);
           (r.equipe || []).forEach(function(m) {
@@ -8148,19 +8167,23 @@
             }
             if (!pid) return;
             if (!empRapportsList[pid]) empRapportsList[pid] = [];
-            empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code });
+            empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code, site: rSite });
           });
         });
+        // Cherche la machine de l'employe POUR LE SITE COURANT (pas globalement).
+        // Evite que la machine FS1 (Kopeto K) soit attribuee a Tauatiti pour son jour
+        // Tiebaghi : sur Tiebaghi, sa machine = D37 (la sondeuse de son rapport).
         function getMachineEmpForDate(pid, dateStr) {
-          var list = empRapportsList[pid] || [];
+          var listAll = empRapportsList[pid] || [];
+          if (listAll.length === 0) return null;
+          // Filtre par site : on ne prend que les rapports du site courant
+          var list = listAll.filter(function(r) { return r.site === site; });
           if (list.length === 0) return null;
-          // 1) Cherche dans le passe : derniere machine sur laquelle il a bosse <= dateStr
           var beforeOrEq = list.filter(function(r) { return r.date <= dateStr; });
           if (beforeOrEq.length > 0) {
             beforeOrEq.sort(function(a, b) { return a.date > b.date ? -1 : 1; });
             return beforeOrEq[0].sondeuse;
           }
-          // 2) Sinon (chomage en debut de periode), cherche dans le futur : 1ere machine
           var afterDate = list.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; });
           return afterDate[0].sondeuse;
         }
@@ -8174,31 +8197,10 @@
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
 
-          // ── STRATEGIE MULTI-SITES : determine le site PRINCIPAL de cet employe ──
-          // Compte les jours de travail sur chaque site pendant la periode.
-          // Le site avec le plus de jours travail = site principal.
-          // L'employe est rattache UNIQUEMENT a son site principal pour le calcul
-          // de la prime (evite les primes "gonflees" sur 1 ou 2 jours de passage
-          // sur un site avec des paliers plus eleves).
-          var sitesDays = {};
-          (affectations || []).forEach(function(a) {
-            if (a.personnelId !== emp.id) return;
-            if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
-            if ((a.typeJour || "travail") !== "travail") return;
-            if (!a.chantierId) return;
-            var s = chantierToSite[a.chantierId];
-            if (s) sitesDays[s] = (sitesDays[s] || 0) + 1;
-          });
-          var siteKeys = Object.keys(sitesDays);
-          if (siteKeys.length === 0) return; // pas de jour travail = pas de prime
-          // Tri par nb jours decroissant ; tie-breaker : objectif_mh decroissant
-          siteKeys.sort(function(a, b) {
-            if (sitesDays[b] !== sitesDays[a]) return sitesDays[b] - sitesDays[a];
-            return (getObjectifForSite(paliers, b) || 0) - (getObjectifForSite(paliers, a) || 0);
-          });
-          var sitePrincipal = siteKeys[0];
-          // Si ce site n'est pas le site principal de cet employe, on ne le calcule pas ici.
-          if (sitePrincipal !== site) return;
+          // Note : la strategie multi-sites avec ratio a ete supprimee.
+          // Desormais, chaque site donne sa propre prime. Si un employe a travaille
+          // sur 2 sites pendant la periode (ex: Tauatiti 13j Kopeto K + 1j Tiebaghi),
+          // il aura 2 primes distinctes calculees avec les paliers de chaque site.
 
           // ── Strategie unifiee : base de comptage = AFFECTATIONS (planning) ──
           // 1) Recupere les affectations de l'employe sur les chantiers du site (ou null)
@@ -8321,49 +8323,6 @@
               adjMetrage += dayMetrage;
               adjJours += 1;
             }
-          });
-
-          // INTEGRATION MULTI-SITES : pour chaque autre site ou l'employe a travaille,
-          // on ajoute ses jours+metres convertis en EQUIVALENT du site principal.
-          // Conversion : metres_equivalent = metres_secondaire * (objectif_principal / objectif_secondaire)
-          // -> un sondeur qui fait 200m sur un site avec objectif 19m/h vaut 200*3.33/19 = 35m
-          //    sur un site avec objectif 3.33m/h. Coherent : la performance relative est preservee.
-          siteKeys.forEach(function(otherSite) {
-            if (otherSite === site) return; // deja traite ci-dessus
-            var otherObj = getObjectifForSite(paliers, otherSite);
-            if (otherObj <= 0) return;
-            var ratio = objectif / otherObj;
-            var otherChIds = (chantiersBySite[otherSite] || []).map(function(c) { return c.id; });
-            var otherReleves = releves.filter(function(r) {
-              if (!r.dateReleve) return false;
-              if (!isDateInPeriod(r.dateReleve, period.start, period.end)) return false;
-              if (!r.chantierId || otherChIds.indexOf(r.chantierId) < 0) return false;
-              if (r.personnelId === emp.id) return true;
-              var rNom = (r.employeNom || "").toUpperCase().trim();
-              return rNom === empNom || rNom === empNomRev;
-            });
-            var otherReleveByDate = {};
-            otherReleves.forEach(function(r) {
-              if (!otherReleveByDate[r.dateReleve]) otherReleveByDate[r.dateReleve] = [];
-              otherReleveByDate[r.dateReleve].push(r);
-            });
-            (affectations || []).forEach(function(a) {
-              if (a.personnelId !== emp.id) return;
-              if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
-              if ((a.typeJour || "travail") !== "travail") return;
-              if (!a.chantierId || otherChIds.indexOf(a.chantierId) < 0) return;
-              var dateStr2 = a.dateAffectation;
-              var dayMetrage2 = 0;
-              if (otherReleveByDate[dateStr2] && otherReleveByDate[dateStr2].length > 0) {
-                otherReleveByDate[dateStr2].forEach(function(r) { dayMetrage2 += parseFloat(r.metrage) || 0; });
-              } else {
-                var sentry = (saisies[a.chantierId] && saisies[a.chantierId][dateStr2]) || null;
-                var sval = sentry ? (parseFloat(getSaisieVal(sentry)) || 0) : 0;
-                if (sval > 0) dayMetrage2 = sval;
-              }
-              adjMetrage += dayMetrage2 * ratio;
-              adjJours += 1;
-            });
           });
 
           if (adjJours === 0) return;
