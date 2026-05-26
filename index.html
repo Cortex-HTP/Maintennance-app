@@ -8325,6 +8325,50 @@
             }
           });
 
+          // ── JOURS "AILLEURS" (autres sites) ──
+          // Pour chaque jour ou l'employe a une affectation sur UN AUTRE site
+          // (travail, panne, conge, etc.), on le compte comme un jour de "rattrapage"
+          // a la moyenne_jour du site qu'on calcule. Cela permet d'eviter les primes
+          // explosees quand un employe a juste 1 ou 2 jours sur un site secondaire.
+          // Les jours ferie/arret/maladie d'autres sites sont egalement ignores ici.
+          (affectations || []).forEach(function(a) {
+            if (a.personnelId !== emp.id) return;
+            if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
+            var tj = a.typeJour || "travail";
+            if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
+            // Determiner si l'affectation est sur ce site (auquel cas deja traitee)
+            var alreadyOnSite = false;
+            if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
+            if (!a.chantierId) {
+              var prevsX = (affectations || []).filter(function(af) {
+                return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
+              }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
+              if (prevsX.length > 0 && chantierToSite[prevsX[0].chantierId] === site) alreadyOnSite = true;
+            }
+            if (alreadyOnSite) return;
+            // Determiner si l'affectation est sur un AUTRE site identifiable
+            var otherSite = null;
+            if (a.chantierId) {
+              otherSite = chantierToSite[a.chantierId];
+            } else {
+              var prevsY = (affectations || []).filter(function(af) {
+                return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
+              }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
+              if (prevsY.length > 0) otherSite = chantierToSite[prevsY[0].chantierId];
+            }
+            if (!otherSite || otherSite === site) return; // pas autre site identifiable
+            // Rattrapage : +moyenne_jour_site, +1 jour
+            adjMetrage += siteMoyenne;
+            adjJours += 1;
+          });
+
+          // Verifier que l'employe a au moins 1 JOUR TRAVAIL REEL sur ce site
+          // (pas juste des rattrapages). Sinon, pas de prime sur ce site.
+          var nbTravailReel = empAffOnSite.filter(function(a) {
+            return (a.typeJour || "travail") === "travail";
+          }).length;
+          if (nbTravailReel === 0) return;
+
           if (adjJours === 0) return;
           var mhRealise = adjMetrage / (adjJours * 9);
           var coef = lookupCoefficient(paliers, site, mhRealise);
