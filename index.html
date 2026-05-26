@@ -7766,16 +7766,34 @@
         return null;
       }
 
-      // personnel : map id -> nom
+      // personnel : map id -> nom canonique
       var pidToNom = {};
       (personnel || []).forEach(function(p) {
         if (p && p.id) pidToNom[p.id] = ((p.prenom || "") + " " + (p.nom || "")).trim();
       });
 
+      // Normalisation cle : lowercase + tri des mots (gere "DESONNEVILLE SEBASTIEN" == "Sebastien Desonneville")
+      function normNameKey(nm) {
+        return String(nm || "").toLowerCase().trim().split(/\s+/).filter(Boolean).sort().join(" ");
+      }
+      // Lookup nom canonique depuis personnel_data : si on retrouve le nom (peu importe l'ordre/casse),
+      // on prefere la version "Prenom Nom" du registre personnel ; sinon on garde tel quel.
+      var canonByKey = {};
+      (personnel || []).forEach(function(p) {
+        if (!p) return;
+        var canon = ((p.prenom || "") + " " + (p.nom || "")).trim();
+        if (canon) canonByKey[normNameKey(canon)] = canon;
+      });
+      function canonName(nm) {
+        var k = normNameKey(nm);
+        return canonByKey[k] || nm;
+      }
+
       // Set : jours+site pour lesquels un rapport existe (on n'utilisera pas le fallback)
       var rapportSetByDaySite = {};
 
       // Pour chaque site : matrice { sondeurNom : { iso : metres, total : metres, nbRapports : N } }
+      // Cle de regroupement = nom canonique du personnel (pas le nom raw du rapport)
       var sitesData = {};
       (rapports || []).forEach(function(r) {
         if (!r.date_rapport) return;
@@ -7791,7 +7809,7 @@
         if (!sitesData[site]) sitesData[site] = {};
         eq.forEach(function(m) {
           if (!m || !m.nom) return;
-          var key = m.nom;
+          var key = canonName(m.nom);
           if (!sitesData[site][key]) sitesData[site][key] = { byDay: {}, total: 0, nbR: 0 };
           sitesData[site][key].byDay[iso] = (sitesData[site][key].byDay[iso] || 0) + metres;
           sitesData[site][key].total += metres;
