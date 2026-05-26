@@ -8153,10 +8153,16 @@
         });
         function getMachineEmpForDate(pid, dateStr) {
           var list = empRapportsList[pid] || [];
+          if (list.length === 0) return null;
+          // 1) Cherche dans le passe : derniere machine sur laquelle il a bosse <= dateStr
           var beforeOrEq = list.filter(function(r) { return r.date <= dateStr; });
-          if (beforeOrEq.length === 0) return null;
-          beforeOrEq.sort(function(a, b) { return a.date > b.date ? -1 : 1; });
-          return beforeOrEq[0].sondeuse;
+          if (beforeOrEq.length > 0) {
+            beforeOrEq.sort(function(a, b) { return a.date > b.date ? -1 : 1; });
+            return beforeOrEq[0].sondeuse;
+          }
+          // 2) Sinon (chomage en debut de periode), cherche dans le futur : 1ere machine
+          var afterDate = list.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; });
+          return afterDate[0].sondeuse;
         }
         function getMetrageMachineForDate(sondeuse, dateStr) {
           if (!sondeuse || !rapportByMachineDate[sondeuse]) return null;
@@ -8262,16 +8268,29 @@
               adjMetrage += siteMoyenne;
               adjJours += 1;
             } else if (effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
-              // Absence liee a l'employe (decision RH ou volontaire) -> rattrapage limite
-              // par la performance reelle de SA machine ce jour-la, plafonne a moyenne_site.
+              // Absence liee a l'employe -> rattrapage limite par la performance reelle.
+              // Cascade de sources de metrage_jour, par ordre de priorite :
+              //   1. Rapport forage de SA machine ce jour
+              //   2. Saisie chantier (page Avancement) du chantier de l'affectation (ou
+              //      premier chantier du site si chantier_id null)
+              //   3. Fallback siteMoyenne (comportement ancien)
+              // Le tout plafonne a moyenne_jour_site.
               var machineEmp = getMachineEmpForDate(emp.id, dateStr);
               var metrageMachine = machineEmp ? getMetrageMachineForDate(machineEmp, dateStr) : null;
               var rattrapage;
               if (metrageMachine !== null) {
                 rattrapage = Math.min(metrageMachine, siteMoyenne);
               } else {
-                // Pas d'info sur sa machine ce jour -> fallback siteMoyenne
-                rattrapage = siteMoyenne;
+                // Pas de rapport pour sa machine -> fallback saisie chantier
+                var chForSaisie = chId || (siteCh.length > 0 ? siteCh[0].id : null);
+                var saisieFallback = chForSaisie ? (saisies[chForSaisie] || {})[dateStr] : null;
+                var sVFb = saisieFallback ? (typeof saisieFallback === "object" ? (parseFloat(saisieFallback.valeur) || 0) : (parseFloat(saisieFallback) || 0)) : 0;
+                if (sVFb > 0) {
+                  rattrapage = Math.min(sVFb, siteMoyenne);
+                } else {
+                  // Ultime fallback : moyenne site
+                  rattrapage = siteMoyenne;
+                }
               }
               adjMetrage += rattrapage;
               adjJours += 1;
