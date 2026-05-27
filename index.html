@@ -2813,6 +2813,78 @@
       var toDelete = _toDelete[0], setToDelete = _toDelete[1];
       var _viewFiche = useState(null);
       var viewFiche = _viewFiche[0], setViewFiche = _viewFiche[1];
+      // Onglet actif dans la fiche : 'infos' (par defaut) ou 'activite'
+      var _ficheTab = useState("infos");
+      var ficheTab = _ficheTab[0], setFicheTab = _ficheTab[1];
+      // Periode du recap activite : defaut = mois en cours
+      var _ficheStart = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+      var ficheStart = _ficheStart[0], setFicheStart = _ficheStart[1];
+      var _ficheEnd = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0); });
+      var ficheEnd = _ficheEnd[0], setFicheEnd = _ficheEnd[1];
+      // Rapport ouvert en modal detail (clic sur une ligne de la liste)
+      var _ficheRapportDetail = useState(null);
+      var ficheRapportDetail = _ficheRapportDetail[0], setFicheRapportDetail = _ficheRapportDetail[1];
+
+      // ─── Helpers Activite : matching employe <-> equipe[] et calculs ───
+      function normNameKey(nm) {
+        return String(nm || "").toLowerCase().trim().split(/\s+/).filter(Boolean).sort().join(" ");
+      }
+      function isEmpInEquipe(emp, equipe) {
+        if (!Array.isArray(equipe)) return false;
+        var empCode = String(emp.code || "");
+        var empNameKey = normNameKey((emp.prenom || "") + " " + (emp.nom || ""));
+        for (var i = 0; i < equipe.length; i++) {
+          var m = equipe[i]; if (!m) continue;
+          if (empCode && m.id && String(m.id) === empCode) return true;
+          if (m.nom && normNameKey(m.nom) === empNameKey) return true;
+        }
+        return false;
+      }
+      function getEmpRapports(emp) {
+        var raps = ctx.dbRapportsForage || [];
+        return raps.filter(function(r) { return isEmpInEquipe(emp, r.equipe); });
+      }
+      function isoDate(d) {
+        if (!d) return "";
+        var y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+        return y + "-" + (m < 10 ? "0" + m : m) + "-" + (day < 10 ? "0" + day : day);
+      }
+      function parseIsoDate(s) {
+        var p = String(s || "").substring(0, 10).split("-");
+        if (p.length !== 3) return null;
+        return new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2]));
+      }
+      function timeStrToMin(t) {
+        if (!t) return 0;
+        var p = String(t).split(":");
+        return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+      }
+      function minsBetween(d, f) {
+        if (!d || !f) return 0;
+        var m = timeStrToMin(f) - timeStrToMin(d);
+        if (m < 0) m += 24 * 60;
+        return m;
+      }
+      function minsToHHmm(m) {
+        var hh = Math.floor(m / 60), mm = m % 60;
+        return hh + "h" + (mm < 10 ? "0" + mm : mm);
+      }
+      function activityColorFor(libelle) {
+        var c = String(libelle || "").toUpperCase();
+        if (c === "FORATION") return "#ec4899";
+        if (c === "TRAJET") return "#818cf8";
+        if (c === "MAINTENANCE") return "#f59e0b";
+        if (c === "DEPLACEMENT") return "#a78bfa";
+        if (c === "PCC") return "#22c55e";
+        if (c === "PAUSE") return "#71717a";
+        if (c === "ATTENTE") return "#0ea5e9";
+        if (c === "REMPLISSAGE RAPPORT TABLETTE") return "#06b6d4";
+        return "#94a3b8";
+      }
+      function fmtFrDate(s) {
+        var p = String(s || "").substring(0, 10).split("-");
+        return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : (s || "-");
+      }
 
       // Recharge si parametres change
       var _loaded = React.useRef(false);
@@ -2870,15 +2942,40 @@
         return months + " mois";
       }
 
-      // Fiche employe detail (modal)
+      // Fiche employe detail (modal) - 2 onglets : Infos et Activite
       function renderFiche(emp) {
         var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
-        return h(Modal, { title: "Fiche employe", onClose: function() { setViewFiche(null); }, size: 520 },
-          h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 24 } },
-            h("div", { style: { width: 64, height: 64, borderRadius: "50%", background: avatarColor, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, marginBottom: 12 } }, getInitials(emp)),
-            h("h3", { style: { fontSize: 20, fontWeight: 700, margin: 0 } }, emp.prenom + " " + emp.nom),
-            emp.lieuContrat ? h("span", { style: { fontSize: 13, color: "#a1a1aa", marginTop: 4 } }, h(Icon, { name: "map-pin", size: 12, color: "#a1a1aa" }), " " + emp.lieuContrat) : null
-          ),
+        var allEmpRapports = getEmpRapports(emp);
+        var hasAnyRapport = allEmpRapports.length > 0;
+        var modalSize = (hasAnyRapport && ficheTab === "activite") ? 900 : 540;
+
+        // Onglets header
+        function tabBtn(key, label) {
+          var active = ficheTab === key;
+          return h("button", {
+            onClick: function() { setFicheTab(key); },
+            style: {
+              padding: "10px 18px", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13,
+              background: active ? "rgba(99,102,241,0.20)" : "transparent",
+              color: active ? "#c7d2fe" : "#a1a1aa",
+              borderBottom: active ? "2px solid #818cf8" : "2px solid transparent",
+              borderRadius: 0, transition: "all 0.15s"
+            }
+          }, label);
+        }
+
+        var tabsBar = hasAnyRapport ? h("div", { style: { display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: 18, marginLeft: -20, marginRight: -20, paddingLeft: 20, paddingRight: 20 } },
+          tabBtn("infos", "Infos"),
+          tabBtn("activite", "Activite (" + allEmpRapports.length + ")")
+        ) : null;
+
+        var header = h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 18 } },
+          h("div", { style: { width: 64, height: 64, borderRadius: "50%", background: avatarColor, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, marginBottom: 12 } }, getInitials(emp)),
+          h("h3", { style: { fontSize: 20, fontWeight: 700, margin: 0 } }, emp.prenom + " " + emp.nom),
+          emp.lieuContrat ? h("span", { style: { fontSize: 13, color: "#a1a1aa", marginTop: 4 } }, h(Icon, { name: "map-pin", size: 12, color: "#a1a1aa" }), " " + emp.lieuContrat) : null
+        );
+
+        var infosContent = h(React.Fragment, null,
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } },
             h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 14 } },
               h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 4 } }, "Date de naissance"),
@@ -2901,6 +2998,278 @@
             h(Button, { variant: "secondary", onClick: function() { setViewFiche(null); setEditing(emp); setShowModal(true); } }, h(IconText, { icon: "pencil", size: 14 }, "Modifier")),
             h(Button, { variant: "danger", onClick: function() { setViewFiche(null); setToDelete(emp); } }, h(IconText, { icon: "trash-2", size: 14 }, "Supprimer"))
           )
+        );
+
+        return h(Modal, { title: "Fiche employe", onClose: function() { setViewFiche(null); setFicheTab("infos"); }, size: modalSize },
+          header,
+          tabsBar,
+          ficheTab === "activite" && hasAnyRapport ? renderFicheActivite(emp, allEmpRapports) : infosContent
+        );
+      }
+
+      // ─── Onglet Activite : KPIs + sites/machines + activites + liste rapports ───
+      function renderFicheActivite(emp, allEmpRapports) {
+        // Filtre rapports sur la periode (inclusive)
+        var startStr = isoDate(ficheStart), endStr = isoDate(ficheEnd);
+        var rapports = allEmpRapports.filter(function(r) {
+          var d = String(r.date_rapport || "").substring(0, 10);
+          return d >= startStr && d <= endStr;
+        }).sort(function(a, b) { return (a.date_rapport || "") > (b.date_rapport || "") ? -1 : 1; });
+
+        // ── KPIs ──
+        var totalMetres = 0;
+        var joursSet = {};
+        var machineCount = {};
+        rapports.forEach(function(r) {
+          totalMetres += parseFloat(r.total_metres) || 0;
+          if (r.date_rapport) joursSet[String(r.date_rapport).substring(0, 10)] = true;
+          if (r.sondeuse_code) machineCount[r.sondeuse_code] = (machineCount[r.sondeuse_code] || 0) + 1;
+        });
+        var nbJours = Object.keys(joursSet).length;
+        var moyenneJour = nbJours > 0 ? totalMetres / nbJours : 0;
+        var machinePrincipale = "-";
+        var maxCnt = 0;
+        Object.keys(machineCount).forEach(function(k) { if (machineCount[k] > maxCnt) { maxCnt = machineCount[k]; machinePrincipale = k; } });
+
+        // ── Sites et machines ──
+        var sitesMap = {}; // site -> { jours: Set, metrage, machines: Set }
+        rapports.forEach(function(r) {
+          var site = r.lieu || "(inconnu)";
+          if (!sitesMap[site]) sitesMap[site] = { jours: {}, metrage: 0, machines: {} };
+          if (r.date_rapport) sitesMap[site].jours[String(r.date_rapport).substring(0, 10)] = true;
+          sitesMap[site].metrage += parseFloat(r.total_metres) || 0;
+          if (r.sondeuse_code) sitesMap[site].machines[r.sondeuse_code] = true;
+        });
+        var sitesList = Object.keys(sitesMap).sort().map(function(s) {
+          var d = sitesMap[s];
+          return { site: s, jours: Object.keys(d.jours).length, metrage: d.metrage, machines: Object.keys(d.machines).sort().join(", ") };
+        });
+
+        // ── Repartition des activites (heures par libelle) ──
+        var actMins = {};
+        rapports.forEach(function(r) {
+          (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+            if (!a || !a.debut || !a.fin) return;
+            var dur = minsBetween(a.debut, a.fin);
+            actMins[a.libelle || "AUTRE"] = (actMins[a.libelle || "AUTRE"] || 0) + dur;
+          });
+        });
+        var actList = Object.keys(actMins).map(function(k) { return { libelle: k, mins: actMins[k] }; }).sort(function(a, b) { return b.mins - a.mins; });
+        var totalActMins = actList.reduce(function(s, x) { return s + x.mins; }, 0);
+
+        // ── KPI helpers ──
+        function kpiCard(value, label, color) {
+          return h("div", { style: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 14, flex: "1 1 0", minWidth: 140 } },
+            h("div", { style: { fontSize: 22, fontWeight: 700, color: color || "#fafafa", marginBottom: 4 } }, value),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, label)
+          );
+        }
+
+        // ── Period selector ──
+        function applyCurrentMonth() {
+          var d = new Date();
+          setFicheStart(new Date(d.getFullYear(), d.getMonth(), 1));
+          setFicheEnd(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+        }
+        var periodBar = h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap", padding: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8 } },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Periode"),
+          h("input", { type: "date", value: startStr, onChange: function(e) { var d = parseIsoDate(e.target.value); if (d) setFicheStart(d); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit" } }),
+          h("span", { style: { color: "#71717a" } }, "->"),
+          h("input", { type: "date", value: endStr, onChange: function(e) { var d = parseIsoDate(e.target.value); if (d) setFicheEnd(d); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit" } }),
+          h("button", { onClick: applyCurrentMonth, style: { padding: "6px 12px", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 6, color: "#c7d2fe", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "Mois en cours")
+        );
+
+        // ── Rendu ──
+        var emptyState = rapports.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", background: "rgba(255,255,255,0.02)", borderRadius: 8 } }, "Aucun rapport sur cette periode") : null;
+
+        return h(React.Fragment, null,
+          periodBar,
+          emptyState,
+          rapports.length > 0 ? h(React.Fragment, null,
+            // KPIs
+            h("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 } },
+              kpiCard(totalMetres.toFixed(1) + " m", "Metrage total", "#a78bfa"),
+              kpiCard(String(nbJours) + " j", "Jours travailles"),
+              kpiCard(moyenneJour.toFixed(1) + " m", "Moyenne / jour"),
+              kpiCard(machinePrincipale, "Machine principale", "#fcd34d")
+            ),
+            // Sites et machines
+            sitesList.length > 0 ? h("div", { style: { marginBottom: 18 } },
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Sites et machines"),
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                  h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
+                    ["Site", "Machines", "Jours", "Metrage"].map(function(x, i) {
+                      return h("th", { key: i, style: { padding: "8px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+                    })
+                  )),
+                  h("tbody", null, sitesList.map(function(row, i) {
+                    return h("tr", { key: i, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                      h("td", { style: { padding: "8px 12px", fontWeight: 700 } }, row.site),
+                      h("td", { style: { padding: "8px 12px", fontFamily: "monospace", fontSize: 12, color: "#fcd34d" } }, row.machines || "-"),
+                      h("td", { style: { padding: "8px 12px" } }, row.jours + " j"),
+                      h("td", { style: { padding: "8px 12px", color: "#a78bfa", fontWeight: 600 } }, row.metrage.toFixed(1) + " m")
+                    );
+                  }))
+                )
+              )
+            ) : null,
+            // Repartition des activites
+            actList.length > 0 ? h("div", { style: { marginBottom: 18 } },
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Repartition des activites"),
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
+                actList.map(function(a, i) {
+                  var pct = totalActMins > 0 ? (a.mins / totalActMins) * 100 : 0;
+                  return h("div", { key: i, style: { marginBottom: i < actList.length - 1 ? 8 : 0 } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3 } },
+                      h("span", { style: { display: "inline-block", width: 10, height: 10, borderRadius: 2, background: activityColorFor(a.libelle), flexShrink: 0 } }),
+                      h("span", { style: { fontSize: 12, fontWeight: 600, flex: 1 } }, a.libelle),
+                      h("span", { style: { fontSize: 12, fontFamily: "monospace", color: "#a1a1aa" } }, minsToHHmm(a.mins)),
+                      h("span", { style: { fontSize: 11, color: "#71717a", minWidth: 36, textAlign: "right" } }, pct.toFixed(1) + "%")
+                    ),
+                    h("div", { style: { height: 4, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" } },
+                      h("div", { style: { height: "100%", width: pct + "%", background: activityColorFor(a.libelle) } })
+                    )
+                  );
+                }),
+                h("div", { style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700 } },
+                  h("span", null, "Total"),
+                  h("span", { style: { fontFamily: "monospace", color: "#fafafa" } }, minsToHHmm(totalActMins))
+                )
+              )
+            ) : null,
+            // Liste des rapports
+            h("div", null,
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Rapports (" + rapports.length + ")"),
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+                rapports.map(function(r, i) {
+                  var sondages = Array.isArray(r.sondages) ? r.sondages.length : 0;
+                  return h("div", { key: r.id || i, onClick: function() { setFicheRapportDetail(r); }, style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.04)" : "none", cursor: "pointer", transition: "background 0.1s" }, onMouseOver: function(e) { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }, onMouseOut: function(e) { e.currentTarget.style.background = "transparent"; } },
+                    h("span", { style: { fontSize: 12, fontFamily: "monospace", color: "#a1a1aa", minWidth: 76 } }, fmtFrDate(r.date_rapport)),
+                    h("span", { style: { fontSize: 12, fontWeight: 700, color: "#fcd34d", fontFamily: "monospace", minWidth: 48 } }, r.sondeuse_code || "-"),
+                    h("span", { style: { fontSize: 12, flex: 1 } }, (r.client || "") + (r.lieu ? " / " + r.lieu : "") + " - Q" + (r.quart || "?")),
+                    h("span", { style: { fontSize: 12, color: "#a78bfa", fontWeight: 700, minWidth: 60, textAlign: "right" } }, (parseFloat(r.total_metres) || 0).toFixed(1) + " m"),
+                    sondages > 0 ? h("span", { style: { fontSize: 11, color: "#71717a", minWidth: 70, textAlign: "right" } }, sondages + " sondage" + (sondages > 1 ? "s" : "")) : h("span", { style: { minWidth: 70 } }),
+                    h(Icon, { name: "chevron-right", size: 14, color: "#71717a" })
+                  );
+                })
+              )
+            )
+          ) : null
+        );
+      }
+
+      // ─── Modal detail rapport (depuis liste activite) ───
+      function renderFicheRapportDetail(r) {
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        var sondages = Array.isArray(r.sondages) ? r.sondages : [];
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+
+        // Timeline (frise 0h-24h auto-zoomee, copie de la logique EcranRapports)
+        function renderTimeline() {
+          var validA = activites.filter(function(a) { return a.debut && a.fin; });
+          if (validA.length === 0) return null;
+          var TOTAL = 24 * 60;
+          var minStart = TOTAL, maxEnd = 0;
+          validA.forEach(function(a) {
+            var s = timeStrToMin(a.debut); var dur = minsBetween(a.debut, a.fin);
+            if (s < minStart) minStart = s;
+            if (s + dur > maxEnd) maxEnd = s + dur;
+          });
+          minStart = Math.max(0, Math.floor((minStart - 60) / 60) * 60);
+          maxEnd = Math.min(TOTAL, Math.ceil((maxEnd + 60) / 60) * 60);
+          if (maxEnd - minStart < 8 * 60) maxEnd = Math.min(TOTAL, minStart + 8 * 60);
+          var span = maxEnd - minStart;
+          var blocks = validA.map(function(a, i) {
+            var s = timeStrToMin(a.debut); var dur = minsBetween(a.debut, a.fin);
+            var left = ((s - minStart) / span) * 100;
+            var w = (dur / span) * 100;
+            if (left + w > 100) w = 100 - left;
+            if (w < 0.5) w = 0.5;
+            return h("div", { key: "blk-" + i, title: a.libelle + " " + a.debut + " a " + a.fin + " (" + minsToHHmm(dur) + ")", style: { position: "absolute", top: 0, bottom: 0, left: left + "%", width: w + "%", background: activityColorFor(a.libelle), borderRight: "1px solid rgba(0,0,0,0.30)", display: "flex", alignItems: "center", padding: "0 4px", overflow: "hidden" } },
+              h("span", { style: { fontSize: 9, color: "white", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1, textShadow: "0 1px 2px rgba(0,0,0,0.4)" } }, a.libelle)
+            );
+          });
+          var marks = [];
+          for (var hh2 = Math.ceil(minStart / 60) * 60; hh2 <= maxEnd; hh2 += 60) {
+            var lpct = ((hh2 - minStart) / span) * 100;
+            var hhStr = ("0" + Math.floor(hh2 / 60)).slice(-2);
+            marks.push(h("div", { key: "tk-" + hh2, style: { position: "absolute", top: -8, width: 1, height: 6, background: "rgba(255,255,255,0.15)", left: lpct + "%", transform: "translateX(-50%)" } }));
+            if (Math.floor(hh2 / 60) % 2 === 0) {
+              marks.push(h("div", { key: "lb-" + hh2, style: { position: "absolute", left: lpct + "%", transform: "translateX(-50%)", fontSize: 9, color: "#a1a1aa", fontWeight: 600, fontFamily: "monospace" } }, hhStr + "h"));
+            }
+          }
+          var presentTypes = [];
+          validA.forEach(function(a) { if (presentTypes.indexOf(a.libelle) < 0) presentTypes.push(a.libelle); });
+          return h("div", { style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: "12px 14px 24px", position: "relative", marginBottom: 12 } },
+            h("div", { style: { position: "relative", height: 32, background: "rgba(255,255,255,0.03)", borderRadius: 6, overflow: "hidden" } }, blocks,
+              h("div", { style: { position: "absolute", left: 0, right: 0, bottom: -18, height: 14 } }, marks)
+            ),
+            h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.05)" } },
+              presentTypes.map(function(t, i) {
+                return h("span", { key: i, style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "#a1a1aa" } },
+                  h("span", { style: { width: 8, height: 8, borderRadius: 2, background: activityColorFor(t) } }),
+                  t
+                );
+              })
+            )
+          );
+        }
+
+        function sectionTitle(t) {
+          return h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, margin: "12px 0 6px" } }, t);
+        }
+        function infoCell(label, value) {
+          return h("div", { style: { background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: 10 } },
+            h("div", { style: { fontSize: 10, color: "#a1a1aa", marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.5 } }, label),
+            h("div", { style: { fontSize: 13, fontWeight: 600 } }, value || "-")
+          );
+        }
+
+        return h(Modal, { title: "Rapport du " + fmtFrDate(r.date_rapport) + " - " + (r.sondeuse_code || "-"), onClose: function() { setFicheRapportDetail(null); }, size: 720 },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 12 } },
+            infoCell("Sondeuse", r.sondeuse_code),
+            infoCell("Client", r.client),
+            infoCell("Lieu", r.lieu),
+            infoCell("Quart", r.quart),
+            infoCell("Total metres", (parseFloat(r.total_metres) || 0).toFixed(1) + " m"),
+            infoCell("Total heures", r.total_heures ? minsToHHmm(parseInt(r.total_heures) || 0) : "-")
+          ),
+          activites.length > 0 ? h("div", null, sectionTitle("Timeline"), renderTimeline()) : null,
+          activites.length > 0 ? h("div", null, sectionTitle("Activites (" + activites.length + ")"),
+            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 10 } },
+              activites.map(function(a, i) {
+                var dur = (a.debut && a.fin) ? minsBetween(a.debut, a.fin) : 0;
+                return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                  h("span", { style: { width: 8, height: 8, borderRadius: 2, background: activityColorFor(a.libelle), flexShrink: 0 } }),
+                  h("span", { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, a.libelle),
+                  h("span", { style: { fontSize: 11, color: "#71717a", fontFamily: "monospace" } }, (a.debut || "--:--") + " -> " + (a.fin || "--:--")),
+                  h("span", { style: { fontSize: 12, fontWeight: 700, color: "#a78bfa", fontFamily: "monospace", minWidth: 50, textAlign: "right" } }, dur > 0 ? minsToHHmm(dur) : "-")
+                );
+              })
+            )
+          ) : null,
+          equipe.length > 0 ? h("div", null, sectionTitle("Equipe (" + equipe.length + ")"),
+            h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, equipe.map(function(m, i) {
+              return h("div", { key: i, style: { padding: "5px 10px", background: "rgba(99,102,241,0.10)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 999, fontSize: 12, fontWeight: 600 } }, (m.nom || m.prenom || "-") + (m.role ? " (" + m.role + ")" : "") + (m.hours ? " - " + m.hours : ""));
+            }))
+          ) : null,
+          sondages.length > 0 ? h("div", null, sectionTitle("Sondages (" + sondages.length + ")"),
+            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 10 } },
+              sondages.map(function(s, i) {
+                var de = (s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0));
+                var a = (s.metresA != null ? s.metresA : (s.a != null ? s.a : 0));
+                var total = Math.max(0, (parseFloat(a) || 0) - (parseFloat(de) || 0));
+                return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: i < sondages.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13 } },
+                  h("span", null, h("strong", null, s.nom || s.num || s.id || ("S" + (i + 1))), s.type ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11 } }, s.type) : null),
+                  h("span", { style: { color: "#a78bfa", fontWeight: 700 } }, de + " - " + a + " m  (" + total.toFixed(1) + " m)")
+                );
+              })
+            )
+          ) : null,
+          r.remarques ? h("div", null, sectionTitle("Remarques"),
+            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 10, fontSize: 13, whiteSpace: "pre-wrap" } }, r.remarques)
+          ) : null
         );
       }
 
@@ -2958,7 +3327,8 @@
         showModal && h(Modal, { title: editing ? "Modifier l'employe" : "Nouvel employe", onClose: function() { setShowModal(false); setEditing(null); } },
           h(PersonnelForm, { onSave: handleSave, onCancel: function() { setShowModal(false); setEditing(null); }, editItem: editing, allPersonnel: personnel })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'employe ?", message: "Confirmer la suppression de \"" + toDelete.prenom + " " + toDelete.nom + "\" ?", onConfirm: function() { handleDelete(toDelete.id); }, onCancel: function() { setToDelete(null); } }),
-        viewFiche && renderFiche(viewFiche)
+        viewFiche && renderFiche(viewFiche),
+        ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
     }
 
