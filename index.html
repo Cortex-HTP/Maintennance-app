@@ -11184,6 +11184,9 @@
       var recapStart = _recapStart[0], setRecapStart = _recapStart[1];
       var _recapEnd = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0); });
       var recapEnd = _recapEnd[0], setRecapEnd = _recapEnd[1];
+      var _recapSite = useState("__all__"); var recapSite = _recapSite[0], setRecapSite = _recapSite[1];
+      var _recapSondeuse = useState("__all__"); var recapSondeuse = _recapSondeuse[0], setRecapSondeuse = _recapSondeuse[1];
+      var _exportMenuOpen = useState(false); var exportMenuOpen = _exportMenuOpen[0], setExportMenuOpen = _exportMenuOpen[1];
 
       // ── Personnel index ──
       // L'app Employes utilise une liste hardcodee d'employes avec des string ids ("p1", "p2", ...)
@@ -11985,9 +11988,23 @@
 
         // Periode et filtrage
         var startStr = isoDate(recapStart), endStr = isoDate(recapEnd);
-        var periodRaps = raps.filter(function(r) {
+        var allPeriodRaps = raps.filter(function(r) {
           var d = String(r.date_rapport || "").substring(0, 10);
           return d >= startStr && d <= endStr;
+        });
+        // Sites + sondeuses distincts dans la periode (pour alimenter les dropdowns)
+        var distinctSites = {}, distinctSondeuses = {};
+        allPeriodRaps.forEach(function(r) {
+          if (r.lieu) distinctSites[r.lieu] = true;
+          if (r.sondeuse_code) distinctSondeuses[r.sondeuse_code] = true;
+        });
+        var sitesOptions = Object.keys(distinctSites).sort();
+        var sondeusesOptions = Object.keys(distinctSondeuses).sort();
+        // Filtrage par site et sondeuse selon les selecteurs
+        var periodRaps = allPeriodRaps.filter(function(r) {
+          if (recapSite !== "__all__" && r.lieu !== recapSite) return false;
+          if (recapSondeuse !== "__all__" && r.sondeuse_code !== recapSondeuse) return false;
+          return true;
         });
 
         // ── KPIs globaux ──
@@ -12085,8 +12102,8 @@
           return { designation: c.designation, ref: c.ref, byMachine: c.byMachine, total: total };
         }).sort(function(a, b) { return b.total - a.total; });
 
-        // ─── Export Excel ───
-        function exportExcel() {
+        // ─── Export Excel : SYNTHESE (resume par machine/site/activites) ───
+        function exportSynthese() {
           if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
           var aoa = [];
           aoa.push(["RECAP MENSUEL DES RAPPORTS DE FORAGE"]);
@@ -12135,8 +12152,185 @@
             ws["!cols"].push({ wch: i === 0 ? 32 : (i === 1 ? 18 : 14) });
           }
           var wb = XLSX.utils.book_new();
-          XLSX.utils.book_append_sheet(wb, ws, "Recap mensuel");
-          var fname = "recap_rapports_" + startStr + "_au_" + endStr + ".xlsx";
+          XLSX.utils.book_append_sheet(wb, ws, "Synthese");
+          var fname = "synthese_rapports_" + startStr + "_au_" + endStr + ".xlsx";
+          XLSX.writeFile(wb, fname);
+        }
+
+        // ─── Export Excel : DETAILLE PAR JOUR (format Billing report) ───
+        function exportDetailleParJour() {
+          if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
+          // Colonnes activites dynamiques : tous les libelles presents dans la periode, tries alpha
+          var activitesCols = {};
+          periodRaps.forEach(function(r) {
+            (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+              if (a && a.libelle) activitesCols[String(a.libelle).toUpperCase()] = true;
+            });
+          });
+          var actColsList = Object.keys(activitesCols).sort();
+
+          // Index : key = sondeuse_code|date -> rapport (1 par jour-machine attendu)
+          var rapByKey = {};
+          periodRaps.forEach(function(r) {
+            if (!r.date_rapport || !r.sondeuse_code) return;
+            var k = r.sondeuse_code + "|" + String(r.date_rapport).substring(0, 10);
+            rapByKey[k] = r;
+          });
+
+          // Construit la liste des jours entre start et end (inclusif)
+          var allDays = [];
+          var cursor = new Date(recapStart.getFullYear(), recapStart.getMonth(), recapStart.getDate());
+          var endD = new Date(recapEnd.getFullYear(), recapEnd.getMonth(), recapEnd.getDate());
+          while (cursor.getTime() <= endD.getTime()) {
+            allDays.push(new Date(cursor.getTime()));
+            cursor.setDate(cursor.getDate() + 1);
+          }
+          // Jour de la semaine en francais
+          var joursFr = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+          function isoWeek(d) {
+            // ISO week number
+            var dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+            var dayNum = dt.getUTCDay() || 7;
+            dt.setUTCDate(dt.getUTCDate() + 4 - dayNum);
+            var yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+            return Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+          }
+
+          // Liste des sondeuses a traiter : si filtre actif, une seule, sinon toutes celles trouvees
+          var sondeusesToShow = recapSondeuse !== "__all__" ? [recapSondeuse] : sondeusesOptions;
+          // Si pas de sondeuse filtrante : on liste TOUTES les sondeuses ayant des rapports.
+          // Pour eviter de creer une ligne par jour x machine (matrice creuse), on construit
+          // la liste de jours avec un fallback "sondeuse en activite ce jour-la" :
+          //   - Si filtre sondeuse : 1 ligne par jour calendaire (vide si pas de rapport)
+          //   - Sinon : 1 ligne par jour x rapports trouves ce jour-la (jour vide si aucun)
+          var dataRows = [];
+          if (recapSondeuse !== "__all__") {
+            // Format ressemblant a l'exemple : 1 ligne par jour, soneduse choisie
+            allDays.forEach(function(d) {
+              var dStr = isoDate(d);
+              var r = rapByKey[recapSondeuse + "|" + dStr];
+              dataRows.push(buildRowForDay(d, r, actColsList));
+            });
+          } else {
+            // 1 ligne par jour calendaire ; cellule sondeuse = celle qui a un rapport ce jour-la
+            // (s'il y en a plusieurs, on duplique la ligne par sondeuse)
+            allDays.forEach(function(d) {
+              var dStr = isoDate(d);
+              var found = false;
+              sondeusesOptions.forEach(function(snd) {
+                var r = rapByKey[snd + "|" + dStr];
+                if (r) {
+                  dataRows.push(buildRowForDay(d, r, actColsList));
+                  found = true;
+                }
+              });
+              if (!found) {
+                // Jour vide
+                dataRows.push(buildRowForDay(d, null, actColsList));
+              }
+            });
+          }
+
+          function sumSondagesByType(r, typeFilter) {
+            if (!r || !Array.isArray(r.sondages)) return 0;
+            var total = 0;
+            r.sondages.forEach(function(s) {
+              var t = String(s.type || "").toUpperCase();
+              if (t === typeFilter) {
+                var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+                var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+                total += Math.max(0, a - de);
+              }
+            });
+            return total;
+          }
+
+          function buildRowForDay(d, r, actCols) {
+            var weekN = isoWeek(d);
+            var jourFr = joursFr[d.getDay()];
+            var dStr = isoDate(d);
+            var row = {
+              client: r ? (r.client || "") : "",
+              site: r ? (r.lieu || "") : "",
+              sondeuse: r ? (r.sondeuse_code || "") : "",
+              semaine: weekN,
+              jour: jourFr,
+              date: dStr,
+              sondeur: "",
+              metrage: 0,
+              aircore: 0,
+              mft: 0,
+              hmo: 0,
+              hm: 0,
+              actHours: {}
+            };
+            if (r) {
+              // Sondeur principal (premier membre avec role sondeur ou nom dispo)
+              var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+              var sondeurMember = equipe.find(function(m) {
+                return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0));
+              });
+              row.sondeur = sondeurMember ? (sondeurMember.nom || "") : (equipe[0] && equipe[0].nom ? equipe[0].nom : "");
+              row.metrage = parseFloat(r.total_metres) || 0;
+              row.aircore = sumSondagesByType(r, "AIRCORE");
+              row.mft = sumSondagesByType(r, "MFT");
+              row.hmo = ((parseFloat(r.total_heures) || 0) / 60); // total_heures en minutes -> heures decimales
+              // HM = somme des heures FORATION uniquement
+              var hmMins = 0;
+              (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+                if (a && a.debut && a.fin && String(a.libelle || "").toUpperCase() === "FORATION") {
+                  hmMins += durBtw(a.debut, a.fin);
+                }
+              });
+              row.hm = hmMins / 60;
+              // Heures par activite
+              (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+                if (!a || !a.debut || !a.fin) return;
+                var lib = String(a.libelle || "").toUpperCase();
+                row.actHours[lib] = (row.actHours[lib] || 0) + (durBtw(a.debut, a.fin) / 60);
+              });
+            }
+            return row;
+          }
+
+          // Construction du AOA
+          var aoa = [];
+          // Bandeau titre + periode
+          var titreCell = "RELEVE DES RAPPORTS";
+          var periodeCell = fmtFr(startStr) + " - " + fmtFr(endStr);
+          aoa.push(["", "", titreCell, "", "", "", "", "", "", "", "", "", periodeCell]);
+          // Header colonnes
+          var header = ["Client", "Site", "Sondeuse", "Semaine", "Jour", "DATE", "Sondeur", "Metrage", "AIRCORE Metrage", "MFT Metrage", "HMO", "HM"];
+          actColsList.forEach(function(a) { header.push(a); });
+          aoa.push(header);
+          // Lignes
+          dataRows.forEach(function(row) {
+            var line = [row.client, row.site, row.sondeuse, row.semaine, row.jour, row.date, row.sondeur, row.metrage || "", row.aircore || "", row.mft || "", row.hmo ? Math.round(row.hmo * 100) / 100 : "", row.hm ? Math.round(row.hm * 100) / 100 : ""];
+            actColsList.forEach(function(a) { var v = row.actHours[a] || 0; line.push(v ? Math.round(v * 100) / 100 : ""); });
+            aoa.push(line);
+          });
+          // Ligne total facturable
+          var totalLine = ["", "", "", "", "", "Total Facturable:", ""];
+          var sumCol = function(getter) { var s = 0; dataRows.forEach(function(r) { s += parseFloat(getter(r)) || 0; }); return Math.round(s * 100) / 100; };
+          totalLine.push(sumCol(function(r) { return r.metrage; }));
+          totalLine.push(sumCol(function(r) { return r.aircore; }));
+          totalLine.push(sumCol(function(r) { return r.mft; }));
+          totalLine.push(sumCol(function(r) { return r.hmo; }));
+          totalLine.push(sumCol(function(r) { return r.hm; }));
+          actColsList.forEach(function(a) { totalLine.push(sumCol(function(r) { return r.actHours[a] || 0; })); });
+          aoa.push(totalLine);
+
+          var ws = XLSX.utils.aoa_to_sheet(aoa);
+          // Largeur colonnes
+          var cols = [{ wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 26 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 8 }];
+          actColsList.forEach(function() { cols.push({ wch: 13 }); });
+          ws["!cols"] = cols;
+          var wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, "Billing report");
+          // Nom du fichier
+          var sndPart = recapSondeuse !== "__all__" ? "_" + recapSondeuse : "";
+          var sitePart = recapSite !== "__all__" ? "_" + recapSite : "";
+          var fname = "releve_rapports" + sndPart + sitePart + "_" + startStr + "_au_" + endStr + ".xlsx";
           XLSX.writeFile(wb, fname);
         }
 
@@ -12160,15 +12354,42 @@
           );
         }
 
-        // Period bar + export
-        var periodBar = h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap", padding: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8 } },
+        // Period bar + filtres site/sondeuse + export
+        var dropStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 12, fontFamily: "inherit", cursor: "pointer" };
+        var periodBar = h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap", padding: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8 } },
           h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Periode"),
           h("input", { type: "date", value: startStr, onChange: function(e) { var d = parseIso(e.target.value); if (d) setRecapStart(d); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit" } }),
           h("span", { style: { color: "#71717a" } }, "->"),
           h("input", { type: "date", value: endStr, onChange: function(e) { var d = parseIso(e.target.value); if (d) setRecapEnd(d); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit" } }),
           h("button", { onClick: applyCurrentMonth, style: { padding: "6px 12px", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 6, color: "#c7d2fe", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "Mois en cours"),
+          h("span", { style: { width: 1, height: 20, background: "rgba(255,255,255,0.10)", margin: "0 4px" } }),
+          // Selecteur Site
+          h("select", { value: recapSite, onChange: function(e) { setRecapSite(e.target.value); }, style: dropStyle },
+            [h("option", { key: "__all__", value: "__all__" }, "Tous sites")].concat(sitesOptions.map(function(s) { return h("option", { key: s, value: s }, s); }))
+          ),
+          // Selecteur Sondeuse
+          h("select", { value: recapSondeuse, onChange: function(e) { setRecapSondeuse(e.target.value); }, style: dropStyle },
+            [h("option", { key: "__all__", value: "__all__" }, "Toutes sondeuses")].concat(sondeusesOptions.map(function(s) { return h("option", { key: s, value: s }, s); }))
+          ),
           h("div", { style: { flex: 1 } }),
-          h("button", { onClick: exportExcel, disabled: periodRaps.length === 0, style: { padding: "8px 14px", background: periodRaps.length === 0 ? "rgba(34,197,94,0.10)" : "linear-gradient(135deg, #16a34a, #22c55e)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, color: periodRaps.length === 0 ? "#71717a" : "#ffffff", cursor: periodRaps.length === 0 ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "file-spreadsheet", size: 14, color: periodRaps.length === 0 ? "#71717a" : "#ffffff" }), "Exporter Excel")
+          // Bouton dropdown Export
+          h("div", { style: { position: "relative" } },
+            h("button", { onClick: function() { setExportMenuOpen(!exportMenuOpen); }, disabled: periodRaps.length === 0, style: { padding: "8px 14px", background: periodRaps.length === 0 ? "rgba(34,197,94,0.10)" : "linear-gradient(135deg, #16a34a, #22c55e)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, color: periodRaps.length === 0 ? "#71717a" : "#ffffff", cursor: periodRaps.length === 0 ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 } },
+              h(Icon, { name: "file-spreadsheet", size: 14, color: periodRaps.length === 0 ? "#71717a" : "#ffffff" }),
+              "Exporter Excel",
+              h(Icon, { name: exportMenuOpen ? "chevron-up" : "chevron-down", size: 12, color: periodRaps.length === 0 ? "#71717a" : "#ffffff" })
+            ),
+            exportMenuOpen ? h("div", { style: { position: "absolute", top: "100%", right: 0, marginTop: 4, background: "rgba(36, 40, 60, 0.98)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, padding: 6, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", zIndex: 50, minWidth: 240 } },
+              h("button", { onClick: function() { setExportMenuOpen(false); exportSynthese(); }, style: { width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", color: "#fafafa", cursor: "pointer", fontSize: 12, borderRadius: 6, display: "flex", flexDirection: "column", gap: 2, fontFamily: "inherit" }, onMouseOver: function(e) { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }, onMouseOut: function(e) { e.currentTarget.style.background = "transparent"; } },
+                h("span", { style: { fontWeight: 700 } }, "Synthese mensuelle"),
+                h("span", { style: { fontSize: 10, color: "#a1a1aa" } }, "Resume machines, sites, activites, consommables")
+              ),
+              h("button", { onClick: function() { setExportMenuOpen(false); exportDetailleParJour(); }, style: { width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", color: "#fafafa", cursor: "pointer", fontSize: 12, borderRadius: 6, display: "flex", flexDirection: "column", gap: 2, fontFamily: "inherit" }, onMouseOver: function(e) { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }, onMouseOut: function(e) { e.currentTarget.style.background = "transparent"; } },
+                h("span", { style: { fontWeight: 700 } }, "Releve detaille par jour"),
+                h("span", { style: { fontSize: 10, color: "#a1a1aa" } }, "Format billing report : 1 ligne par jour + heures par activite")
+              )
+            ) : null
+          )
         );
 
         if (periodRaps.length === 0) {
