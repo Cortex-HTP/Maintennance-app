@@ -11446,6 +11446,41 @@
           setRaps(raps.map(function(x) { return x.id === id ? updated : x; }));
         });
       };
+      // Bascule facturable/non d'un sondage reforage SANS passer par l'edition complete.
+      // On modifie juste le commentaire du sondage ("REFORATION" <-> "REFORATION NON FACTURABLE")
+      // et on enregistre directement dans Supabase + contexte global (recap a jour).
+      // Detection robuste : reforage = commentaire commençant par "REFOR" ; non facturable
+      // = contient "NON FACTURABLE". (s'aligne sur la nomenclature existante "REFORATION".)
+      var REFORAGE_FACT = "REFORATION";
+      var REFORAGE_NON_FACT = "REFORATION NON FACTURABLE";
+      var estCommReforage = function(c) { return String(c || "").toUpperCase().indexOf("REFOR") === 0; };
+      var estCommNonFact = function(c) { var u = String(c || "").toUpperCase(); return u.indexOf("REFOR") === 0 && u.indexOf("NON FACTURABLE") >= 0; };
+      var toggleSondageReforage = function(rapportId, sondageIdx, facturable) {
+        var rap = raps.find(function(x) { return x.id === rapportId; });
+        if (!rap) return;
+        var sondages = (Array.isArray(rap.sondages) ? rap.sondages : []).map(function(s, i) {
+          if (i !== sondageIdx) return s;
+          var copy = Object.assign({}, s);
+          copy.commentaire = facturable ? REFORAGE_FACT : REFORAGE_NON_FACT;
+          return copy;
+        });
+        var updatedLocal = Object.assign({}, rap, { sondages: sondages });
+        // Maj optimiste de l'UI
+        setRaps(raps.map(function(x) { return x.id === rapportId ? updatedLocal : x; }));
+        if (ctx.setDbRapportsForage) {
+          var cur = ctx.dbRapportsForage || [];
+          ctx.setDbRapportsForage(cur.map(function(x) { return x.id === rapportId ? Object.assign({}, x, { sondages: sondages }) : x; }));
+        }
+        supabase.from("rapports_forage").update({ sondages: sondages }).eq("id", rapportId).then(function(res) {
+          if (res.error) {
+            alert("Erreur enregistrement reforage : " + res.error.message);
+            // Rollback UI
+            setRaps(raps.map(function(x) { return x.id === rapportId ? rap : x; }));
+          } else if (showToast) {
+            showToast(facturable ? "Reforage marque facturable" : "Reforage marque non facturable", "success");
+          }
+        });
+      };
       // Suppression definitive d'un rapport (utile pour purger les doublons d'import)
       var deleteRapport = function(r) {
         var libelle = "Rapport #" + r.id + (r.sondeuse_code ? " " + r.sondeuse_code : "") + (r.date_rapport ? " du " + fmtDate(r.date_rapport) : "");
@@ -11800,12 +11835,24 @@
                 sectionTitle("Sondages (" + sondages.length + ")"),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
                   sondages.map(function(s, i) {
-                    return h("div", { key: i, style: { padding: "8px 0", borderBottom: i < sondages.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, display: "flex", justifyContent: "space-between", gap: 12 } },
-                      h("div", null,
+                    var estReforage = estCommReforage(s.commentaire);
+                    var estNonFact = estCommNonFact(s.commentaire);
+                    var toggleBtnStyle = function(active, kind) {
+                      return { border: "none", padding: "4px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                        background: active ? (kind === "fact" ? "linear-gradient(135deg,#16a34a,#22c55e)" : "linear-gradient(135deg,#e11d48,#f43f5e)") : "transparent",
+                        color: active ? "#ffffff" : "#a1a1aa" };
+                    };
+                    return h("div", { key: i, style: { padding: "8px 0", borderBottom: i < sondages.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" } },
+                      h("div", { style: { flex: "1 1 auto" } },
                         h("span", { style: { fontWeight: 700 } }, s.nom || s.id || ("S" + (i + 1))),
                         s.type ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11 } }, s.type) : null,
                         s.commentaire ? h("span", { style: { marginLeft: 8, color: "#fcd34d", fontSize: 11, fontStyle: "italic" } }, "« " + s.commentaire + " »") : null
                       ),
+                      // Toggle facturable/non inline (uniquement pour les reforages, sans edition complete)
+                      estReforage ? h("div", { style: { display: "inline-flex", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 999, overflow: "hidden", background: "rgba(0,0,0,0.30)" } },
+                        h("button", { onClick: function() { toggleSondageReforage(r.id, i, true); }, style: toggleBtnStyle(!estNonFact, "fact") }, "Facturable"),
+                        h("button", { onClick: function() { toggleSondageReforage(r.id, i, false); }, style: toggleBtnStyle(estNonFact, "non") }, "Non facturable")
+                      ) : null,
                       h("div", { style: { color: "#a78bfa", fontWeight: 600 } },
                         (s.metresDe != null ? s.metresDe : (s.de != null ? s.de : "?")) + " - " + (s.metresA != null ? s.metresA : (s.a != null ? s.a : "?")) + " m"
                       )
@@ -12020,10 +12067,21 @@
 
         // ── KPIs globaux ──
         var totalMetres = 0;
+        var metresReforageNonFact = 0; // metrage des passes "Reforage non facturable"
         var jMachines = {}; // sondeuse_code|date -> 1
         var allSondeurs = {};
         periodRaps.forEach(function(r) {
           totalMetres += parseFloat(r.total_metres) || 0;
+          // Deduction des reforages marques non facturables (par le responsable).
+          // Detection : commentaire commençant par "REFOR" et contenant "NON FACTURABLE".
+          (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+            var u = String(s.commentaire || "").toUpperCase();
+            if (u.indexOf("REFOR") === 0 && u.indexOf("NON FACTURABLE") >= 0) {
+              var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+              var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+              metresReforageNonFact += Math.max(0, a - de);
+            }
+          });
           if (r.sondeuse_code && r.date_rapport) {
             jMachines[r.sondeuse_code + "|" + String(r.date_rapport).substring(0, 10)] = true;
           }
@@ -12031,6 +12089,7 @@
             if (m && (m.nom || m.id)) allSondeurs[upN(m.nom || m.id)] = true;
           });
         });
+        var metresFacturables = Math.max(0, totalMetres - metresReforageNonFact);
         var nbJMachines = Object.keys(jMachines).length;
         var moyJM = nbJMachines > 0 ? totalMetres / nbJMachines : 0;
         var nbSondeurs = Object.keys(allSondeurs).length;
@@ -12122,8 +12181,8 @@
           aoa.push(["Nb rapports :", periodRaps.length]);
           aoa.push([]);
           aoa.push(["KPIs GLOBAUX"]);
-          aoa.push(["Metrage total (m)", "J-machines", "Moyenne / J-machine (m)", "Sondeurs", "Heures facturables", "Heures totales"]);
-          aoa.push([Math.round(totalMetres * 10) / 10, nbJMachines, Math.round(moyJM * 10) / 10, nbSondeurs, minToHHmm(totalFacturableMins), minToHHmm(totalActMins)]);
+          aoa.push(["Metrage fore (m)", "Reforage non facturable (m)", "Metrage facturable (m)", "J-machines", "Moyenne / J-machine (m)", "Sondeurs", "Heures facturables", "Heures totales"]);
+          aoa.push([Math.round(totalMetres * 10) / 10, Math.round(metresReforageNonFact * 10) / 10, Math.round(metresFacturables * 10) / 10, nbJMachines, Math.round(moyJM * 10) / 10, nbSondeurs, minToHHmm(totalFacturableMins), minToHHmm(totalActMins)]);
           aoa.push([]);
           aoa.push(["RESUME PAR MACHINE"]);
           aoa.push(["Machine", "Jours", "Metrage (m)", "Moy/j (m)", "Sondages", "Sondeur principal"]);
@@ -12413,7 +12472,9 @@
           periodBar,
           // KPIs
           h("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8 } },
-            kpiCard(totalMetres.toFixed(1) + " m", "Metrage total", "#a78bfa"),
+            kpiCard(totalMetres.toFixed(1) + " m", "Metrage fore", "#a78bfa"),
+            kpiCard(metresFacturables.toFixed(1) + " m", "Metrage facturable", "#86efac"),
+            metresReforageNonFact > 0 ? kpiCard("-" + metresReforageNonFact.toFixed(1) + " m", "Reforage non facturable", "#fda4af") : null,
             kpiCard(String(nbJMachines), "J-machines"),
             kpiCard(moyJM.toFixed(1) + " m", "Moy / j-machine"),
             kpiCard(String(nbSondeurs), "Sondeurs", "#fcd34d"),
