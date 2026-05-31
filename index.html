@@ -1911,6 +1911,7 @@
       const [showModal, setShowModal] = useState(false);
       const [editing, setEditing] = useState(null);
       const [toDelete, setToDelete] = useState(null);
+      const [tab, setTab] = useState("liste"); // "liste" ou "inflation"
       const categories = ["all", ...Array.from(new Set(pieces.map((p) => p.Categorie).filter(Boolean)))];
       const filtered = pieces.filter((p) => {
         const mc = categorie === "all" || p.Categorie === categorie;
@@ -1932,8 +1933,27 @@
       const openEdit = (p) => { setEditing(p); setShowModal(true); };
       const openNew = () => { setEditing(null); setShowModal(true); };
 
+      // Onglets bar (Liste pieces / Inflation)
+      const tabBtn = (key, label, icon) => {
+        const active = tab === key;
+        return h("button", { key: key, onClick: function() { setTab(key); },
+          style: { display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px",
+            background: active ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)",
+            color: active ? "#ffffff" : "#a78bfa",
+            border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.08)"),
+            borderRadius: 10, fontWeight: 600, fontSize: 14, cursor: "pointer",
+            boxShadow: active ? "0 8px 20px rgba(99,102,241,0.3)" : "none",
+            fontFamily: "inherit"
+          } }, h(Icon, { name: icon, size: 14, color: active ? "#ffffff" : "#a78bfa" }), label);
+      };
+
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "package", size: 20 }, "Pieces detachees"), subtitle: pieces.length + " references \u2014 " + fmtMoney(totalValeur) + " en stock", action: h(Button, { onClick: openNew }, "+ Nouvelle piece") }),
+        h(PageHeader, { title: h(IconText, { icon: "package", size: 20 }, "Pieces detachees"), subtitle: pieces.length + " references \u2014 " + fmtMoney(totalValeur) + " en stock", action: tab === "liste" ? h(Button, { onClick: openNew }, "+ Nouvelle piece") : null }),
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } },
+          tabBtn("liste", "Liste", "list"),
+          tabBtn("inflation", "Inflation", "trending-up")
+        ),
+        tab === "inflation" ? h(InflationView, { pieces: pieces }) : h(React.Fragment, null,
         h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
           h(KPICard, { icon: h(Icon, { name: "package", size: 22, color: "#ffffff" }), label: "References", value: fmtNum(pieces.length), color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "alert-triangle", size: 22, color: "#ffffff" }), label: "Stock faible", value: fmtNum(faibles), color: faibles > 0 ? "#fbbf24" : "#22c55e" }),
@@ -1964,7 +1984,240 @@
                     h("button", { onClick: () => setToDelete(p), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))))))))),
         showModal && h(Modal, { title: editing ? "Modifier la piece" : "Nouvelle piece detachee", onClose: () => { setShowModal(false); setEditing(null); } },
           h(PieceForm, { onSave: handleSave, onCancel: () => { setShowModal(false); setEditing(null); }, editItem: editing })),
-        toDelete && h(ConfirmDialog, { title: "Supprimer la piece ?", message: "Confirmer la suppression de \"" + toDelete.Reference + " - " + toDelete.Designation + "\" ?", onConfirm: async () => { await deletePiece(toDelete.Id); setToDelete(null); }, onCancel: () => setToDelete(null) }));
+        toDelete && h(ConfirmDialog, { title: "Supprimer la piece ?", message: "Confirmer la suppression de \"" + toDelete.Reference + " - " + toDelete.Designation + "\" ?", onConfirm: async () => { await deletePiece(toDelete.Id); setToDelete(null); }, onCancel: () => setToDelete(null) })
+        ));
+    }
+
+    // ─── Vue Inflation : evolution des prix dans le temps ──────────────
+    // Sous-onglet de Pieces detachees. Affiche pour chaque reference :
+    // prix initial / prix actuel / Δ% / nb observations + graphique au clic.
+    function InflationView({ pieces }) {
+      const [obs, setObs] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [filterCat, setFilterCat] = useState("all");
+      const [filterPeriod, setFilterPeriod] = useState("all"); // 3mois, 6mois, 1an, all
+      const [expandedRef, setExpandedRef] = useState(null);
+      const [showAddObs, setShowAddObs] = useState(null); // ref selectionne ou null
+      const [refresh, setRefresh] = useState(0);
+
+      useEffect(function() {
+        setLoading(true);
+        supabase.from("prix_observations").select("*").order("date_observation", { ascending: true }).then(function(res) {
+          setLoading(false);
+          if (res.error) { console.warn("[InflationView] fetch:", res.error.message); return; }
+          setObs(res.data || []);
+        });
+      }, [refresh]);
+
+      // Filtre periode
+      var now = new Date();
+      var periodStart = null;
+      if (filterPeriod === "3mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+      else if (filterPeriod === "6mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      else if (filterPeriod === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+
+      // Regroupe observations par piece_reference
+      var byRef = {};
+      obs.forEach(function(o) {
+        if (filterCat !== "all" && o.categorie !== filterCat) return;
+        if (periodStart && o.date_observation && new Date(o.date_observation) < periodStart) return;
+        var k = o.piece_reference || "?";
+        if (!byRef[k]) byRef[k] = { reference: k, designation: o.piece_designation || "", categorie: o.categorie || "", observations: [] };
+        byRef[k].observations.push(o);
+      });
+
+      // Stats par reference : prix initial (1ere obs de la periode), prix actuel (derniere), delta %
+      var rows = Object.keys(byRef).map(function(k) {
+        var r = byRef[k];
+        var sorted = r.observations.slice().sort(function(a, b) { return (a.date_observation || "") < (b.date_observation || "") ? -1 : 1; });
+        var first = sorted[0], last = sorted[sorted.length - 1];
+        var pInit = parseFloat(first.prix_unitaire) || 0;
+        var pAct = parseFloat(last.prix_unitaire) || 0;
+        var delta = pInit > 0 ? ((pAct - pInit) / pInit) * 100 : 0;
+        return {
+          reference: r.reference, designation: r.designation, categorie: r.categorie,
+          prixInitial: pInit, dateInit: first.date_observation,
+          prixActuel: pAct, dateAct: last.date_observation,
+          deltaPct: delta, nbObs: sorted.length,
+          observations: sorted
+        };
+      }).sort(function(a, b) { return b.deltaPct - a.deltaPct; });
+
+      // Categories distinctes pour le filtre
+      var cats = Array.from(new Set(obs.map(function(o) { return o.categorie; }).filter(Boolean))).sort();
+
+      // KPIs globaux
+      var nbTracked = rows.length;
+      var avgInflation = rows.length > 0 ? rows.reduce(function(s, r) { return s + r.deltaPct; }, 0) / rows.length : 0;
+      var topHausse = rows.length > 0 ? rows[0] : null;
+      var topBaisse = rows.length > 0 ? rows[rows.length - 1] : null;
+
+      // Mini graphique SVG (sparkline) d'evolution pour une ref
+      function sparkline(observations) {
+        if (observations.length < 2) return h("span", { style: { color: "#71717a", fontSize: 11 } }, "1 seule obs");
+        var W = 120, H = 32;
+        var prices = observations.map(function(o) { return parseFloat(o.prix_unitaire) || 0; });
+        var minP = Math.min.apply(null, prices), maxP = Math.max.apply(null, prices);
+        var range = Math.max(1, maxP - minP);
+        var pts = prices.map(function(p, i) {
+          var x = (i / (prices.length - 1)) * W;
+          var y = H - ((p - minP) / range) * (H - 4) - 2;
+          return x.toFixed(1) + "," + y.toFixed(1);
+        }).join(" ");
+        var stroke = prices[prices.length - 1] > prices[0] ? "#f43f5e" : "#22c55e";
+        return h("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H },
+          h("polyline", { points: pts, fill: "none", stroke: stroke, strokeWidth: 1.5, strokeLinecap: "round" })
+        );
+      }
+
+      // Modal "Ajouter une observation manuelle"
+      function AddObsModal({ pieceRef, pieceDes, pieceCat, fournisseur, onClose }) {
+        const [prix, setPrix] = useState("");
+        const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+        const [fourn, setFourn] = useState(fournisseur || "");
+        const [src, setSrc] = useState("manuel");
+        const [notes, setNotes] = useState("");
+        const [saving, setSaving] = useState(false);
+        function save() {
+          var p = parseFloat(prix) || 0;
+          if (p <= 0) { alert("Prix invalide"); return; }
+          if (!date) { alert("Date requise"); return; }
+          setSaving(true);
+          supabase.from("prix_observations").insert({
+            piece_reference: pieceRef, piece_designation: pieceDes, categorie: pieceCat || null,
+            prix_unitaire: p, fournisseur: fourn || null, date_observation: date,
+            source: src || "manuel", notes: notes || null
+          }).then(function(r) {
+            setSaving(false);
+            if (r.error) { alert("Erreur : " + r.error.message); return; }
+            setRefresh(refresh + 1);
+            onClose();
+          });
+        }
+        return h(Modal, { title: "Nouvelle observation : " + pieceRef, onClose: onClose, size: 460 },
+          h("div", { style: { display: "grid", gap: 10 } },
+            h("div", null,
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Piece"),
+              h("div", { style: { fontWeight: 700 } }, pieceRef + " — " + pieceDes)
+            ),
+            h("div", null,
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Prix unitaire (XPF)"),
+              h("input", { type: "number", style: inputStyle, value: prix, onChange: function(e) { setPrix(e.target.value); }, placeholder: "Ex: 12500", autoFocus: true })
+            ),
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } },
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Date observation"),
+                h("input", { type: "date", style: inputStyle, value: date, onChange: function(e) { setDate(e.target.value); } })
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Source"),
+                h("select", { style: selectStyle, value: src, onChange: function(e) { setSrc(e.target.value); } },
+                  ["manuel", "facture", "devis", "pompe", "observation"].map(function(s) { return h("option", { key: s, value: s }, s); })
+                )
+              )
+            ),
+            h("div", null,
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Fournisseur"),
+              h("input", { type: "text", style: inputStyle, value: fourn, onChange: function(e) { setFourn(e.target.value); }, placeholder: "Optionnel" })
+            ),
+            h("div", null,
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Notes"),
+              h("input", { type: "text", style: inputStyle, value: notes, onChange: function(e) { setNotes(e.target.value); }, placeholder: "N de facture, contexte..." })
+            ),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 10 } },
+              h(Button, { variant: "secondary", onClick: onClose }, "Annuler"),
+              h(Button, { onClick: save, disabled: saving }, saving ? "..." : "Enregistrer")
+            )
+          )
+        );
+      }
+
+      var fmtPct = function(p) { var s = p > 0 ? "+" : ""; return s + p.toFixed(1) + " %"; };
+      var fmtDate = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "-"; };
+      var pctColor = function(p) { if (p > 0.5) return "#f43f5e"; if (p < -0.5) return "#22c55e"; return "#a1a1aa"; };
+
+      if (loading) return h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...");
+
+      return h(React.Fragment, null,
+        // KPIs
+        h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
+          h(KPICard, { icon: h(Icon, { name: "package", size: 22, color: "#ffffff" }), label: "Refs suivies", value: String(nbTracked), color: "#818cf8" }),
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 22, color: "#ffffff" }), label: "Inflation moyenne", value: fmtPct(avgInflation), color: avgInflation > 0 ? "#f43f5e" : "#22c55e" }),
+          topHausse ? h(KPICard, { icon: h(Icon, { name: "arrow-up", size: 22, color: "#ffffff" }), label: "Top hausse : " + topHausse.reference, value: fmtPct(topHausse.deltaPct), color: "#f43f5e" }) : null,
+          topBaisse && topBaisse.deltaPct < 0 ? h(KPICard, { icon: h(Icon, { name: "arrow-down", size: 22, color: "#ffffff" }), label: "Top baisse : " + topBaisse.reference, value: fmtPct(topBaisse.deltaPct), color: "#22c55e" }) : null
+        ),
+        // Filtres
+        h("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Periode"),
+          h("select", { value: filterPeriod, onChange: function(e) { setFilterPeriod(e.target.value); }, style: { ...selectStyle, width: "auto" } },
+            h("option", { value: "3mois" }, "3 mois"),
+            h("option", { value: "6mois" }, "6 mois"),
+            h("option", { value: "1an" }, "1 an"),
+            h("option", { value: "all" }, "Tout l'historique")
+          ),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Categorie"),
+          h("select", { value: filterCat, onChange: function(e) { setFilterCat(e.target.value); }, style: { ...selectStyle, width: "auto" } },
+            h("option", { value: "all" }, "Toutes"),
+            cats.map(function(c) { return h("option", { key: c, value: c }, c); })
+          )
+        ),
+        // Tableau
+        rows.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune observation de prix pour cette periode/categorie. Modifie le prix d'une piece pour declencher le suivi, ou clique '+ Ajouter observation' sur une ligne.")) :
+        h(Card, { style: { padding: 0, overflow: "hidden" } },
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
+                ["Reference", "Designation", "Categorie", "Prix initial", "Prix actuel", "Variation", "Obs", "Evolution", ""].map(function(x, i) {
+                  return h("th", { key: i, style: { padding: "12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+                })
+              )),
+              h("tbody", null, rows.map(function(r) {
+                var isExp = expandedRef === r.reference;
+                return h(React.Fragment, { key: r.reference },
+                  h("tr", { style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", background: isExp ? "rgba(99,102,241,0.06)" : "transparent" }, onClick: function() { setExpandedRef(isExp ? null : r.reference); } },
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.reference),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 600 } }, r.designation),
+                    h("td", { style: { padding: "10px 12px", color: "#a1a1aa", fontSize: 12 } }, r.categorie || "-"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace" } }, fmtMoney(r.prixInitial), h("div", { style: { fontSize: 10, color: "#71717a" } }, fmtDate(r.dateInit))),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontWeight: 700 } }, fmtMoney(r.prixActuel), h("div", { style: { fontSize: 10, color: "#71717a" } }, fmtDate(r.dateAct))),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 800, color: pctColor(r.deltaPct), fontFamily: "monospace" } }, fmtPct(r.deltaPct)),
+                    h("td", { style: { padding: "10px 12px", textAlign: "center" } }, r.nbObs),
+                    h("td", { style: { padding: "10px 12px" } }, sparkline(r.observations)),
+                    h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
+                      h("button", { onClick: function() { setShowAddObs(r); }, style: { background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.30)", color: "#c7d2fe", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "inherit" }, title: "Ajouter une observation manuelle" }, "+ Obs")
+                    )
+                  ),
+                  isExp ? h("tr", { key: "exp" }, h("td", { colSpan: 9, style: { padding: 12, background: "rgba(0,0,0,0.20)" } },
+                    h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Historique des observations"),
+                    h("table", { style: { width: "100%", fontSize: 12 } },
+                      h("thead", null, h("tr", { style: { color: "#71717a" } },
+                        ["Date", "Prix", "Variation", "Fournisseur", "Source", "Notes"].map(function(x, i) { return h("th", { key: i, style: { padding: "6px 10px", textAlign: "left", fontWeight: 600 } }, x); })
+                      )),
+                      h("tbody", null, r.observations.slice().reverse().map(function(o, i) {
+                        var prev = i < r.observations.length - 1 ? r.observations.slice().reverse()[i + 1] : null;
+                        var d = prev ? ((parseFloat(o.prix_unitaire) - parseFloat(prev.prix_unitaire)) / Math.max(0.001, parseFloat(prev.prix_unitaire))) * 100 : 0;
+                        return h("tr", { key: o.id, style: { borderTop: "1px solid rgba(255,255,255,0.05)" } },
+                          h("td", { style: { padding: "6px 10px", fontFamily: "monospace" } }, fmtDate(o.date_observation)),
+                          h("td", { style: { padding: "6px 10px", fontFamily: "monospace", fontWeight: 700 } }, fmtMoney(o.prix_unitaire)),
+                          h("td", { style: { padding: "6px 10px", color: pctColor(d), fontFamily: "monospace" } }, prev ? fmtPct(d) : "-"),
+                          h("td", { style: { padding: "6px 10px" } }, o.fournisseur || "-"),
+                          h("td", { style: { padding: "6px 10px", color: "#a1a1aa", fontSize: 11 } }, o.source || "-"),
+                          h("td", { style: { padding: "6px 10px", color: "#a1a1aa", fontSize: 11 } }, o.notes || "")
+                        );
+                      }))
+                    )
+                  )) : null
+                );
+              }))
+            )
+          )
+        ),
+        showAddObs ? h(AddObsModal, {
+          pieceRef: showAddObs.reference, pieceDes: showAddObs.designation, pieceCat: showAddObs.categorie,
+          fournisseur: (showAddObs.observations[showAddObs.observations.length - 1] || {}).fournisseur,
+          onClose: function() { setShowAddObs(null); }
+        }) : null
+      );
     }
 
     // ─── Confirm Dialog (popup de confirmation suppression) ─────────────
@@ -13409,17 +13662,43 @@
       };
 
       // CRUD : Pieces
+      // Helper : enregistre une observation de prix dans prix_observations pour suivi
+      // d'inflation (toute creation ou modif de prix > 0 sur une piece).
+      const trackPrixObservation = function(item, ancienPrix, source) {
+        const nouveauPrix = parseFloat(item.PrixUnitaire) || 0;
+        if (nouveauPrix <= 0) return;
+        if (ancienPrix != null && Math.abs(nouveauPrix - ancienPrix) < 0.001) return;
+        supabase.from("prix_observations").insert({
+          piece_reference: item.Reference || "",
+          piece_designation: item.Designation || "",
+          categorie: item.Categorie || null,
+          prix_unitaire: nouveauPrix,
+          fournisseur: item.Fournisseur || null,
+          date_observation: new Date().toISOString().substring(0, 10),
+          source: source || "maj fiche",
+          notes: (ancienPrix != null && ancienPrix > 0) ? ("Ancien prix : " + ancienPrix) : null
+        }).then(function(r) {
+          if (r && r.error) console.warn("[prix_observations]", r.error.message);
+        });
+      };
       const addPiece = async (item) => {
         const { data, error } = await supabase.from("pieces").insert(pieceToDb(item)).select().single();
         if (error) { showToast(error.message, "error"); throw error; }
         setPieces((p) => [...p, pieceFromDb(data)]);
         showToast("Piece ajoutee");
+        // Premiere observation de prix (si > 0)
+        trackPrixObservation(item, null, "creation piece");
       };
       const updatePiece = async (item) => {
+        // Recupere l'ancien prix avant l'update pour ne tracker que si ca a change
+        const oldPiece = (pieces || []).find(function(p) { return p.Id === item.Id; });
+        const oldPrix = oldPiece ? (parseFloat(oldPiece.PrixUnitaire) || 0) : 0;
         const { data, error } = await supabase.from("pieces").update(pieceToDb(item)).eq("id", item.Id).select().single();
         if (error) { showToast(error.message, "error"); throw error; }
         setPieces((p) => p.map((x) => (x.Id === item.Id ? pieceFromDb(data) : x)));
         showToast("Piece mise a jour");
+        // Auto-track si le prix a change
+        trackPrixObservation(item, oldPrix, oldPrix > 0 ? "maj fiche" : "premiere saisie");
       };
       const deletePiece = async (id) => {
         const { error } = await supabase.from("pieces").delete().eq("id", id);
