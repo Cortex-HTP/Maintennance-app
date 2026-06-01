@@ -10035,6 +10035,8 @@
 
       var _rapports = useState([]);
       var rapports = _rapports[0]; var setRapports = _rapports[1];
+      var _carburants = useState([]);
+      var carburants = _carburants[0]; var setCarburants = _carburants[1];
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
       var _refresh = useState(0);
@@ -10046,6 +10048,12 @@
       useEffect(function() {
         var cancelled = false;
         if (refreshFlag === 0) setLoading(true);
+        // Fetch parallele : rapports + consommations_carburant (source unique pour le mazout)
+        supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").then(function(res) {
+          if (cancelled) return;
+          if (res.error) console.warn("[stats] fetch carburant:", res.error.message);
+          setCarburants(res.data || []);
+        });
         supabase.from("rapports_forage").select(STATS_COLS).order("date_rapport", { ascending: false }).then(function(res) {
           if (cancelled) return;
           if (res.error) console.warn("[stats] fetch rapports:", res.error.message);
@@ -10214,6 +10222,33 @@
           consoMap[keyNorm].qty += qty;
           consoMap[keyNorm].cout += cout;
         });
+      });
+      // Source unique pour le mazout : table consommations_carburant (saisi par sondeur).
+      // On filtre les memes contraintes (periode, chantier, sondeuse, sondeur) que les rapports.
+      // Le prix unitaire est lookuped depuis la table pieces (Mazout/L).
+      var filteredIdsSet = {};
+      filtered.forEach(function(r) { filteredIdsSet[r.id] = true; });
+      var filteredSondeuses = {};
+      filtered.forEach(function(r) { if (r.sondeuse_code) filteredSondeuses[r.sondeuse_code] = true; });
+      var prixMazout = lookupPrix("Mazout/L", "");
+      var mazoutDisplayName = pieceDesignationOfficielle("Mazout/L", "");
+      (carburants || []).forEach(function(c) {
+        // Filtre par rapport lie (priorite) ou couple sondeuse + periode
+        var dateStr = String(c.date_consommation || "").substring(0, 10);
+        var inPeriod = (!periodStart || new Date(dateStr) >= periodStart) && (!periodEnd || new Date(dateStr) <= periodEnd);
+        var matchesScope;
+        if (c.rapport_id && filteredIdsSet[c.rapport_id]) matchesScope = true;
+        else if (filteredSondeuses[c.sondeuse_code] && inPeriod) matchesScope = true;
+        else matchesScope = false;
+        if (!matchesScope) return;
+        var qty = parseFloat(c.quantite_l) || 0;
+        if (qty <= 0) return;
+        var cout = qty * prixMazout;
+        totalCoutConso += cout;
+        var keyNorm = mazoutDisplayName.toLowerCase();
+        if (!consoMap[keyNorm]) consoMap[keyNorm] = { qty: 0, cout: 0, displayName: mazoutDisplayName };
+        consoMap[keyNorm].qty += qty;
+        consoMap[keyNorm].cout += cout;
       });
       // Productivite : metres / heures de foration uniquement
       var minutesForation = 0;
