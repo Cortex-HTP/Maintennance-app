@@ -11723,6 +11723,18 @@
           if (showToast) showToast("Statut mis a jour", "success");
         });
       };
+      // Suppression definitive d'une demande de conge (admin uniquement)
+      var deleteConge = function(c) {
+        var dem = (personnelMap[c.demandeur_id] && personnelMap[c.demandeur_id].nom) || ("Demandeur #" + c.demandeur_id);
+        var libelle = "Conge " + (c.type_conge || "") + " — " + dem + (c.date_debut ? " (du " + fmtDate(c.date_debut) + ")" : "");
+        if (!confirm("Supprimer DEFINITIVEMENT cette demande de conge ?\n\n" + libelle + "\n\nCette action est irreversible.")) return;
+        supabase.from("demandes_conge").delete().eq("id", c.id).then(function(res) {
+          if (res.error) { alert("Erreur suppression : " + res.error.message); return; }
+          setConges(conges.filter(function(x) { return x.id !== c.id; }));
+          if (showToast) showToast("Demande de conge supprimee", "success");
+          setExpanded(null);
+        });
+      };
       var updateCommandeStatut = function(id, st) {
         updateStatut("bons_commande", id, st, function(updated) {
           setCmds(cmds.map(function(x) { return x.id === id ? updated : x; }));
@@ -11960,7 +11972,8 @@
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
                 c.statut === "en_attente" ? actionBtn({ label: "Approuver", icon: "check", color: "green", onClick: function() { updateCongeStatut(c.id, "approuvee"); setExpanded(null); } }) : null,
                 c.statut === "en_attente" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette demande ?")) { updateCongeStatut(c.id, "refusee"); setExpanded(null); } } }) : null,
-                c.statut !== "en_attente" ? actionBtn({ label: "Re-mettre en attente", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCongeStatut(c.id, "en_attente"); } }) : null
+                c.statut !== "en_attente" ? actionBtn({ label: "Re-mettre en attente", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCongeStatut(c.id, "en_attente"); } }) : null,
+                isAdmin ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteConge(c); } }) : null
               )
             ]) : null
           );
