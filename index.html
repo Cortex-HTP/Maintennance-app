@@ -11467,6 +11467,7 @@
       var _cmds = useState([]);       var cmds = _cmds[0];         var setCmds = _cmds[1];
       var _ints = useState([]);       var ints = _ints[0];         var setInts = _ints[1];
       var _raps = useState([]);       var raps = _raps[0];         var setRaps = _raps[1];
+      var _carbs = useState([]);      var carbs = _carbs[0];       var setCarbs = _carbs[1];
       var _expanded = useState(null); var expanded = _expanded[0]; var setExpanded = _expanded[1];
       var _filtStatut = useState("tous"); var filtStatut = _filtStatut[0]; var setFiltStatut = _filtStatut[1];
       var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
@@ -11590,7 +11591,8 @@
           supabase.from("demandes_conge").select(CONGES_COLS).order("created_at", { ascending: false }),
           supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }),
           supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }),
-          supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("created_at", { ascending: false })
+          supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("created_at", { ascending: false }),
+          supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -11598,11 +11600,13 @@
           if (results[2].error) console.warn("[soumissions] commandes:", results[2].error.message);
           if (results[3].error) console.warn("[soumissions] interventions:", results[3].error.message);
           if (results[4].error) console.warn("[soumissions] rapports:", results[4].error.message);
+          if (results[5] && results[5].error) console.warn("[soumissions] carburant:", results[5].error.message);
           setRels(results[0].data || []);
           setConges(results[1].data || []);
           setCmds(results[2].data || []);
           setInts(results[3].data || []);
           setRaps(results[4].data || []);
+          setCarbs((results[5] && results[5].data) || []);
           setLoading(false);
         }).catch(function(err) {
           if (cancelled) return;
@@ -12129,6 +12133,13 @@
           var activites = Array.isArray(r.activites) ? r.activites : [];
           var conso = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
           var horametres = Array.isArray(r.horametre) ? r.horametre : [];
+          // Somme du carburant consomme pour ce rapport (entrees liees par rapport_id
+          // OU par couple sondeuse_code + date_rapport)
+          var rDate = String(r.date_rapport || "").substring(0, 10);
+          var carbTotal = (carbs || []).filter(function(c) {
+            if (c.rapport_id === r.id) return true;
+            return c.sondeuse_code === r.sondeuse_code && String(c.date_consommation || "").substring(0, 10) === rDate;
+          }).reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
           // Trouver le sondeur dans l'equipe (pour l'avatar et le nom affiche)
           var sondeurMember = equipe.find(function(m) { return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0)); });
           var sondeurName = (sondeurMember && sondeurMember.nom) || personnelLabel(r.personnel_id);
@@ -12154,6 +12165,7 @@
                 { label: "Chantier", value: chantierLabel(r.chantier_id) },
                 { label: "Total metres", value: (r.total_metres || 0) + " m" },
                 { label: "Total heures", value: fmtMinsHHmm(r.total_heures) },
+                { label: "Carburant", value: carbTotal > 0 ? carbTotal.toFixed(1) + " L" : "-" },
                 { label: "Controles OK", value: r.controles_ok ? "Oui" : "Non" }
               ]),
               equipe.length > 0 ? h("div", null,
