@@ -2220,6 +2220,209 @@
       );
     }
 
+    // ─── Ecran Carburant : vue dediee avec ventilation engin / VL ──────
+    // Affiche toutes les saisies consommations_carburant (sondeurs) avec :
+    // - KPIs : total L, total cout, ventilation engins (sondeuses) vs VL (vehicules)
+    // - Tableau recap par machine
+    // - Liste detaillee des entrees
+    // - Filtres : periode + categorie + machine
+    function EcranCarburant() {
+      const ctx = useAppData();
+      const equipements = ctx.equipements || [];
+      const pieces = ctx.pieces || [];
+
+      const [carburants, setCarburants] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [period, setPeriod] = useState("mois"); // mois, moisdernier, 3mois, 6mois, 1an, all
+      const [filterCat, setFilterCat] = useState("all"); // all, engin, vl
+      const [filterMachine, setFilterMachine] = useState("all");
+
+      useEffect(function() {
+        supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id,sondeur_id,created_at").order("date_consommation", { ascending: false }).then(function(res) {
+          setLoading(false);
+          if (res.error) { console.warn("[carburant] fetch:", res.error.message); return; }
+          setCarburants(res.data || []);
+        });
+      }, []);
+
+      // Map equipement par immatriculation (uppercase) pour categorie/nom
+      var equipByImmat = {};
+      equipements.forEach(function(eq) {
+        var imm = String(eq.Title || "").toUpperCase().trim();
+        if (imm) equipByImmat[imm] = eq;
+      });
+
+      // Periode
+      var now = new Date();
+      var periodStart = null, periodEnd = null;
+      if (period === "mois") {
+        periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      } else if (period === "moisdernier") {
+        periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        periodEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+      } else if (period === "3mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+      else if (period === "6mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+
+      // Categorie d'une saisie : engin / vl / autre, base sur l'equipement de l'immat
+      function getCategorie(sondeuseCode) {
+        var eq = equipByImmat[String(sondeuseCode || "").toUpperCase().trim()];
+        if (!eq) return "autre";
+        var cat = String(eq.Categorie || "").toLowerCase();
+        if (cat === "engin" || /sondeuse|engin/i.test(eq.Type || "")) return "engin";
+        if (cat === "vehicule" || cat === "vl" || /vehicule|vl|camion/i.test(eq.Type || "")) return "vl";
+        return "autre";
+      }
+
+      // Prix unitaire mazout (depuis pieces)
+      var prixMazout = (function() {
+        var match = pieces.find(function(p) {
+          var d = String(p.Designation || "").toLowerCase();
+          var r = String(p.Reference || "").toLowerCase();
+          return d.indexOf("mazout") >= 0 || r.indexOf("mazout") >= 0;
+        });
+        return match ? (parseFloat(match.PrixUnitaire) || 0) : 0;
+      })();
+
+      // Filtre + enrichissement
+      var filtered = (carburants || []).filter(function(c) {
+        var d = new Date(String(c.date_consommation || "").substring(0, 10));
+        if (periodStart && d < periodStart) return false;
+        if (periodEnd && d > periodEnd) return false;
+        var cat = getCategorie(c.sondeuse_code);
+        if (filterCat !== "all" && cat !== filterCat) return false;
+        if (filterMachine !== "all" && c.sondeuse_code !== filterMachine) return false;
+        return true;
+      }).map(function(c) {
+        return Object.assign({}, c, {
+          categorie: getCategorie(c.sondeuse_code),
+          cout: (parseFloat(c.quantite_l) || 0) * prixMazout,
+          equipement: equipByImmat[String(c.sondeuse_code || "").toUpperCase().trim()] || null
+        });
+      });
+
+      // KPIs
+      var totalL = filtered.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
+      var totalCout = filtered.reduce(function(s, c) { return s + c.cout; }, 0);
+      var engins = filtered.filter(function(c) { return c.categorie === "engin"; });
+      var vls = filtered.filter(function(c) { return c.categorie === "vl"; });
+      var totalEnginsL = engins.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
+      var totalVLsL = vls.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
+
+      // Recap par machine
+      var byMachine = {};
+      filtered.forEach(function(c) {
+        var code = c.sondeuse_code || "?";
+        if (!byMachine[code]) byMachine[code] = { code: code, categorie: c.categorie, nom: c.equipement ? c.equipement.Nom : "", quantite: 0, cout: 0, nbEntries: 0, lastDate: "" };
+        byMachine[code].quantite += parseFloat(c.quantite_l) || 0;
+        byMachine[code].cout += c.cout;
+        byMachine[code].nbEntries += 1;
+        if (!byMachine[code].lastDate || c.date_consommation > byMachine[code].lastDate) byMachine[code].lastDate = c.date_consommation;
+      });
+      var machinesList = Object.keys(byMachine).map(function(k) { return byMachine[k]; }).sort(function(a, b) { return b.quantite - a.quantite; });
+
+      // Machines distinctes (pour filtre)
+      var allMachines = Array.from(new Set((carburants || []).map(function(c) { return c.sondeuse_code; }).filter(Boolean))).sort();
+
+      var fmtFr = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "-"; };
+      var catBadge = function(cat) {
+        var col = cat === "engin" ? "#fcd34d" : cat === "vl" ? "#86efac" : "#a1a1aa";
+        var bg = cat === "engin" ? "rgba(245,158,11,0.15)" : cat === "vl" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.15)";
+        var label = cat === "engin" ? "ENGIN" : cat === "vl" ? "VL" : "AUTRE";
+        return h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700, background: bg, color: col, border: "1px solid " + col + "44" } }, label);
+      };
+      var ddStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
+      var lblStyle = { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+
+      if (loading) return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant") }),
+        h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...")
+      );
+
+      return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les sondeurs (engins + vehicules)" }),
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 } },
+          h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Total litres", value: fmtNum(totalL.toFixed(1)) + " L", color: "#86efac" }),
+          h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout total", value: fmtMoney(totalCout), color: "#22c55e" }),
+          h(KPICard, { icon: h(Icon, { name: "hard-hat", size: 22, color: "#ffffff" }), label: "Engins (sondeuses)", value: fmtNum(totalEnginsL.toFixed(1)) + " L", color: "#fbbf24" }),
+          h(KPICard, { icon: h(Icon, { name: "truck", size: 22, color: "#ffffff" }), label: "Vehicules", value: fmtNum(totalVLsL.toFixed(1)) + " L", color: "#818cf8" })
+        ),
+        // Filtres
+        h("div", { style: { display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap", alignItems: "center" } },
+          h("span", { style: lblStyle }, "Periode"),
+          h("select", { value: period, onChange: function(e) { setPeriod(e.target.value); }, style: ddStyle },
+            h("option", { value: "mois" }, "Mois en cours"),
+            h("option", { value: "moisdernier" }, "Mois dernier"),
+            h("option", { value: "3mois" }, "3 mois"),
+            h("option", { value: "6mois" }, "6 mois"),
+            h("option", { value: "1an" }, "1 an"),
+            h("option", { value: "all" }, "Tout l'historique")
+          ),
+          h("span", { style: lblStyle }, "Categorie"),
+          h("select", { value: filterCat, onChange: function(e) { setFilterCat(e.target.value); }, style: ddStyle },
+            h("option", { value: "all" }, "Toutes"),
+            h("option", { value: "engin" }, "Engins"),
+            h("option", { value: "vl" }, "Vehicules")
+          ),
+          h("span", { style: lblStyle }, "Machine"),
+          h("select", { value: filterMachine, onChange: function(e) { setFilterMachine(e.target.value); }, style: ddStyle },
+            h("option", { value: "all" }, "Toutes"),
+            allMachines.map(function(m) { return h("option", { key: m, value: m }, m); })
+          )
+        ),
+        // Recap par machine
+        machinesList.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune saisie de carburant sur cette periode")) :
+        h(Card, { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
+          h("h3", { style: { margin: 0, padding: "16px 18px", fontSize: 14, fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.06)" } }, "Recap par machine (" + machinesList.length + ")"),
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
+                ["Machine", "Categorie", "Nom", "Entrees", "Total L", "Cout", "Dernier ravitaillement"].map(function(x, i) {
+                  return h("th", { key: i, style: { padding: "10px 14px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+                })
+              )),
+              h("tbody", null, machinesList.map(function(r) {
+                return h("tr", { key: r.code, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                  h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code),
+                  h("td", { style: { padding: "10px 14px" } }, catBadge(r.categorie)),
+                  h("td", { style: { padding: "10px 14px", color: "#cbd5e1" } }, r.nom || "-"),
+                  h("td", { style: { padding: "10px 14px", textAlign: "center" } }, r.nbEntries),
+                  h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, r.quantite.toFixed(1) + " L"),
+                  h("td", { style: { padding: "10px 14px", color: "#22c55e" } }, fmtMoney(r.cout)),
+                  h("td", { style: { padding: "10px 14px", fontFamily: "monospace", fontSize: 12 } }, fmtFr(r.lastDate))
+                );
+              }))
+            )
+          )
+        ),
+        // Liste detaillee
+        filtered.length > 0 && h(Card, { style: { padding: 0, overflow: "hidden" } },
+          h("h3", { style: { margin: 0, padding: "16px 18px", fontSize: 14, fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.06)" } }, "Detail des saisies (" + filtered.length + ")"),
+          h("div", { style: { overflowX: "auto", maxHeight: 500 } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left", position: "sticky", top: 0 } },
+                ["Date", "Machine", "Cat", "Litres", "Cout", "Lien rapport"].map(function(x, i) {
+                  return h("th", { key: i, style: { padding: "8px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, background: "rgba(36,40,60,0.95)" } }, x);
+                })
+              )),
+              h("tbody", null, filtered.sort(function(a, b) { return (b.date_consommation || "") > (a.date_consommation || "") ? 1 : -1; }).map(function(c) {
+                return h("tr", { key: c.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                  h("td", { style: { padding: "7px 12px", fontFamily: "monospace" } }, fmtFr(c.date_consommation)),
+                  h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, c.sondeuse_code || "-"),
+                  h("td", { style: { padding: "7px 12px" } }, catBadge(c.categorie)),
+                  h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, (parseFloat(c.quantite_l) || 0).toFixed(1) + " L"),
+                  h("td", { style: { padding: "7px 12px", color: "#22c55e" } }, fmtMoney(c.cout)),
+                  h("td", { style: { padding: "7px 12px", color: c.rapport_id ? "#a5b4fc" : "#71717a" } }, c.rapport_id ? "Rapport #" + c.rapport_id : "(aucun)")
+                );
+              }))
+            )
+          )
+        )
+      );
+    }
+
     // ─── Confirm Dialog (popup de confirmation suppression) ─────────────
     function ConfirmDialog({ title, message, onConfirm, onCancel, confirmLabel = "Supprimer" }) {
       return h(Modal, { title: title || "Confirmation", onClose: onCancel, size: 420 },
@@ -9441,6 +9644,7 @@
         { key: "plans", label: "Plans", icon: "clipboard-list" },
         { key: "interventions", label: "Interventions", icon: "wrench" },
         { key: "pieces", label: "Pieces detachees", icon: "package" },
+        { key: "carburant", label: "Carburant", icon: "fuel" },
         { key: "planning", label: "Calendrier", icon: "calendar" },
         { key: "avancement", label: "Avancement", icon: "hard-hat" },
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
@@ -13333,6 +13537,7 @@
           { key: "plans", label: "Plans", lucide: "clipboard-list" },
           { key: "interventions", label: "Interventions", lucide: "wrench" },
           { key: "pieces", label: "Pieces detachees", lucide: "package" },
+          { key: "carburant", label: "Carburant", lucide: "fuel" },
         ]},
         { name: "Chantiers", pages: [
           { key: "planning", label: "Calendrier", lucide: "calendar" },
@@ -14331,6 +14536,7 @@
         if (currentPage === "fiche-equipement") return h(EcranFicheEquipement, { onNavigate: navigate, equipement: pageData });
         if (currentPage === "personnel") return h(EcranPersonnel, { onNavigate: navigate });
         if (currentPage === "pieces") return h(EcranPieces, null);
+        if (currentPage === "carburant") return h(EcranCarburant, null);
         if (currentPage === "financement") return h(EcranFinancement, { onNavigate: navigate });
         if (currentPage === "emprunts") return h(EcranEmprunts, null);
         if (currentPage === "planning") return h(EcranPlanning, null);
