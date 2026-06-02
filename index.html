@@ -11168,10 +11168,20 @@
       // Seuil atteint si on a fait au moins le seuil_metres OU si cout/metre < prix
       var seuilDepasse = seuilMois > 0 && totalMetresAll >= seuilMois;
 
+      // Pour ventiler les charges indirectes (carburant VL, salaires hors-equipe, charges fixes)
+      // au prorata des metres realises par chaque sondeuse sur la periode.
+      var sumPersonnelTerrainAll = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.30; });
+      var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
+      var chargesIndirectesTotal = coutCarburantVL + coutPersonnelHorsTerrain + coutChargesFixesTotal;
+
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
-        var coutCharges = s.coutPersonnel * 0.30;  // 30% charges patronales
-        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt;
+        var coutCharges = s.coutPersonnel * 0.30;  // 30% charges patronales sur personnel terrain
+        // Part des charges indirectes au prorata des metres
+        var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
+        var coutIndirect = chargesIndirectesTotal * partMetres;
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         return {
           code: code,
           rapports: s.rapports,
@@ -11183,6 +11193,7 @@
           coutPersonnel: s.coutPersonnel,
           coutCharges: coutCharges,
           coutEmprunt: s.coutEmprunt,
+          coutIndirect: coutIndirect,
           coutTotal: coutTotal,
           coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0
         };
@@ -11514,7 +11525,8 @@
                   h("th", { style: thRightStyle, title: "Salaires journaliers cumules des membres d'equipe" }, "Salaires"),
                   h("th", { style: thRightStyle, title: "Charges patronales (30% des salaires)" }, "Charges 30%"),
                   h("th", { style: thRightStyle, title: "Quote-part des emprunts au prorata des metres fores. 100% des mensualites du mois sont absorbees ; une machine qui fore plus absorbe plus." }, "Emprunts"),
-                  h("th", { style: thRightStyle, title: "Total : consos + salaires + charges + emprunts" }, "Cout total"),
+                  h("th", { style: thRightStyle, title: "Charges indirectes ventilees au prorata des metres : carburant VL + salaires hors-equipe + charges fixes mensuelles (loyer, electricite, comptable, etc.)" }, "Indirect"),
+                  h("th", { style: thRightStyle, title: "Total : consos + salaires + charges + emprunts + charges indirectes" }, "Cout total"),
                   h("th", { style: thRightStyle, title: "Cout total / metres fores" }, "Cout / metre")
                 )),
                 h("tbody", null, sondeusesDetail.map(function(s) {
@@ -11528,6 +11540,7 @@
                     h("td", { style: tdRightStyle }, Math.round(s.coutPersonnel).toLocaleString("fr-FR")),
                     h("td", { style: tdRightStyle }, Math.round(s.coutCharges).toLocaleString("fr-FR")),
                     h("td", { style: Object.assign({}, tdRightStyle, { color: "#c4b5fd" }) }, Math.round(s.coutEmprunt).toLocaleString("fr-FR")),
+                    h("td", { style: Object.assign({}, tdRightStyle, { color: "#fdba74" }) }, Math.round(s.coutIndirect).toLocaleString("fr-FR")),
                     h("td", { style: Object.assign({}, tdRightStyle, { fontWeight: 700 }) }, Math.round(s.coutTotal).toLocaleString("fr-FR")),
                     h("td", { style: Object.assign({}, tdRightStyle, { color: "#fcd34d", fontWeight: 700 }) }, Math.round(s.coutParMetre).toLocaleString("fr-FR") + " /m")
                   );
