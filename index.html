@@ -2372,6 +2372,88 @@
             allMachines.map(function(m) { return h("option", { key: m, value: m }, m); })
           )
         ),
+        // ── Graphique evolution journaliere + moyennes ──
+        (function() {
+          // Determine la plage de jours selon la periode (defaut mois en cours)
+          var startD = periodStart || new Date(now.getFullYear(), now.getMonth(), 1);
+          var endD = periodEnd || now;
+          var days = [];
+          var cursor = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate());
+          var endCap = new Date(endD.getFullYear(), endD.getMonth(), endD.getDate());
+          // Borne max 90 jours pour eviter explosion graphique
+          var maxLoop = 0;
+          while (cursor.getTime() <= endCap.getTime() && maxLoop < 366) {
+            days.push(new Date(cursor.getTime()));
+            cursor.setDate(cursor.getDate() + 1);
+            maxLoop++;
+          }
+          // Aggregation par jour
+          var byDay = {};
+          filtered.forEach(function(c) {
+            var k = String(c.date_consommation || "").substring(0, 10);
+            byDay[k] = (byDay[k] || 0) + (parseFloat(c.quantite_l) || 0);
+          });
+          var seriesG = days.map(function(d) {
+            var iso = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+            return { date: d, iso: iso, value: byDay[iso] || 0 };
+          });
+          if (seriesG.length === 0) return null;
+          var maxV = Math.max.apply(null, seriesG.map(function(p) { return p.value; }).concat(1));
+          // Moyenne globale (sur jours avec saisie pour eviter dilution par les WE/jours feries)
+          var activeDays = seriesG.filter(function(p) { return p.value > 0; });
+          var moyenneGlobale = activeDays.length > 0 ? activeDays.reduce(function(s, p) { return s + p.value; }, 0) / activeDays.length : 0;
+          var moyenneGlobaleAllDays = seriesG.length > 0 ? seriesG.reduce(function(s, p) { return s + p.value; }, 0) / seriesG.length : 0;
+          // SVG line chart
+          var W = 720, H = 200, pad = { t: 18, r: 14, b: 32, l: 44 };
+          var iW = W - pad.l - pad.r;
+          var iH = H - pad.t - pad.b;
+          var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
+          var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
+          var linePts = seriesG.map(function(p, i) { return xFor(i) + ',' + yFor(p.value); }).join(' ');
+          // Ligne moyenne (basee sur jours actifs)
+          var yMoy = yFor(moyenneGlobale);
+          // Ticks Y (4 graduations)
+          var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function(t) { return { v: t * maxV, y: pad.t + iH - t * iH }; });
+          // Labels X : 1 sur N pour pas surcharger
+          var xLabelEvery = Math.max(1, Math.ceil(seriesG.length / 12));
+          return h(Card, { style: { padding: 16, marginBottom: 20 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 12 } },
+              h("h3", { style: { margin: 0, fontSize: 14, fontWeight: 700 } }, h(IconText, { icon: "trending-up", size: 14, color: "#86efac" }, "Evolution journaliere")),
+              h("div", { style: { display: "flex", gap: 16, fontSize: 11, color: "#a1a1aa" } },
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#86efac", verticalAlign: "middle", marginRight: 6 } }), "Consommation"),
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Moyenne jours actifs : " + moyenneGlobale.toFixed(1) + " L"),
+                h("span", { style: { color: "#71717a" } }, "Moyenne periode : " + moyenneGlobaleAllDays.toFixed(1) + " L/jour")
+              )
+            ),
+            h("div", { style: { overflowX: "auto" } },
+              h("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, style: { maxWidth: "100%", display: "block" } },
+                // Grid lignes horizontales
+                yTicks.map(function(t, i) { return h("g", { key: "g" + i },
+                  h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
+                  h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, Math.round(t.v) + " L")
+                ); }),
+                // Aire sous courbe (subtile)
+                seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z",
+                  fill: "url(#carb-grad)" }) : null,
+                h("defs", null, h("linearGradient", { id: "carb-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
+                  h("stop", { offset: "0%", "stop-color": "rgba(134,239,172,0.30)" }),
+                  h("stop", { offset: "100%", "stop-color": "rgba(134,239,172,0)" })
+                )),
+                // Ligne moyenne
+                moyenneGlobale > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
+                // Polyline courbe
+                seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                // Points
+                seriesG.map(function(p, i) { return p.value > 0 ? h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }) : null; }),
+                // Labels X
+                seriesG.map(function(p, i) {
+                  if (i % xLabelEvery !== 0 && i !== seriesG.length - 1) return null;
+                  return h("text", { key: "x" + i, x: xFor(i), y: H - 8, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, p.date.getDate() + "/" + (p.date.getMonth() + 1));
+                })
+              )
+            )
+          );
+        }()),
         // Recap par machine
         machinesList.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune saisie de carburant sur cette periode")) :
         h(Card, { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
@@ -2379,17 +2461,19 @@
           h("div", { style: { overflowX: "auto" } },
             h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
               h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
-                ["Machine", "Categorie", "Nom", "Entrees", "Total L", "Cout", "Dernier ravitaillement"].map(function(x, i) {
+                ["Machine", "Categorie", "Nom", "Entrees", "Total L", "Moy / saisie", "Cout", "Dernier ravitaillement"].map(function(x, i) {
                   return h("th", { key: i, style: { padding: "10px 14px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
                 })
               )),
               h("tbody", null, machinesList.map(function(r) {
+                var moyParSaisie = r.nbEntries > 0 ? (r.quantite / r.nbEntries) : 0;
                 return h("tr", { key: r.code, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
                   h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code),
                   h("td", { style: { padding: "10px 14px" } }, catBadge(r.categorie)),
                   h("td", { style: { padding: "10px 14px", color: "#cbd5e1" } }, r.nom || "-"),
                   h("td", { style: { padding: "10px 14px", textAlign: "center" } }, r.nbEntries),
                   h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, r.quantite.toFixed(1) + " L"),
+                  h("td", { style: { padding: "10px 14px", fontFamily: "monospace", color: "#fbbf24" } }, moyParSaisie.toFixed(1) + " L"),
                   h("td", { style: { padding: "10px 14px", color: "#22c55e" } }, fmtMoney(r.cout)),
                   h("td", { style: { padding: "10px 14px", fontFamily: "monospace", fontSize: 12 } }, fmtFr(r.lastDate))
                 );
