@@ -2220,6 +2220,124 @@
       );
     }
 
+    // ─── Ecran Charges fixes : charges mensuelles recurrentes ───────────
+    // Liste editable des charges fixes (loyer, electricite, expert comptable, etc.)
+    // Le total mensuel est integre au calcul du seuil de rentabilite dans Stats.
+    function EcranChargesFixes() {
+      const ctx = useAppData();
+      const charges = ctx.dbChargesFixes || [];
+      const [editing, setEditing] = useState(null);
+      const [showForm, setShowForm] = useState(false);
+
+      async function save(c) {
+        const payload = {
+          libelle: (c.libelle || "").trim(),
+          montant_mensuel: parseFloat(c.montant_mensuel) || 0,
+          categorie: c.categorie || null,
+          actif: c.actif !== false,
+          notes: c.notes || null,
+          updated_at: new Date().toISOString()
+        };
+        if (!payload.libelle) { alert("Libelle requis"); return; }
+        if (c.id) {
+          const { data, error } = await supabase.from("charges_fixes").update(payload).eq("id", c.id).select().single();
+          if (error) { ctx.showToast("Erreur : " + error.message, "error"); return; }
+          ctx.setDbChargesFixes(charges.map(function(x) { return x.id === c.id ? data : x; }));
+        } else {
+          const { data, error } = await supabase.from("charges_fixes").insert(payload).select().single();
+          if (error) { ctx.showToast("Erreur : " + error.message, "error"); return; }
+          ctx.setDbChargesFixes(charges.concat([data]));
+        }
+        setShowForm(false); setEditing(null);
+        ctx.showToast("Enregistre", "success");
+      }
+      async function remove(id) {
+        if (!confirm("Supprimer cette charge fixe ?")) return;
+        const { error } = await supabase.from("charges_fixes").delete().eq("id", id);
+        if (error) { ctx.showToast("Erreur : " + error.message, "error"); return; }
+        ctx.setDbChargesFixes(charges.filter(function(x) { return x.id !== id; }));
+        ctx.showToast("Supprime", "success");
+      }
+      async function toggleActif(c) {
+        const { data, error } = await supabase.from("charges_fixes").update({ actif: !c.actif }).eq("id", c.id).select().single();
+        if (error) { ctx.showToast("Erreur : " + error.message, "error"); return; }
+        ctx.setDbChargesFixes(charges.map(function(x) { return x.id === c.id ? data : x; }));
+      }
+
+      // Groupement par categorie
+      var byCat = {};
+      charges.forEach(function(c) { var k = c.categorie || "Autre"; if (!byCat[k]) byCat[k] = []; byCat[k].push(c); });
+      var cats = Object.keys(byCat).sort();
+      var totalMensuel = charges.filter(function(c) { return c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+      var totalAnnuel = totalMensuel * 12;
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "receipt", size: 20 }, "Charges fixes"),
+          subtitle: "Charges mensuelles recurrentes (loyer, electricite, comptable, etc.) - integrees au calcul de rentabilite",
+          action: h(Button, { onClick: function() { setEditing({ libelle: "", montant_mensuel: 0, categorie: "Autre", actif: true, notes: "" }); setShowForm(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle charge"))
+        }),
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 } },
+          h(KPICard, { icon: h(Icon, { name: "calendar", size: 22, color: "#ffffff" }), label: "Total mensuel", value: fmtMoney(totalMensuel), color: "#f97316" }),
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 22, color: "#ffffff" }), label: "Total annuel", value: fmtMoney(totalAnnuel), color: "#f43f5e" }),
+          h(KPICard, { icon: h(Icon, { name: "list", size: 22, color: "#ffffff" }), label: "Charges actives", value: String(charges.filter(function(c) { return c.actif !== false; }).length) + " / " + String(charges.length), color: "#818cf8" })
+        ),
+        // Tableau par categorie
+        charges.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune charge fixe enregistree. Clique sur 'Nouvelle charge' pour commencer.")) :
+        cats.map(function(cat) {
+          var list = byCat[cat];
+          var totalCat = list.filter(function(c) { return c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+          return h(Card, { key: cat, style: { padding: 0, overflow: "hidden", marginBottom: 14 } },
+            h("div", { style: { padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+              h("h3", { style: { margin: 0, fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#a78bfa" } }, cat + " (" + list.length + ")"),
+              h("div", { style: { fontSize: 13, color: "#a1a1aa" } }, "Sous-total : ", h("strong", { style: { color: "#f97316" } }, fmtMoney(totalCat) + " / mois"))
+            ),
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("tbody", null, list.map(function(c) {
+                return h("tr", { key: c.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)", opacity: c.actif === false ? 0.4 : 1 } },
+                  h("td", { style: { padding: "10px 14px", width: 40 } },
+                    h("input", { type: "checkbox", checked: c.actif !== false, onChange: function() { toggleActif(c); }, title: "Activer/desactiver", style: { width: 16, height: 16, cursor: "pointer" } })
+                  ),
+                  h("td", { style: { padding: "10px 14px", fontWeight: 600 } }, c.libelle, c.notes ? h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, c.notes) : null),
+                  h("td", { style: { padding: "10px 14px", textAlign: "right", fontFamily: "monospace", fontWeight: 700, color: "#fde68a" } }, fmtMoney(c.montant_mensuel) + " / mois"),
+                  h("td", { style: { padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" } },
+                    h("button", { onClick: function() { setEditing(c); setShowForm(true); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#a1a1aa", padding: 4, marginRight: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
+                    h("button", { onClick: function() { remove(c.id); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15 }))
+                  )
+                );
+              }))
+            )
+          );
+        }),
+        // Modal edition
+        showForm && editing ? h(Modal, { title: editing.id ? "Modifier charge fixe" : "Nouvelle charge fixe", onClose: function() { setShowForm(false); setEditing(null); }, size: 480 },
+          h("div", { style: { display: "grid", gap: 12 } },
+            h("div", null, h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Libelle"),
+              h("input", { type: "text", style: inputStyle, value: editing.libelle, onChange: function(e) { setEditing(Object.assign({}, editing, { libelle: e.target.value })); }, placeholder: "Ex: Loyer bureau", autoFocus: true })
+            ),
+            h("div", null, h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Montant mensuel (XPF)"),
+              h("input", { type: "number", style: inputStyle, value: editing.montant_mensuel, onChange: function(e) { setEditing(Object.assign({}, editing, { montant_mensuel: e.target.value })); }, placeholder: "Ex: 150000" })
+            ),
+            h("div", null, h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Categorie"),
+              h("input", { type: "text", style: inputStyle, value: editing.categorie || "", onChange: function(e) { setEditing(Object.assign({}, editing, { categorie: e.target.value })); }, placeholder: "Ex: Locaux, Services, Assurances, Personnel hors-equipe..." })
+            ),
+            h("div", null, h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Notes (optionnel)"),
+              h("input", { type: "text", style: inputStyle, value: editing.notes || "", onChange: function(e) { setEditing(Object.assign({}, editing, { notes: e.target.value })); } })
+            ),
+            h("label", { style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "rgba(255,255,255,0.04)", borderRadius: 6, cursor: "pointer" } },
+              h("input", { type: "checkbox", checked: editing.actif !== false, onChange: function(e) { setEditing(Object.assign({}, editing, { actif: e.target.checked })); } }),
+              h("span", { style: { fontSize: 13 } }, "Active (sera incluse dans le calcul rentabilite)")
+            ),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 } },
+              h(Button, { variant: "secondary", onClick: function() { setShowForm(false); setEditing(null); } }, "Annuler"),
+              h(Button, { onClick: function() { save(editing); } }, "Enregistrer")
+            )
+          )
+        ) : null
+      );
+    }
+
     // ─── Ecran Carburant : vue dediee avec ventilation engin / VL ──────
     // Affiche toutes les saisies consommations_carburant (sondeurs) avec :
     // - KPIs : total L, total cout, ventilation engins (sondeuses) vs VL (vehicules)
@@ -9734,6 +9852,7 @@
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
+        { key: "charges-fixes", label: "Charges fixes", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
         { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
         { key: "administration", label: "Administration", icon: "user-cog", adminOnly: true }
@@ -10311,6 +10430,7 @@
       var parametres = ctx.parametres || [];
       var affectations = ctx.dbAffectations || [];
       var emprunts = ctx.dbEmprunts || [];
+      var dbChargesFixes = ctx.dbChargesFixes || [];
 
       var _period = useState("mois");
       var period = _period[0]; var setPeriod = _period[1];
@@ -10958,13 +11078,65 @@
         }
       });
       // ── Seuil de rentabilite (breakeven en metres) ──
-      // Seuil_mois = couts totaux periode / prix moyen pondere au metre
-      // Seuil_jour = Seuil_mois / jours ouvres (Lun-Jeu) dans la periode
-      var totalCoutsAll = 0;
+      // Composantes :
+      //  1) Consommables forage (deja dans s.coutConso, qui inclut carburant des SONDEUSES)
+      //  2) Carburant VL : entrees carburant dont le code n'est pas une sondeuse (vehicules legers)
+      //  3) Masse salariale COMPLETE de tout le personnel (pas seulement equipes terrain) x charges patronales
+      //  4) Couts d'emprunts ventiles sur les sondeuses
+      //  5) Charges fixes mensuelles (loyer, electricite, expert comptable, etc.) x nb mois periode
+      var coutConsoSondeusesAll = 0;
+      var coutEmpruntAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) {
         var s = sondeusesMap[code];
-        totalCoutsAll += s.coutConso + s.coutPersonnel * 1.30 + s.coutEmprunt;
+        coutConsoSondeusesAll += s.coutConso;
+        coutEmpruntAll += s.coutEmprunt;
       });
+      // Codes deja comptes (sondeuses) pour eviter le double comptage du carburant
+      var sondeusesCodesSet = {};
+      Object.keys(sondeusesMap).forEach(function(c) { sondeusesCodesSet[String(c).toUpperCase()] = true; });
+      // Prix du mazout au litre (depuis prix_observations ou parametres)
+      var prixMazoutLitre = (function() {
+        try { return lookupPrixMetre ? 0 : 0; } catch(e) { return 0; }
+      })();
+      // On reutilise la meme logique de prix que sondeusesMap (lookup mazout)
+      var pmRow = parametres.find(function(p) { return p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre"); });
+      if (pmRow && pmRow.valeur) prixMazoutLitre = parseFloat(pmRow.valeur) || 0;
+      if (!prixMazoutLitre) prixMazoutLitre = 175; // fallback raisonnable XPF/L
+      // Carburant des VL (non-sondeuses) sur la periode filtree
+      var coutCarburantVL = 0;
+      (carburants || []).forEach(function(c) {
+        var code = String(c.sondeuse_code || "").toUpperCase();
+        if (sondeusesCodesSet[code]) return; // deja compte dans coutConso
+        var dStr = String(c.date_consommation || "").substring(0, 10);
+        if (!dStr) return;
+        var d = new Date(dStr);
+        if (periodStart && d < periodStart) return;
+        if (periodEnd && d > periodEnd) return;
+        coutCarburantVL += (parseFloat(c.quantite_l) || 0) * prixMazoutLitre;
+      });
+      // Masse salariale COMPLETE depuis personnel_data
+      var personnelDataAll = [];
+      try {
+        var pdRow = parametres.find(function(p) { return p && p.categorie === "personnel_data"; });
+        if (pdRow && pdRow.valeur) {
+          personnelDataAll = (typeof pdRow.valeur === "string") ? JSON.parse(pdRow.valeur) : pdRow.valeur;
+        }
+      } catch(e) { personnelDataAll = []; }
+      var masseSalarialeMensuelle = (personnelDataAll || []).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
+      // Nombre de mois dans la periode (approx : 30 jours = 1 mois)
+      var nbMoisPeriode = (function() {
+        if (!periodStart || !periodEnd) return 1;
+        var days = Math.max(1, Math.round((periodEnd.getTime() - periodStart.getTime()) / (24 * 3600 * 1000)));
+        return days / 30;
+      })();
+      var coutPersonnelTotal = masseSalarialeMensuelle * 1.30 * nbMoisPeriode;
+      // Charges fixes mensuelles (actives) x nb mois
+      var chargesFixesMensuelles = (dbChargesFixes || [])
+        .filter(function(c) { return c && c.actif !== false; })
+        .reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+      var coutChargesFixesTotal = chargesFixesMensuelles * nbMoisPeriode;
+      // TOTAL
+      var totalCoutsAll = coutConsoSondeusesAll + coutCarburantVL + coutPersonnelTotal + coutEmpruntAll + coutChargesFixesTotal;
       // Prix moyen pondere par metres realises sur la periode filtree
       var sumMetresPrix = 0, sumMetres = 0;
       filtered.forEach(function(r) {
@@ -13874,6 +14046,7 @@
         { name: "Finances", pages: [
           { key: "financement", label: "Financement", lucide: "wallet" },
           { key: "emprunts", label: "Emprunts", lucide: "landmark" },
+          { key: "charges-fixes", label: "Charges fixes", lucide: "receipt" },
         ]},
         { name: "Soumissions", pages: [
           { key: "soumissions", label: "Soumissions employes", lucide: "inbox" },
@@ -13953,6 +14126,7 @@
       const [dbRelevesJourn, setDbRelevesJourn] = useState([]);
       const [dbRapportsForage, setDbRapportsForage] = useState([]);
       const [dbEmprunts, setDbEmprunts] = useState([]);
+      const [dbChargesFixes, setDbChargesFixes] = useState([]);
       const [dbBugLogs, setDbBugLogs] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
@@ -13997,6 +14171,7 @@
           var rjRes = { data: [], error: null };
           var rfRes = { data: [], error: null };
           var emRes = { data: [], error: null };
+          var cfRes = { data: [], error: null };
           var blRes = { data: [], error: null };
           try {
             var results = await Promise.all([
@@ -14008,6 +14183,7 @@
               // Rapports forage : light fetch (sans signatures lourdes en base64)
               supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at").order("date_rapport", { ascending: false }),
               supabase.from("emprunts").select("*").order("date_debut", { ascending: false }),
+              supabase.from("charges_fixes").select("*").order("categorie").order("libelle"),
               supabase.from("bug_logs").select("*").order("created_at", { ascending: false }).limit(500),
             ]);
             afRes = results[0];
@@ -14017,7 +14193,8 @@
             rjRes = results[4];
             rfRes = results[5];
             emRes = results[6];
-            blRes = results[7];
+            cfRes = results[7];
+            blRes = results[8];
           } catch(e) { console.error("Tables planning/primes non disponibles:", e.message); }
           if (eqRes.error) throw eqRes.error;
           if (pcRes.error) throw pcRes.error;
@@ -14071,6 +14248,7 @@
           setDbRelevesJourn((rjRes.data || []).map(releveJournFromDb));
           setDbRapportsForage(rfRes.data || []);
           setDbEmprunts(emRes.data || []);
+          setDbChargesFixes(cfRes.data || []);
           setDbBugLogs(blRes.data || []);
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
@@ -14823,6 +15001,7 @@
         dbRelevesJournRaw: dbRelevesJourn, // acces brut au CSV legacy si besoin
         dbRapportsForage, setDbRapportsForage, rapportsAsReleves,
         dbEmprunts, setDbEmprunts,
+        dbChargesFixes, setDbChargesFixes,
         dbBugLogs, setDbBugLogs,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
@@ -14862,6 +15041,7 @@
         if (currentPage === "carburant") return h(EcranCarburant, null);
         if (currentPage === "financement") return h(EcranFinancement, { onNavigate: navigate });
         if (currentPage === "emprunts") return h(EcranEmprunts, null);
+        if (currentPage === "charges-fixes") return h(EcranChargesFixes, null);
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
