@@ -11223,9 +11223,33 @@
     // Permet de modifier TOUS les champs : date, employe (via dropdown personnel),
     // heures, pause, route, eloignement, absence, prime panier, remarques.
     function ReleveEditModal({ releve, personnelMap, onClose, onSaved }) {
+      var ctx = useAppData();
+      var parametres = ctx.parametres || [];
+      // Liste canonique du personnel : meme source que la page Personnel
+      // (parametres > categorie personnel_data). Pas de doublons, pas de hash bigint.
+      var personnel = (function() {
+        try {
+          var row = parametres.find(function(pr) { return pr.categorie === "personnel_data"; });
+          if (!row || !row.valeur) return [];
+          var arr = (typeof row.valeur === "string") ? JSON.parse(row.valeur) : row.valeur;
+          if (!Array.isArray(arr)) return [];
+          return arr.map(function(p) {
+            return { id: p.id, code: p.code, prenom: p.prenom || "", nom: p.nom || "", role: p.role || "" };
+          });
+        } catch (e) { return []; }
+      }());
+      personnel.sort(function(a, b) { return String(a.nom || "").localeCompare(String(b.nom || ""), "fr", { sensitivity: "base" }); });
+      // Trouve l'employe canonique correspondant au releve actuel via le bigint hash de leur code
+      var initialEmpId = (function() {
+        var p1 = personnel.find(function(p) { return p.code && String(strToBigintMA(p.code)) === String(releve.personnel_id); });
+        if (p1) return String(p1.id);
+        var p2 = personnel.find(function(p) { return String(p.id) === String(releve.personnel_id); });
+        if (p2) return String(p2.id);
+        return ""; // pas trouve : selection vide (user devra choisir)
+      })();
       var [f, setF] = useState({
         date_releve: String(releve.date_releve || "").substring(0, 10),
-        personnel_id: releve.personnel_id,
+        personnel_id: initialEmpId,
         sondeuse_code: releve.sondeuse_code || "",
         fonction: releve.fonction || "",
         heure_debut: releve.heure_debut || "",
@@ -11240,8 +11264,6 @@
       });
       var [saving, setSaving] = useState(false);
       var upd = function(k, v) { setF(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); };
-      var personnel = Object.values(personnelMap || {}).filter(Boolean);
-      personnel.sort(function(a, b) { return String(a.nom || "").localeCompare(String(b.nom || "")); });
       // Calcule total minutes
       var totMin = (function() {
         try {
@@ -11259,9 +11281,13 @@
         if (!f.date_releve) { alert("Date requise"); return; }
         if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date_releve)) { alert("Format date invalide (AAAA-MM-JJ)"); return; }
         setSaving(true);
+        // Convertit l'id canonique du select en bigint hash attendu par la DB
+        // (releves_heures.personnel_id stocke strToBigint(personnel.code))
+        var pickedEmp = personnel.find(function(p) { return String(p.id) === String(f.personnel_id); });
+        var personnelIdForDb = pickedEmp && pickedEmp.code ? strToBigintMA(pickedEmp.code) : (parseInt(f.personnel_id) || f.personnel_id);
         var payload = {
           date_releve: f.date_releve,
-          personnel_id: f.personnel_id,
+          personnel_id: personnelIdForDb,
           sondeuse_code: f.sondeuse_code || null,
           fonction: f.fonction || null,
           heure_debut: f.heure_debut || null,
