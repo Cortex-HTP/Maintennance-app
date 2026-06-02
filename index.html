@@ -11795,8 +11795,14 @@
           )),
           row("Absence", h("select", { style: inputS, value: f.absence_type || "", onChange: function(e) { upd("absence_type", e.target.value); } },
             h("option", { value: "" }, "Aucune"),
-            h("option", { value: "conge" }, "Conge"),
+            h("option", { value: "conge" }, "CP - Conge paye"),
+            h("option", { value: "cp_v" }, "CP V - Conge paye vendredi"),
+            h("option", { value: "css" }, "CSS - Conge sans solde"),
             h("option", { value: "maladie" }, "Maladie"),
+            h("option", { value: "ai" }, "AI - Arret travail"),
+            h("option", { value: "ferie" }, "Ferie"),
+            h("option", { value: "delegation" }, "Delegation"),
+            h("option", { value: "reunion" }, "Reunion"),
             h("option", { value: "chomage" }, "Chomage technique"),
             h("option", { value: "non_productif" }, "Non productif")
           )),
@@ -12326,6 +12332,8 @@
       var _editingReleve = useState(null); var editingReleve = _editingReleve[0]; var setEditingReleve = _editingReleve[1];
       // Switch dans l'onglet Rapports : "liste" (defaut) ou "recap_mensuel"
       var _rapportsView = useState("liste"); var rapportsView = _rapportsView[0]; var setRapportsView = _rapportsView[1];
+      // Switch dans l'onglet Releves d'heures : "liste" (defaut) ou "recap_mensuel"
+      var _relevesView = useState("liste"); var relevesView = _relevesView[0]; var setRelevesView = _relevesView[1];
       var _recapStart = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
       var recapStart = _recapStart[0], setRecapStart = _recapStart[1];
       var _recapEnd = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0); });
@@ -13240,6 +13248,262 @@
         }));
       };
 
+      // ─── Recap mensuel des releves d'heures : agregation par employe x sondeuse + export Timesheet ───
+      var renderRelevesRecapMensuel = function() {
+        function isoDate(d) {
+          if (!d) return "";
+          var y = d.getFullYear(), m = d.getMonth() + 1, dd = d.getDate();
+          return y + "-" + (m < 10 ? "0" + m : m) + "-" + (dd < 10 ? "0" + dd : dd);
+        }
+        function fmtFr(s) {
+          var p = String(s || "").substring(0, 10).split("-");
+          return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : (s || "-");
+        }
+        function num(v) { return Math.round((parseFloat(v) || 0) * 100) / 100; }
+        // Mapping absence_type -> colonne timesheet
+        function absBucket(t) {
+          var s = String(t || "").toLowerCase().trim();
+          if (!s) return null;
+          if (s === "conge" || s === "cp") return "CP";
+          if (s === "cp_v" || s === "cpv" || s === "cp v") return "CP V";
+          if (s === "css" || s === "chomage" || s === "chomage_technique") return "CSS";
+          if (s === "maladie") return "Maladie";
+          if (s === "ai") return "AI";
+          if (s === "ferie") return "FERIE";
+          if (s === "delegation") return "DELEGATION";
+          if (s === "reunion") return "REUNION";
+          if (s === "non_productif") return null; // pas de colonne dediee
+          return null;
+        }
+
+        var startStr = isoDate(recapStart), endStr = isoDate(recapEnd);
+        var periodRels = (rels || []).filter(function(r) {
+          var d = String(r.date_releve || "").substring(0, 10);
+          return d >= startStr && d <= endStr;
+        });
+
+        // Sondeuses distinctes dans la periode (pour le filtre dropdown)
+        var distinctSond = {};
+        periodRels.forEach(function(r) {
+          if (r.sondeuse_code) distinctSond[String(r.sondeuse_code).toUpperCase()] = true;
+        });
+        var sondeusesOpts = Object.keys(distinctSond).sort();
+        var filteredRels = periodRels.filter(function(r) {
+          if (recapSondeuse !== "__all__" && String(r.sondeuse_code || "").toUpperCase() !== recapSondeuse) return false;
+          return true;
+        });
+
+        // Agregation par (employe, sondeuse)
+        // key = employe|sondeuse
+        var agg = {};
+        var empsSet = {};
+        filteredRels.forEach(function(r) {
+          var emp = personnelLabel(r.personnel_id);
+          if (!emp || emp === "?") return;
+          empsSet[emp] = true;
+          var sond = String(r.sondeuse_code || "").toUpperCase().trim() || "-";
+          var key = emp + "||" + sond;
+          if (!agg[key]) {
+            agg[key] = {
+              emp: emp, sond: sond,
+              nbPoste: 0, nbPosteDim: 0,
+              routeChauf: 0, routePass: 0,
+              heuresNorm: 0, heuresDim: 0, heuresEffectives: 0,
+              heurePause: 0, totalHorsPause: 0,
+              primePanier: 0,
+              posteSondeur: 0, posteAideSondeur: 0,
+              absences: { "CP": 0, "CP V": 0, "CSS": 0, "Maladie": 0, "AI": 0, "FERIE": 0, "DELEGATION": 0, "REUNION": 0 },
+              eloignement: 0
+            };
+          }
+          var a = agg[key];
+          var d = new Date(String(r.date_releve).substring(0, 10));
+          var isDim = d.getDay() === 0;
+          var totMin = parseInt(r.total_minutes) || 0;
+          var pauseMin = parseInt(r.pause_dejeuner) || 0;
+          var routeCh = parseFloat(r.route_chauffeur) || 0; // heures decimales
+          var routePa = parseFloat(r.route_passager) || 0;
+
+          a.nbPoste += 1;
+          if (isDim) a.nbPosteDim += 1;
+          a.routeChauf += routeCh;
+          a.routePass += routePa;
+          if (isDim) a.heuresDim += totMin / 60;
+          else a.heuresNorm += totMin / 60;
+          a.heuresEffectives += totMin / 60;
+          a.heurePause += pauseMin / 60;
+          a.totalHorsPause += Math.max(0, (totMin - pauseMin) / 60);
+          a.primePanier += parseInt(r.prime_panier) || 0;
+
+          var fonc = String(r.fonction || "").toLowerCase();
+          if (fonc.indexOf("aide") >= 0) a.posteAideSondeur += 1;
+          else if (fonc.indexOf("sondeur") >= 0) a.posteSondeur += 1;
+
+          var bucket = absBucket(r.absence_type);
+          if (bucket && a.absences[bucket] != null) a.absences[bucket] += 1;
+
+          if (r.eloignement === true || String(r.eloignement || "").toLowerCase() === "oui") a.eloignement += 1;
+        });
+
+        // Tri : par employe asc, puis par sondeuse asc
+        var emps = Object.keys(empsSet).sort();
+        // Pour chaque employe, lignes par sondeuse + ligne total
+        var lignes = [];
+        emps.forEach(function(emp) {
+          var byEmp = Object.keys(agg).filter(function(k) { return agg[k].emp === emp; }).map(function(k) { return agg[k]; }).sort(function(a, b) { return a.sond.localeCompare(b.sond); });
+          // ligne par sondeuse (si > 1) ; sinon une seule ligne
+          var multi = byEmp.length > 1;
+          byEmp.forEach(function(r) { lignes.push({ kind: "row", emp: emp, sond: r.sond, data: r }); });
+          // Total employe (somme)
+          if (multi) {
+            var t = { emp: emp, sond: "Total", nbPoste: 0, nbPosteDim: 0, routeChauf: 0, routePass: 0, heuresNorm: 0, heuresDim: 0, heuresEffectives: 0, heurePause: 0, totalHorsPause: 0, primePanier: 0, posteSondeur: 0, posteAideSondeur: 0, absences: {"CP":0,"CP V":0,"CSS":0,"Maladie":0,"AI":0,"FERIE":0,"DELEGATION":0,"REUNION":0}, eloignement: 0 };
+            byEmp.forEach(function(r) {
+              t.nbPoste += r.nbPoste; t.nbPosteDim += r.nbPosteDim;
+              t.routeChauf += r.routeChauf; t.routePass += r.routePass;
+              t.heuresNorm += r.heuresNorm; t.heuresDim += r.heuresDim;
+              t.heuresEffectives += r.heuresEffectives;
+              t.heurePause += r.heurePause; t.totalHorsPause += r.totalHorsPause;
+              t.primePanier += r.primePanier;
+              t.posteSondeur += r.posteSondeur; t.posteAideSondeur += r.posteAideSondeur;
+              Object.keys(t.absences).forEach(function(k) { t.absences[k] += r.absences[k]; });
+              t.eloignement += r.eloignement;
+            });
+            lignes.push({ kind: "total", emp: emp, sond: "Total", data: t });
+          }
+        });
+
+        // Export Excel format Timesheet
+        function exportTimesheet() {
+          if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
+          var aoa = [];
+          aoa.push(["Timesheet " + fmtFr(startStr) + " - " + fmtFr(endStr)]);
+          aoa.push([]);
+          aoa.push([
+            "Employé","Sondeuse","Nbre de poste","Nbre de poste dimanche",
+            "Heure Route chauffeur","Heures route passager","Heures normale","Heures dimanche",
+            "Nbre totale d'heures effectives","Heure de pause","Total Hors paus",
+            "Nbre Total prime panier","Poste sondeur","Poste aide sondeur",
+            "CP","CP V","CSS","Maladie","AI","FERIE","DELEGATION","REUNION","ELOIGNEMENT"
+          ]);
+          lignes.forEach(function(l) {
+            var d = l.data;
+            var emp = l.kind === "total" ? (l.emp + " Total") : l.emp;
+            var sond = l.kind === "total" ? null : l.sond;
+            aoa.push([
+              emp, sond, d.nbPoste, d.nbPosteDim,
+              num(d.routeChauf), num(d.routePass), num(d.heuresNorm), num(d.heuresDim),
+              num(d.heuresEffectives), num(d.heurePause), num(d.totalHorsPause),
+              d.primePanier, d.posteSondeur, d.posteAideSondeur,
+              d.absences["CP"], d.absences["CP V"], d.absences["CSS"], d.absences["Maladie"], d.absences["AI"], d.absences["FERIE"], d.absences["DELEGATION"], d.absences["REUNION"],
+              d.eloignement
+            ]);
+          });
+          var ws = XLSX.utils.aoa_to_sheet(aoa);
+          ws["!cols"] = [{wch:24},{wch:14},{wch:13},{wch:18},{wch:18},{wch:18},{wch:14},{wch:14},{wch:24},{wch:12},{wch:14},{wch:18},{wch:13},{wch:16},{wch:7},{wch:7},{wch:7},{wch:9},{wch:7},{wch:7},{wch:12},{wch:10},{wch:13}];
+          var wb = XLSX.utils.book_new();
+          var sname = "Timesheet " + fmtFr(startStr) + " - " + fmtFr(endStr);
+          if (sname.length > 31) sname = sname.substring(0, 31);
+          XLSX.utils.book_append_sheet(wb, ws, sname);
+          XLSX.writeFile(wb, "timesheet_" + startStr + "_au_" + endStr + ".xlsx");
+        }
+
+        // Styles tableau
+        var thS = { padding: "8px 6px", fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid rgba(255,255,255,0.07)", textAlign: "center", whiteSpace: "nowrap" };
+        var tdS = { padding: "7px 6px", fontSize: 12, borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "center", fontFamily: "monospace" };
+        var tdTotS = Object.assign({}, tdS, { fontWeight: 800, color: "#fde68a", background: "rgba(251,191,36,0.06)" });
+
+        // KPIs globaux
+        var kTotPost = 0, kTotHEff = 0, kTotPanier = 0, kTotEloign = 0;
+        Object.keys(agg).forEach(function(k) {
+          kTotPost += agg[k].nbPoste;
+          kTotHEff += agg[k].heuresEffectives;
+          kTotPanier += agg[k].primePanier;
+          kTotEloign += agg[k].eloignement;
+        });
+        var nbEmployes = emps.length;
+
+        return h("div", null,
+          // Filtres periode + sondeuse + export
+          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 } },
+            h("label", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Du"),
+            h("input", { type: "date", value: isoDate(recapStart), onChange: function(e) { setRecapStart(new Date(e.target.value)); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit" } }),
+            h("label", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Au"),
+            h("input", { type: "date", value: isoDate(recapEnd), onChange: function(e) { setRecapEnd(new Date(e.target.value)); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit" } }),
+            h("select", { value: recapSondeuse, onChange: function(e) { setRecapSondeuse(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" } },
+              h("option", { value: "__all__" }, "Toutes sondeuses"),
+              sondeusesOpts.map(function(s) { return h("option", { key: s, value: s }, s); })
+            ),
+            h("div", { style: { marginLeft: "auto" } },
+              h(Button, { onClick: exportTimesheet }, h(IconText, { icon: "download", size: 14 }, "Exporter Excel"))
+            )
+          ),
+          // KPIs
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 } },
+            h("div", { style: { background: "rgba(129,140,248,0.10)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 10, padding: "10px 14px" } },
+              h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Employes"),
+              h("div", { style: { fontSize: 18, fontWeight: 800, color: "#c4b5fd" } }, nbEmployes)
+            ),
+            h("div", { style: { background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 10, padding: "10px 14px" } },
+              h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Nbre postes"),
+              h("div", { style: { fontSize: 18, fontWeight: 800, color: "#86efac" } }, kTotPost)
+            ),
+            h("div", { style: { background: "rgba(236,72,153,0.10)", border: "1px solid rgba(236,72,153,0.30)", borderRadius: 10, padding: "10px 14px" } },
+              h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Heures effectives"),
+              h("div", { style: { fontSize: 18, fontWeight: 800, color: "#f9a8d4" } }, num(kTotHEff) + " h")
+            ),
+            h("div", { style: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.30)", borderRadius: 10, padding: "10px 14px" } },
+              h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Total primes panier"),
+              h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fde68a" } }, kTotPanier)
+            ),
+            h("div", { style: { background: "rgba(6,182,212,0.10)", border: "1px solid rgba(6,182,212,0.30)", borderRadius: 10, padding: "10px 14px" } },
+              h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Eloignements"),
+              h("div", { style: { fontSize: 18, fontWeight: 800, color: "#67e8f9" } }, kTotEloign)
+            )
+          ),
+          // Tableau type Timesheet
+          lignes.length === 0 ? h("div", { style: { padding: 60, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun releve sur la periode.") :
+          h("div", { style: { overflowX: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10 } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 1500 } },
+              h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
+                ["Employé","Sondeuse","Nb post.","Nb dim.","Rte chauf.","Rte pass.","H. norm.","H. dim.","H. effect.","H. pause","Hors pause","Panier","Sondeur","Aide sond.","CP","CP V","CSS","Mal.","AI","FERIE","DELEG.","REUN.","ELOIGN."].map(function(c, i) {
+                  return h("th", { key: c, style: Object.assign({}, thS, { textAlign: i < 2 ? "left" : "center" }) }, c);
+                })
+              )),
+              h("tbody", null, lignes.map(function(l, idx) {
+                var d = l.data;
+                var isTot = l.kind === "total";
+                var rowS = isTot ? tdTotS : tdS;
+                return h("tr", { key: idx, style: { background: isTot ? "rgba(251,191,36,0.04)" : "transparent" } },
+                  h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: isTot ? 800 : 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, isTot ? l.emp + " Total" : l.emp),
+                  h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, isTot ? "" : l.sond),
+                  h("td", { style: rowS }, d.nbPoste || ""),
+                  h("td", { style: rowS }, d.nbPosteDim || ""),
+                  h("td", { style: rowS }, num(d.routeChauf) || ""),
+                  h("td", { style: rowS }, num(d.routePass) || ""),
+                  h("td", { style: rowS }, num(d.heuresNorm) || ""),
+                  h("td", { style: rowS }, num(d.heuresDim) || ""),
+                  h("td", { style: Object.assign({}, rowS, { color: "#86efac", fontWeight: 700 }) }, num(d.heuresEffectives) || ""),
+                  h("td", { style: rowS }, num(d.heurePause) || ""),
+                  h("td", { style: rowS }, num(d.totalHorsPause) || ""),
+                  h("td", { style: Object.assign({}, rowS, { color: "#fde68a" }) }, d.primePanier || ""),
+                  h("td", { style: rowS }, d.posteSondeur || ""),
+                  h("td", { style: rowS }, d.posteAideSondeur || ""),
+                  h("td", { style: rowS }, d.absences["CP"] || ""),
+                  h("td", { style: rowS }, d.absences["CP V"] || ""),
+                  h("td", { style: rowS }, d.absences["CSS"] || ""),
+                  h("td", { style: rowS }, d.absences["Maladie"] || ""),
+                  h("td", { style: rowS }, d.absences["AI"] || ""),
+                  h("td", { style: rowS }, d.absences["FERIE"] || ""),
+                  h("td", { style: rowS }, d.absences["DELEGATION"] || ""),
+                  h("td", { style: rowS }, d.absences["REUNION"] || ""),
+                  h("td", { style: Object.assign({}, rowS, { color: "#67e8f9" }) }, d.eloignement || "")
+                );
+              }))
+            )
+          )
+        );
+      };
+
       // ─── Recap mensuel des rapports : KPIs + sections + export Excel ───
       var renderRapportsRecapMensuel = function() {
         // Helpers locaux date
@@ -13890,17 +14154,18 @@
             ),
             // Filtres + switch vue (Liste/Recap pour Rapports)
             h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
-              // Switch vue pour Rapports uniquement
-              tab === "soumissions_rapports" ? h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2, marginRight: 8 } },
+              // Switch vue (Liste / Recap mensuel) pour Rapports ET Releves
+              (tab === "soumissions_rapports" || tab === "soumissions_releves") ? h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2, marginRight: 8 } },
                 ["liste", "recap_mensuel"].map(function(v) {
-                  var active = rapportsView === v;
+                  var isRel = tab === "soumissions_releves";
+                  var active = isRel ? relevesView === v : rapportsView === v;
                   var label = v === "liste" ? "Liste" : "Recap mensuel";
-                  return h("button", { key: v, onClick: function() { setRapportsView(v); },
+                  return h("button", { key: v, onClick: function() { isRel ? setRelevesView(v) : setRapportsView(v); },
                     style: { padding: "5px 13px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "none", background: active ? "linear-gradient(135deg, #6366f1, #818cf8)" : "transparent", color: active ? "#ffffff" : "#a1a1aa", boxShadow: active ? "0 2px 8px rgba(99,102,241,0.30)" : "none" } }, label);
                 })
               ) : null,
               // Filtres statut (masques en mode recap mensuel)
-              !(tab === "soumissions_rapports" && rapportsView === "recap_mensuel") ? h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+              !((tab === "soumissions_rapports" && rapportsView === "recap_mensuel") || (tab === "soumissions_releves" && relevesView === "recap_mensuel")) ? h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                 currentStatuts.map(function(s) {
                   var active = filtStatut === s;
                   var count = s === "tous" ? currentList.length : currentList.filter(function(r) { return r.statut === s; }).length;
@@ -13915,7 +14180,7 @@
             h("div", { className: "loader", style: { margin: "0 auto 12px" } }),
             "Chargement des soumissions..."
           ) :
-          tab === "soumissions_releves" ? renderReleves() :
+          tab === "soumissions_releves" ? (relevesView === "recap_mensuel" ? renderRelevesRecapMensuel() : renderReleves()) :
           tab === "soumissions_conges" ? renderConges() :
           tab === "soumissions_commandes" ? renderCommandes() :
           tab === "soumissions_interventions" ? renderInterventions() :
