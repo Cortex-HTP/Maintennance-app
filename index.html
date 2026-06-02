@@ -12334,6 +12334,8 @@
       var _rapportsView = useState("liste"); var rapportsView = _rapportsView[0]; var setRapportsView = _rapportsView[1];
       // Switch dans l'onglet Releves d'heures : "liste" (defaut) ou "recap_mensuel"
       var _relevesView = useState("liste"); var relevesView = _relevesView[0]; var setRelevesView = _relevesView[1];
+      // Dans le recap mensuel : "synthese" (par employe x sondeuse) ou "detail_jour" (1 ligne par date/employe)
+      var _relevesRecapMode = useState("synthese"); var relevesRecapMode = _relevesRecapMode[0]; var setRelevesRecapMode = _relevesRecapMode[1];
       var _recapStart = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
       var recapStart = _recapStart[0], setRecapStart = _recapStart[1];
       var _recapEnd = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0); });
@@ -13416,6 +13418,85 @@
           XLSX.writeFile(wb, "timesheet_" + startStr + "_au_" + endStr + ".xlsx");
         }
 
+        // ── Detail par jour : 1 ligne par (date, employe, sondeuse) ──
+        // Trie chronologiquement, garde tous les champs du timesheet
+        var detailRows = filteredRels.map(function(r) {
+          var emp = personnelLabel(r.personnel_id);
+          var sond = String(r.sondeuse_code || "").toUpperCase().trim() || "-";
+          var date = String(r.date_releve || "").substring(0, 10);
+          var d = new Date(date);
+          var isDim = d.getDay() === 0;
+          var totMin = parseInt(r.total_minutes) || 0;
+          var pauseMin = hhmmToMin(r.pause_dejeuner);
+          var routeCh = hhmmToMin(r.route_chauffeur) / 60;
+          var routePa = hhmmToMin(r.route_passager) / 60;
+          var fonc = String(r.fonction || "").toLowerCase();
+          var posteSondeur = (fonc.indexOf("sondeur") >= 0 && fonc.indexOf("aide") < 0) ? 1 : 0;
+          var posteAide = (fonc.indexOf("aide") >= 0) ? 1 : 0;
+          var bucket = absBucket(r.absence_type);
+          var absences = { "CP": 0, "CP V": 0, "CSS": 0, "Maladie": 0, "AI": 0, "FERIE": 0, "DELEGATION": 0, "REUNION": 0 };
+          if (bucket && absences[bucket] != null) absences[bucket] = 1;
+          var elo = (r.eloignement === true || String(r.eloignement || "").toLowerCase() === "oui") ? 1 : 0;
+          return {
+            date: date, emp: emp, sond: sond,
+            heureDebut: r.heure_debut || "", heureFin: r.heure_fin || "",
+            fonction: r.fonction || "",
+            isDim: isDim,
+            nbPoste: 1, nbPosteDim: isDim ? 1 : 0,
+            routeChauf: routeCh, routePass: routePa,
+            heuresNorm: isDim ? 0 : totMin / 60,
+            heuresDim: isDim ? totMin / 60 : 0,
+            heuresEffectives: totMin / 60,
+            heurePause: pauseMin / 60,
+            totalHorsPause: Math.max(0, (totMin - pauseMin) / 60),
+            primePanier: parseInt(r.prime_panier) || 0,
+            posteSondeur: posteSondeur, posteAideSondeur: posteAide,
+            absences: absences,
+            eloignement: elo
+          };
+        }).sort(function(a, b) {
+          if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+          if (a.emp !== b.emp) return a.emp.localeCompare(b.emp);
+          return a.sond.localeCompare(b.sond);
+        });
+
+        // Export detail jour
+        function exportDetailJour() {
+          if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
+          var aoa = [];
+          aoa.push(["Detail par jour " + fmtFr(startStr) + " - " + fmtFr(endStr)]);
+          aoa.push([]);
+          aoa.push([
+            "Date","Jour","Employé","Sondeuse","Fonction","Debut","Fin",
+            "Nb post.","Nb dim.","Rte chauf.","Rte pass.","H. norm.","H. dim.",
+            "H. effect.","H. pause","Hors pause","Panier","Sondeur","Aide sond.",
+            "CP","CP V","CSS","Maladie","AI","FERIE","DELEGATION","REUNION","ELOIGN."
+          ]);
+          var jourLabels = ["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
+          detailRows.forEach(function(d) {
+            var dt = new Date(d.date);
+            aoa.push([
+              fmtFr(d.date), jourLabels[dt.getDay()],
+              d.emp, d.sond, d.fonction,
+              d.heureDebut, d.heureFin,
+              d.nbPoste, d.nbPosteDim,
+              num(d.routeChauf), num(d.routePass),
+              num(d.heuresNorm), num(d.heuresDim),
+              num(d.heuresEffectives), num(d.heurePause), num(d.totalHorsPause),
+              d.primePanier, d.posteSondeur, d.posteAideSondeur,
+              d.absences["CP"], d.absences["CP V"], d.absences["CSS"], d.absences["Maladie"], d.absences["AI"], d.absences["FERIE"], d.absences["DELEGATION"], d.absences["REUNION"],
+              d.eloignement
+            ]);
+          });
+          var ws = XLSX.utils.aoa_to_sheet(aoa);
+          ws["!cols"] = [{wch:12},{wch:6},{wch:24},{wch:14},{wch:14},{wch:8},{wch:8},{wch:9},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10},{wch:12},{wch:10},{wch:12},{wch:8},{wch:9},{wch:11},{wch:6},{wch:7},{wch:6},{wch:8},{wch:6},{wch:7},{wch:11},{wch:9},{wch:9}];
+          var wb = XLSX.utils.book_new();
+          var sname = "Detail jour " + fmtFr(startStr) + " - " + fmtFr(endStr);
+          if (sname.length > 31) sname = sname.substring(0, 31);
+          XLSX.utils.book_append_sheet(wb, ws, sname);
+          XLSX.writeFile(wb, "timesheet_detail_jour_" + startStr + "_au_" + endStr + ".xlsx");
+        }
+
         // Styles tableau
         var thS = { padding: "8px 6px", fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid rgba(255,255,255,0.07)", textAlign: "center", whiteSpace: "nowrap" };
         var tdS = { padding: "7px 6px", fontSize: 12, borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "center", fontFamily: "monospace" };
@@ -13442,8 +13523,18 @@
               h("option", { value: "__all__" }, "Toutes sondeuses"),
               sondeusesOpts.map(function(s) { return h("option", { key: s, value: s }, s); })
             ),
+            // Switch Synthese / Detail jour
+            h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2 } },
+              ["synthese", "detail_jour"].map(function(v) {
+                var active = relevesRecapMode === v;
+                var label = v === "synthese" ? "Synthese" : "Detail jour";
+                return h("button", { key: v, onClick: function() { setRelevesRecapMode(v); },
+                  style: { padding: "5px 13px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "none", background: active ? "linear-gradient(135deg, #6366f1, #818cf8)" : "transparent", color: active ? "#ffffff" : "#a1a1aa", boxShadow: active ? "0 2px 8px rgba(99,102,241,0.30)" : "none" } }, label);
+              })
+            ),
             h("div", { style: { marginLeft: "auto" } },
-              h(Button, { onClick: exportTimesheet }, h(IconText, { icon: "download", size: 14 }, "Exporter Excel"))
+              h(Button, { onClick: relevesRecapMode === "detail_jour" ? exportDetailJour : exportTimesheet },
+                h(IconText, { icon: "download", size: 14 }, "Exporter Excel"))
             )
           ),
           // KPIs
@@ -13469,45 +13560,98 @@
               h("div", { style: { fontSize: 18, fontWeight: 800, color: "#67e8f9" } }, kTotEloign)
             )
           ),
-          // Tableau type Timesheet
-          lignes.length === 0 ? h("div", { style: { padding: 60, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun releve sur la periode.") :
-          h("div", { style: { overflowX: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10 } },
-            h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 1500 } },
-              h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
-                ["Employé","Sondeuse","Nb post.","Nb dim.","Rte chauf.","Rte pass.","H. norm.","H. dim.","H. effect.","H. pause","Hors pause","Panier","Sondeur","Aide sond.","CP","CP V","CSS","Mal.","AI","FERIE","DELEG.","REUN.","ELOIGN."].map(function(c, i) {
-                  return h("th", { key: c, style: Object.assign({}, thS, { textAlign: i < 2 ? "left" : "center" }) }, c);
-                })
-              )),
-              h("tbody", null, lignes.map(function(l, idx) {
-                var d = l.data;
-                var isTot = l.kind === "total";
-                var rowS = isTot ? tdTotS : tdS;
-                return h("tr", { key: idx, style: { background: isTot ? "rgba(251,191,36,0.04)" : "transparent" } },
-                  h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: isTot ? 800 : 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, isTot ? l.emp + " Total" : l.emp),
-                  h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, isTot ? "" : l.sond),
-                  h("td", { style: rowS }, d.nbPoste || ""),
-                  h("td", { style: rowS }, d.nbPosteDim || ""),
-                  h("td", { style: rowS }, num(d.routeChauf) || ""),
-                  h("td", { style: rowS }, num(d.routePass) || ""),
-                  h("td", { style: rowS }, num(d.heuresNorm) || ""),
-                  h("td", { style: rowS }, num(d.heuresDim) || ""),
-                  h("td", { style: Object.assign({}, rowS, { color: "#86efac", fontWeight: 700 }) }, num(d.heuresEffectives) || ""),
-                  h("td", { style: rowS }, num(d.heurePause) || ""),
-                  h("td", { style: rowS }, num(d.totalHorsPause) || ""),
-                  h("td", { style: Object.assign({}, rowS, { color: "#fde68a" }) }, d.primePanier || ""),
-                  h("td", { style: rowS }, d.posteSondeur || ""),
-                  h("td", { style: rowS }, d.posteAideSondeur || ""),
-                  h("td", { style: rowS }, d.absences["CP"] || ""),
-                  h("td", { style: rowS }, d.absences["CP V"] || ""),
-                  h("td", { style: rowS }, d.absences["CSS"] || ""),
-                  h("td", { style: rowS }, d.absences["Maladie"] || ""),
-                  h("td", { style: rowS }, d.absences["AI"] || ""),
-                  h("td", { style: rowS }, d.absences["FERIE"] || ""),
-                  h("td", { style: rowS }, d.absences["DELEGATION"] || ""),
-                  h("td", { style: rowS }, d.absences["REUNION"] || ""),
-                  h("td", { style: Object.assign({}, rowS, { color: "#67e8f9" }) }, d.eloignement || "")
-                );
-              }))
+          // Tableau : Synthese (par employe x sondeuse) ou Detail jour (1 ligne par date)
+          (relevesRecapMode === "synthese" ?
+            (lignes.length === 0 ? h("div", { style: { padding: 60, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun releve sur la periode.") :
+              h("div", { style: { overflowX: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10 } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 1500 } },
+                  h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
+                    ["Employé","Sondeuse","Nb post.","Nb dim.","Rte chauf.","Rte pass.","H. norm.","H. dim.","H. effect.","H. pause","Hors pause","Panier","Sondeur","Aide sond.","CP","CP V","CSS","Mal.","AI","FERIE","DELEG.","REUN.","ELOIGN."].map(function(c, i) {
+                      return h("th", { key: c, style: Object.assign({}, thS, { textAlign: i < 2 ? "left" : "center" }) }, c);
+                    })
+                  )),
+                  h("tbody", null, lignes.map(function(l, idx) {
+                    var d = l.data;
+                    var isTot = l.kind === "total";
+                    var rowS = isTot ? tdTotS : tdS;
+                    return h("tr", { key: idx, style: { background: isTot ? "rgba(251,191,36,0.04)" : "transparent" } },
+                      h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: isTot ? 800 : 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, isTot ? l.emp + " Total" : l.emp),
+                      h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, isTot ? "" : l.sond),
+                      h("td", { style: rowS }, d.nbPoste || ""),
+                      h("td", { style: rowS }, d.nbPosteDim || ""),
+                      h("td", { style: rowS }, num(d.routeChauf) || ""),
+                      h("td", { style: rowS }, num(d.routePass) || ""),
+                      h("td", { style: rowS }, num(d.heuresNorm) || ""),
+                      h("td", { style: rowS }, num(d.heuresDim) || ""),
+                      h("td", { style: Object.assign({}, rowS, { color: "#86efac", fontWeight: 700 }) }, num(d.heuresEffectives) || ""),
+                      h("td", { style: rowS }, num(d.heurePause) || ""),
+                      h("td", { style: rowS }, num(d.totalHorsPause) || ""),
+                      h("td", { style: Object.assign({}, rowS, { color: "#fde68a" }) }, d.primePanier || ""),
+                      h("td", { style: rowS }, d.posteSondeur || ""),
+                      h("td", { style: rowS }, d.posteAideSondeur || ""),
+                      h("td", { style: rowS }, d.absences["CP"] || ""),
+                      h("td", { style: rowS }, d.absences["CP V"] || ""),
+                      h("td", { style: rowS }, d.absences["CSS"] || ""),
+                      h("td", { style: rowS }, d.absences["Maladie"] || ""),
+                      h("td", { style: rowS }, d.absences["AI"] || ""),
+                      h("td", { style: rowS }, d.absences["FERIE"] || ""),
+                      h("td", { style: rowS }, d.absences["DELEGATION"] || ""),
+                      h("td", { style: rowS }, d.absences["REUNION"] || ""),
+                      h("td", { style: Object.assign({}, rowS, { color: "#67e8f9" }) }, d.eloignement || "")
+                    );
+                  }))
+                )
+              )
+            )
+          : // Mode detail_jour
+            (detailRows.length === 0 ? h("div", { style: { padding: 60, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun releve sur la periode.") :
+              h("div", { style: { overflowX: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10 } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 1700 } },
+                  h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
+                    ["Date","Jour","Employé","Sondeuse","Fonction","Debut","Fin","Rte chauf.","Rte pass.","H. effect.","H. pause","Hors pause","Panier","CP","CP V","CSS","Mal.","AI","FERIE","DELEG.","REUN.","ELOIGN."].map(function(c, i) {
+                      return h("th", { key: c, style: Object.assign({}, thS, { textAlign: i < 5 ? "left" : "center" }) }, c);
+                    })
+                  )),
+                  h("tbody", null, (function() {
+                    // Couleur differente quand la date change : aide visuelle
+                    var lastDate = null;
+                    var altRow = false;
+                    return detailRows.map(function(d, idx) {
+                      if (d.date !== lastDate) { altRow = !altRow; lastDate = d.date; }
+                      var rowS = tdS;
+                      var bg = altRow ? "rgba(129,140,248,0.03)" : "transparent";
+                      var jourLabels = ["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
+                      var dt = new Date(d.date);
+                      var jourLabel = jourLabels[dt.getDay()];
+                      var jourColor = d.isDim ? "#f9a8d4" : "#a1a1aa";
+                      return h("tr", { key: idx, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", whiteSpace: "nowrap", color: "#e5e7eb" }) }, fmtFr(d.date)),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: jourColor, fontWeight: 700 }) }, jourLabel),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, d.emp),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, d.sond),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a1a1aa", fontSize: 11 }) }, d.fonction || "-"),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, d.heureDebut || "-"),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, d.heureFin || "-"),
+                        h("td", { style: rowS }, num(d.routeChauf) || ""),
+                        h("td", { style: rowS }, num(d.routePass) || ""),
+                        h("td", { style: Object.assign({}, rowS, { color: "#86efac", fontWeight: 700 }) }, num(d.heuresEffectives) || ""),
+                        h("td", { style: rowS }, num(d.heurePause) || ""),
+                        h("td", { style: rowS }, num(d.totalHorsPause) || ""),
+                        h("td", { style: Object.assign({}, rowS, { color: "#fde68a" }) }, d.primePanier || ""),
+                        h("td", { style: rowS }, d.absences["CP"] || ""),
+                        h("td", { style: rowS }, d.absences["CP V"] || ""),
+                        h("td", { style: rowS }, d.absences["CSS"] || ""),
+                        h("td", { style: rowS }, d.absences["Maladie"] || ""),
+                        h("td", { style: rowS }, d.absences["AI"] || ""),
+                        h("td", { style: rowS }, d.absences["FERIE"] || ""),
+                        h("td", { style: rowS }, d.absences["DELEGATION"] || ""),
+                        h("td", { style: rowS }, d.absences["REUNION"] || ""),
+                        h("td", { style: Object.assign({}, rowS, { color: "#67e8f9" }) }, d.eloignement || "")
+                      );
+                    });
+                  }()))
+                )
+              )
             )
           )
         );
