@@ -13638,11 +13638,25 @@
         return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
       };
       var renderReleves = function() {
-        // Identifie le responsable de chaque equipe (date + sondeuse) :
-        // c'est la ligne dont fonction = "Sondeur" (et non "Aide sondeur").
-        // Fallback : si aucun Sondeur trouve dans le groupe, on prend le 1er releve par id.
+        // Identifie le responsable de chaque equipe (date + sondeuse).
+        // Le responsable = le sondeur connecte a l'app qui a saisi les releves pour son equipe.
+        // PRIORITES (par fiabilite) :
+        //  1) personnel_id du rapport_forage correspondant (date+sondeuse) - SOURCE LA PLUS AUTORITAIRE
+        //  2) Si pas de rapport : la ligne dont fonction = "Sondeur" (regle metier post-migration)
+        //  3) Fallback : 1er releve par id du groupe
         var rawList = applyFilter(rels);
         var responsableByGroup = {}; // key = "date|sondeuse_code" -> personnel_id
+        // 1) Index des rapports par (date, sondeuse)
+        var rapByGroup = {};
+        (raps || []).forEach(function(r) {
+          if (!r.date_rapport || !r.sondeuse_code || r.personnel_id == null) return;
+          var k = String(r.date_rapport).substring(0,10) + "|" + String(r.sondeuse_code);
+          // Si plusieurs rapports : on garde le plus recent
+          if (!rapByGroup[k] || (r.created_at && r.created_at > (rapByGroup[k].created_at || ""))) {
+            rapByGroup[k] = r;
+          }
+        });
+        // 2) Groupement des releves
         var groups = {};
         rawList.forEach(function(r) {
           var k = String(r.date_releve || "").substring(0,10) + "|" + String(r.sondeuse_code || "");
@@ -13651,13 +13665,19 @@
         });
         Object.keys(groups).forEach(function(k) {
           var rows = groups[k];
-          // Cherche un Sondeur (pas Aide)
+          // PRIORITE 1 : rapport correspondant
+          var rap = rapByGroup[k];
+          if (rap && rap.personnel_id != null) {
+            responsableByGroup[k] = rap.personnel_id;
+            return;
+          }
+          // PRIORITE 2 : ligne fonction "Sondeur" pur
           var resp = rows.find(function(r) {
             var f = String(r.fonction || "").toLowerCase();
             return f.indexOf("sondeur") >= 0 && f.indexOf("aide") < 0;
           });
+          // PRIORITE 3 : 1er par id
           if (!resp) {
-            // Fallback : 1er releve par id
             resp = rows.slice().sort(function(a, b) { return (a.id || 0) - (b.id || 0); })[0];
           }
           responsableByGroup[k] = resp ? resp.personnel_id : null;
