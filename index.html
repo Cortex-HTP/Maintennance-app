@@ -12457,7 +12457,7 @@
         setLoading(true);
         // Cols light : on exclut les signatures base64 (lourdes) du fetch en boucle.
         // Elles sont charges a la demande quand l'utilisateur expand une ligne (cf. fetchSignatures()).
-        var RELEVES_COLS = "id,personnel_id,date_releve,sondeuse_code,equipement_id,fonction,heure_debut,heure_fin,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,remarques,source,created_at";
+        var RELEVES_COLS = "id,personnel_id,date_releve,sondeuse_code,equipement_id,fonction,heure_debut,heure_fin,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,remarques,source,statut,valide_at,created_at";
         var CONGES_COLS  = "id,demandeur_id,date_demande,lieu,classification,type_conge,nombre_jours,date_debut,date_reprise,raison,statut,created_at";
         var CMDS_COLS    = "id,demandeur_id,date_demande,tel,chantier_id,machine_lieu,lignes,statut,created_at";
         var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,created_at";
@@ -12569,6 +12569,18 @@
         planifiee: "Planifiee", en_cours: "En cours", terminee: "Terminee",
         envoye: "Envoye pour signature", signe_client: "Signe par client", valide_admin: "Valide",
         demande_modification: "Demande de modification"
+      };
+
+      // Validation des releves d'heures par l'admin/responsable du personnel
+      var updateReleveStatut = function(id, st) {
+        var extra = {};
+        if (st === "valide_admin" || st === "refuse") extra.valide_at = new Date().toISOString();
+        else if (st === "en_attente") extra.valide_at = null;
+        supabase.from("releves_heures").update(Object.assign({ statut: st }, extra)).eq("id", id).select().single().then(function(res) {
+          if (res.error) { alert("Erreur mise a jour : " + res.error.message); return; }
+          setRels(rels.map(function(x) { return x.id === id ? res.data : x; }));
+          if (showToast) showToast("Statut mis a jour", "success");
+        });
       };
       var statutStyle = function(s) {
         var base = { display: "inline-block", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.3, border: "1px solid rgba(255,255,255,0.1)" };
@@ -12737,7 +12749,7 @@
 
       // ── Filtres statut par onglet ──
       var STATUTS_BY_TAB = {
-        soumissions_releves:       ["tous"],
+        soumissions_releves:       ["tous", "en_attente", "valide_admin", "refuse"],
         soumissions_conges:        ["tous", "en_attente", "approuvee", "refusee"],
         soumissions_commandes:     ["tous", "soumis", "traite", "envoye_fournisseur", "refuse"],
         soumissions_interventions: ["tous", "soumis", "planifiee", "en_cours", "terminee", "refusee"],
@@ -12751,7 +12763,7 @@
 
       // ── KPIs par onglet ──
       var kpis = [
-        { key: "soumissions_releves", label: "Releves d'heure", sub: "soumis", count: rels.length, icon: "clock", color: "#c7d2fe", bg: "rgba(99,102,241,0.15)" },
+        { key: "soumissions_releves", label: "Releves d'heure", sub: "en attente", count: rels.filter(function(r) { return (r.statut || "en_attente") === "en_attente"; }).length, icon: "clock", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
         { key: "soumissions_conges", label: "Demandes de conges", sub: "en attente", count: conges.filter(function(c) { return c.statut === "en_attente"; }).length, icon: "calendar-days", color: "#86efac", bg: "rgba(34,197,94,0.15)" },
         { key: "soumissions_commandes", label: "Bons de commande", sub: "a traiter", count: cmds.filter(function(c) { return c.statut === "soumis"; }).length, icon: "shopping-cart", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
         { key: "soumissions_interventions", label: "Demandes intervention", sub: "a planifier", count: ints.filter(function(c) { return c.statut === "soumis"; }).length, icon: "wrench", color: "#fdba74", bg: "rgba(249,115,22,0.15)" },
@@ -12829,12 +12841,13 @@
           var totalStr = minToHHMM(c.total_minutes || 0);
           var sondLabel = c.sondeuse_code || equipementLabel(c.equipement_id) || "-";
           var heureRange = (c.heure_debut || "") + (c.heure_fin ? " - " + c.heure_fin : "");
+          var statut = c.statut || "en_attente"; // fallback pour les rows pre-migration
           return h(React.Fragment, { key: "h-" + c.id },
             rowHeader({
               name: name + " - " + sondLabel,
               sub: (c.fonction ? c.fonction + " - " : "") + (heureRange || "Heures non renseignees") + " (" + totalStr + ")" + (c.absence_type ? " - " + c.absence_type : ""),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : fmtDate(c.date_releve),
-              statut: c.absence_type ? "refusee" : "approuvee",
+              statut: statut,
               isExpanded: isExp,
               onClick: function() { toggleExpand("h", c.id); }
             }),
@@ -12852,14 +12865,20 @@
                 { label: "Route passager", value: c.route_passager },
                 { label: "Eloignement", value: c.eloignement },
                 { label: "Absence", value: c.absence_type },
-                { label: "Prime panier", value: c.prime_panier }
+                { label: "Prime panier", value: c.prime_panier },
+                { label: "Valide le", value: c.valide_at ? fmtDateTime(c.valide_at) : "-" }
               ]),
               c.remarques ? h("div", null, sectionTitle("Remarques"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8, whiteSpace: "pre-wrap" } }, c.remarques)) : null,
               c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null,
-              isAdmin ? h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
-                actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingReleve(c); } }),
-                actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteReleveHeures(c); } })
-              ) : null
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                // Actions de validation (admin)
+                isAdmin && statut === "en_attente" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateReleveStatut(c.id, "valide_admin"); setExpanded(null); } }) : null,
+                isAdmin && statut === "en_attente" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser ce releve d'heure ?")) { updateReleveStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
+                isAdmin && statut !== "en_attente" ? actionBtn({ label: "Re-mettre en attente", icon: "rotate-ccw", color: "neutral", onClick: function() { updateReleveStatut(c.id, "en_attente"); } }) : null,
+                // Edition + suppression
+                isAdmin ? actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingReleve(c); } }) : null,
+                isAdmin ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteReleveHeures(c); } }) : null
+              )
             ]) : null
           );
         }));
