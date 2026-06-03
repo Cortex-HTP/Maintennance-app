@@ -11147,8 +11147,52 @@
         .filter(function(c) { return c && c.actif !== false; })
         .reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
       var coutChargesFixesTotal = chargesFixesMensuelles * nbMoisPeriode;
+      // ── Primes de metrage : estimation par rapport ──
+      // Pour chaque rapport, si m/h depasse l'objectif du site, applique le coefficient
+      // de palier et multiplie par le nb de sondeurs/aides dans l'equipe.
+      // x 1.30 pour ajouter les charges patronales sur les primes (meme regle que salaires).
+      var coutPrimesMetrageTotal = 0;
+      var chantierToSiteForPrimes = {};
+      (dbChantiers || []).forEach(function(c) { if (c && c.id != null) chantierToSiteForPrimes[c.id] = c.site || ""; });
+      var siteByLieuForPrimes = {};
+      (dbChantiers || []).forEach(function(c) {
+        if (c && c.site) siteByLieuForPrimes[String(c.site).toUpperCase().trim()] = c.site;
+      });
+      function siteOfRapportLocal(r) {
+        if (r.chantier_id && chantierToSiteForPrimes[r.chantier_id]) return chantierToSiteForPrimes[r.chantier_id];
+        if (r.lieu) {
+          var lk = String(r.lieu).toUpperCase().trim();
+          if (siteByLieuForPrimes[lk]) return siteByLieuForPrimes[lk];
+          var keys = Object.keys(siteByLieuForPrimes);
+          for (var i = 0; i < keys.length; i++) {
+            if (keys[i].indexOf(lk) >= 0 || lk.indexOf(keys[i]) >= 0) return siteByLieuForPrimes[keys[i]];
+          }
+        }
+        return null;
+      }
+      var dbPaliersForPrimes = (typeof dbPaliers !== "undefined" ? dbPaliers : (ctx.dbPaliers || []));
+      filtered.forEach(function(r) {
+        var rSite = siteOfRapportLocal(r);
+        if (!rSite) return;
+        var siteObjectif = getObjectifForSite(dbPaliersForPrimes, rSite);
+        if (!siteObjectif || siteObjectif <= 0) return;
+        var metres = parseFloat(r.total_metres) || 0;
+        if (metres <= 0) return;
+        var mhRealise = metres / 9; // base 9h de foration / jour de poste
+        if (mhRealise <= siteObjectif) return;
+        var coef = lookupCoefficient(dbPaliersForPrimes, rSite, mhRealise);
+        if (!coef || coef <= 0) return;
+        var primePersonne = (mhRealise - siteObjectif) * coef;
+        // Nb employes eligibles (sondeurs + aides) dans l'equipe du rapport
+        var nbBonus = (Array.isArray(r.equipe) ? r.equipe : []).filter(function(m) {
+          var role = String((m && m.role) || "").toLowerCase();
+          return role.indexOf("sondeur") >= 0 || role.indexOf("aide") >= 0;
+        }).length;
+        if (nbBonus === 0) nbBonus = 1; // fallback : on suppose au moins 1 sondeur
+        coutPrimesMetrageTotal += primePersonne * nbBonus * 1.30; // +30% charges patronales
+      });
       // TOTAL
-      var totalCoutsAll = coutConsoSondeusesAll + coutCarburantVL + coutPersonnelTotal + coutEmpruntAll + coutChargesFixesTotal;
+      var totalCoutsAll = coutConsoSondeusesAll + coutCarburantVL + coutPersonnelTotal + coutEmpruntAll + coutChargesFixesTotal + coutPrimesMetrageTotal;
       // Prix moyen pondere par metres realises sur la periode filtree
       var sumMetresPrix = 0, sumMetres = 0;
       filtered.forEach(function(r) {
