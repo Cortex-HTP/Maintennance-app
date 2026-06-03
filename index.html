@@ -10135,6 +10135,8 @@
           //    - Maladie : +0 metrage, +1 jour (tire la moyenne vers le bas)
           var adjMetrage = 0;
           var adjJours = 0;
+          // Decompte par type de jour (pour affichage dans le tableau)
+          var joursParType = { travail: 0, intemperies: 0, panne: 0, conge: 0, chomage: 0, maladie: 0, arret: 0, non_productif: 0 };
           empAffOnSite.forEach(function(a) {
             var tj = a.typeJour || "travail";
             var dateStr = a.dateAffectation;
@@ -10150,11 +10152,13 @@
             // Arret : journee explicitement "rien ne se passe" -> 0m, +1j
             if (effectiveType === "arret") {
               adjJours += 1;
+              joursParType.arret += 1;
             } else if (effectiveType === "panne" || effectiveType === "intemperies") {
               // Cause externe (panne machine / meteo) -> rattrapage = moyenne_jour_site fixe.
               // L'employe n'est pas responsable, il merite la moyenne complete.
               adjMetrage += siteMoyenne;
               adjJours += 1;
+              joursParType[effectiveType] += 1;
             } else if (effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
               // Absence liee a l'employe -> rattrapage limite par la performance reelle.
               // Cascade de sources de metrage_jour, par ordre de priorite :
@@ -10182,8 +10186,10 @@
               }
               adjMetrage += rattrapage;
               adjJours += 1;
+              joursParType[effectiveType] += 1;
             } else if (effectiveType === "maladie") {
               adjJours += 1;
+              joursParType.maladie += 1;
             } else {
               // Travail : on prend le metrage de SA machine habituelle uniquement.
               // Evite le double-comptage quand un employe apparait dans 2 rapports
@@ -10208,6 +10214,7 @@
               }
               adjMetrage += dayMetrage;
               adjJours += 1;
+              joursParType.travail += 1;
             }
           });
 
@@ -10267,6 +10274,7 @@
             details: [{
               chantier: site,
               jours: adjJours,
+              joursParType: joursParType,
               mhRealise: mhRealise,
               objectif: objectif,
               coef: coef,
@@ -10476,10 +10484,29 @@
               primeData.map(function(row) {
                 var lines = [];
                 row.details.forEach(function(det, idx) {
+                  // Construit un mini-tag par type pour les jours non-travail
+                  var jpt = det.joursParType || {};
+                  var nonTravail = [];
+                  if (jpt.intemperies) nonTravail.push({ k: "INT", n: jpt.intemperies, color: "#3b82f6", title: jpt.intemperies + " jour(s) intemperies (+moy site)" });
+                  if (jpt.panne) nonTravail.push({ k: "PAN", n: jpt.panne, color: "#f59e0b", title: jpt.panne + " jour(s) panne (+moy site)" });
+                  if (jpt.conge) nonTravail.push({ k: "CG", n: jpt.conge, color: "#06b6d4", title: jpt.conge + " jour(s) conge" });
+                  if (jpt.chomage) nonTravail.push({ k: "CH", n: jpt.chomage, color: "#8b5cf6", title: jpt.chomage + " jour(s) chomage" });
+                  if (jpt.non_productif) nonTravail.push({ k: "NP", n: jpt.non_productif, color: "#a78bfa", title: jpt.non_productif + " jour(s) non productif" });
+                  if (jpt.maladie) nonTravail.push({ k: "MAL", n: jpt.maladie, color: "#ef4444", title: jpt.maladie + " jour(s) maladie" });
+                  if (jpt.arret) nonTravail.push({ k: "ARR", n: jpt.arret, color: "#71717a", title: jpt.arret + " jour(s) arret" });
                   lines.push(h("tr", { key: row.employeId + "-" + idx },
                     idx === 0 ? h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, verticalAlign: "top" }), rowSpan: row.details.length }, row.employe) : null,
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) }, det.chantier),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) }, String(det.jours)),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+                      h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 3 } },
+                        h("span", null, String(det.jours)),
+                        nonTravail.length > 0 ? h("div", { style: { display: "inline-flex", flexWrap: "wrap", gap: 3, justifyContent: "center" } },
+                          nonTravail.map(function(t, i) {
+                            return h("span", { key: i, title: t.title, style: { fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "rgba(255,255,255,0.04)", border: "1px solid " + t.color, color: t.color, whiteSpace: "nowrap" } }, t.n + " " + t.k);
+                          })
+                        ) : null
+                      )
+                    ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", fontWeight: 600, color: det.mhRealise > det.objectif ? "#86efac" : "#fda4af" }) }, (det.mhRealise || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#a1a1aa" }) }, (det.objectif || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#d4d4d8" }) }, fmtNum(det.coef)),
