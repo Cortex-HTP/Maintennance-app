@@ -2567,6 +2567,194 @@
       );
     }
 
+    // ─── Ecran Messages : messagerie admin -> employes ─────────────────
+    // Permet d'envoyer un message (broadcast tous OU 1 employe specifique).
+    // Affiche la liste des messages envoyes + le nombre d'employes qui ont lu.
+    function EcranMessages() {
+      const ctx = useAppData();
+      const parametres = ctx.parametres || [];
+      const [messages, setMessages] = useState([]);
+      const [lectures, setLectures] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [refreshFlag, setRefreshFlag] = useState(0);
+      // Form state
+      const [destType, setDestType] = useState("all"); // "all" ou "individuel"
+      const [destPersonnelId, setDestPersonnelId] = useState("");
+      const [sujet, setSujet] = useState("");
+      const [message, setMessage] = useState("");
+      const [importance, setImportance] = useState("normale");
+      const [sending, setSending] = useState(false);
+
+      // Personnel deduplique pour le dropdown destinataire
+      var personnelData = (function() {
+        try {
+          var row = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+          if (row && row.valeur) {
+            var arr = (typeof row.valeur === "string") ? JSON.parse(row.valeur) : row.valeur;
+            return (arr || []).filter(function(p) { return p && (p.nom || p.prenom); }).sort(function(a, b) {
+              var na = ((a.prenom || "") + " " + (a.nom || "")).trim();
+              var nb = ((b.prenom || "") + " " + (b.nom || "")).trim();
+              return na.localeCompare(nb);
+            });
+          }
+        } catch(e) {}
+        return [];
+      }());
+
+      useEffect(function() {
+        setLoading(true);
+        Promise.all([
+          supabase.from("messages").select("*").order("created_at", { ascending: false }),
+          supabase.from("message_lectures").select("*")
+        ]).then(function(results) {
+          if (results[0].error) console.warn("[messages] fetch:", results[0].error.message);
+          if (results[1].error) console.warn("[lectures] fetch:", results[1].error.message);
+          setMessages(results[0].data || []);
+          setLectures(results[1].data || []);
+          setLoading(false);
+        });
+      }, [refreshFlag]);
+
+      function strToBigintMessages(s) {
+        if (typeof s === "number") return s;
+        if (/^\d+$/.test(String(s))) return parseInt(s, 10);
+        var hx = 0; var str = String(s);
+        for (var i = 0; i < str.length; i++) hx = (hx * 31 + str.charCodeAt(i)) & 0x7fffffff;
+        return hx || 1;
+      }
+
+      function sendMessage() {
+        if (!message.trim()) { alert("Le message ne peut pas etre vide."); return; }
+        if (destType === "individuel" && !destPersonnelId) { alert("Choisis un destinataire."); return; }
+        setSending(true);
+        var payload = {
+          expediteur: "admin",
+          destinataire_id: destType === "all" ? null : strToBigintMessages(destPersonnelId),
+          destinataire_label: destType === "all" ? "Tous les employes" : (function() {
+            var p = personnelData.find(function(pp) { return String(pp.code) === String(destPersonnelId); });
+            return p ? ((p.prenom || "") + " " + (p.nom || "")).trim() : "";
+          })(),
+          sujet: sujet.trim() || null,
+          message: message.trim(),
+          importance: importance
+        };
+        supabase.from("messages").insert(payload).select().single().then(function(res) {
+          setSending(false);
+          if (res.error) { alert("Erreur envoi : " + res.error.message); return; }
+          if (ctx.showToast) ctx.showToast("Message envoye", "success");
+          // Reset form
+          setSujet(""); setMessage(""); setImportance("normale");
+          setDestType("all"); setDestPersonnelId("");
+          setRefreshFlag(refreshFlag + 1);
+        });
+      }
+
+      function deleteMessage(id) {
+        if (!confirm("Supprimer ce message ? Toutes les traces de lecture seront perdues.")) return;
+        supabase.from("messages").delete().eq("id", id).then(function(res) {
+          if (res.error) { alert("Erreur : " + res.error.message); return; }
+          setMessages(messages.filter(function(m) { return m.id !== id; }));
+          if (ctx.showToast) ctx.showToast("Message supprime", "success");
+        });
+      }
+
+      // Calcul nb lectures par message
+      var lecturesByMsg = {};
+      (lectures || []).forEach(function(l) {
+        if (!lecturesByMsg[l.message_id]) lecturesByMsg[l.message_id] = [];
+        lecturesByMsg[l.message_id].push(l);
+      });
+
+      function impColor(imp) {
+        if (imp === "urgent") return { bg: "rgba(220,38,38,0.15)", br: "rgba(220,38,38,0.40)", txt: "#fda4af" };
+        if (imp === "important") return { bg: "rgba(249,115,22,0.15)", br: "rgba(249,115,22,0.40)", txt: "#fed7aa" };
+        return { bg: "rgba(99,102,241,0.10)", br: "rgba(99,102,241,0.30)", txt: "#c7d2fe" };
+      }
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "mail", size: 20 }, "Messages aux employes"),
+          subtitle: "Envoie des messages aux sondeurs (broadcast tous ou destinataire specifique). Accuses de reception traces.",
+        }),
+        // Form composer
+        h(Card, { style: { marginBottom: 20 } },
+          h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#e0e7ff" } }, h(IconText, { icon: "send", size: 14, color: "#818cf8" }, "Nouveau message")),
+          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 } },
+            h("div", null,
+              h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Destinataire"),
+              h("select", { value: destType, onChange: function(e) { setDestType(e.target.value); setDestPersonnelId(""); }, style: inputStyle },
+                h("option", { value: "all" }, "Tous les employes (broadcast)"),
+                h("option", { value: "individuel" }, "Un employe specifique")
+              )
+            ),
+            h("div", null,
+              h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Importance"),
+              h("select", { value: importance, onChange: function(e) { setImportance(e.target.value); }, style: inputStyle },
+                h("option", { value: "normale" }, "Normale"),
+                h("option", { value: "important" }, "Important"),
+                h("option", { value: "urgent" }, "Urgent")
+              )
+            )
+          ),
+          destType === "individuel" ? h("div", { style: { marginBottom: 12 } },
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Choisir l'employe"),
+            h("select", { value: destPersonnelId, onChange: function(e) { setDestPersonnelId(e.target.value); }, style: inputStyle },
+              h("option", { value: "" }, "-- choisir --"),
+              personnelData.map(function(p) {
+                var nom = ((p.prenom || "") + " " + (p.nom || "")).trim();
+                return h("option", { key: p.code, value: p.code }, nom + (p.role ? " (" + p.role + ")" : ""));
+              })
+            )
+          ) : null,
+          h("div", { style: { marginBottom: 12 } },
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Sujet (optionnel)"),
+            h("input", { type: "text", value: sujet, onChange: function(e) { setSujet(e.target.value); }, placeholder: "Ex: Rappel consigne securite", style: inputStyle })
+          ),
+          h("div", { style: { marginBottom: 12 } },
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Message"),
+            h("textarea", { value: message, onChange: function(e) { setMessage(e.target.value); }, placeholder: "Tape ton message ici...", rows: 5, style: Object.assign({}, inputStyle, { resize: "vertical", fontFamily: "inherit" }) })
+          ),
+          h("div", { style: { display: "flex", justifyContent: "flex-end" } },
+            h(Button, { onClick: sendMessage, disabled: sending || !message.trim() },
+              h(IconText, { icon: "send", size: 14 }, sending ? "Envoi..." : "Envoyer"))
+          )
+        ),
+        // Historique
+        h(Card, null,
+          h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#e0e7ff" } }, h(IconText, { icon: "history", size: 14, color: "#818cf8" }, "Messages envoyes (" + messages.length + ")")),
+          loading ? h("div", { style: { padding: 30, textAlign: "center", color: "#a1a1aa" } }, "Chargement...") :
+          messages.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontSize: 13 } }, "Aucun message envoye pour le moment.") :
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+            messages.map(function(m) {
+              var col = impColor(m.importance);
+              var nbLus = (lecturesByMsg[m.id] || []).length;
+              var nbCible = m.destinataire_id ? 1 : (personnelData.length || 1);
+              return h("div", { key: m.id, style: { background: col.bg, border: "1px solid " + col.br, borderRadius: 10, padding: "12px 14px" } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 } },
+                  h("div", { style: { flex: 1, minWidth: 0 } },
+                    h("div", { style: { fontSize: 11, color: "#71717a", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } },
+                      m.destinataire_label || (m.destinataire_id ? "#" + m.destinataire_id : "Tous"),
+                      m.importance !== "normale" ? h("span", { style: { marginLeft: 8, padding: "1px 6px", borderRadius: 4, background: col.br, color: col.txt, fontSize: 9, fontWeight: 800 } }, m.importance.toUpperCase()) : null
+                    ),
+                    m.sujet ? h("div", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa", marginTop: 4 } }, m.sujet) : null,
+                    h("div", { style: { fontSize: 13, color: "#cbd5e1", marginTop: 4, whiteSpace: "pre-wrap" } }, m.message)
+                  ),
+                  h("button", { onClick: function() { deleteMessage(m.id); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4, flexShrink: 0 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15 }))
+                ),
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.05)" } },
+                  h("span", { style: { fontSize: 11, color: "#71717a" } }, m.created_at ? "Envoye le " + new Date(m.created_at).toLocaleString("fr-FR") : ""),
+                  h("span", { style: { fontSize: 11, color: nbLus > 0 ? "#86efac" : "#71717a", fontWeight: 700 } },
+                    h(Icon, { name: nbLus > 0 ? "check-check" : "check", size: 11, color: nbLus > 0 ? "#86efac" : "#71717a" }),
+                    " " + nbLus + (m.destinataire_id ? (nbLus > 0 ? " Lu" : " Pas encore lu") : (" / " + nbCible + " lectures"))
+                  )
+                )
+              );
+            })
+          )
+        )
+      );
+    }
+
     // ─── Ecran Carburant : vue dediee avec ventilation engin / VL ──────
     // Affiche toutes les saisies consommations_carburant (sondeurs) avec :
     // - KPIs : total L, total cout, ventilation engins (sondeuses) vs VL (vehicules)
@@ -10083,6 +10271,7 @@
         { key: "financement", label: "Financement", icon: "wallet" },
         { key: "charges-fixes", label: "Charges fixes", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
+        { key: "messages", label: "Messages", icon: "mail" },
         { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
         { key: "administration", label: "Administration", icon: "user-cog", adminOnly: true }
       ];
@@ -14889,6 +15078,7 @@
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
+          { key: "messages", label: "Messages", lucide: "mail" },
         ]},
         { name: "Finances", pages: [
           { key: "financement", label: "Financement", lucide: "wallet" },
@@ -15884,6 +16074,7 @@
         if (currentPage === "equipements") return h(EcranEquipements, { onNavigate: navigate });
         if (currentPage === "fiche-equipement") return h(EcranFicheEquipement, { onNavigate: navigate, equipement: pageData });
         if (currentPage === "personnel") return h(EcranPersonnel, { onNavigate: navigate });
+        if (currentPage === "messages") return h(EcranMessages, null);
         if (currentPage === "pieces") return h(EcranPieces, null);
         if (currentPage === "carburant") return h(EcranCarburant, null);
         if (currentPage === "financement") return h(EcranFinancement, { onNavigate: navigate });
