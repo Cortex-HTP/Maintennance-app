@@ -2855,6 +2855,110 @@
         return "-";
       }
 
+      // ── Previsionnel : calcule les prochains envois dans les N jours ──
+      function buildPrevisionnel(daysAhead) {
+        daysAhead = daysAhead || 90;
+        function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+        function isoOf(d) { return d.getFullYear() + "-" + pad2(d.getMonth()+1) + "-" + pad2(d.getDate()); }
+        function nextOccurrenceOfMMDD(mm, dd, fromDate) {
+          // Renvoie la prochaine date ou MM-DD survient (cette annee si pas encore passe, sinon l'an prochain)
+          var y = fromDate.getFullYear();
+          var d = new Date(y, mm - 1, dd);
+          if (d < new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate())) {
+            d = new Date(y + 1, mm - 1, dd);
+          }
+          return d;
+        }
+        var now = new Date();
+        var todayISO = isoOf(now);
+        var horizon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysAhead);
+        var events = [];
+        var actifs = templates.filter(function(x) { return x.actif; });
+        actifs.forEach(function(t) {
+          if (t.type === "anniversaire") {
+            // Pour chaque employe avec dateNaissance dans personnel_data
+            (personnelData || []).forEach(function(p) {
+              if (!p.dateNaissance) return;
+              var parts = String(p.dateNaissance).substring(0, 10).split("-");
+              if (parts.length !== 3) return;
+              var mm = parseInt(parts[1]), dd = parseInt(parts[2]);
+              if (!mm || !dd) return;
+              var next = nextOccurrenceOfMMDD(mm, dd, now);
+              if (next > horizon) return;
+              var age = next.getFullYear() - parseInt(parts[0]);
+              events.push({
+                date: next,
+                tplId: t.id,
+                tplType: t.type,
+                tplSujet: t.sujet,
+                tplMessage: t.message,
+                tplImportance: t.importance,
+                jubilaire: ((p.prenom || "") + " " + (p.nom || "")).trim(),
+                age: age
+              });
+            });
+          } else if (t.type === "date_fixe_annuelle") {
+            if (!t.jour_mois) return;
+            var jp = String(t.jour_mois).split("-");
+            if (jp.length !== 2) return;
+            var mm = parseInt(jp[0]), dd = parseInt(jp[1]);
+            if (!mm || !dd) return;
+            // 1 ou 2 occurrences possibles dans la fenetre (cette annee + l'an prochain si encore dans la fenetre)
+            var next = nextOccurrenceOfMMDD(mm, dd, now);
+            if (next <= horizon) {
+              events.push({ date: next, tplId: t.id, tplType: t.type, tplSujet: t.sujet, tplMessage: t.message, tplImportance: t.importance });
+            }
+            var nextNext = new Date(next.getFullYear() + 1, next.getMonth(), next.getDate());
+            if (nextNext <= horizon) {
+              events.push({ date: nextNext, tplId: t.id, tplType: t.type, tplSujet: t.sujet, tplMessage: t.message, tplImportance: t.importance });
+            }
+          } else if (t.type === "date_specifique") {
+            if (!t.date_specifique) return;
+            if (t.derniere_execution === t.date_specifique) return; // deja envoye
+            var d = new Date(String(t.date_specifique) + "T00:00:00");
+            if (d < new Date(now.getFullYear(), now.getMonth(), now.getDate())) return;
+            if (d > horizon) return;
+            events.push({ date: d, tplId: t.id, tplType: t.type, tplSujet: t.sujet, tplMessage: t.message, tplImportance: t.importance });
+          } else if (t.type === "periodique") {
+            var iv = parseInt(t.interval_jours);
+            if (!iv || iv < 1) return;
+            // Point de depart : derniere execution + iv, ou aujourd'hui si jamais execute
+            var cursor;
+            if (t.derniere_execution) {
+              cursor = new Date(String(t.derniere_execution) + "T00:00:00");
+              cursor.setDate(cursor.getDate() + iv);
+            } else {
+              cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            }
+            var safe = 0;
+            while (cursor <= horizon && safe < 100) {
+              if (cursor >= new Date(now.getFullYear(), now.getMonth(), now.getDate())) {
+                events.push({ date: new Date(cursor.getTime()), tplId: t.id, tplType: t.type, tplSujet: t.sujet, tplMessage: t.message, tplImportance: t.importance });
+              }
+              cursor.setDate(cursor.getDate() + iv);
+              safe++;
+            }
+          }
+        });
+        events.sort(function(a, b) { return a.date - b.date; });
+        return events;
+      }
+
+      var previsionnel = buildPrevisionnel(90);
+      var daysOfWeek = ["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
+      var monthsLabel = ["janv","fevr","mars","avril","mai","juin","juil","aout","sept","oct","nov","dec"];
+      function fmtDayFr(d) {
+        var today = new Date(); today.setHours(0,0,0,0);
+        var dN = new Date(d.getTime()); dN.setHours(0,0,0,0);
+        var diff = Math.round((dN - today) / 86400000);
+        var base = daysOfWeek[d.getDay()] + " " + d.getDate() + " " + monthsLabel[d.getMonth()];
+        if (diff === 0) return "Aujourd'hui";
+        if (diff === 1) return "Demain";
+        if (diff < 7) return base + " (dans " + diff + "j)";
+        return base + " " + d.getFullYear();
+      }
+      function trunc(s, n) { s = String(s || ""); return s.length > n ? s.substring(0, n - 1) + "…" : s; }
+
       return h("div", null,
         // KPIs + bouton +
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 } },
@@ -2873,6 +2977,47 @@
           h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{date}"),
           h("span", { style: { display: "block", marginTop: 4, color: "#a1a1aa" } }, "Ex : \"Joyeux anniversaire a {prenom} {nom} ({age} ans) !\""),
         ),
+        // Previsionnel des envois futurs
+        previsionnel.length > 0 ? h(Card, { style: { marginBottom: 16, padding: 0, overflow: "hidden" } },
+          h("div", { style: { padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" } },
+            h("h3", { style: { margin: 0, fontSize: 13, fontWeight: 800, color: "#c7d2fe", display: "flex", alignItems: "center", gap: 6 } },
+              h(Icon, { name: "calendar-clock", size: 14, color: "#818cf8" }),
+              "Previsionnel - prochains 90 jours"
+            ),
+            h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600 } }, previsionnel.length + " envoi(s) prevu(s)")
+          ),
+          h("div", { style: { maxHeight: previsionnel.length > 6 ? 320 : "none", overflowY: previsionnel.length > 6 ? "auto" : "visible" } },
+            previsionnel.map(function(ev, i) {
+              var col = ev.tplImportance === "urgent" ? "#fca5a5" : ev.tplImportance === "important" ? "#fdba74" : "#c7d2fe";
+              var icon = TYPE_ICON[ev.tplType] || "calendar";
+              var prevText = ev.jubilaire
+                ? "Anniversaire de " + ev.jubilaire + (ev.age ? " (" + ev.age + " ans)" : "")
+                : (ev.tplSujet || trunc(ev.tplMessage, 70));
+              var sub = ev.tplType === "anniversaire" ? trunc(ev.tplMessage, 80) :
+                        ev.tplSujet ? trunc(ev.tplMessage, 80) : null;
+              return h("div", { key: i, style: { display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 12, alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.03)" : "none" } },
+                h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minWidth: 50, padding: "4px 8px", background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.20)", borderRadius: 8 } },
+                  h("div", { style: { fontSize: 16, fontWeight: 800, color: "#c7d2fe", lineHeight: 1 } }, ev.date.getDate()),
+                  h("div", { style: { fontSize: 9, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 2 } }, monthsLabel[ev.date.getMonth()])
+                ),
+                h("div", { style: { minWidth: 0 } },
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 2 } },
+                    h(Icon, { name: icon, size: 12, color: col }),
+                    h("span", { style: { fontSize: 10, color: col, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, ev.tplType === "anniversaire" ? "ANNIVERSAIRE" : ev.tplType === "date_fixe_annuelle" ? "DATE FIXE" : ev.tplType === "date_specifique" ? "DATE UNIQUE" : "PERIODIQUE")
+                  ),
+                  h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, prevText),
+                  sub ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, sub) : null
+                ),
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, whiteSpace: "nowrap", textAlign: "right" } }, fmtDayFr(ev.date))
+              );
+            })
+          )
+        ) : (templates.filter(function(x){ return x.actif; }).length > 0 ? h(Card, { style: { marginBottom: 16 } },
+          h("div", { style: { padding: "16px", textAlign: "center", color: "#71717a", fontSize: 12 } },
+            h(Icon, { name: "calendar-x", size: 18, color: "#52525b" }),
+            h("div", { style: { marginTop: 6 } }, "Aucun envoi prevu dans les 90 prochains jours pour les templates actifs.")
+          )
+        ) : null),
         // Liste templates
         templates.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun template configure. Clique sur 'Nouveau template' pour creer ton premier message automatique.")) :
         h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
