@@ -9821,6 +9821,28 @@
         // Si plusieurs affectations meme jour (rare), garder la 1ere
         if (!affByPidDate[k]) affByPidDate[k] = { type: a.typeJour || "travail", chantier: a.chantierId };
       });
+
+      // Index saisies par (site, iso) : pour chaque jour de chaque site, on regarde
+      // si UN chantier du site a une saisie avec typeJour=intemperies/panne/ferie/etc.
+      // Cela permet d'afficher le badge meme quand la saisie est faite sur la page
+      // Avancement (et pas via le planning des affectations).
+      var saisieTypeBySiteDay = {}; // key = "site|iso" -> type
+      Object.keys(chantiersBySite || {}).forEach(function(site) {
+        (chantiersBySite[site] || []).forEach(function(c) {
+          var entries = (saisies && saisies[c.id]) || {};
+          Object.keys(entries).forEach(function(iso) {
+            var entry = entries[iso];
+            var t = (typeof entry === "object") ? (entry.typeJour || "normal") : "normal";
+            if (t === "normal" || t === "travail") return;
+            var key = site + "|" + iso;
+            // Priorite : intemperies/panne > conge/chomage > maladie > arret
+            var priority = { intemperies: 5, panne: 5, ferie: 4, chomage: 3, conge: 3, non_productif: 3, maladie: 2, arret: 1 };
+            if (!saisieTypeBySiteDay[key] || (priority[t] || 0) > (priority[saisieTypeBySiteDay[key]] || 0)) {
+              saisieTypeBySiteDay[key] = t;
+            }
+          });
+        });
+      });
       // Labels et couleurs des types d'affectation manuelle (cases vides)
       var typeShortLabels = {
         ferie: "F", panne: "P", conge: "C", chomage: "Ch",
@@ -9872,12 +9894,19 @@
                       days.map(function(day) {
                         var v = data.byDay[day.iso] || 0;
                         var isWE = day.dow === 0 || day.dow === 6;
-                        // Si case vide, regarde si une affectation manuelle existe ce jour pour cet employe
+                        // Si case vide, priorite : 1) affectation manuelle, 2) saisie du site (avancement)
                         var badgeType = null;
                         if (v === 0 && pidForNom) {
                           var aff = affByPidDate[pidForNom + "|" + day.iso];
                           if (aff && aff.type && aff.type !== "travail" && typeShortLabels[aff.type]) {
                             badgeType = aff.type;
+                          }
+                        }
+                        // Fallback : saisie du site (page Avancement) avec un typeJour non-normal
+                        if (!badgeType && v === 0 && !isWE) {
+                          var siteT = saisieTypeBySiteDay[site + "|" + day.iso];
+                          if (siteT && typeShortLabels[siteT]) {
+                            badgeType = siteT;
                           }
                         }
                         return h("td", { key: day.iso, style: Object.assign({}, tdStyle, {
