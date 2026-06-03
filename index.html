@@ -13026,13 +13026,21 @@
         // Taille de police adaptee a la longueur (full machine code peut faire 7+ chars)
         var len = String(avatarTxt).length;
         var avatarFontSize = len <= 2 ? 12 : len <= 3 ? 11 : len <= 5 ? 9 : 7.5;
-        return h("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
+        // Si on a un sender (envoye par), on insere une colonne centrale ; sinon 4 colonnes classiques.
+        var hasSender = !!opts.sender;
+        var gridCols = hasSender ? "auto 1fr auto auto auto" : "auto 1fr auto auto";
+        return h("div", { style: { display: "grid", gridTemplateColumns: gridCols, alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
           onClick: opts.onClick },
           h("div", { style: { width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: avatarFontSize, color: "white", flexShrink: 0, padding: "0 4px", textAlign: "center", lineHeight: 1 } }, avatarTxt),
           h("div", { style: { minWidth: 0 } },
             h("div", { style: { fontSize: 13, fontWeight: 700, color: "#e5e7eb" } }, opts.name),
             h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2 } }, opts.sub)
           ),
+          // Envoye par (centre)
+          hasSender ? h("div", { style: { fontSize: 11, color: "#a1a1aa", whiteSpace: "nowrap", display: "flex", flexDirection: "column", alignItems: "flex-end", borderLeft: "1px solid rgba(255,255,255,0.06)", paddingLeft: 14 } },
+            h("span", { style: { fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "Envoye par"),
+            h("span", { style: { fontSize: 12, color: "#c7d2fe", fontWeight: 700, marginTop: 2 } }, opts.sender)
+          ) : null,
           h("div", { style: { fontSize: 12, color: "#a1a1aa", whiteSpace: "nowrap" } }, opts.right || ""),
           h("div", null, h("span", { style: statutStyle(opts.statut) }, STATUT_LABEL[opts.statut] || opts.statut || "-"))
         );
@@ -13096,6 +13104,7 @@
             rowHeader({
               name: name + " - " + sondLabel,
               sub: (c.fonction ? c.fonction + " - " : "") + (heureRange || "Heures non renseignees") + " (" + totalStr + ")" + (c.absence_type ? " - " + c.absence_type : ""),
+              sender: personnelLabel(c.personnel_id),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : fmtDate(c.date_releve),
               statut: statut,
               isExpanded: isExp,
@@ -13145,6 +13154,7 @@
             rowHeader({
               name: name + (c.lieu ? " - " + c.lieu : ""),
               sub: (c.type_conge || "conge") + " - " + c.nombre_jours + " jour" + (c.nombre_jours > 1 ? "s" : "") + " du " + fmtDate(c.date_debut) + " au " + fmtDate(c.date_reprise),
+              sender: personnelLabel(c.envoye_par_id || c.demandeur_id),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
@@ -13186,6 +13196,7 @@
             rowHeader({
               name: name,
               sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
+              sender: personnelLabel(c.demandeur_id),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
@@ -13253,6 +13264,7 @@
                 c.urgence ? h("span", null, h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: URG_COLOR[c.urgence] || "#94a3b8", marginRight: 6, verticalAlign: "middle" } }), URG_LABEL[c.urgence] || c.urgence, " - ") : null,
                 (c.type_panne ? c.type_panne + " - " : "") + (c.description ? c.description.substring(0, 80) + (c.description.length > 80 ? "..." : "") : "")
               ),
+              sender: personnelLabel(c.demandeur_id),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Soumis " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
@@ -13322,6 +13334,7 @@
               avatarText: sondLabel,
               name: sondLabel + " - " + sondeurName,
               sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.total_metres || 0) + " m / " + fmtMinsHHmm(r.total_heures) + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
+              sender: personnelLabel(r.personnel_id),
               right: r.date_rapport ? "Rapport du " + fmtDate(r.date_rapport) : (r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : "-"),
               statut: r.statut,
               isExpanded: isExp,
