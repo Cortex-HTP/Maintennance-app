@@ -13156,6 +13156,113 @@
       );
     }
 
+    // ─── Modal : planifier une demande d'intervention (cree une intervention reelle) ──
+    // Pre-remplie depuis la demande, tous les champs modifiables. A la sauvegarde :
+    // - INSERT dans la table interventions (via ctx.addIntervention)
+    // - UPDATE statut de la demande_intervention -> planifiee (gere par le parent)
+    function PlanifierInterventionModal({ demande, initialForm, equipements, onClose, onCreated }) {
+      var ctx = useAppData();
+      var [form, setForm] = useState(initialForm);
+      var [saving, setSaving] = useState(false);
+      function upd(k, v) { setForm(Object.assign({}, form, { [k]: v })); }
+
+      async function save() {
+        if (!form.Title || !form.Title.trim()) { alert("Le titre est obligatoire."); return; }
+        if (!form.Date_Intervention) { alert("La date est obligatoire."); return; }
+        if (!form.Technicien || !form.Technicien.trim()) { alert("Le technicien est obligatoire."); return; }
+        setSaving(true);
+        try {
+          await ctx.addIntervention(form);
+          setSaving(false);
+          if (onCreated) onCreated(form);
+        } catch (e) {
+          setSaving(false);
+          alert("Erreur creation : " + (e.message || String(e)));
+        }
+      }
+
+      var inputS = { width: "100%", padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+      var labelS = { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+
+      return h(Modal, { title: "Planifier l'intervention", onClose: onClose, size: 600 },
+        // Info source
+        h("div", { style: { background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#c7d2fe" } },
+          h(IconText, { icon: "info", size: 13, color: "#a5b4fc" },
+            "Cree a partir de la demande #" + demande.id + (demande.urgence ? " (urgence " + demande.urgence + ")" : "") + " - les champs ci-dessous sont pre-remplis et modifiables."
+          )
+        ),
+        h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+          // Titre (full width)
+          h("div", { style: { gridColumn: "1 / -1" } },
+            h("label", { style: labelS }, "Titre de l'intervention *"),
+            h("input", { type: "text", style: inputS, value: form.Title, onChange: function(e) { upd("Title", e.target.value); }, placeholder: "Ex: Reparation pompe hydraulique" })
+          ),
+          // Equipement
+          h("div", null,
+            h("label", { style: labelS }, "Equipement"),
+            h("select", { style: inputS, value: form.EquipementId || "", onChange: function(e) {
+              var eq = equipements.find(function(x) { return x.Id === e.target.value; });
+              setForm(Object.assign({}, form, { EquipementId: e.target.value || null, Equipement: eq ? eq.Title : "" }));
+            } },
+              h("option", { value: "" }, "-- aucun --"),
+              equipements.slice().sort(function(a, b) { return String(a.Title || "").localeCompare(String(b.Title || "")); }).map(function(eq) {
+                return h("option", { key: eq.Id, value: eq.Id }, eq.Title);
+              })
+            )
+          ),
+          // Date
+          h("div", null,
+            h("label", { style: labelS }, "Date d'intervention *"),
+            h("input", { type: "date", style: inputS, value: form.Date_Intervention || "", onChange: function(e) { upd("Date_Intervention", e.target.value); } })
+          ),
+          // Technicien
+          h("div", null,
+            h("label", { style: labelS }, "Technicien *"),
+            h("input", { type: "text", style: inputS, value: form.Technicien || "", onChange: function(e) { upd("Technicien", e.target.value); }, placeholder: "Nom du technicien" })
+          ),
+          // Type
+          h("div", null,
+            h("label", { style: labelS }, "Type"),
+            h("select", { style: inputS, value: form.Type || "Curative", onChange: function(e) { upd("Type", e.target.value); } },
+              h("option", { value: "Curative" }, "Curative"),
+              h("option", { value: "Preventive" }, "Preventive")
+            )
+          ),
+          // Horametre
+          h("div", null,
+            h("label", { style: labelS }, "Horametre (h)"),
+            h("input", { type: "number", style: inputS, value: form.Horametre || "", onChange: function(e) { upd("Horametre", e.target.value); }, placeholder: "Ex: 8300" })
+          ),
+          // KM
+          h("div", null,
+            h("label", { style: labelS }, "Kilometrage (km)"),
+            h("input", { type: "number", style: inputS, value: form.KM || "", onChange: function(e) { upd("KM", e.target.value); }, placeholder: "Ex: 20500" })
+          ),
+          // Cout
+          h("div", null,
+            h("label", { style: labelS }, "Cout estime (XPF)"),
+            h("input", { type: "number", style: inputS, value: form.Cout || "", onChange: function(e) { upd("Cout", e.target.value); }, placeholder: "Ex: 50000" })
+          ),
+          // Temps arret
+          h("div", null,
+            h("label", { style: labelS }, "Temps d'arret (h)"),
+            h("input", { type: "text", style: inputS, value: form.Temps_Arret || "", onChange: function(e) { upd("Temps_Arret", e.target.value); }, placeholder: "Ex: 2h ou 24h" })
+          ),
+          // Travaux / description (full width)
+          h("div", { style: { gridColumn: "1 / -1" } },
+            h("label", { style: labelS }, "Travaux a effectuer / description"),
+            h("textarea", { rows: 4, style: Object.assign({}, inputS, { resize: "vertical", fontFamily: "inherit" }), value: form.Travaux_Effectues || "", onChange: function(e) { upd("Travaux_Effectues", e.target.value); }, placeholder: "Description detaillee des travaux..." })
+          )
+        ),
+        h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.07)" } },
+          h(Button, { variant: "secondary", onClick: onClose, disabled: saving }, "Annuler"),
+          h(Button, { onClick: save, disabled: saving },
+            h(IconText, { icon: saving ? "loader" : "calendar-check", size: 14 }, saving ? "Creation..." : "Creer l'intervention")
+          )
+        )
+      );
+    }
+
     // ─── Ecran Soumissions employes ───────────────────────────────────
     function EcranSoumissions() {
       var ctx = useAppData();
@@ -13261,6 +13368,8 @@
       var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
       var _editingRapportId = useState(null); var editingRapportId = _editingRapportId[0]; var setEditingRapportId = _editingRapportId[1];
       var _editingReleve = useState(null); var editingReleve = _editingReleve[0]; var setEditingReleve = _editingReleve[1];
+      // Modal de planification d'une demande d'intervention -> creation d'une intervention reelle
+      var _planifInt = useState(null); var planifInt = _planifInt[0]; var setPlanifInt = _planifInt[1];
       // Switch dans l'onglet Rapports : "liste" (defaut) ou "recap_mensuel"
       var _rapportsView = useState("liste"); var rapportsView = _rapportsView[0]; var setRapportsView = _rapportsView[1];
       // Switch dans l'onglet Releves d'heures : "liste" (defaut) ou "recap_mensuel"
@@ -14023,7 +14132,31 @@
               ) : null,
               c.signature_employe_png ? h("div", null, sectionTitle("Signature employe"), sigBox(c.signature_employe_png)) : null,
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
-                c.statut === "soumis" ? actionBtn({ label: "Planifier", icon: "calendar-plus", color: "indigo", onClick: function() { updateInterventionStatut(c.id, "planifiee"); setExpanded(null); } }) : null,
+                c.statut === "soumis" ? actionBtn({ label: "Planifier", icon: "calendar-plus", color: "indigo", onClick: function() {
+                  // Ouvre la modale pre-remplie avec les donnees de la demande.
+                  // L'admin pourra modifier tous les champs avant de creer l'intervention reelle.
+                  var eq = (ctx.equipements || []).find(function(e) { return e.Id === c.equipement_id; });
+                  setPlanifInt({
+                    demande: c,
+                    form: {
+                      Title: c.type_panne ? (c.type_panne + (c.immatriculation ? " - " + c.immatriculation : "")) : ("Intervention " + (c.immatriculation || "")),
+                      Equipement: eq ? eq.Title : (c.immatriculation || ""),
+                      EquipementId: c.equipement_id || null,
+                      Date_Intervention: new Date().toISOString().substring(0, 10),
+                      Technicien: "",
+                      Statut_Intervention: "Planifiee",
+                      Travaux_Effectues: c.description || "",
+                      Temps_Arret: "",
+                      Cout: "",
+                      Plan: "",
+                      Horametre: c.horametre != null ? String(c.horametre) : "",
+                      KM: "",
+                      Type: "Curative",
+                      Gamme: []
+                    }
+                  });
+                  setExpanded(null);
+                } }) : null,
                 c.statut === "planifiee" ? actionBtn({ label: "Demarrer", icon: "play", color: "indigo", onClick: function() { updateInterventionStatut(c.id, "en_cours"); } }) : null,
                 c.statut === "en_cours" ? actionBtn({ label: "Terminer", icon: "check", color: "green", onClick: function() { updateInterventionStatut(c.id, "terminee"); } }) : null,
                 c.statut === "soumis" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette demande ?")) { updateInterventionStatut(c.id, "refusee"); setExpanded(null); } } }) : null,
@@ -15375,6 +15508,20 @@
           onSaved: function(updated) {
             setRels(rels.map(function(x) { return x.id === updated.id ? updated : x; }));
             setEditingReleve(null);
+          }
+        }) : null,
+        // Modal "Planifier une intervention" : cree une intervention reelle a partir d'une demande
+        planifInt ? h(PlanifierInterventionModal, {
+          demande: planifInt.demande,
+          initialForm: planifInt.form,
+          equipements: ctx.equipements || [],
+          onClose: function() { setPlanifInt(null); },
+          onCreated: function(newInt) {
+            // 1) Marque la demande comme planifiee
+            updateInterventionStatut(planifInt.demande.id, "planifiee");
+            // 2) Ferme la modale
+            setPlanifInt(null);
+            if (ctx.showToast) ctx.showToast("Intervention creee et planifiee", "success");
           }
         }) : null,
         // Modal "Ajouter aux Pieces detachees" depuis une soumission
