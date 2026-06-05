@@ -2968,14 +2968,16 @@
       }
 
       var TYPE_LABEL = {
-        anniversaire: "Anniversaire (auto par employe)",
+        anniversaire: "Anniversaire (date de naissance)",
+        anniversaire_anciennete: "Anniversaire d'anciennete (date d'embauche)",
         date_fixe_annuelle: "Date fixe annuelle (ex: 25/12)",
         date_specifique: "Date specifique (1x unique)",
         periodique: "Periodique (tous les X jours)"
       };
-      var TYPE_ICON = { anniversaire: "cake", date_fixe_annuelle: "calendar", date_specifique: "calendar-clock", periodique: "repeat" };
+      var TYPE_ICON = { anniversaire: "cake", anniversaire_anciennete: "award", date_fixe_annuelle: "calendar", date_specifique: "calendar-clock", periodique: "repeat" };
       function describeTrigger(t) {
         if (t.type === "anniversaire") return "Le jour de l'anniversaire de chaque employe";
+        if (t.type === "anniversaire_anciennete") return "Le jour anniversaire de la date d'embauche de chaque employe";
         if (t.type === "date_fixe_annuelle") return "Chaque annee le " + (t.jour_mois || "?");
         if (t.type === "date_specifique") return "Le " + (t.date_specifique || "?") + " (1x)";
         if (t.type === "periodique") return "Tous les " + (t.interval_jours || "?") + " jours";
@@ -2988,6 +2990,7 @@
           .replace(/\{prenom\}/g, ctx.prenom || "")
           .replace(/\{nom\}/g, ctx.nom || "")
           .replace(/\{age\}/g, ctx.age != null ? String(ctx.age) : "")
+          .replace(/\{annees\}/g, ctx.annees != null ? String(ctx.annees) : "")
           .replace(/\{date\}/g, ctx.date || "");
       }
       function buildPrevisionnel(daysAhead) {
@@ -3030,6 +3033,30 @@
                 tplImportance: t.importance,
                 jubilaire: ((p.prenom || "") + " " + (p.nom || "")).trim(),
                 age: age
+              });
+            });
+          } else if (t.type === "anniversaire_anciennete") {
+            // Pour chaque employe avec dateEmbauche
+            (personnelData || []).forEach(function(p) {
+              if (!p.dateEmbauche) return;
+              var parts = String(p.dateEmbauche).substring(0, 10).split("-");
+              if (parts.length !== 3) return;
+              var mm = parseInt(parts[1]), dd = parseInt(parts[2]);
+              if (!mm || !dd) return;
+              var next = nextOccurrenceOfMMDD(mm, dd, now);
+              if (next > horizon) return;
+              var annees = next.getFullYear() - parseInt(parts[0]);
+              if (annees < 1) return; // saute le 0
+              var ctx = { prenom: p.prenom || "", nom: p.nom || "", annees: annees, date: isoOf(next) };
+              events.push({
+                date: next,
+                tplId: t.id,
+                tplType: t.type,
+                tplSujet: substituteVarsPrev(t.sujet, ctx),
+                tplMessage: substituteVarsPrev(t.message, ctx),
+                tplImportance: t.importance,
+                jubilaire: ((p.prenom || "") + " " + (p.nom || "")).trim(),
+                annees: annees
               });
             });
           } else if (t.type === "date_fixe_annuelle") {
@@ -3113,8 +3140,10 @@
           h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{prenom}"),
           h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{nom}"),
           h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{age}"),
+          h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{annees}"),
           h("code", { style: { background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3, margin: "0 3px" } }, "{date}"),
-          h("span", { style: { display: "block", marginTop: 4, color: "#a1a1aa" } }, "Ex : \"Joyeux anniversaire a {prenom} {nom} ({age} ans) !\""),
+          h("span", { style: { display: "block", marginTop: 4, color: "#a1a1aa" } }, "Ex anniv. naissance : \"Joyeux anniversaire {prenom} {nom} ({age} ans) !\""),
+          h("span", { style: { display: "block", marginTop: 2, color: "#a1a1aa" } }, "Ex anciennete : \"Felicitations {prenom} {nom} pour vos {annees} ans dans l'entreprise !\""),
         ),
         // Previsionnel des envois futurs
         previsionnel.length > 0 ? h(Card, { style: { marginBottom: 16, padding: 0, overflow: "hidden" } },
@@ -3130,7 +3159,9 @@
               var col = ev.tplImportance === "urgent" ? "#fca5a5" : ev.tplImportance === "important" ? "#fdba74" : "#c7d2fe";
               var icon = TYPE_ICON[ev.tplType] || "calendar";
               var prevText = ev.jubilaire
-                ? "Anniversaire de " + ev.jubilaire + (ev.age ? " (" + ev.age + " ans)" : "")
+                ? (ev.tplType === "anniversaire_anciennete"
+                    ? ev.annees + " ans d'anciennete - " + ev.jubilaire
+                    : "Anniversaire de " + ev.jubilaire + (ev.age ? " (" + ev.age + " ans)" : ""))
                 : (ev.tplSujet || trunc(ev.tplMessage, 70));
               var sub = ev.tplType === "anniversaire" ? trunc(ev.tplMessage, 80) :
                         ev.tplSujet ? trunc(ev.tplMessage, 80) : null;
@@ -3142,7 +3173,11 @@
                 h("div", { style: { minWidth: 0 } },
                   h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 2 } },
                     h(Icon, { name: icon, size: 12, color: col }),
-                    h("span", { style: { fontSize: 10, color: col, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, ev.tplType === "anniversaire" ? "ANNIVERSAIRE" : ev.tplType === "date_fixe_annuelle" ? "DATE FIXE" : ev.tplType === "date_specifique" ? "DATE UNIQUE" : "PERIODIQUE")
+                    h("span", { style: { fontSize: 10, color: col, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } },
+                      ev.tplType === "anniversaire" ? "ANNIVERSAIRE" :
+                      ev.tplType === "anniversaire_anciennete" ? "ANCIENNETE" :
+                      ev.tplType === "date_fixe_annuelle" ? "DATE FIXE" :
+                      ev.tplType === "date_specifique" ? "DATE UNIQUE" : "PERIODIQUE")
                   ),
                   h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, prevText),
                   sub ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, sub) : null
@@ -3192,7 +3227,8 @@
             h("div", null,
               h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Type"),
               h("select", { value: editing.type, onChange: function(e) { setEditing(Object.assign({}, editing, { type: e.target.value })); }, style: inputStyle },
-                h("option", { value: "anniversaire" }, "Anniversaire (auto par dateNaissance)"),
+                h("option", { value: "anniversaire" }, "Anniversaire (date de naissance)"),
+                h("option", { value: "anniversaire_anciennete" }, "Anniversaire d'anciennete (date d'embauche)"),
                 h("option", { value: "date_fixe_annuelle" }, "Date fixe annuelle (ex: Noel)"),
                 h("option", { value: "date_specifique" }, "Date specifique (1x unique)"),
                 h("option", { value: "periodique" }, "Periodique (tous les X jours)")
