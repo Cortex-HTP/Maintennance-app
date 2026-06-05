@@ -2294,11 +2294,31 @@
       const [editing, setEditing] = useState(null);
       const [toDelete, setToDelete] = useState(null);
       const [tab, setTab] = useState("liste"); // "liste" ou "inflation"
+      const [famille, setFamille] = useState("all"); // all / aircore / carotte / autres
       const categories = ["all", ...Array.from(new Set(pieces.map((p) => p.Categorie).filter(Boolean)))];
+      // Determine la famille d'une piece d'apres son champ Compatible
+      // - aircore : matche au moins un engin D*
+      // - carotte : matche au moins un engin FS*
+      // - autres : pas de Compatible, ou ne matche aucun des 2
+      function familleOf(p) {
+        if (!p.Compatible) return "autres";
+        var codes = resolveCompatibleCodes(p.Compatible, allEquipCodes);
+        var hasD = codes.some(function(c) { return /^D/i.test(c); });
+        var hasFS = codes.some(function(c) { return /^FS/i.test(c); });
+        if (hasD && hasFS) return "both";
+        if (hasD) return "aircore";
+        if (hasFS) return "carotte";
+        return "autres";
+      }
+      var nbAircore = pieces.filter(function(p) { var f = familleOf(p); return f === "aircore" || f === "both"; }).length;
+      var nbCarotte = pieces.filter(function(p) { var f = familleOf(p); return f === "carotte" || f === "both"; }).length;
+      var nbAutres = pieces.filter(function(p) { return familleOf(p) === "autres"; }).length;
       const filtered = pieces.filter((p) => {
         const mc = categorie === "all" || p.Categorie === categorie;
         const ms = !search || p.Reference.toLowerCase().includes(search.toLowerCase()) || p.Designation.toLowerCase().includes(search.toLowerCase()) || (p.Fournisseur || "").toLowerCase().includes(search.toLowerCase());
-        return mc && ms;
+        const f = familleOf(p);
+        const mf = famille === "all" || f === famille || (famille !== "autres" && f === "both");
+        return mc && ms && mf;
       });
       const statusOf = (p) => {
         const s = parseInt(p.Stock || 0), m = parseInt(p.StockMin || 0);
@@ -2340,6 +2360,26 @@
           h(KPICard, { icon: h(Icon, { name: "package", size: 22, color: "#ffffff" }), label: "References", value: fmtNum(pieces.length), color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "alert-triangle", size: 22, color: "#ffffff" }), label: "Stock faible", value: fmtNum(faibles), color: faibles > 0 ? "#fbbf24" : "#22c55e" }),
           h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Valeur stock", value: fmtMoney(totalValeur), color: "#22c55e" })),
+        // Filtre famille : separation physique Aircore / Carotte / Autres
+        h("div", { style: { display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" } },
+          [
+            { k: "all", label: "Toutes les references", count: pieces.length, color: "#a78bfa" },
+            { k: "aircore", label: "Aircore (D*)", count: nbAircore, color: "#fbbf24" },
+            { k: "carotte", label: "Carotte (FS*)", count: nbCarotte, color: "#67e8f9" },
+            { k: "autres", label: "Autres / non specifie", count: nbAutres, color: "#a1a1aa" }
+          ].map(function(f) {
+            var active = famille === f.k;
+            return h("button", { key: f.k, onClick: function() { setFamille(f.k); },
+              style: { padding: "8px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+                background: active ? "linear-gradient(135deg, " + f.color + "33, " + f.color + "11)" : "rgba(255,255,255,0.04)",
+                color: active ? f.color : "#a1a1aa",
+                border: "1px solid " + (active ? f.color + "55" : "rgba(255,255,255,0.08)"),
+                display: "inline-flex", alignItems: "center", gap: 6 } },
+              f.label,
+              h("span", { style: { background: active ? f.color + "33" : "rgba(255,255,255,0.06)", color: active ? f.color : "#71717a", padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 800 } }, f.count)
+            );
+          })
+        ),
         h("div", { style: { display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" } },
           h("div", { style: { flex: 1, minWidth: 250 } }, h(SearchInput, { placeholder: "Reference, designation, fournisseur...", value: search, onChange: setSearch })),
           h("select", { value: categorie, onChange: (e) => setCategorie(e.target.value), style: { ...selectStyle, width: "auto", minWidth: 180 } },
