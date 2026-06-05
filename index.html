@@ -746,6 +746,32 @@
       return total;
     }
 
+    // ─── Soft-delete : sauvegarde la ligne dans deleted_items avant de la supprimer ─
+    // Retourne une Promise. Utilisation : softDeleteRow("rapports_forage", rowObj, "Rapport #..." [, userEmail])
+    //  - sourceTable : nom de la table source
+    //  - rowObj : l'objet de la ligne (DOIT contenir .id)
+    //  - summary : libelle court pour l'affichage dans la corbeille
+    //  - userEmail : optionnel, qui a supprime
+    // La ligne sera purgee automatiquement apres 30 jours (cf. expires_at colonne).
+    async function softDeleteRow(sourceTable, rowObj, summary, userEmail) {
+      if (!rowObj || rowObj.id == null) {
+        throw new Error("softDeleteRow : rowObj.id manquant");
+      }
+      // 1) Backup dans deleted_items
+      const backupRes = await supabase.from("deleted_items").insert({
+        source_table: sourceTable,
+        source_row_id: String(rowObj.id),
+        row_data: rowObj,
+        deleted_by: userEmail || null,
+        summary: summary || null
+      });
+      if (backupRes.error) throw new Error("Backup corbeille echoue : " + backupRes.error.message);
+      // 2) Suppression effective dans la table source
+      const delRes = await supabase.from(sourceTable).delete().eq("id", rowObj.id);
+      if (delRes.error) throw new Error("Suppression echouee : " + delRes.error.message);
+      return true;
+    }
+
     // ─── Contexte global ────────────────────────────────────────────────
     const AppContext = createContext();
     function useAppData() { return useContext(AppContext); }
@@ -3259,12 +3285,14 @@
         });
       }
       function deleteCarburant(id) {
-        supabase.from("consommations_carburant").delete().eq("id", id).then(function(res) {
-          if (res.error) { alert("Erreur : " + res.error.message); return; }
+        var row = carburants.find(function(x) { return x.id === id; });
+        if (!row) return;
+        var libelle = "Carburant " + (row.sondeuse_code || "?") + " du " + (row.date_consommation || "?") + " (" + (parseFloat(row.quantite_l) || 0).toFixed(1) + " L)";
+        softDeleteRow("consommations_carburant", row, libelle, ctx.userEmail).then(function() {
           setCarburants(carburants.filter(function(x) { return x.id !== id; }));
           setToDelete(null);
-          if (ctx.showToast) ctx.showToast("Carburant supprime", "success");
-        });
+          if (ctx.showToast) ctx.showToast("Deplace dans la corbeille (30j)", "success");
+        }).catch(function(e) { alert("Erreur : " + e.message); });
       }
 
       // Map equipement par immatriculation (uppercase) pour categorie/nom
@@ -13752,13 +13780,12 @@
       var deleteIntervention = function(c) {
         var name = personnelLabel(c.demandeur_id) || ("Demandeur #" + c.demandeur_id);
         var libelle = "Intervention #" + c.id + " — " + name + (c.immatriculation ? " (" + c.immatriculation + ")" : "") + (c.type_panne ? " - " + c.type_panne : "");
-        if (!confirm("Supprimer DEFINITIVEMENT cette demande d'intervention ?\n\n" + libelle + "\n\nLes photos uploadees resteront dans le bucket Storage (a purger separement si besoin).\n\nCette action est irreversible.")) return;
-        supabase.from("demandes_intervention").delete().eq("id", c.id).then(function(res) {
-          if (res.error) { alert("Erreur suppression : " + res.error.message); return; }
+        if (!confirm("Supprimer cette demande d'intervention ?\n\n" + libelle + "\n\n(Sauvegardee dans la corbeille pendant 30 jours, restaurable depuis Administration > Corbeille)")) return;
+        softDeleteRow("demandes_intervention", c, libelle, ctx.userEmail).then(function() {
           setInts(ints.filter(function(x) { return x.id !== c.id; }));
-          if (showToast) showToast("Demande d'intervention supprimee", "success");
+          if (showToast) showToast("Deplacee dans la corbeille (30j)", "success");
           setExpanded(null);
-        });
+        }).catch(function(e) { alert("Erreur : " + e.message); });
       };
       // Modifier la date d'un releve d'heures (admin)
       var updateReleveDate = function(c) {
@@ -13777,25 +13804,23 @@
       var deleteReleveHeures = function(c) {
         var emp = personnelLabel(c.personnel_id) || ("Employe #" + c.personnel_id);
         var libelle = "Releve " + emp + (c.date_releve ? " du " + fmtDate(c.date_releve) : "") + (c.sondeuse_code ? " — " + c.sondeuse_code : "");
-        if (!confirm("Supprimer DEFINITIVEMENT ce releve d'heures ?\n\n" + libelle + "\n\nCette action est irreversible.")) return;
-        supabase.from("releves_heures").delete().eq("id", c.id).then(function(res) {
-          if (res.error) { alert("Erreur suppression : " + res.error.message); return; }
+        if (!confirm("Supprimer ce releve d'heures ?\n\n" + libelle + "\n\n(Sauvegarde dans la corbeille pendant 30 jours, restaurable depuis Administration > Corbeille)")) return;
+        softDeleteRow("releves_heures", c, libelle, ctx.userEmail).then(function() {
           setRels(rels.filter(function(x) { return x.id !== c.id; }));
-          if (showToast) showToast("Releve supprime", "success");
+          if (showToast) showToast("Deplace dans la corbeille (30j)", "success");
           setExpanded(null);
-        });
+        }).catch(function(e) { alert("Erreur : " + e.message); });
       };
       // Suppression definitive d'une demande de conge (admin uniquement)
       var deleteConge = function(c) {
         var dem = (personnelMap[c.demandeur_id] && personnelMap[c.demandeur_id].nom) || ("Demandeur #" + c.demandeur_id);
         var libelle = "Conge " + (c.type_conge || "") + " — " + dem + (c.date_debut ? " (du " + fmtDate(c.date_debut) + ")" : "");
-        if (!confirm("Supprimer DEFINITIVEMENT cette demande de conge ?\n\n" + libelle + "\n\nCette action est irreversible.")) return;
-        supabase.from("demandes_conge").delete().eq("id", c.id).then(function(res) {
-          if (res.error) { alert("Erreur suppression : " + res.error.message); return; }
+        if (!confirm("Supprimer cette demande de conge ?\n\n" + libelle + "\n\n(Sauvegardee dans la corbeille pendant 30 jours, restaurable depuis Administration > Corbeille)")) return;
+        softDeleteRow("demandes_conge", c, libelle, ctx.userEmail).then(function() {
           setConges(conges.filter(function(x) { return x.id !== c.id; }));
-          if (showToast) showToast("Demande de conge supprimee", "success");
+          if (showToast) showToast("Deplacee dans la corbeille (30j)", "success");
           setExpanded(null);
-        });
+        }).catch(function(e) { alert("Erreur : " + e.message); });
       };
       var updateCommandeStatut = function(id, st) {
         updateStatut("bons_commande", id, st, function(updated) {
@@ -13860,21 +13885,16 @@
       // Suppression definitive d'un rapport (utile pour purger les doublons d'import)
       var deleteRapport = function(r) {
         var libelle = "Rapport #" + r.id + (r.sondeuse_code ? " " + r.sondeuse_code : "") + (r.date_rapport ? " du " + fmtDate(r.date_rapport) : "");
-        if (!confirm("Supprimer DEFINITIVEMENT ce rapport ?\n\n" + libelle + "\n\nCette action est irreversible.")) return;
-        supabase.from("rapports_forage").delete().eq("id", r.id).then(function(res) {
-          if (res.error) {
-            alert("Erreur suppression : " + res.error.message);
-            return;
-          }
+        if (!confirm("Supprimer ce rapport ?\n\n" + libelle + "\n\n(Sauvegarde dans la corbeille pendant 30 jours, restaurable depuis Administration > Corbeille)")) return;
+        softDeleteRow("rapports_forage", r, libelle, ctx.userEmail).then(function() {
           setRaps(raps.filter(function(x) { return x.id !== r.id; }));
-          // Refresh contexte global pour que Avancement / Stats / Accueil voient la suppression immediatement
           if (ctx.setDbRapportsForage) {
             var current = ctx.dbRapportsForage || [];
             ctx.setDbRapportsForage(current.filter(function(x) { return x.id !== r.id; }));
           }
-          if (showToast) showToast("Rapport supprime", "success");
+          if (showToast) showToast("Deplace dans la corbeille (30j)", "success");
           setExpanded(null);
-        });
+        }).catch(function(e) { alert("Erreur : " + e.message); });
       };
 
       // ── Filtres statut par onglet ──
@@ -15682,6 +15702,7 @@
         { key: "parametres", label: "Parametres", icon: "sliders-horizontal", adminOnly: false },
         { key: "validations", label: "Validations", icon: "shield-check", adminOnly: true, badge: pendingCount },
         { key: "utilisateurs", label: "Utilisateurs", icon: "user-cog", adminOnly: true },
+        { key: "corbeille", label: "Corbeille", icon: "trash-2", adminOnly: true },
         { key: "bugs", label: "Journal des bugs", icon: "alert-triangle", adminOnly: true, badge: bugsUnresolved },
       ];
       const visibleTabs = tabs.filter(function(t) { return !t.adminOnly || isAdmin; });
@@ -15715,7 +15736,147 @@
         tab === "parametres" ? h(EcranParametres, null) : null,
         tab === "validations" && isAdmin ? h(EcranValidations, { onNavigate: onNavigate }) : null,
         tab === "utilisateurs" && isAdmin ? h(EcranAdminUtilisateurs, null) : null,
+        tab === "corbeille" && isAdmin ? h(EcranCorbeille, null) : null,
         tab === "bugs" && isAdmin ? h(EcranBugs, null) : null
+      );
+    }
+
+    // ─── EcranCorbeille : restauration / suppression definitive des lignes ───
+    function EcranCorbeille() {
+      const ctx = useAppData();
+      const [items, setItems] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [filter, setFilter] = useState("all");
+      const [refreshFlag, setRefreshFlag] = useState(0);
+
+      useEffect(function() {
+        setLoading(true);
+        supabase.from("deleted_items").select("*").order("deleted_at", { ascending: false }).then(function(res) {
+          setLoading(false);
+          if (res.error) { console.warn("[corbeille] fetch:", res.error.message); return; }
+          setItems(res.data || []);
+        });
+      }, [refreshFlag]);
+
+      function tableLabel(t) {
+        return ({
+          "rapports_forage": "Rapport de forage",
+          "releves_heures": "Releve d'heure",
+          "demandes_conge": "Demande de conge",
+          "demandes_intervention": "Demande d'intervention",
+          "bons_commande": "Bon de commande",
+          "consommations_carburant": "Carburant"
+        })[t] || t;
+      }
+      function tableIcon(t) {
+        return ({
+          "rapports_forage": "file-text",
+          "releves_heures": "clock",
+          "demandes_conge": "calendar-days",
+          "demandes_intervention": "wrench",
+          "bons_commande": "shopping-cart",
+          "consommations_carburant": "fuel"
+        })[t] || "file";
+      }
+
+      async function restore(item) {
+        if (!confirm("Restaurer cette ligne ?\n\n" + (item.summary || "(sans libelle)") + "\n\nElle reapparaitra dans " + tableLabel(item.source_table) + ".")) return;
+        try {
+          var row = item.row_data;
+          if (row && typeof row === "string") row = JSON.parse(row);
+          // Re-INSERT dans la table source (l'id est preserve si possible)
+          const insRes = await supabase.from(item.source_table).insert(row).select().single();
+          if (insRes.error) { alert("Erreur restauration : " + insRes.error.message); return; }
+          // Retire de la corbeille
+          const delRes = await supabase.from("deleted_items").delete().eq("id", item.id);
+          if (delRes.error) console.warn("[corbeille] cleanup delete:", delRes.error.message);
+          setItems(items.filter(function(x) { return x.id !== item.id; }));
+          if (ctx.showToast) ctx.showToast("Restaure", "success");
+        } catch (e) { alert("Erreur : " + (e.message || e)); }
+      }
+
+      async function purge(item) {
+        if (!confirm("Supprimer DEFINITIVEMENT cette ligne ?\n\n" + (item.summary || "(sans libelle)") + "\n\nIrreversible.")) return;
+        const { error } = await supabase.from("deleted_items").delete().eq("id", item.id);
+        if (error) { alert("Erreur : " + error.message); return; }
+        setItems(items.filter(function(x) { return x.id !== item.id; }));
+        if (ctx.showToast) ctx.showToast("Supprime definitivement", "success");
+      }
+
+      async function purgeAll() {
+        if (!confirm("Vider TOUTE la corbeille ?\n\n" + items.length + " element(s) seront supprimes DEFINITIVEMENT. Irreversible.")) return;
+        const { error } = await supabase.from("deleted_items").delete().neq("id", -1);
+        if (error) { alert("Erreur : " + error.message); return; }
+        setItems([]);
+        if (ctx.showToast) ctx.showToast("Corbeille videe", "success");
+      }
+
+      // Filtres + comptage
+      var tablesPresent = Array.from(new Set(items.map(function(x) { return x.source_table; })));
+      var filtered = filter === "all" ? items : items.filter(function(x) { return x.source_table === filter; });
+      var nbExpiringSoon = items.filter(function(x) {
+        if (!x.expires_at) return false;
+        var d = (new Date(x.expires_at) - new Date()) / 86400000;
+        return d > 0 && d <= 3;
+      }).length;
+
+      return h("div", null,
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 } },
+          h("div", { style: { fontSize: 13, color: "#a1a1aa" } },
+            h("strong", { style: { color: "#fafafa" } }, items.length), " element(s) - ",
+            h("strong", { style: { color: nbExpiringSoon > 0 ? "#fda4af" : "#86efac" } }, nbExpiringSoon), " expire(nt) dans 3 jours"
+          ),
+          items.length > 0 ? h(Button, { variant: "danger", onClick: purgeAll }, h(IconText, { icon: "trash-2", size: 13 }, "Vider la corbeille")) : null
+        ),
+        h("div", { style: { background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12, color: "#c7d2fe" } },
+          h("strong", null, "Conservation : 30 jours."), " Apres ce delai les elements seront purges automatiquement et seront irrecuperables."
+        ),
+        // Filtres
+        tablesPresent.length > 0 ? h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 } },
+          [{ key: "all", label: "Tous (" + items.length + ")" }].concat(tablesPresent.map(function(t) {
+            return { key: t, label: tableLabel(t) + " (" + items.filter(function(x) { return x.source_table === t; }).length + ")" };
+          })).map(function(f) {
+            var active = filter === f.key;
+            return h("button", { key: f.key, onClick: function() { setFilter(f.key); },
+              style: { padding: "5px 11px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), background: active ? "rgba(99,102,241,0.18)" : "rgba(255,255,255,0.04)", color: active ? "#e0e7ff" : "#a1a1aa" } }, f.label);
+          })
+        ) : null,
+        loading ? h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...") :
+        filtered.length === 0 ? h("div", { style: { padding: 60, textAlign: "center", color: "#71717a" } },
+          h(Icon, { name: "trash-2", size: 32, color: "#52525b" }),
+          h("div", { style: { marginTop: 8, fontSize: 14, fontWeight: 600 } }, "Corbeille vide"),
+          h("div", { style: { marginTop: 4, fontSize: 12 } }, "Les elements supprimes apparaissent ici pour 30 jours.")
+        ) :
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          filtered.map(function(item) {
+            var daysLeft = item.expires_at ? Math.max(0, Math.ceil((new Date(item.expires_at) - new Date()) / 86400000)) : 30;
+            var col = daysLeft <= 3 ? "#fda4af" : daysLeft <= 7 ? "#fde68a" : "#86efac";
+            return h("div", { key: item.id, style: { background: "rgba(36,40,60,0.55)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 } },
+              h("div", { style: { width: 36, height: 36, borderRadius: 8, background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                h(Icon, { name: tableIcon(item.source_table), size: 16, color: "#fda4af" })
+              ),
+              h("div", { style: { flex: 1, minWidth: 0 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 2 } },
+                  h("span", { style: { fontSize: 10, fontWeight: 700, color: "#a78bfa", textTransform: "uppercase", letterSpacing: 0.5 } }, tableLabel(item.source_table)),
+                  h("span", { style: { fontSize: 10, color: col, fontWeight: 700 } }, "Expire dans " + daysLeft + " j")
+                ),
+                h("div", { style: { fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, item.summary || "(sans libelle)"),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } },
+                  "Supprime " + (item.deleted_at ? new Date(item.deleted_at).toLocaleString("fr-FR") : "?") +
+                  (item.deleted_by ? " par " + item.deleted_by : "")
+                )
+              ),
+              h("div", { style: { display: "flex", gap: 6 } },
+                h("button", { onClick: function() { restore(item); }, style: { padding: "6px 12px", background: "linear-gradient(135deg, #22c55e, #16a34a)", color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 } },
+                  h(Icon, { name: "rotate-ccw", size: 12, color: "white" }), "Restaurer"
+                ),
+                h("button", { onClick: function() { purge(item); }, style: { padding: "6px 12px", background: "rgba(244,63,94,0.10)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 } },
+                  h(Icon, { name: "trash-2", size: 12, color: "#fda4af" })
+                )
+              )
+            );
+          })
+        )
       );
     }
 
