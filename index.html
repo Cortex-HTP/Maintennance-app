@@ -746,6 +746,29 @@
       return total;
     }
 
+    // ─── Resolution du champ "Compatible avec" en codes d'equipements ───
+    // Regle : chaque token separe par , ; ou espace est traite comme un PREFIXE
+    // (insensible a la casse) qui doit matcher le debut du code de l'equipement.
+    // Ex : "FS" matche FS1, FS2 ; "D" matche D35,D36,D37,D38 etc.
+    //      "FS,D37" matche FS1,FS2,D37 ; "Tous" matche tous les codes.
+    function resolveCompatibleCodes(compatibleStr, allCodes) {
+      if (!compatibleStr) return [];
+      var s = String(compatibleStr).trim();
+      if (!s) return [];
+      if (/^tous?$/i.test(s) || s === "*") return (allCodes || []).slice();
+      var tokens = s.split(/[,;\s]+/).map(function(t) { return t.toUpperCase().trim(); }).filter(Boolean);
+      if (tokens.length === 0) return [];
+      return (allCodes || []).filter(function(code) {
+        var c = String(code || "").toUpperCase().trim();
+        return tokens.some(function(p) { return c.indexOf(p) === 0; });
+      });
+    }
+    // True si la piece est compatible avec l'equipement (selon le champ Compatible)
+    function pieceMatchesEquipement(pieceCompatibleStr, equipCode) {
+      var matched = resolveCompatibleCodes(pieceCompatibleStr, [equipCode]);
+      return matched.length > 0;
+    }
+
     // ─── Soft-delete : sauvegarde la ligne dans deleted_items avant de la supprimer ─
     // Retourne une Promise. Utilisation : softDeleteRow("rapports_forage", rowObj, "Rapport #..." [, userEmail])
     //  - sourceTable : nom de la table source
@@ -1903,10 +1926,13 @@
         finally { setSaving(false); }
       };
 
-      // Pieces liees a cet equipement
+      // Pieces liees a cet equipement (lien explicite via pieces_equipements OU via champ Compatible)
       const piecesLieesIds = new Set((piecesEquipements || []).filter((l) => l.equipement_id === eq.Id).map((l) => l.piece_id));
-      const piecesLiees = pieces.filter((p) => piecesLieesIds.has(p.Id));
-      const piecesNonLiees = pieces.filter((p) => !piecesLieesIds.has(p.Id));
+      // Auto-match : pieces dont le champ Compatible matche le code de cet engin par prefixe
+      const piecesCompatAuto = pieces.filter((p) => p.Compatible && pieceMatchesEquipement(p.Compatible, eq.Title) && !piecesLieesIds.has(p.Id));
+      // Liees = lien explicite (priorite) + auto-match (sans doublon)
+      const piecesLiees = pieces.filter((p) => piecesLieesIds.has(p.Id)).concat(piecesCompatAuto);
+      const piecesNonLiees = pieces.filter((p) => !piecesLieesIds.has(p.Id) && !piecesCompatAuto.find((x) => x.Id === p.Id));
       const piecesNonLieesFilter = piecesNonLiees.filter((p) => !pieceSearch || p.Reference.toLowerCase().includes(pieceSearch.toLowerCase()) || p.Designation.toLowerCase().includes(pieceSearch.toLowerCase()));
 
       // Donnees pour les graphiques
@@ -2244,7 +2270,15 @@
           h(FormField, { label: "Emplacement" }, h("input", { style: inputStyle, value: f.Emplacement, onChange: (e) => upd("Emplacement", e.target.value), placeholder: "Ex: Rayon A-1" })),
           h(FormField, { label: "Stock actuel" }, h("input", { type: "number", style: inputStyle, value: f.Stock, onChange: (e) => upd("Stock", e.target.value) })),
           h(FormField, { label: "Stock minimum" }, h("input", { type: "number", style: inputStyle, value: f.StockMin, onChange: (e) => upd("StockMin", e.target.value) }))),
-        h(FormField, { label: "Compatible avec" }, h("input", { style: inputStyle, value: f.Compatible, onChange: (e) => upd("Compatible", e.target.value), placeholder: "Ex: 427 686 NC ou Tous" })),
+        h(FormField, { label: "Compatible avec (prefixes des codes engins)" }, h("div", null,
+          h("input", { style: inputStyle, value: f.Compatible, onChange: (e) => upd("Compatible", e.target.value), placeholder: "Ex: FS,D ou D37 ou Tous" }),
+          h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4, lineHeight: 1.4 } },
+            "Chaque token = prefixe du code engin. ",
+            h("strong", { style: { color: "#a78bfa" } }, "FS"), " matche FS1, FS2 ; ",
+            h("strong", { style: { color: "#a78bfa" } }, "D"), " matche D35, D36, D37... ; ",
+            h("strong", { style: { color: "#a78bfa" } }, "Tous"), " matche tous les engins. Separateurs : virgule, point-virgule ou espace."
+          )
+        )),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
           h(Button, { variant: "secondary", onClick: onCancel, disabled: saving }, "Annuler"),
           h(Button, { onClick: submit, disabled: saving }, saving ? "Enregistrement..." : h(IconText, { icon: "save", size: 14 }, "Enregistrer"))));
@@ -2252,7 +2286,8 @@
 
     // ─── Ecran Pieces ───────────────────────────────────────────────────
     function EcranPieces() {
-      const { pieces, addPiece, updatePiece, deletePiece } = useAppData();
+      const { pieces, addPiece, updatePiece, deletePiece, equipements } = useAppData();
+      const allEquipCodes = (equipements || []).map(function(eq) { return eq.Title; }).filter(Boolean).sort();
       const [search, setSearch] = useState("");
       const [categorie, setCategorie] = useState("all");
       const [showModal, setShowModal] = useState(false);
@@ -2324,7 +2359,20 @@
                   h("td", { style: { padding: "10px 12px", fontWeight: 600, color: "#fafafa" } }, fmtNum(p.Stock) + " / min " + fmtNum(p.StockMin)),
                   h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, fmtMoney(p.PrixUnitaire)),
                   h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa" } }, p.Emplacement),
-                  h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa" } }, p.Compatible),
+                  h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa", minWidth: 180 } }, (function() {
+                    if (!p.Compatible) return "-";
+                    var matched = resolveCompatibleCodes(p.Compatible, allEquipCodes);
+                    return h("div", null,
+                      h("div", { style: { fontFamily: "monospace", fontSize: 11, color: "#71717a", marginBottom: 4 } }, p.Compatible),
+                      matched.length === 0 ? h("span", { style: { fontSize: 10, color: "#fda4af", fontStyle: "italic" } }, "Aucun engin matche") :
+                      h("div", { style: { display: "flex", flexWrap: "wrap", gap: 3 } },
+                        matched.slice(0, 8).map(function(c) {
+                          return h("span", { key: c, style: { fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "rgba(167,139,250,0.12)", color: "#c4b5fd", border: "1px solid rgba(167,139,250,0.25)" } }, c);
+                        }),
+                        matched.length > 8 ? h("span", { style: { fontSize: 10, color: "#71717a", padding: "1px 4px" } }, "+ " + (matched.length - 8)) : null
+                      )
+                    );
+                  }())),
                   h("td", { style: { padding: "10px 12px" } }, h(StatusBadge, { status: statusOf(p) })),
                   h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" } },
                     h("button", { onClick: () => openEdit(p), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
