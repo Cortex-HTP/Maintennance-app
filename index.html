@@ -1486,8 +1486,21 @@
         return 0;
       });
 
+      // Banniere alerte : saisies manquantes (rapport / carburant / heures)
+      var _alertesSais = ctx.alertesSaisies || { list: [], count: 0 };
+      var _alertesCount = _alertesSais.count || 0;
+      var _alertesJours = (_alertesSais.list || []).length;
+
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "home", size: 20 }, "Tableau de bord"), subtitle: "Vue d'ensemble de la maintenance" }),
+        _alertesCount > 0 ? h("div", { onClick: function() { onNavigate("alertes-saisies"); }, style: { cursor: "pointer", marginBottom: 18, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(244, 63, 94, 0.15), rgba(244, 63, 94, 0.05))", border: "1px solid rgba(244, 63, 94, 0.35)", display: "flex", alignItems: "center", gap: 12 } },
+          h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(244, 63, 94, 0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "alert-triangle", size: 18, color: "#fb7185" })),
+          h("div", { style: { flex: 1, minWidth: 0 } },
+            h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa" } }, _alertesCount + " saisie(s) manquante(s) sur " + _alertesJours + " jour(s)"),
+            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, "Rapport de forage, releve de carburant ou releves d'heures non envoyes pour des couples chantier x machine actifs.")
+          ),
+          h("div", { style: { fontSize: 12, fontWeight: 600, color: "#fb7185" } }, "Voir le detail >")
+        ) : null,
         h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "truck", size: 22, color: "#ffffff" }), label: "Equipements", value: fmtNum(totalEquip), color: "#818cf8", onClick: () => onNavigate("equipements") }),
           h(KPICard, { icon: h(Icon, { name: "calendar", size: 22, color: "#ffffff" }), label: "Planifiees", value: fmtNum(planifiees), color: "#60a5fa", onClick: () => onNavigate("interventions") }),
@@ -16455,12 +16468,254 @@
       );
     }
 
+    // ─── Detection des saisies manquantes (par jour ouvre / chantier / machine) ───
+    // Pour chaque jour ouvre J de la fenetre [aujourd'hui - daysWindow ; hier],
+    // pour chaque affectation chantier_equipement couvrant J,
+    // on verifie qu'il y a au moins :
+    //   - 1 rapport de forage (date_rapport = J, sondeuse_code = code(equip))
+    //   - 1 conso carburant   (date_consommation = J, sondeuse_code = code(equip))
+    //   - 3 releves d'heures  (date_releve = J, chantier_id OU sondeuse_code matche)
+    // Tout manquement donne lieu a un item. La liste est groupee par jour, du plus
+    // recent au plus ancien.
+    function computeAlertesSaisies(args) {
+      var today          = args.today;
+      var daysWindow     = args.daysWindow != null ? args.daysWindow : 7;
+      var chantiers      = args.chantiers || [];
+      var equipements    = args.equipements || [];
+      var chantierEquips = args.chantierEquipements || [];
+      var rapports       = args.rapports || [];
+      var carburant      = args.carburant || [];
+      var heures         = args.heures || [];
+      var minHeures      = args.minHeures != null ? args.minHeures : 3;
+
+      function toYMD(d) {
+        var y = d.getFullYear();
+        var m = String(d.getMonth() + 1).padStart(2, "0");
+        var j = String(d.getDate()).padStart(2, "0");
+        return y + "-" + m + "-" + j;
+      }
+      function ymdOnly(s) { return String(s || "").substring(0, 10); }
+
+      // 1) Genere la liste des jours ouvres (Lun-Ven) de la fenetre, hors aujourd'hui
+      var days = [];
+      var cursor = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      // On commence a J-1 pour laisser le temps de saisir le jour meme
+      for (var step = 1; days.length < daysWindow && step < daysWindow * 3; step++) {
+        var d = new Date(cursor.getTime());
+        d.setDate(d.getDate() - step);
+        var dow = d.getDay(); // 0=Dim 6=Sam
+        if (dow >= 1 && dow <= 5) days.push(toYMD(d));
+      }
+      if (!days.length) return { list: [], count: 0 };
+
+      // 2) Index par chantier
+      var chantById = {};
+      chantiers.forEach(function(c) { chantById[String(c.id)] = c; });
+      var chantStatut = function(c) {
+        var st = String((c && (c.statut || c.Statut)) || "").toLowerCase();
+        return st;
+      };
+
+      // 3) Index equipement
+      var eqById = {};
+      var eqCodeById = {};
+      equipements.forEach(function(e) {
+        eqById[e.Id] = e;
+        if (e.Id != null) eqCodeById[e.Id] = String(e.Title || "").trim().toUpperCase();
+      });
+
+      // 4) Pour chaque table, build index par jour
+      // rapports : { 'YYYY-MM-DD|SONDEUSE': count }
+      var rapByDayMach = {};
+      rapports.forEach(function(r) {
+        var d = ymdOnly(r.date_rapport);
+        var code = String(r.sondeuse_code || "").trim().toUpperCase();
+        if (!d || !code) return;
+        rapByDayMach[d + "|" + code] = (rapByDayMach[d + "|" + code] || 0) + 1;
+      });
+      // carburant : { 'YYYY-MM-DD|SONDEUSE': count }
+      var carbByDayMach = {};
+      carburant.forEach(function(c) {
+        var d = ymdOnly(c.date_consommation);
+        var code = String(c.sondeuse_code || "").trim().toUpperCase();
+        if (!d || !code) return;
+        carbByDayMach[d + "|" + code] = (carbByDayMach[d + "|" + code] || 0) + 1;
+      });
+      // heures : { 'YYYY-MM-DD|CHANTIER': count } et fallback { 'YYYY-MM-DD|SONDEUSE': count }
+      var heuresByDayChant = {};
+      var heuresByDayMach  = {};
+      heures.forEach(function(h0) {
+        var d = ymdOnly(h0.date_releve);
+        if (!d) return;
+        if (h0.chantier_id != null) {
+          var k = d + "|" + String(h0.chantier_id);
+          heuresByDayChant[k] = (heuresByDayChant[k] || 0) + 1;
+        }
+        if (h0.sondeuse_code) {
+          var code2 = String(h0.sondeuse_code).trim().toUpperCase();
+          var k2 = d + "|" + code2;
+          heuresByDayMach[k2] = (heuresByDayMach[k2] || 0) + 1;
+        }
+      });
+
+      // 5) Pour chaque jour, repere les affectations actives (chantier x machine)
+      // chantier_equipements : { chantierId, equipementId, dateDebut, dateFin }
+      // On considere l'affectation active sur J si dateDebut <= J <= dateFin (ou dateFin null = en cours).
+      var items = [];
+      days.forEach(function(dayStr) {
+        var perDay = [];
+        chantierEquips.forEach(function(ce) {
+          var dd = ymdOnly(ce.dateDebut);
+          var df = ymdOnly(ce.dateFin);
+          if (dd && dayStr < dd) return;
+          if (df && dayStr > df) return;
+          var ch = chantById[String(ce.chantierId)];
+          if (!ch) return;
+          // Filtre chantiers archives / termines
+          var st = chantStatut(ch);
+          if (st.indexOf("archiv") >= 0 || st.indexOf("termin") >= 0 || st.indexOf("clos") >= 0) return;
+          var eq = eqById[ce.equipementId];
+          if (!eq) return;
+          var code = eqCodeById[ce.equipementId] || "";
+          var kMach = dayStr + "|" + code;
+          var kChant = dayStr + "|" + String(ce.chantierId);
+          var hasRap  = code ? (rapByDayMach[kMach]  > 0) : false;
+          var hasCarb = code ? (carbByDayMach[kMach] > 0) : false;
+          var nbH = Math.max(heuresByDayChant[kChant] || 0, heuresByDayMach[kMach] || 0);
+          var missing = [];
+          if (!hasRap)  missing.push("rapport");
+          if (!hasCarb) missing.push("carburant");
+          if (nbH < minHeures) missing.push("heures(" + nbH + "/" + minHeures + ")");
+          if (missing.length > 0) {
+            perDay.push({
+              date: dayStr,
+              chantierId: ce.chantierId,
+              chantierLabel: ch.titre || ch.nom || ("Chantier #" + ce.chantierId),
+              equipementId: ce.equipementId,
+              equipementCode: code || (eq.Title || ""),
+              missing: missing,
+              hasRapport: hasRap,
+              hasCarburant: hasCarb,
+              nbHeures: nbH,
+              minHeures: minHeures
+            });
+          }
+        });
+        if (perDay.length > 0) {
+          items.push({ date: dayStr, items: perDay });
+        }
+      });
+
+      // Tri jours du plus recent au plus ancien
+      items.sort(function(a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+      var total = items.reduce(function(s, g) { return s + g.items.length; }, 0);
+      return { list: items, count: total, daysChecked: days };
+    }
+
+    // ─── Ecran : Alertes de saisies manquantes (rapport / carburant / heures) ───
+    function EcranAlertesSaisies({ onNavigate }) {
+      var ctx = useAppData();
+      var alertes = ctx.alertesSaisies || { list: [], count: 0, daysChecked: [] };
+      var chantById = {};
+      (ctx.dbChantiers || []).forEach(function(c) { chantById[String(c.id)] = c; });
+
+      function fmtJour(d) {
+        try {
+          var dt = new Date(d + "T00:00:00");
+          if (isNaN(dt.getTime())) return d;
+          var jours = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+          var mois  = ["janv.", "fevr.", "mars", "avr.", "mai", "juin", "juil.", "aout", "sept.", "oct.", "nov.", "dec."];
+          return jours[dt.getDay()] + " " + dt.getDate() + " " + mois[dt.getMonth()];
+        } catch (e) { return d; }
+      }
+
+      var nbJoursAvecManquements = alertes.list.length;
+      var totalManquements = alertes.count;
+      var nbJoursChecked = (alertes.daysChecked || []).length;
+
+      // Couleur du chip "missing"
+      function chipStyle(kind) {
+        if (kind === "rapport")   return { background: "rgba(244, 63, 94, 0.15)", color: "#fda4af", border: "1px solid rgba(244, 63, 94, 0.35)" };
+        if (kind === "carburant") return { background: "rgba(245, 158, 11, 0.15)", color: "#fcd34d", border: "1px solid rgba(245, 158, 11, 0.35)" };
+        return { background: "rgba(168, 85, 247, 0.15)", color: "#d8b4fe", border: "1px solid rgba(168, 85, 247, 0.35)" };
+      }
+      function chipLabel(s) {
+        if (s === "rapport")   return "Rapport forage manquant";
+        if (s === "carburant") return "Carburant manquant";
+        if (s.indexOf("heures(") === 0) return "Releves d'heures incomplets " + s.replace("heures", "");
+        return s;
+      }
+
+      return h("div", null,
+        h("h1", { style: { fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: "#fafafa", marginBottom: 6 } }, "Alertes saisies"),
+        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique sur les " + nbJoursChecked + " derniers jours ouvres (Lundi-Vendredi). Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage, 1 releve de carburant et 3 releves d'heures."),
+
+        // Resume
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 } },
+          h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Manquements"),
+            h("div", { style: { fontSize: 28, fontWeight: 700, color: totalManquements > 0 ? "#fb7185" : "#86efac", marginTop: 4 } }, totalManquements)
+          ),
+          h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Jours concernes"),
+            h("div", { style: { fontSize: 28, fontWeight: 700, color: "#e0e7ff", marginTop: 4 } }, nbJoursAvecManquements + " / " + nbJoursChecked)
+          ),
+          h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Fenetre"),
+            h("div", { style: { fontSize: 14, color: "#cbd5e1", marginTop: 8 } }, "7 derniers jours ouvres"),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "(re-evaluation auto chaque minute)")
+          )
+        ),
+
+        // Etat vide
+        totalManquements === 0 ? h("div", { style: { padding: 28, background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.25)", borderRadius: 12, textAlign: "center" } },
+          h("div", { style: { fontSize: 16, fontWeight: 600, color: "#86efac", marginBottom: 6 } }, "Aucun manquement detecte"),
+          h("div", { style: { fontSize: 13, color: "#a1a1aa" } }, "Toutes les machines actives ont bien envoye leurs rapports, releves de carburant et releves d'heures.")
+        ) : null,
+
+        // Liste par jour
+        alertes.list.map(function(group) {
+          return h("div", { key: group.date, style: { marginBottom: 18, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(244, 63, 94, 0.25)", borderRadius: 12, overflow: "hidden" } },
+            h("div", { style: { padding: "12px 16px", background: "rgba(244, 63, 94, 0.08)", borderBottom: "1px solid rgba(244, 63, 94, 0.2)", display: "flex", alignItems: "center", gap: 10 } },
+              h(Icon, { name: "calendar", size: 16, color: "#fb7185" }),
+              h("div", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } }, fmtJour(group.date)),
+              h("div", { style: { marginLeft: "auto", fontSize: 12, color: "#a1a1aa" } }, group.items.length + " manquement(s)")
+            ),
+            h("div", { style: { padding: "8px 0" } },
+              group.items.map(function(it, idx) {
+                var ch = chantById[String(it.chantierId)];
+                var siteOuTitre = (ch && (ch.titre || ch.nom)) || it.chantierLabel;
+                return h("div", { key: idx, style: { padding: "10px 16px", display: "grid", gridTemplateColumns: "1.4fr 0.8fr 2fr", gap: 12, alignItems: "center", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                  h("div", null,
+                    h("div", { style: { fontSize: 13.5, color: "#e0e7ff", fontWeight: 600 } }, siteOuTitre),
+                    ch && ch.client ? h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, ch.client) : null
+                  ),
+                  h("div", null,
+                    h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 2 } }, "Machine"),
+                    h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, it.equipementCode || "-")
+                  ),
+                  h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+                    it.missing.map(function(m, j) {
+                      var kind = m.indexOf("heures(") === 0 ? "heures" : m;
+                      var st = chipStyle(kind);
+                      return h("span", { key: j, style: { fontSize: 11.5, fontWeight: 600, padding: "4px 10px", borderRadius: 999, background: st.background, color: st.color, border: st.border } }, chipLabel(m));
+                    })
+                  )
+                );
+              })
+            )
+          );
+        })
+      );
+    }
+
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
           { key: "accueil", label: "Maintenance", lucide: "wrench" },
+          { key: "alertes-saisies", label: "Alertes saisies", lucide: "alert-triangle" },
         ]},
         { name: "Maintenance", pages: [
           { key: "equipements", label: "Equipements", lucide: "settings" },
@@ -16529,7 +16784,8 @@
                 p.key === "soumissions" && soumissionsPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
-                p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null
+                p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null,
+                p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / carburant / heures) sur les 7 derniers jours ouvres" }, alertesSaisiesPending) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -16568,6 +16824,9 @@
       const [dbBugLogs, setDbBugLogs] = useState([]);
       const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
       const [piecesPendingCount, setPiecesPendingCount] = useState(0);
+      // Donnees brutes pour la detection des saisies manquantes (fenetre 14 derniers jours)
+      const [recentRelHeures, setRecentRelHeures] = useState([]);
+      const [recentCarburant, setRecentCarburant] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -16751,6 +17010,44 @@
         var timer = setInterval(fetchCounts, 60000);
         return () => clearInterval(timer);
       }, [session]);
+
+      // ── Fetch leger releves_heures + carburant pour la fenetre des 21 derniers jours
+      // (sert au calcul des saisies manquantes par jour / chantier / machine). ──
+      useEffect(() => {
+        if (!session) return;
+        function fetchRecent() {
+          var since = new Date();
+          since.setDate(since.getDate() - 21);
+          var sinceStr = since.getFullYear() + "-" + String(since.getMonth() + 1).padStart(2, "0") + "-" + String(since.getDate()).padStart(2, "0");
+          Promise.all([
+            supabase.from("releves_heures").select("id,date_releve,personnel_id,chantier_id,sondeuse_code").gte("date_releve", sinceStr),
+            supabase.from("consommations_carburant").select("id,date_consommation,sondeuse_code,quantite_l").gte("date_consommation", sinceStr)
+          ]).then(function(res) {
+            if (res[0] && res[0].data) setRecentRelHeures(res[0].data);
+            if (res[1] && res[1].data) setRecentCarburant(res[1].data);
+          }).catch(function(e) { console.warn("[alertes-saisies] fetch:", e.message); });
+        }
+        fetchRecent();
+        var t = setInterval(fetchRecent, 60000);
+        return function() { clearInterval(t); };
+      }, [session]);
+
+      // ── Calcul memo des alertes de saisies manquantes ──
+      const alertesSaisies = useMemo(function() {
+        try {
+          return computeAlertesSaisies({
+            today: new Date(),
+            daysWindow: 7,
+            chantiers: dbChantiers || [],
+            equipements: equipements || [],
+            chantierEquipements: dbChantierEquipements || [],
+            rapports: dbRapportsForage || [],
+            carburant: recentCarburant || [],
+            heures: recentRelHeures || [],
+            minHeures: 3
+          });
+        } catch (e) { console.warn("[alertes-saisies] compute:", e.message); return { list: [], count: 0 }; }
+      }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentCarburant, recentRelHeures]);
 
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
@@ -17535,6 +17832,7 @@
         dbEmprunts, setDbEmprunts,
         dbChargesFixes, setDbChargesFixes,
         dbBugLogs, setDbBugLogs,
+        alertesSaisies, recentRelHeures, recentCarburant,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
@@ -17564,6 +17862,7 @@
           return h(EcranAccueil, { onNavigate: navigate });
         }
         if (currentPage === "accueil") return h(EcranAccueil, { onNavigate: navigate });
+        if (currentPage === "alertes-saisies") return h(EcranAlertesSaisies, { onNavigate: navigate });
         if (currentPage === "plans") return h(EcranPlans, null);
         if (currentPage === "interventions") return h(EcranInterventions, { onNavigate: navigate, editItem: pageData });
         if (currentPage === "equipements") return h(EcranEquipements, { onNavigate: navigate });
@@ -17592,7 +17891,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100vh", minHeight: "100vh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: "auto", maxHeight: "100vh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: 12, left: 12, width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
