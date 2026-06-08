@@ -2284,6 +2284,113 @@
           h(Button, { onClick: submit, disabled: saving }, saving ? "Enregistrement..." : h(IconText, { icon: "save", size: 14 }, "Enregistrer"))));
     }
 
+    // ─── Pieces en attente : scan des consommables des rapports inconnus du catalogue ───
+    function PiecesEnAttenteView({ pieces, addPiece }) {
+      const [raps, setRaps] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [refreshKey, setRefreshKey] = useState(0);
+      useEffect(function() {
+        setLoading(true);
+        supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,consommables_perdus")
+          .not("consommables_perdus", "is", null)
+          .order("date_rapport", { ascending: false }).then(function(res) {
+          setLoading(false);
+          if (res.error) { console.warn(res.error.message); return; }
+          setRaps(res.data || []);
+        });
+      }, [refreshKey]);
+
+      // Index pieces connues par ref + designation (UPPER)
+      var pieceByRef = {};
+      var pieceByDes = {};
+      (pieces || []).forEach(function(p) {
+        if (p.Reference) pieceByRef[String(p.Reference).toUpperCase().trim()] = p;
+        if (p.Designation) pieceByDes[String(p.Designation).toUpperCase().trim()] = p;
+      });
+
+      // Agregation des inconnues : key = ref ou designation -> { count, rapports[], samples }
+      var unknownMap = {};
+      raps.forEach(function(r) {
+        var cons = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+        cons.forEach(function(c) {
+          var ref = String(c.reference || c.ref || "").toUpperCase().trim();
+          var des = String(c.designation || c.desig || c.nom || "").toUpperCase().trim();
+          if (!ref && !des) return;
+          var known = (ref && pieceByRef[ref]) || (des && pieceByDes[des]);
+          if (known) return;
+          var key = ref || des;
+          if (!unknownMap[key]) unknownMap[key] = { ref: c.reference || c.ref || "", designation: c.designation || c.desig || c.nom || "", count: 0, totalQty: 0, sondeuses: {}, lastDate: "" };
+          unknownMap[key].count += 1;
+          unknownMap[key].totalQty += parseFloat(c.quantite || c.qty || c.q) || 0;
+          if (r.sondeuse_code) unknownMap[key].sondeuses[r.sondeuse_code] = true;
+          if (!unknownMap[key].lastDate || r.date_rapport > unknownMap[key].lastDate) unknownMap[key].lastDate = r.date_rapport;
+        });
+      });
+      var unknown = Object.keys(unknownMap).map(function(k) { return Object.assign({ key: k }, unknownMap[k]); })
+        .sort(function(a, b) { return b.count - a.count; });
+
+      async function createPiece(u) {
+        var refSugg = u.ref || ("AUTO-" + String(u.designation || "PIECE").substring(0, 6).toUpperCase().replace(/[^A-Z0-9]/g, ""));
+        var newRef = prompt("Reference pour cette nouvelle piece :", refSugg);
+        if (!newRef) return;
+        var newDes = prompt("Designation :", u.designation || "");
+        if (!newDes) return;
+        var newCompat = prompt("Compatible avec (prefixes engins, ex: D ou FS,D37) :\nLaisse vide si compatible avec tout.", "") || "";
+        var prix = parseFloat(prompt("Prix unitaire estime (XPF) :", "0") || "0") || 0;
+        try {
+          await addPiece({
+            Reference: newRef.toUpperCase().trim(),
+            Designation: newDes,
+            Categorie: "Consommable",
+            Fournisseur: "",
+            PrixUnitaire: String(prix),
+            Stock: "0",
+            StockMin: "1",
+            Emplacement: "",
+            Compatible: newCompat
+          });
+          setRefreshKey(refreshKey + 1);
+          alert("Piece creee dans le catalogue.");
+        } catch (e) {
+          alert("Erreur : " + (e.message || e));
+        }
+      }
+
+      if (loading) return h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...");
+      return h("div", null,
+        h("div", { style: { background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#67e8f9" } },
+          h(IconText, { icon: "info", size: 13, color: "#67e8f9" }, "Ces consommables ont ete saisis par les sondeurs dans leurs rapports mais ne sont PAS dans ton catalogue Pieces detachees. Tu peux les transformer en pieces officielles.")
+        ),
+        unknown.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } },
+          h(Icon, { name: "check-circle", size: 32, color: "#86efac" }),
+          h("div", { style: { marginTop: 8, fontSize: 14 } }, "Tous les consommables saisis sont deja dans le catalogue."))) :
+        h(Card, { style: { padding: 0, overflow: "hidden" } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+            h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
+              ["Reference", "Designation", "Saisies", "Qte totale", "Machines", "Derniere", ""].map(function(x, i) {
+                return h("th", { key: i, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+              })
+            )),
+            h("tbody", null, unknown.map(function(u) {
+              var machines = Object.keys(u.sondeuses).join(", ");
+              return h("tr", { key: u.key, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, u.ref || "(pas de ref)"),
+                h("td", { style: { padding: "10px 12px", color: "#fafafa" } }, u.designation || "-"),
+                h("td", { style: { padding: "10px 12px", textAlign: "center", color: "#fbbf24", fontWeight: 700 } }, u.count),
+                h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: "#86efac" } }, Math.round(u.totalQty * 10) / 10),
+                h("td", { style: { padding: "10px 12px", fontSize: 11, color: "#a1a1aa" } }, machines || "-"),
+                h("td", { style: { padding: "10px 12px", fontSize: 11, fontFamily: "monospace", color: "#a1a1aa" } }, String(u.lastDate || "").substring(0, 10)),
+                h("td", { style: { padding: "10px 12px", textAlign: "right" } },
+                  h(Button, { onClick: function() { createPiece(u); } },
+                    h(IconText, { icon: "plus", size: 12 }, "Creer la piece"))
+                )
+              );
+            }))
+          )
+        )
+      );
+    }
+
     // ─── Ecran Pieces ───────────────────────────────────────────────────
     function EcranPieces() {
       const { pieces, addPiece, updatePiece, deletePiece, equipements } = useAppData();
@@ -2353,9 +2460,12 @@
         h(PageHeader, { title: h(IconText, { icon: "package", size: 20 }, "Pieces detachees"), subtitle: pieces.length + " references \u2014 " + fmtMoney(totalValeur) + " en stock", action: tab === "liste" ? h(Button, { onClick: openNew }, "+ Nouvelle piece") : null }),
         h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } },
           tabBtn("liste", "Liste", "list"),
+          tabBtn("attente", "Pieces en attente", "inbox"),
           tabBtn("inflation", "Inflation", "trending-up")
         ),
-        tab === "inflation" ? h(InflationView, { pieces: pieces }) : h(React.Fragment, null,
+        tab === "inflation" ? h(InflationView, { pieces: pieces }) :
+        tab === "attente" ? h(PiecesEnAttenteView, { pieces: pieces, addPiece: addPiece }) :
+        h(React.Fragment, null,
         h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
           h(KPICard, { icon: h(Icon, { name: "package", size: 22, color: "#ffffff" }), label: "References", value: fmtNum(pieces.length), color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "alert-triangle", size: 22, color: "#ffffff" }), label: "Stock faible", value: fmtNum(faibles), color: faibles > 0 ? "#fbbf24" : "#22c55e" }),
@@ -3484,7 +3594,17 @@
       var totalEnginsL = engins.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
       var totalVLsL = vls.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
 
-      // Recap par machine
+      // Recap par machine + agregation metres (depuis rapports_forage du ctx)
+      var rapportsCtx = ctx.dbRapportsForage || [];
+      var metresParMachine = {};
+      rapportsCtx.forEach(function(r) {
+        if (!r.sondeuse_code) return;
+        var d = String(r.date_rapport || "").substring(0, 10);
+        if (periodStart && d < periodStart.toISOString().substring(0,10)) return;
+        if (periodEnd && d > periodEnd.toISOString().substring(0,10)) return;
+        var k = String(r.sondeuse_code).toUpperCase().trim();
+        metresParMachine[k] = (metresParMachine[k] || 0) + (parseFloat(r.total_metres) || 0);
+      });
       var byMachine = {};
       filtered.forEach(function(c) {
         var code = c.sondeuse_code || "?";
@@ -3494,7 +3614,23 @@
         byMachine[code].nbEntries += 1;
         if (!byMachine[code].lastDate || c.date_consommation > byMachine[code].lastDate) byMachine[code].lastDate = c.date_consommation;
       });
+      // Calcule coutParMetre + ratio L/m pour chaque machine
+      Object.keys(byMachine).forEach(function(code) {
+        var m = byMachine[code];
+        var metres = metresParMachine[String(code).toUpperCase().trim()] || 0;
+        m.metres = metres;
+        m.coutParMetre = metres > 0 ? m.cout / metres : 0;
+        m.lParMetre = metres > 0 ? m.quantite / metres : 0;
+      });
       var machinesList = Object.keys(byMachine).map(function(k) { return byMachine[k]; }).sort(function(a, b) { return b.quantite - a.quantite; });
+      // Moyenne globale (engins uniquement, pour comparaison)
+      var moyEnginsCoutParMetre = (function() {
+        var ms = machinesList.filter(function(m) { return m.categorie === "engin" && m.metres > 0; });
+        if (ms.length === 0) return 0;
+        var tot = ms.reduce(function(s, m) { return s + m.cout; }, 0);
+        var tom = ms.reduce(function(s, m) { return s + m.metres; }, 0);
+        return tom > 0 ? tot / tom : 0;
+      })();
 
       // Machines distinctes (pour filtre)
       var allMachines = Array.from(new Set((carburants || []).map(function(c) { return c.sondeuse_code; }).filter(Boolean))).sort();
@@ -3635,21 +3771,29 @@
           h("div", { style: { overflowX: "auto" } },
             h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
               h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
-                ["Machine", "Categorie", "Nom", "Entrees", "Total L", "Moy / saisie", "Cout", "Dernier ravitaillement"].map(function(x, i) {
-                  return h("th", { key: i, style: { padding: "10px 14px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+                ["Machine", "Cat.", "Nom", "Entrees", "Total L", "Cout", "Metres", "L/m", "Cout/m", "Dernier"].map(function(x, i) {
+                  return h("th", { key: i, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
                 })
               )),
               h("tbody", null, machinesList.map(function(r) {
-                var moyParSaisie = r.nbEntries > 0 ? (r.quantite / r.nbEntries) : 0;
+                // Couleur du cout/m : compare a la moyenne engins. Vert si <= moyenne, rouge si > moyenne x1.2
+                var coutColor = "#a1a1aa";
+                if (r.categorie === "engin" && r.coutParMetre > 0 && moyEnginsCoutParMetre > 0) {
+                  if (r.coutParMetre <= moyEnginsCoutParMetre) coutColor = "#86efac";
+                  else if (r.coutParMetre <= moyEnginsCoutParMetre * 1.20) coutColor = "#fde68a";
+                  else coutColor = "#fda4af";
+                }
                 return h("tr", { key: r.code, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
-                  h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code),
-                  h("td", { style: { padding: "10px 14px" } }, catBadge(r.categorie)),
-                  h("td", { style: { padding: "10px 14px", color: "#cbd5e1" } }, r.nom || "-"),
-                  h("td", { style: { padding: "10px 14px", textAlign: "center" } }, r.nbEntries),
-                  h("td", { style: { padding: "10px 14px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, r.quantite.toFixed(1) + " L"),
-                  h("td", { style: { padding: "10px 14px", fontFamily: "monospace", color: "#fbbf24" } }, moyParSaisie.toFixed(1) + " L"),
-                  h("td", { style: { padding: "10px 14px", color: "#22c55e" } }, fmtMoney(r.cout)),
-                  h("td", { style: { padding: "10px 14px", fontFamily: "monospace", fontSize: 12 } }, fmtFr(r.lastDate))
+                  h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code),
+                  h("td", { style: { padding: "10px 12px" } }, catBadge(r.categorie)),
+                  h("td", { style: { padding: "10px 12px", color: "#cbd5e1" } }, r.nom || "-"),
+                  h("td", { style: { padding: "10px 12px", textAlign: "center" } }, r.nbEntries),
+                  h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, r.quantite.toFixed(1) + " L"),
+                  h("td", { style: { padding: "10px 12px", color: "#22c55e" } }, fmtMoney(r.cout)),
+                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: r.metres > 0 ? "#fafafa" : "#52525b" } }, r.metres > 0 ? Math.round(r.metres) + " m" : "-"),
+                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: coutColor } }, r.lParMetre > 0 ? r.lParMetre.toFixed(2) + " L/m" : "-"),
+                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontWeight: 700, color: coutColor } }, r.coutParMetre > 0 ? fmtMoney(Math.round(r.coutParMetre)) + "/m" : "-"),
+                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 11 } }, fmtFr(r.lastDate))
                 );
               }))
             )
@@ -12354,7 +12498,7 @@
         var cur = new Date(startD.getTime());
         while (cur.getTime() <= endD.getTime() && safe < 400) {
           var dow = cur.getDay(); // 0=dim 1=lun 2=mar 3=mer 4=jeu 5=ven 6=sam
-          if (dow >= 1 && dow <= 4) n++;
+          if (dow >= 1 && dow <= 5) n++;  // Lun-Ven : standard NC
           cur.setDate(cur.getDate() + 1);
           safe++;
         }
@@ -12379,7 +12523,9 @@
         });
         return Object.keys(set).length;
       }());
-      var ratioJoursReels = joursOuvres > 0 ? Math.min(1, joursTravailles / joursOuvres) : 0;
+      // Garde-fou : si on travaille des Sam/Dim, joursTravailles peut depasser joursOuvres
+      var joursOuvresAffichage = Math.max(joursOuvres, joursTravailles);
+      var ratioJoursReels = joursOuvresAffichage > 0 ? Math.min(1, joursTravailles / joursOuvresAffichage) : 0;
       // Prorate l'ensemble des couts de la periode aux jours travailles
       // (revient a : cout_par_jour_ouvre x jours_travailles)
       var depensesTempsReel = totalCoutsAll * ratioJoursReels;
@@ -14738,6 +14884,34 @@
           return true;
         });
 
+        // Index responsable par groupe (date|sondeuse) = personnel_id du rapport_forage (source autoritative).
+        // Fallback : ligne dont fonction = "Sondeur" pur ; ou 1ere par id.
+        var rapByGroup = {};
+        (raps || []).forEach(function(r) {
+          if (!r.date_rapport || !r.sondeuse_code || r.personnel_id == null) return;
+          var k = String(r.date_rapport).substring(0,10) + "|" + String(r.sondeuse_code).toUpperCase().trim();
+          if (!rapByGroup[k] || (r.created_at && r.created_at > (rapByGroup[k].created_at || ""))) rapByGroup[k] = r;
+        });
+        var respByGroup = {};
+        var groups = {};
+        filteredRels.forEach(function(r) {
+          var k = String(r.date_releve || "").substring(0,10) + "|" + String(r.sondeuse_code || "").toUpperCase().trim();
+          if (!groups[k]) groups[k] = [];
+          groups[k].push(r);
+        });
+        Object.keys(groups).forEach(function(k) {
+          var rap = rapByGroup[k];
+          if (rap && rap.personnel_id != null) { respByGroup[k] = rap.personnel_id; return; }
+          var rows = groups[k];
+          var resp = rows.find(function(r) { var f = String(r.fonction || "").toLowerCase(); return f.indexOf("sondeur") >= 0 && f.indexOf("aide") < 0; });
+          if (!resp) resp = rows.slice().sort(function(a, b) { return (a.id || 0) - (b.id || 0); })[0];
+          respByGroup[k] = resp ? resp.personnel_id : null;
+        });
+        function isResponsableOfGroup(r) {
+          var k = String(r.date_releve || "").substring(0,10) + "|" + String(r.sondeuse_code || "").toUpperCase().trim();
+          return respByGroup[k] != null && respByGroup[k] === r.personnel_id;
+        }
+
         // Agregation par (employe, sondeuse)
         // key = employe|sondeuse
         var agg = {};
@@ -14780,9 +14954,10 @@
           a.totalHorsPause += Math.max(0, (totMin - pauseMin) / 60);
           a.primePanier += parseInt(r.prime_panier) || 0;
 
-          var fonc = String(r.fonction || "").toLowerCase();
-          if (fonc.indexOf("aide") >= 0) a.posteAideSondeur += 1;
-          else if (fonc.indexOf("sondeur") >= 0) a.posteSondeur += 1;
+          // Sondeur = responsable du groupe (date+sondeuse) detecte via rapport.personnel_id
+          // Tous les autres releves du groupe = aide sondeur, peu importe leur fonction string
+          if (isResponsableOfGroup(r)) a.posteSondeur += 1;
+          else a.posteAideSondeur += 1;
 
           var bucket = absBucket(r.absence_type);
           if (bucket && a.absences[bucket] != null) a.absences[bucket] += 1;
@@ -15846,6 +16021,7 @@
         { key: "parametres", label: "Parametres", icon: "sliders-horizontal", adminOnly: false },
         { key: "validations", label: "Validations", icon: "shield-check", adminOnly: true, badge: pendingCount },
         { key: "utilisateurs", label: "Utilisateurs", icon: "user-cog", adminOnly: true },
+        { key: "connectes", label: "Qui est en ligne", icon: "users", adminOnly: true },
         { key: "corbeille", label: "Corbeille", icon: "trash-2", adminOnly: true },
         { key: "bugs", label: "Journal des bugs", icon: "alert-triangle", adminOnly: true, badge: bugsUnresolved },
       ];
@@ -15880,8 +16056,76 @@
         tab === "parametres" ? h(EcranParametres, null) : null,
         tab === "validations" && isAdmin ? h(EcranValidations, { onNavigate: onNavigate }) : null,
         tab === "utilisateurs" && isAdmin ? h(EcranAdminUtilisateurs, null) : null,
+        tab === "connectes" && isAdmin ? h(EcranConnectes, null) : null,
         tab === "corbeille" && isAdmin ? h(EcranCorbeille, null) : null,
         tab === "bugs" && isAdmin ? h(EcranBugs, null) : null
+      );
+    }
+
+    // ─── EcranConnectes : presence Realtime - qui est en ligne maintenant ────
+    function EcranConnectes() {
+      const ctx = useAppData();
+      const [presences, setPresences] = useState([]);
+
+      useEffect(() => {
+        // On utilise un channel Realtime de presence partage
+        // Chaque client annonce son email + heure de connexion.
+        var channel = supabase.channel("wallis-presence", { config: { presence: { key: ctx.userEmail || "anon" } } });
+        channel.on("presence", { event: "sync" }, () => {
+          var state = channel.presenceState();
+          // state : { key: [{ email, connected_at, ... }] }
+          var list = [];
+          Object.keys(state).forEach(function(k) {
+            var entries = state[k];
+            if (entries && entries.length > 0) {
+              // Plus recent (derniere connexion)
+              entries.forEach(function(e) {
+                list.push({ email: e.email || k, connected_at: e.connected_at, page: e.page || null });
+              });
+            }
+          });
+          // Dedup par email (au cas ou plusieurs onglets)
+          var byEmail = {};
+          list.forEach(function(p) {
+            if (!byEmail[p.email] || (p.connected_at && p.connected_at > byEmail[p.email].connected_at)) byEmail[p.email] = p;
+          });
+          setPresences(Object.keys(byEmail).map(function(e) { return byEmail[e]; }).sort(function(a, b) { return (a.email || "").localeCompare(b.email || ""); }));
+        });
+        channel.subscribe(async function(status) {
+          if (status === "SUBSCRIBED") {
+            await channel.track({ email: ctx.userEmail || "anon", connected_at: new Date().toISOString() });
+          }
+        });
+        return function() { supabase.removeChannel(channel); };
+      }, []);
+
+      function fmtAgo(iso) {
+        if (!iso) return "?";
+        var diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (diff < 60) return "a l'instant";
+        if (diff < 3600) return "il y a " + Math.floor(diff / 60) + " min";
+        if (diff < 86400) return "il y a " + Math.floor(diff / 3600) + " h";
+        return new Date(iso).toLocaleString("fr-FR");
+      }
+
+      return h("div", null,
+        h("div", { style: { background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#86efac" } },
+          h(IconText, { icon: "wifi", size: 14, color: "#86efac" },
+            h("strong", null, presences.length), " utilisateur(s) actuellement connecte(s) a l'app admin"
+          )
+        ),
+        presences.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Personne d'autre n'est connecte.")) :
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          presences.map(function(p) {
+            return h("div", { key: p.email, style: { background: "rgba(36,40,60,0.55)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 } },
+              h("div", { style: { width: 12, height: 12, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px #22c55e", flexShrink: 0 } }),
+              h("div", { style: { flex: 1 } },
+                h("div", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } }, p.email),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, "Connecte " + fmtAgo(p.connected_at))
+              )
+            );
+          })
+        )
       );
     }
 
@@ -16157,7 +16401,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, demandesFinPending, empruntsFinProche, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -16226,7 +16470,9 @@
                 onMouseLeave: (e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }
               },
                 h(Icon, { name: p.lucide, size: 16, color: isActive ? "#a5b4fc" : "#71717a" }), p.label,
-                p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" } }, pendingCount) : null,
+                p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: pendingCount + " validation(s) en attente" }, pendingCount) : null,
+                p.key === "soumissions" && soumissionsPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
+                p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
                 p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null
               );
@@ -16265,6 +16511,8 @@
       const [dbEmprunts, setDbEmprunts] = useState([]);
       const [dbChargesFixes, setDbChargesFixes] = useState([]);
       const [dbBugLogs, setDbBugLogs] = useState([]);
+      const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
+      const [piecesPendingCount, setPiecesPendingCount] = useState(0);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -16405,6 +16653,47 @@
             .order("date_rapport", { ascending: false })
             .then(res => { if (res.data) setDbRapportsForage(res.data); });
         }, 60000);
+        return () => clearInterval(timer);
+      }, [session]);
+
+      // ── Compteurs soumissions en attente + pieces inconnues (pour macarons sidebar) ──
+      useEffect(() => {
+        if (!session) return;
+        async function fetchCounts() {
+          try {
+            const [relRes, intRes, cmdRes, congeRes, rapsForPieces, piecesRes] = await Promise.all([
+              supabase.from("releves_heures").select("id", { count: "exact", head: true }).eq("statut", "en_attente"),
+              supabase.from("demandes_intervention").select("id", { count: "exact", head: true }).eq("statut", "soumis"),
+              supabase.from("bons_commande").select("id", { count: "exact", head: true }).eq("statut", "soumis"),
+              supabase.from("demandes_conge").select("id", { count: "exact", head: true }).eq("statut", "en_attente"),
+              // Pour les pieces inconnues : on doit lire les consommables_perdus de tous les rapports
+              supabase.from("rapports_forage").select("consommables_perdus").not("consommables_perdus", "is", null),
+              supabase.from("pieces").select("reference,designation")
+            ]);
+            var soumTotal = (relRes.count || 0) + (intRes.count || 0) + (cmdRes.count || 0) + (congeRes.count || 0);
+            setSoumissionsPendingCount(soumTotal);
+            // Pieces inconnues : reference/designation presente dans les rapports MAIS pas dans la table pieces
+            var pieceKeys = new Set();
+            (piecesRes.data || []).forEach(function(p) {
+              if (p.reference) pieceKeys.add(("ref:" + String(p.reference).toUpperCase().trim()));
+              if (p.designation) pieceKeys.add(("des:" + String(p.designation).toUpperCase().trim()));
+            });
+            var unknown = new Set();
+            (rapsForPieces.data || []).forEach(function(r) {
+              var cons = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+              cons.forEach(function(c) {
+                var ref = String(c.reference || c.ref || "").toUpperCase().trim();
+                var des = String(c.designation || c.desig || c.nom || "").toUpperCase().trim();
+                if (!ref && !des) return;
+                var known = (ref && pieceKeys.has("ref:" + ref)) || (des && pieceKeys.has("des:" + des));
+                if (!known) unknown.add(ref || des);
+              });
+            });
+            setPiecesPendingCount(unknown.size);
+          } catch (e) { console.warn("[counts] fetch:", e.message); }
+        }
+        fetchCounts();
+        var timer = setInterval(fetchCounts, 60000);
         return () => clearInterval(timer);
       }, [session]);
 
@@ -17248,7 +17537,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100vh", minHeight: "100vh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: "auto", maxHeight: "100vh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: 12, left: 12, width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
