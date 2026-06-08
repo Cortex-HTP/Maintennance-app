@@ -16480,12 +16480,14 @@
     function computeAlertesSaisies(args) {
       var today          = args.today;
       var daysWindow     = args.daysWindow != null ? args.daysWindow : 7;
+      var startDateStr   = args.startDate || null; // ex: "2026-06-01" -> on prend tous les jours ouvres de startDate a hier
       var chantiers      = args.chantiers || [];
       var equipements    = args.equipements || [];
       var chantierEquips = args.chantierEquipements || [];
       var rapports       = args.rapports || [];
       var carburant      = args.carburant || [];
       var heures         = args.heures || [];
+      var saisies        = args.saisies || {}; // dbSaisies map {chantierId: {dateStr: {valeur, typeJour}}}
       var minHeures      = args.minHeures != null ? args.minHeures : 3;
 
       function toYMD(d) {
@@ -16498,15 +16500,34 @@
 
       // 1) Genere la liste des jours ouvres (Lun-Ven) de la fenetre, hors aujourd'hui
       var days = [];
-      var cursor = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      // On commence a J-1 pour laisser le temps de saisir le jour meme
-      for (var step = 1; days.length < daysWindow && step < daysWindow * 3; step++) {
-        var d = new Date(cursor.getTime());
-        d.setDate(d.getDate() - step);
-        var dow = d.getDay(); // 0=Dim 6=Sam
-        if (dow >= 1 && dow <= 5) days.push(toYMD(d));
+      // Hier = aujourd'hui - 1 (on ne juge pas le jour en cours)
+      var yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      yesterday.setDate(yesterday.getDate() - 1);
+      if (startDateStr) {
+        // Mode 'depuis date fixe' : on prend tous les jours ouvres de startDate a hier
+        var parts = startDateStr.split("-");
+        var startD = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        var cur = new Date(startD.getTime());
+        var safe = 0;
+        while (cur.getTime() <= yesterday.getTime() && safe < 400) {
+          var dow0 = cur.getDay();
+          if (dow0 >= 1 && dow0 <= 5) days.push(toYMD(cur));
+          cur.setDate(cur.getDate() + 1);
+          safe++;
+        }
+      } else {
+        // Mode 'fenetre glissante' : N derniers jours ouvres a partir de hier
+        var cursor = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        for (var step = 1; days.length < daysWindow && step < daysWindow * 3; step++) {
+          var d = new Date(cursor.getTime());
+          d.setDate(d.getDate() - step);
+          var dow = d.getDay(); // 0=Dim 6=Sam
+          if (dow >= 1 && dow <= 5) days.push(toYMD(d));
+        }
+        // Tri chronologique croissant pour cohesion
+        days.sort();
       }
-      if (!days.length) return { list: [], count: 0 };
+      if (!days.length) return { list: [], count: 0, daysChecked: [] };
 
       // 2) Index par chantier
       var chantById = {};
@@ -16561,6 +16582,20 @@
       // 5) Pour chaque jour, repere les affectations actives (chantier x machine)
       // chantier_equipements : { chantierId, equipementId, dateDebut, dateFin }
       // On considere l'affectation active sur J si dateDebut <= J <= dateFin (ou dateFin null = en cours).
+      // Exclusion : si Avancement marque ce (chantier, jour) avec typeJour != "normal"
+      // (panne / intemperies / ferie / arret / conge / maladie / chommage / non_productif),
+      // on saute la ligne -> pas d'alerte.
+      function isJourNonProductif(chantierId, dayStr) {
+        var byChant = saisies[chantierId] || saisies[String(chantierId)];
+        if (!byChant) return false;
+        var entry = byChant[dayStr];
+        if (!entry) return false;
+        if (typeof entry === "object") {
+          var tj = entry.typeJour || "normal";
+          return tj !== "normal";
+        }
+        return false;
+      }
       var items = [];
       days.forEach(function(dayStr) {
         var perDay = [];
@@ -16574,6 +16609,8 @@
           // Filtre chantiers archives / termines
           var st = chantStatut(ch);
           if (st.indexOf("archiv") >= 0 || st.indexOf("termin") >= 0 || st.indexOf("clos") >= 0) return;
+          // Filtre Avancement : jour ferie / non productif marque sur ce chantier
+          if (isJourNonProductif(ce.chantierId, dayStr)) return;
           var eq = eqById[ce.equipementId];
           if (!eq) return;
           var code = eqCodeById[ce.equipementId] || "";
@@ -16648,7 +16685,7 @@
 
       return h("div", null,
         h("h1", { style: { fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: "#fafafa", marginBottom: 6 } }, "Alertes saisies"),
-        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique sur les " + nbJoursChecked + " derniers jours ouvres (Lundi-Vendredi). Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage, 1 releve de carburant et 3 releves d'heures."),
+        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage, 1 releve de carburant et 3 releves d'heures. Les jours marques sur Avancement comme ferie, panne, intemperies, arret ou conge sont automatiquement exclus."),
 
         // Resume
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 } },
@@ -16662,8 +16699,8 @@
           ),
           h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Fenetre"),
-            h("div", { style: { fontSize: 14, color: "#cbd5e1", marginTop: 8 } }, "7 derniers jours ouvres"),
-            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "(re-evaluation auto chaque minute)")
+            h("div", { style: { fontSize: 14, color: "#cbd5e1", marginTop: 8 } }, "Depuis le 1er juin (Lun-Ven)"),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Re-evaluation auto / minute. Jours non productifs (Avancement) exclus.")
           )
         ),
 
@@ -16785,7 +16822,7 @@
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
                 p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null,
-                p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / carburant / heures) sur les 7 derniers jours ouvres" }, alertesSaisiesPending) : null
+                p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / carburant / heures) depuis le 1er juin (jours Avancement non productifs exclus)" }, alertesSaisiesPending) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -17011,13 +17048,16 @@
         return () => clearInterval(timer);
       }, [session]);
 
-      // ── Fetch leger releves_heures + carburant pour la fenetre des 21 derniers jours
-      // (sert au calcul des saisies manquantes par jour / chantier / machine). ──
+      // ── Fetch leger releves_heures + carburant pour la fenetre [1er juin -> hier]
+      // (sert au calcul des saisies manquantes par jour / chantier / machine).
+      // On garde aussi un bonus de 21 jours en arriere au cas ou on est en debut juin. ──
       useEffect(() => {
         if (!session) return;
         function fetchRecent() {
-          var since = new Date();
-          since.setDate(since.getDate() - 21);
+          var now = new Date();
+          var sinceJuin = new Date(now.getFullYear(), 5, 1); // mois 5 = juin
+          var since21 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 21);
+          var since = sinceJuin.getTime() < since21.getTime() ? sinceJuin : since21;
           var sinceStr = since.getFullYear() + "-" + String(since.getMonth() + 1).padStart(2, "0") + "-" + String(since.getDate()).padStart(2, "0");
           Promise.all([
             supabase.from("releves_heures").select("id,date_releve,personnel_id,chantier_id,sondeuse_code").gte("date_releve", sinceStr),
@@ -17033,21 +17073,28 @@
       }, [session]);
 
       // ── Calcul memo des alertes de saisies manquantes ──
+      // Fenetre fixe : depuis le 1er juin (annee en cours) jusqu'a hier.
+      // Exclusion automatique des jours marques non productifs sur Avancement
+      // (panne / intemperies / ferie / arret / conge / maladie / chommage / non_productif)
+      // et des vendredis (ou autres jours) saisis comme ferie sur le chantier concerne.
       const alertesSaisies = useMemo(function() {
         try {
+          var now = new Date();
+          var startStr = now.getFullYear() + "-06-01";
           return computeAlertesSaisies({
-            today: new Date(),
-            daysWindow: 7,
+            today: now,
+            startDate: startStr,
             chantiers: dbChantiers || [],
             equipements: equipements || [],
             chantierEquipements: dbChantierEquipements || [],
             rapports: dbRapportsForage || [],
             carburant: recentCarburant || [],
             heures: recentRelHeures || [],
+            saisies: dbSaisies || {},
             minHeures: 3
           });
         } catch (e) { console.warn("[alertes-saisies] compute:", e.message); return { list: [], count: 0 }; }
-      }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentCarburant, recentRelHeures]);
+      }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentCarburant, recentRelHeures, dbSaisies]);
 
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
