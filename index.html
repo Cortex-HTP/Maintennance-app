@@ -8905,6 +8905,61 @@
         affMap[a.personnelId + "-" + a.dateAffectation] = { chantierId: a.chantierId, typeJour: a.typeJour || "travail" };
       });
 
+      // ── Auto-affectation depuis les rapports de forage ──
+      // Si un employe figure dans l'equipe d'un rapport mais n'a pas d'affectation
+      // explicite ce jour-la, on lui en cree une virtuelle "travail" liee au chantier du rapport.
+      // Permet d'afficher Steeve/Ulrich/etc. sur le planning sans saisie manuelle.
+      function _strToBigintPe(s) {
+        if (typeof s === "number") return s;
+        if (/^\d+$/.test(String(s))) return parseInt(s, 10);
+        var hx = 0; var str = String(s);
+        for (var i = 0; i < str.length; i++) hx = (hx * 31 + str.charCodeAt(i)) & 0x7fffffff;
+        return hx || 1;
+      }
+      // Index nom canonique -> personnel_id (pour matcher quand m.id absent dans l'equipe)
+      var nameKeyToPidPe = {};
+      (personnel || []).forEach(function(p) {
+        if (!p || p.id == null) return;
+        var k = ((p.prenom || "") + " " + (p.nom || "")).toLowerCase().trim().split(/\s+/).filter(Boolean).sort().join(" ");
+        if (k) nameKeyToPidPe[k] = p.id;
+      });
+      // Index code court (p1..pN) -> personnel_id
+      var codeToPidPe = {};
+      (personnel || []).forEach(function(p) {
+        if (p && p.code && p.id != null) codeToPidPe[String(p.code)] = p.id;
+      });
+      function siteToChantierPe(lieu) {
+        if (!lieu) return null;
+        var lk = String(lieu).toUpperCase().trim();
+        var match = (activeChantiers || []).find(function(c) {
+          var s = String(c.site || "").toUpperCase().trim();
+          return s && (s === lk || s.indexOf(lk) >= 0 || lk.indexOf(s) >= 0);
+        });
+        return match ? match.id : null;
+      }
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r.date_rapport || !Array.isArray(r.equipe) || r.equipe.length === 0) return;
+        var d = String(r.date_rapport).substring(0, 10);
+        if (d.substring(0, 7) !== year + "-" + (monthIdx < 9 ? "0" : "") + (monthIdx + 1)) return; // skip si pas dans le mois affiche
+        var chId = r.chantier_id || siteToChantierPe(r.lieu);
+        if (!chId) return;
+        r.equipe.forEach(function(m) {
+          if (!m) return;
+          // Resolution du personnel_id : via m.id (code) puis via nom canonique
+          var pid = null;
+          if (m.id && codeToPidPe[String(m.id)]) pid = codeToPidPe[String(m.id)];
+          else if (m.id) { var b = _strToBigintPe(m.id); if (b) pid = b; }
+          if (!pid && m.nom) {
+            var k = String(m.nom).toLowerCase().trim().split(/\s+/).filter(Boolean).sort().join(" ");
+            if (nameKeyToPidPe[k]) pid = nameKeyToPidPe[k];
+          }
+          if (!pid) return;
+          var key = pid + "-" + d;
+          if (affMap[key]) return; // priorite a l'affectation explicite si elle existe
+          affMap[key] = { chantierId: chId, typeJour: "travail", auto: true };
+        });
+      });
+
       // Affectations implicites depuis releves_journaliers (import CSV).
       // { "empId-date": chantierId } - utilise comme fallback automatique
       // pour que le site de chaque employe s'affiche sans saisie manuelle.
