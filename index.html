@@ -1497,7 +1497,7 @@
           h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(244, 63, 94, 0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "alert-triangle", size: 18, color: "#fb7185" })),
           h("div", { style: { flex: 1, minWidth: 0 } },
             h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa" } }, _alertesCount + " saisie(s) manquante(s) sur " + _alertesJours + " jour(s)"),
-            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, "Rapport de forage, releve de carburant ou releves d'heures non envoyes pour des couples chantier x machine actifs.")
+            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, "Rapport de forage ou releves d'heures non envoyes pour des couples chantier x machine actifs.")
           ),
           h("div", { style: { fontSize: 12, fontWeight: 600, color: "#fb7185" } }, "Voir le detail >")
         ) : null,
@@ -16476,12 +16476,13 @@
     }
 
     // ─── Detection des saisies manquantes (par jour ouvre / chantier / machine) ───
-    // Pour chaque jour ouvre J de la fenetre [aujourd'hui - daysWindow ; hier],
+    // Pour chaque jour ouvre J de la fenetre [startDate ; hier],
     // pour chaque affectation chantier_equipement couvrant J,
     // on verifie qu'il y a au moins :
     //   - 1 rapport de forage (date_rapport = J, sondeuse_code = code(equip))
-    //   - 1 conso carburant   (date_consommation = J, sondeuse_code = code(equip))
-    //   - 3 releves d'heures  (date_releve = J, chantier_id OU sondeuse_code matche)
+    //   - 3 releves d'heures  (date_releve = J, equipement_id = ce.equipementId
+    //                          OU sondeuse_code = code(equip))
+    // Le carburant n'est plus verifie (regle a affiner).
     // Tout manquement donne lieu a un item. La liste est groupee par jour, du plus
     // recent au plus ancien.
     function computeAlertesSaisies(args) {
@@ -16561,23 +16562,16 @@
         if (!d || !code) return;
         rapByDayMach[d + "|" + code] = (rapByDayMach[d + "|" + code] || 0) + 1;
       });
-      // carburant : { 'YYYY-MM-DD|SONDEUSE': count }
-      var carbByDayMach = {};
-      carburant.forEach(function(c) {
-        var d = ymdOnly(c.date_consommation);
-        var code = String(c.sondeuse_code || "").trim().toUpperCase();
-        if (!d || !code) return;
-        carbByDayMach[d + "|" + code] = (carbByDayMach[d + "|" + code] || 0) + 1;
-      });
-      // heures : { 'YYYY-MM-DD|CHANTIER': count } et fallback { 'YYYY-MM-DD|SONDEUSE': count }
-      var heuresByDayChant = {};
-      var heuresByDayMach  = {};
+      // heures : indexes par equipement_id (champ principal) et par sondeuse_code (fallback)
+      // La table releves_heures n'a PAS de chantier_id : on matche sur equipement_id.
+      var heuresByDayEqId = {};
+      var heuresByDayMach = {};
       heures.forEach(function(h0) {
         var d = ymdOnly(h0.date_releve);
         if (!d) return;
-        if (h0.chantier_id != null) {
-          var k = d + "|" + String(h0.chantier_id);
-          heuresByDayChant[k] = (heuresByDayChant[k] || 0) + 1;
+        if (h0.equipement_id != null) {
+          var k = d + "|" + String(h0.equipement_id);
+          heuresByDayEqId[k] = (heuresByDayEqId[k] || 0) + 1;
         }
         if (h0.sondeuse_code) {
           var code2 = String(h0.sondeuse_code).trim().toUpperCase();
@@ -16622,13 +16616,11 @@
           if (!eq) return;
           var code = eqCodeById[ce.equipementId] || "";
           var kMach = dayStr + "|" + code;
-          var kChant = dayStr + "|" + String(ce.chantierId);
-          var hasRap  = code ? (rapByDayMach[kMach]  > 0) : false;
-          var hasCarb = code ? (carbByDayMach[kMach] > 0) : false;
-          var nbH = Math.max(heuresByDayChant[kChant] || 0, heuresByDayMach[kMach] || 0);
+          var kEqId = dayStr + "|" + String(ce.equipementId);
+          var hasRap = code ? (rapByDayMach[kMach] > 0) : false;
+          var nbH = Math.max(heuresByDayEqId[kEqId] || 0, heuresByDayMach[kMach] || 0);
           var missing = [];
           if (!hasRap)  missing.push("rapport");
-          if (!hasCarb) missing.push("carburant");
           if (nbH < minHeures) missing.push("heures(" + nbH + "/" + minHeures + ")");
           if (missing.length > 0) {
             perDay.push({
@@ -16639,7 +16631,6 @@
               equipementCode: code || (eq.Title || ""),
               missing: missing,
               hasRapport: hasRap,
-              hasCarburant: hasCarb,
               nbHeures: nbH,
               minHeures: minHeures
             });
@@ -16692,7 +16683,7 @@
 
       return h("div", null,
         h("h1", { style: { fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: "#fafafa", marginBottom: 6 } }, "Alertes saisies"),
-        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage, 1 releve de carburant et 3 releves d'heures. Les jours marques sur Avancement comme ferie, panne, intemperies, arret ou conge sont automatiquement exclus."),
+        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage et 3 releves d'heures. Les jours marques sur Avancement comme ferie, panne, intemperies, arret ou conge sont automatiquement exclus."),
 
         // Resume
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 } },
@@ -16828,7 +16819,7 @@
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
                 p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null,
-                p.key === "administration" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: pendingCount > 0 ? 4 : "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / carburant / heures) depuis le 1er juin" }, alertesSaisiesPending) : null
+                p.key === "administration" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: pendingCount > 0 ? 4 : "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / heures) depuis le 1er juin" }, alertesSaisiesPending) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -16867,9 +16858,8 @@
       const [dbBugLogs, setDbBugLogs] = useState([]);
       const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
       const [piecesPendingCount, setPiecesPendingCount] = useState(0);
-      // Donnees brutes pour la detection des saisies manquantes (fenetre 14 derniers jours)
+      // Donnees brutes pour la detection des saisies manquantes (fenetre [1er juin -> hier])
       const [recentRelHeures, setRecentRelHeures] = useState([]);
-      const [recentCarburant, setRecentCarburant] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
 
       const showToast = (message, type = "success") => {
@@ -17054,9 +17044,10 @@
         return () => clearInterval(timer);
       }, [session]);
 
-      // ── Fetch leger releves_heures + carburant pour la fenetre [1er juin -> hier]
+      // ── Fetch leger releves_heures pour la fenetre [1er juin -> hier]
       // (sert au calcul des saisies manquantes par jour / chantier / machine).
-      // On garde aussi un bonus de 21 jours en arriere au cas ou on est en debut juin. ──
+      // On garde aussi un bonus de 21 jours en arriere au cas ou on est en debut juin.
+      // Le carburant n'est plus utilise (regle a revoir cote terrain). ──
       useEffect(() => {
         if (!session) return;
         function fetchRecent() {
@@ -17065,12 +17056,8 @@
           var since21 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 21);
           var since = sinceJuin.getTime() < since21.getTime() ? sinceJuin : since21;
           var sinceStr = since.getFullYear() + "-" + String(since.getMonth() + 1).padStart(2, "0") + "-" + String(since.getDate()).padStart(2, "0");
-          Promise.all([
-            supabase.from("releves_heures").select("id,date_releve,personnel_id,chantier_id,sondeuse_code").gte("date_releve", sinceStr),
-            supabase.from("consommations_carburant").select("id,date_consommation,sondeuse_code,quantite_l").gte("date_consommation", sinceStr)
-          ]).then(function(res) {
-            if (res[0] && res[0].data) setRecentRelHeures(res[0].data);
-            if (res[1] && res[1].data) setRecentCarburant(res[1].data);
+          supabase.from("releves_heures").select("id,date_releve,personnel_id,equipement_id,sondeuse_code").gte("date_releve", sinceStr).then(function(res) {
+            if (res && res.data) setRecentRelHeures(res.data);
           }).catch(function(e) { console.warn("[alertes-saisies] fetch:", e.message); });
         }
         fetchRecent();
@@ -17094,13 +17081,12 @@
             equipements: equipements || [],
             chantierEquipements: dbChantierEquipements || [],
             rapports: dbRapportsForage || [],
-            carburant: recentCarburant || [],
             heures: recentRelHeures || [],
             saisies: dbSaisies || {},
             minHeures: 3
           });
         } catch (e) { console.warn("[alertes-saisies] compute:", e.message); return { list: [], count: 0 }; }
-      }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentCarburant, recentRelHeures, dbSaisies]);
+      }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentRelHeures, dbSaisies]);
 
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
@@ -17885,7 +17871,7 @@
         dbEmprunts, setDbEmprunts,
         dbChargesFixes, setDbChargesFixes,
         dbBugLogs, setDbBugLogs,
-        alertesSaisies, recentRelHeures, recentCarburant,
+        alertesSaisies, recentRelHeures,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
