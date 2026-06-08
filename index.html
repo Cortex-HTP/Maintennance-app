@@ -16583,19 +16583,26 @@
       // 5) Pour chaque jour, repere les affectations actives (chantier x machine)
       // chantier_equipements : { chantierId, equipementId, dateDebut, dateFin }
       // On considere l'affectation active sur J si dateDebut <= J <= dateFin (ou dateFin null = en cours).
-      // Exclusion : si Avancement marque ce (chantier, jour) avec typeJour != "normal"
-      // (panne / intemperies / ferie / arret / conge / maladie / chommage / non_productif),
-      // on saute la ligne -> pas d'alerte.
-      function isJourNonProductif(chantierId, dayStr) {
+      //
+      // Regle d'exclusion (Avancement = source de verite) :
+      //   On n'alerte que si la cellule Avancement (chantier, jour) est productive,
+      //   c'est-a-dire : saisie presente avec typeJour "normal" ET valeur > 0
+      //   (ou simplement une valeur numerique > 0 si saisie au format ancien).
+      //   Si pas de saisie OU typeJour non productif (ferie, panne, intemperies, etc.)
+      //   OU valeur 0, on ne s'attend pas a recevoir des rapports/heures -> aucune alerte.
+      function isJourProductif(chantierId, dayStr) {
         var byChant = saisies[chantierId] || saisies[String(chantierId)];
         if (!byChant) return false;
         var entry = byChant[dayStr];
-        if (!entry) return false;
+        if (entry == null) return false;
         if (typeof entry === "object") {
           var tj = entry.typeJour || "normal";
-          return tj !== "normal";
+          if (tj !== "normal") return false;
+          var v = parseFloat(entry.valeur || 0);
+          return v > 0;
         }
-        return false;
+        // entry est directement une valeur numerique (saisie au format ancien)
+        return parseFloat(entry || 0) > 0;
       }
       var items = [];
       days.forEach(function(dayStr) {
@@ -16610,8 +16617,8 @@
           // Filtre chantiers archives / termines
           var st = chantStatut(ch);
           if (st.indexOf("archiv") >= 0 || st.indexOf("termin") >= 0 || st.indexOf("clos") >= 0) return;
-          // Filtre Avancement : jour ferie / non productif marque sur ce chantier
-          if (isJourNonProductif(ce.chantierId, dayStr)) return;
+          // Filtre Avancement : on n'alerte que si la cellule (chantier, jour) est productive
+          if (!isJourProductif(ce.chantierId, dayStr)) return;
           var eq = eqById[ce.equipementId];
           if (!eq) return;
           var code = eqCodeById[ce.equipementId] || "";
@@ -16683,7 +16690,7 @@
 
       return h("div", null,
         h("h1", { style: { fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: "#fafafa", marginBottom: 6 } }, "Alertes saisies"),
-        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. Pour chaque jour, chaque chantier et chaque machine, il faut au minimum : 1 rapport de forage et 3 releves d'heures. Les jours marques sur Avancement comme ferie, panne, intemperies, arret ou conge sont automatiquement exclus."),
+        h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. La page Avancement sert de reference : seuls les jours productifs (cellule renseignee avec une valeur > 0) declenchent une verification. Pour chaque (chantier, machine, jour productif), il faut au minimum : 1 rapport de forage et 3 releves d'heures."),
 
         // Resume
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 } },
@@ -16698,7 +16705,7 @@
           h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Fenetre"),
             h("div", { style: { fontSize: 14, color: "#cbd5e1", marginTop: 8 } }, "Depuis le 1er juin (Lun-Ven)"),
-            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Re-evaluation auto / minute. Jours non productifs (Avancement) exclus.")
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Re-evaluation auto / minute. Reference = Avancement (jour productif si valeur > 0).")
           )
         ),
 
@@ -17074,7 +17081,7 @@
         try {
           var now = new Date();
           var startStr = now.getFullYear() + "-06-01";
-          return computeAlertesSaisies({
+          var res = computeAlertesSaisies({
             today: now,
             startDate: startStr,
             chantiers: dbChantiers || [],
@@ -17085,6 +17092,12 @@
             saisies: dbSaisies || {},
             minHeures: 3
           });
+          // Debug temporaire : permet de verifier le matching cote console navigateur
+          try {
+            var sampleEqIds = (recentRelHeures || []).slice(0, 5).map(function(h) { return { date: h.date_releve, eq: h.equipement_id, code: h.sondeuse_code }; });
+            console.log("[alertes-saisies] releves_heures fetched=" + (recentRelHeures || []).length + ", manquements=" + (res && res.count) + ", sample=", sampleEqIds);
+          } catch(e) {}
+          return res;
         } catch (e) { console.warn("[alertes-saisies] compute:", e.message); return { list: [], count: 0 }; }
       }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentRelHeures, dbSaisies]);
 
