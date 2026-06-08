@@ -11053,6 +11053,14 @@
           supabase.from("app_users").update(dbData).eq("id", f.id).select().single().then(function(res) {
             if (res.error) { alert("Erreur sauvegarde utilisateur: " + res.error.message); return; }
             setUsers(users.map(function(u) { return u.id === f.id ? appUserFromDb(res.data) : u; }));
+            // Auto-logout : invalide la session du user pour qu'il re-charge ses droits a la prochaine connexion
+            if (f.email) {
+              fetch("https://employes-psi.vercel.app/api/invalidate-user-session", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: f.email })
+              }).catch(function(e) { console.warn("[saveUser] invalidate session :", e.message); });
+            }
           });
         } else {
           supabase.from("app_users").insert(dbData).select().single().then(function(res) {
@@ -16398,6 +16406,57 @@
             .then(res => { if (res.data) setDbRapportsForage(res.data); });
         }, 60000);
         return () => clearInterval(timer);
+      }, [session]);
+
+      // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
+      // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
+      // la table pour mettre l'UI a jour sans rechargement.
+      useEffect(() => {
+        if (!session) return;
+        var eqCodeById = {};
+        (equipements || []).forEach(e => { eqCodeById[e.Id] = e.Title; });
+        // Helper : table -> handler de re-fetch
+        var refreshers = {
+          app_users: function() { supabase.from("app_users").select("*").then(res => { if (res.data) setDbAppUsers(res.data.map(appUserFromDb)); }); },
+          chantiers: function() { supabase.from("chantiers").select("*").order("titre").then(res => { if (res.data) setDbChantiers(res.data.map(chantierFromDb)); }); },
+          equipements: function() { supabase.from("equipements").select("*").then(res => { if (res.data) setEquipements(res.data.map(equipementFromDb)); }); },
+          pieces: function() { supabase.from("pieces").select("*").then(res => { if (res.data) setPieces(res.data.map(pieceFromDb)); }); },
+          plans: function() { supabase.from("plans").select("*").then(res => { if (res.data) setPlans(res.data.map(planFromDb)); }); },
+          paliers_primes: function() { supabase.from("paliers_primes").select("*").then(res => { if (res.data) setDbPaliers(res.data.map(palierFromDb)); }); },
+          affectations: function() { supabase.from("affectations").select("*").then(res => { if (res.data) setDbAffectations(res.data.map(affectationFromDb)); }); },
+          saisies: function() { supabase.from("saisies").select("*").then(res => {
+            if (!res.data) return;
+            var bag = {};
+            res.data.forEach(s => { if (!bag[s.chantier_id]) bag[s.chantier_id] = {}; bag[s.chantier_id][s.date_saisie] = s.valeur != null ? s.valeur : (s.type_jour && s.type_jour !== 'normal' ? { valeur: 0, typeJour: s.type_jour } : 0); });
+            setDbSaisies(bag);
+          }); },
+          charges_fixes: function() { supabase.from("charges_fixes").select("*").order("categorie").order("libelle").then(res => { if (res.data) setDbChargesFixes(res.data); }); },
+          emprunts: function() { supabase.from("emprunts").select("*").then(res => { if (res.data) setDbEmprunts(res.data); }); },
+          parametres: function() { supabase.from("parametres").select("*").then(res => { if (res.data) setParametres(res.data); }); },
+          interventions: function() { supabase.from("interventions").select("*").then(res => { if (res.data) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] }))); }); },
+          rapports_forage: function() { supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(res => { if (res.data) setDbRapportsForage(res.data); }); },
+          releves_horametre: function() { supabase.from("releves_horametre").select("*").then(res => { if (res.data) setReleves(res.data.map(r => releveFromDb(r, eqCodeById))); }); }
+        };
+        // Throttle : evite de re-fetch trop souvent si plusieurs events arrivent rapidement
+        var pending = {};
+        function schedule(table) {
+          if (pending[table]) return;
+          pending[table] = setTimeout(() => {
+            pending[table] = null;
+            try { refreshers[table] && refreshers[table](); } catch(e) { console.warn("[realtime] refresh", table, e.message); }
+          }, 250);
+        }
+        var channel = supabase.channel("public:wallis-sync");
+        Object.keys(refreshers).forEach(table => {
+          channel.on("postgres_changes", { event: "*", schema: "public", table: table }, () => schedule(table));
+        });
+        channel.subscribe(status => {
+          if (status === "SUBSCRIBED") console.log("[realtime] subscribed to all tables");
+        });
+        return function() {
+          Object.keys(pending).forEach(k => { if (pending[k]) clearTimeout(pending[k]); });
+          supabase.removeChannel(channel);
+        };
       }, [session]);
 
       // Auto-generation des interventions preventives : une seule visite par (equipement, plan)
