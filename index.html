@@ -3703,26 +3703,23 @@
             var k = String(c.date_consommation || "").substring(0, 10);
             byDay[k] = (byDay[k] || 0) + (parseFloat(c.quantite_l) || 0);
           });
-          var seriesG = days.map(function(d) {
+          // On garde UNIQUEMENT les jours avec une saisie (skip dates vides pour chart compact)
+          var allDays = days.map(function(d) {
             var iso = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
             return { date: d, iso: iso, value: byDay[iso] || 0 };
           });
+          var seriesG = allDays.filter(function(p) { return p.value > 0; });
           if (seriesG.length === 0) return null;
           var maxV = Math.max.apply(null, seriesG.map(function(p) { return p.value; }).concat(1));
-          // Moyenne globale (sur jours avec saisie pour eviter dilution par les WE/jours feries)
-          var activeDays = seriesG.filter(function(p) { return p.value > 0; });
-          var moyenneGlobale = activeDays.length > 0 ? activeDays.reduce(function(s, p) { return s + p.value; }, 0) / activeDays.length : 0;
-          var moyenneGlobaleAllDays = seriesG.length > 0 ? seriesG.reduce(function(s, p) { return s + p.value; }, 0) / seriesG.length : 0;
+          var moyenneGlobale = seriesG.reduce(function(s, p) { return s + p.value; }, 0) / seriesG.length;
+          var moyenneGlobaleAllDays = allDays.length > 0 ? allDays.reduce(function(s, p) { return s + p.value; }, 0) / allDays.length : 0;
           // SVG line chart
           var W = 720, H = 200, pad = { t: 18, r: 14, b: 32, l: 44 };
           var iW = W - pad.l - pad.r;
           var iH = H - pad.t - pad.b;
           var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
           var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
-          // Polyline point-a-point : on ne relie que les jours qui ont une saisie (value > 0).
-          // Les jours vides sont sautes -> pas de chute artificielle a 0.
-          var activePts = seriesG.map(function(p, i) { return { i: i, val: p.value }; }).filter(function(o) { return o.val > 0; });
-          var linePts = activePts.map(function(o) { return xFor(o.i) + ',' + yFor(o.val); }).join(' ');
+          var linePts = seriesG.map(function(p, i) { return xFor(i) + ',' + yFor(p.value); }).join(' ');
           // Ligne moyenne (basee sur jours actifs)
           var yMoy = yFor(moyenneGlobale);
           // Ticks Y (4 graduations)
@@ -3745,8 +3742,8 @@
                   h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
                   h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, Math.round(t.v) + " L")
                 ); }),
-                // Aire sous courbe (subtile) : depuis le 1er point actif jusqu'au dernier
-                activePts.length > 1 ? h("path", { d: "M " + xFor(activePts[0].i) + "," + yFor(0) + " L " + linePts + " L " + xFor(activePts[activePts.length-1].i) + "," + yFor(0) + " Z",
+                // Aire sous courbe
+                seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z",
                   fill: "url(#carb-grad)" }) : null,
                 h("defs", null, h("linearGradient", { id: "carb-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
                   h("stop", { offset: "0%", "stop-color": "rgba(134,239,172,0.30)" }),
@@ -3754,11 +3751,11 @@
                 )),
                 // Ligne moyenne
                 moyenneGlobale > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
-                // Polyline point-a-point (seuls les jours avec saisie sont relies)
-                activePts.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                // Polyline (uniquement jours avec saisie, axe X compressed)
+                seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
                 // Points
-                seriesG.map(function(p, i) { return p.value > 0 ? h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }) : null; }),
-                // Labels X
+                seriesG.map(function(p, i) { return h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }); }),
+                // Labels X (uniquement les dates avec saisie)
                 seriesG.map(function(p, i) {
                   if (i % xLabelEvery !== 0 && i !== seriesG.length - 1) return null;
                   return h("text", { key: "x" + i, x: xFor(i), y: H - 8, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, p.date.getDate() + "/" + (p.date.getMonth() + 1));
