@@ -3719,7 +3719,10 @@
           var iH = H - pad.t - pad.b;
           var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
           var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
-          var linePts = seriesG.map(function(p, i) { return xFor(i) + ',' + yFor(p.value); }).join(' ');
+          // Polyline point-a-point : on ne relie que les jours qui ont une saisie (value > 0).
+          // Les jours vides sont sautes -> pas de chute artificielle a 0.
+          var activePts = seriesG.map(function(p, i) { return { i: i, val: p.value }; }).filter(function(o) { return o.val > 0; });
+          var linePts = activePts.map(function(o) { return xFor(o.i) + ',' + yFor(o.val); }).join(' ');
           // Ligne moyenne (basee sur jours actifs)
           var yMoy = yFor(moyenneGlobale);
           // Ticks Y (4 graduations)
@@ -3742,8 +3745,8 @@
                   h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
                   h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, Math.round(t.v) + " L")
                 ); }),
-                // Aire sous courbe (subtile)
-                seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z",
+                // Aire sous courbe (subtile) : depuis le 1er point actif jusqu'au dernier
+                activePts.length > 1 ? h("path", { d: "M " + xFor(activePts[0].i) + "," + yFor(0) + " L " + linePts + " L " + xFor(activePts[activePts.length-1].i) + "," + yFor(0) + " Z",
                   fill: "url(#carb-grad)" }) : null,
                 h("defs", null, h("linearGradient", { id: "carb-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
                   h("stop", { offset: "0%", "stop-color": "rgba(134,239,172,0.30)" }),
@@ -3751,8 +3754,8 @@
                 )),
                 // Ligne moyenne
                 moyenneGlobale > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
-                // Polyline courbe
-                seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                // Polyline point-a-point (seuls les jours avec saisie sont relies)
+                activePts.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
                 // Points
                 seriesG.map(function(p, i) { return p.value > 0 ? h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }) : null; }),
                 // Labels X
