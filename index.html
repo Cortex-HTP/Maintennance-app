@@ -11289,6 +11289,33 @@
         });
         setToDelete(null);
       };
+      var resetPasswordFor = async function(u) {
+        if (!u || !u.email) { alert("Cet utilisateur n'a pas d'email."); return; }
+        var newPwd = prompt("Nouveau mot de passe pour " + u.email + " (au moins 8 caracteres, majuscules / chiffres / signe recommandes) :");
+        if (newPwd == null) return;
+        newPwd = String(newPwd).trim();
+        if (newPwd.length < 8) { alert("Le mot de passe doit faire au moins 8 caracteres."); return; }
+        var confirmMsg = "Confirmer le reset du mot de passe de " + u.email + " ?\n\nLa session active de l'utilisateur sera fermee. Il devra se reconnecter avec le nouveau mot de passe.";
+        if (!window.confirm(confirmMsg)) return;
+        try {
+          var sess = await supabase.auth.getSession();
+          var tok = sess && sess.data && sess.data.session && sess.data.session.access_token;
+          if (!tok) { alert("Session admin introuvable, reconnectez-vous."); return; }
+          var resp = await fetch("https://employes-psi.vercel.app/api/admin-reset-password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok },
+            body: JSON.stringify({ email: u.email, newPassword: newPwd })
+          });
+          var data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            alert("Erreur reset MDP : " + (data && data.error ? data.error : ("HTTP " + resp.status)));
+            return;
+          }
+          alert("Mot de passe reinitialise pour " + u.email + ".\n\nCommunique le nouveau mot de passe a l'utilisateur :\n\n" + newPwd);
+        } catch (e) {
+          alert("Erreur reseau : " + e.message);
+        }
+      };
       var closeModal = function() { setShowModal(false); setEditing(null); };
 
       var subKeys = SOUMISSIONS_SUBPAGES.map(function(s) { return s.key; });
@@ -11499,6 +11526,7 @@
                         ),
                         h("td", { style: Object.assign({}, tdStyle, { whiteSpace: "nowrap" }) },
                           h("button", { onClick: function() { openEdit(u); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
+                          h("button", { onClick: function() { resetPasswordFor(u); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Reinitialiser le mot de passe" }, h(Icon, { name: "key-round", size: 15, color: "#f59e0b" })),
                           u.email !== ADMIN_EMAIL ? h("button", { onClick: function() { setToDelete(u); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" })) : null
                         )
                       );
@@ -16079,11 +16107,93 @@
       );
     }
 
+    // ─── Ecran : Mon profil (accessible a tous depuis Administration) ───
+    function EcranMonProfil() {
+      const ctx = useAppData();
+      const userEmail = (ctx.userEmail || "").toLowerCase();
+      const appUsers = ctx.dbAppUsers || [];
+      const me = appUsers.find(function(u) { return (u.email || "").toLowerCase() === userEmail; }) || null;
+      const isAdminFlag = ctx.isAdmin;
+
+      const [newPwd, setNewPwd] = useState("");
+      const [newPwd2, setNewPwd2] = useState("");
+      const [busy, setBusy] = useState(false);
+      const [msg, setMsg] = useState(null); // { type: 'ok'|'err', text }
+
+      function pagesLabels(pageKeys) {
+        if (!pageKeys || pageKeys.length === 0) return "Aucune page autorisee";
+        // Lookup PAGE_LABELS ou ALL_PAGES si dispo
+        try {
+          if (typeof PAGE_LABELS !== "undefined") {
+            return pageKeys.map(function(k) { return PAGE_LABELS[k] || k; }).join(", ");
+          }
+        } catch (e) {}
+        return pageKeys.join(", ");
+      }
+
+      async function changeMyPassword() {
+        setMsg(null);
+        if (!newPwd || newPwd.length < 8) { setMsg({ type: "err", text: "Le nouveau mot de passe doit faire au moins 8 caracteres." }); return; }
+        if (newPwd !== newPwd2) { setMsg({ type: "err", text: "Les deux mots de passe ne correspondent pas." }); return; }
+        setBusy(true);
+        try {
+          const res = await supabase.auth.updateUser({ password: newPwd });
+          if (res && res.error) { setMsg({ type: "err", text: "Erreur : " + res.error.message }); setBusy(false); return; }
+          setMsg({ type: "ok", text: "Mot de passe change avec succes. Vous resterez connecte sur cet appareil." });
+          setNewPwd(""); setNewPwd2("");
+        } catch (e) {
+          setMsg({ type: "err", text: "Erreur reseau : " + e.message });
+        }
+        setBusy(false);
+      }
+
+      var card = { background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 18 };
+      var lbl  = { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 4 };
+      var val  = { fontSize: 14.5, color: "#fafafa", fontWeight: 600, marginBottom: 14 };
+      var inputStyle = { width: "100%", padding: "10px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 14, fontFamily: "inherit" };
+
+      return h("div", null,
+        h("h2", { style: { fontSize: 20, fontWeight: 700, color: "#fafafa", marginBottom: 14 } }, h(IconText, { icon: "user-round", size: 18, color: "#a78bfa" }, "Mon profil")),
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 20 } },
+          h("div", { style: card },
+            h("div", { style: lbl }, "Nom"),
+            h("div", { style: val }, (me && me.nom) || "(non defini cote app_users)"),
+            h("div", { style: lbl }, "Email"),
+            h("div", { style: val }, ctx.userEmail || "-"),
+            h("div", { style: lbl }, "Role"),
+            h("div", { style: val }, isAdminFlag ? "Administrateur" : ((me && me.role) || "Utilisateur"))
+          ),
+          h("div", { style: card },
+            h("div", { style: lbl }, "Statut"),
+            h("div", { style: val }, (me && me.statut) || "Actif"),
+            h("div", { style: lbl }, "Derniere connexion"),
+            h("div", { style: val }, (me && me.derniereConnexion) || "Jamais enregistree"),
+            h("div", { style: lbl }, "Pages autorisees"),
+            h("div", { style: Object.assign({}, val, { fontSize: 12.5, fontWeight: 500, lineHeight: 1.5 }) }, isAdminFlag ? "Toutes (administrateur)" : pagesLabels(me && me.pagesAutorisees))
+          )
+        ),
+        h("div", { style: Object.assign({}, card, { maxWidth: 520 }) },
+          h("h3", { style: { fontSize: 15, fontWeight: 700, color: "#fafafa", marginTop: 0, marginBottom: 14 } }, h(IconText, { icon: "key-round", size: 15, color: "#f59e0b" }, "Changer mon mot de passe")),
+          h("div", { style: { marginBottom: 12 } },
+            h("div", { style: lbl }, "Nouveau mot de passe (8 caracteres min.)"),
+            h("input", { type: "password", style: inputStyle, value: newPwd, onChange: function(e) { setNewPwd(e.target.value); }, autoComplete: "new-password" })
+          ),
+          h("div", { style: { marginBottom: 14 } },
+            h("div", { style: lbl }, "Confirmer"),
+            h("input", { type: "password", style: inputStyle, value: newPwd2, onChange: function(e) { setNewPwd2(e.target.value); }, autoComplete: "new-password" })
+          ),
+          msg ? h("div", { style: { padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: msg.type === "ok" ? "rgba(34,197,94,0.12)" : "rgba(244,63,94,0.12)", color: msg.type === "ok" ? "#86efac" : "#fda4af", border: "1px solid " + (msg.type === "ok" ? "rgba(34,197,94,0.3)" : "rgba(244,63,94,0.3)") } }, msg.text) : null,
+          h(Button, { onClick: changeMyPassword, disabled: busy }, busy ? "Modification..." : "Changer mon mot de passe")
+        )
+      );
+    }
+
     // ─── Ecran Administration (Parametres / Validations / Utilisateurs) ──
     function EcranAdministration({ onNavigate, pendingCount, initialTab }) {
       const ctx = useAppData();
       const isAdmin = ctx.isAdmin;
-      const [tab, setTab] = useState(initialTab || "parametres");
+      const defaultTab = initialTab || (isAdmin ? "parametres" : "mon-profil");
+      const [tab, setTab] = useState(defaultTab);
       // Si initialTab change apres montage (navigation depuis la banniere Accueil), on l'applique
       React.useEffect(function() {
         if (initialTab) setTab(initialTab);
@@ -16091,6 +16201,7 @@
       const bugsUnresolved = (ctx.dbBugLogs || []).filter(function(b) { return !b.resolved; }).length;
       const alertesSaisCount = (ctx.alertesSaisies && ctx.alertesSaisies.count) || 0;
       const tabs = [
+        { key: "mon-profil", label: "Mon profil", icon: "user-round", adminOnly: false },
         { key: "parametres", label: "Parametres", icon: "sliders-horizontal", adminOnly: false },
         { key: "validations", label: "Validations", icon: "shield-check", adminOnly: true, badge: pendingCount },
         { key: "alertes-saisies", label: "Alertes saisies", icon: "alert-triangle", adminOnly: true, badge: alertesSaisCount },
@@ -16127,6 +16238,7 @@
             );
           })
         ),
+        tab === "mon-profil" ? h(EcranMonProfil, null) : null,
         tab === "parametres" ? h(EcranParametres, null) : null,
         tab === "validations" && isAdmin ? h(EcranValidations, { onNavigate: onNavigate }) : null,
         tab === "alertes-saisies" && isAdmin ? h(EcranAlertesSaisies, { onNavigate: onNavigate }) : null,
@@ -16805,7 +16917,7 @@
         h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
           sections.map((section) => h("div", { key: section.name },
             h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
-            section.pages.filter(function(p) { if (p.adminOnly && !isAdmin) return false; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
+            section.pages.filter(function(p) { if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
               return h("button", { key: p.key, onClick: () => navigateThenClose(p.key),
                 style: {
@@ -17619,6 +17731,27 @@
         supabase.from("app_users").update({ derniere_connexion: new Date().toISOString() }).eq("id", currentAppUser.id).then(function() {});
       }, [session]);
 
+      // ── Auto-deconnexion a 18h (heure locale) pour les non-admins ──
+      // Les admins gardent leur session ; les autres sont deconnectes en fin de journee.
+      useEffect(function() {
+        if (!session || isAdmin) return;
+        var now = new Date();
+        var target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0, 0);
+        if (target.getTime() <= now.getTime()) {
+          // Deja passe 18h aujourd'hui -> on programme pour 18h du lendemain
+          target.setDate(target.getDate() + 1);
+        }
+        var delay = target.getTime() - now.getTime();
+        // setTimeout max ~24.8 jours, mais ici on est sur < 24h donc OK
+        var timer = setTimeout(function() {
+          try {
+            alert("Deconnexion automatique programmee (18h). Reconnectez-vous demain.");
+          } catch(e) {}
+          supabase.auth.signOut().finally(function() { setSession(null); });
+        }, delay);
+        return function() { clearTimeout(timer); };
+      }, [session, isAdmin]);
+
       // ─── Systeme de validation ──────────────────────────────────────
       const PENDING_KEY = "pending_validations";
       const VALIDATION_LOG_KEY = "validation_log";
@@ -17910,7 +18043,7 @@
 
       const renderPage = () => {
         // Check page access for non-admins
-        if (!isAdmin && allowedPages && currentPage !== "accueil" && currentPage !== "fiche-equipement" && allowedPages.indexOf(currentPage) < 0) {
+        if (!isAdmin && allowedPages && currentPage !== "accueil" && currentPage !== "fiche-equipement" && currentPage !== "administration" && allowedPages.indexOf(currentPage) < 0) {
           return h(EcranAccueil, { onNavigate: navigate });
         }
         if (currentPage === "accueil") return h(EcranAccueil, { onNavigate: navigate });
