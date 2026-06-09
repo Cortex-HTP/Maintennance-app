@@ -11222,10 +11222,12 @@
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
+        { key: "emprunts", label: "Emprunts", icon: "landmark" },
         { key: "charges-fixes", label: "Charges fixes", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
         { key: "messages", label: "Messages", icon: "mail" },
         { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
+        { key: "alertes-saisies", label: "Alertes saisies", icon: "alert-triangle", adminOnly: true },
         { key: "administration", label: "Administration", icon: "user-cog", adminOnly: true }
       ];
       // Sous-pages de "Soumissions employes" - actives seulement quand la page parente est cochee
@@ -11340,7 +11342,7 @@
       var selectAllPages = function() {
         if (!editing) return;
         var pages = ALL_PAGES.filter(function(p) {
-          if (editing.role !== "Administrateur" && p.key === "administration") return false;
+          if (editing.role !== "Administrateur" && p.adminOnly) return false;
           return true;
         }).map(function(p) { return p.key; });
         // Inclure aussi toutes les sous-pages de soumissions
@@ -11383,9 +11385,10 @@
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Role" }, h("select", { style: selectStyle, value: f.role, onChange: function(e) {
                 upd("role", e.target.value);
-                // Si on passe en Utilisateur, retirer les pages admin
+                // Si on passe en Utilisateur, retirer toutes les pages adminOnly
                 if (e.target.value !== "Administrateur") {
-                  var cleaned = (f.pagesAutorisees || []).filter(function(k) { return k !== "administration"; });
+                  var adminOnlyKeys = ALL_PAGES.filter(function(p) { return p.adminOnly; }).map(function(p) { return p.key; });
+                  var cleaned = (f.pagesAutorisees || []).filter(function(k) { return adminOnlyKeys.indexOf(k) < 0; });
                   setEditing(Object.assign({}, f, { role: e.target.value, pagesAutorisees: cleaned }));
                 }
               } },
@@ -11407,7 +11410,7 @@
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 6 } },
                 ALL_PAGES.filter(function(page) {
                   // Hide admin-only pages for non-admin roles
-                  if (f.role !== "Administrateur" && page.key === "administration") return false;
+                  if (f.role !== "Administrateur" && page.adminOnly) return false;
                   return true;
                 }).map(function(page) {
                   var checked = (f.pagesAutorisees || []).indexOf(page.key) >= 0;
@@ -11503,7 +11506,9 @@
                   ? h("tr", null, h("td", { colSpan: 7, style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun utilisateur trouve"))
                   : filtered.map(function(u) {
                       var sc = statusColors[u.statut] || statusColors["Inactif"];
-                      var pageCount = (u.pagesAutorisees || []).length;
+                      // Ne compte que les pages presentes dans ALL_PAGES (exclut les sous-pages
+                      // de soumissions et les anciennes cles obsoletes)
+                      var pageCount = (u.pagesAutorisees || []).filter(function(k) { return allPageKeys.indexOf(k) >= 0; }).length;
                       return h("tr", { key: u.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
                         h("td", { style: Object.assign({}, tdStyle, { fontWeight: 700 }) },
                           h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
