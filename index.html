@@ -6,6 +6,25 @@
   <meta name="theme-color" content="#1a1d2e" />
   <title>Wallis-Label - Gestion & Suivi</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236d28d9' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z'/></svg>" />
+  <!-- ─── Sentry (monitoring d'erreurs en prod) ───
+       Pour activer : 1) creer un compte gratuit sur https://sentry.io
+                      2) projet 'wallis-label-admin'
+                      3) coller le DSN ci-dessous
+       Tant que SENTRY_DSN reste vide, Sentry est inactif (zero impact). -->
+  <script src="https://browser.sentry-cdn.com/8.40.0/bundle.min.js" crossorigin="anonymous"></script>
+  <script>
+    (function() {
+      var SENTRY_DSN = ""; // TODO : remplir avec ton DSN Sentry
+      if (SENTRY_DSN && window.Sentry) {
+        window.Sentry.init({
+          dsn: SENTRY_DSN,
+          environment: location.hostname.indexOf("localhost") >= 0 ? "dev" : "prod",
+          release: "wallis-admin@" + (new Date().getFullYear()),
+          tracesSampleRate: 0.1
+        });
+      }
+    })();
+  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -776,6 +795,26 @@
     //  - summary : libelle court pour l'affichage dans la corbeille
     //  - userEmail : optionnel, qui a supprime
     // La ligne sera purgee automatiquement apres 30 jours (cf. expires_at colonne).
+    // ─── Audit logs : trace silencieuse des actions sensibles ───
+    // Insertion non-bloquante. Si la table n'existe pas encore (migration
+    // pas faite), on log juste cote console et on n'echoue pas le flow.
+    function auditLog(action, opts) {
+      try {
+        var payload = {
+          actor_email: (opts && opts.actor) || null,
+          actor_role: (opts && opts.role) || null,
+          action: action,
+          target_type: (opts && opts.targetType) || null,
+          target_id: (opts && opts.targetId != null) ? String(opts.targetId) : null,
+          details: (opts && opts.details) || null,
+          user_agent: (typeof navigator !== "undefined" && navigator.userAgent) ? navigator.userAgent.substring(0, 200) : null
+        };
+        supabase.from("audit_logs").insert(payload).then(function(res) {
+          if (res && res.error) console.warn("[audit] insert failed (non bloquant) :", res.error.message);
+        }).catch(function(e) { console.warn("[audit] catch :", e && e.message); });
+      } catch (e) { console.warn("[audit] outer catch :", e && e.message); }
+    }
+
     async function softDeleteRow(sourceTable, rowObj, summary, userEmail) {
       if (!rowObj || rowObj.id == null) {
         throw new Error("softDeleteRow : rowObj.id manquant");
@@ -11269,11 +11308,14 @@
             setUsers(users.map(function(u) { return u.id === f.id ? appUserFromDb(res.data) : u; }));
             // Auto-logout : invalide la session du user pour qu'il re-charge ses droits a la prochaine connexion
             if (f.email) {
-              fetch("https://employes-psi.vercel.app/api/invalidate-user-session", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email: f.email })
-              }).catch(function(e) { console.warn("[saveUser] invalidate session :", e.message); });
+              supabase.auth.getSession().then(function(sess) {
+                var tok = sess && sess.data && sess.data.session && sess.data.session.access_token;
+                fetch("https://employes-psi.vercel.app/api/invalidate-user-session", {
+                  method: "POST",
+                  headers: Object.assign({ "Content-Type": "application/json" }, tok ? { "Authorization": "Bearer " + tok } : {}),
+                  body: JSON.stringify({ email: f.email })
+                }).catch(function(e) { console.warn("[saveUser] invalidate session :", e.message); });
+              });
             }
           });
         } else {
@@ -11285,9 +11327,11 @@
         setShowModal(false); setEditing(null);
       };
       var deleteUser = function(id) {
+        var target = users.find(function(u) { return u.id === id; });
         supabase.from("app_users").delete().eq("id", id).then(function(res) {
           if (res.error) { alert("Erreur suppression utilisateur: " + res.error.message); return; }
           setUsers(users.filter(function(u) { return u.id !== id; }));
+          if (target) auditLog("delete_user", { actor: ctxAu.userEmail, role: "admin", targetType: "user", targetId: target.email, details: { user_nom: target.nom, user_role: target.role } });
         });
         setToDelete(null);
       };
@@ -11313,6 +11357,7 @@
             alert("Erreur reset MDP : " + (data && data.error ? data.error : ("HTTP " + resp.status)));
             return;
           }
+          auditLog("reset_password", { actor: ctxAu.userEmail, role: "admin", targetType: "user", targetId: u.email, details: { user_nom: u.nom } });
           alert("Mot de passe reinitialise pour " + u.email + ".\n\nCommunique le nouveau mot de passe a l'utilisateur :\n\n" + newPwd);
         } catch (e) {
           alert("Erreur reseau : " + e.message);
