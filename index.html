@@ -11674,8 +11674,30 @@
             }
           });
         } else {
+          // Pre-check : email deja existant ? (case-insensitive)
+          var emailLow = String(f.email || "").trim().toLowerCase();
+          var existing = users.find(function(u) { return (u.email || "").toLowerCase() === emailLow; });
+          if (existing) {
+            var msg = "Un utilisateur avec l'email \"" + f.email + "\" existe deja :\n\n" +
+                      "  Nom : " + (existing.nom || "(sans nom)") + "\n" +
+                      "  Role : " + (existing.role || "Utilisateur") + "\n\n" +
+                      "Voulez-vous modifier cet utilisateur existant a la place ?";
+            if (window.confirm(msg)) {
+              // Bascule en mode edition
+              setEditing(Object.assign({}, existing, f, { id: existing.id, pagesAutorisees: f.pagesAutorisees || existing.pagesAutorisees || [] }));
+              return;
+            }
+            return;
+          }
           supabase.from("app_users").insert(dbData).select().single().then(function(res) {
-            if (res.error) { alert("Erreur ajout utilisateur: " + res.error.message); return; }
+            if (res.error) {
+              if (res.error.message && res.error.message.indexOf("duplicate key") >= 0) {
+                alert("Erreur : cet email existe deja dans la liste des utilisateurs.\n\nIl est peut-etre cache (filtre actif ?) ou archive. Verifie la liste ou contacte ton administrateur.");
+              } else {
+                alert("Erreur ajout utilisateur : " + res.error.message);
+              }
+              return;
+            }
             setUsers(users.concat(appUserFromDb(res.data)));
           });
         }
