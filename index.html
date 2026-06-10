@@ -1946,7 +1946,7 @@
 
     // ─── Ecran Fiche Equipement ─────────────────────────────────────────
     function EcranFicheEquipement({ onNavigate, equipement }) {
-      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin } = useAppData();
+      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin, dbRapportsForage } = useAppData();
       const eq = equipement;
       if (!eq) return h("div", null, h(Button, { variant: "secondary", onClick: () => onNavigate("equipements") }, h(IconText, { icon: "arrow-left", size: 14 }, "Retour")));
       const eqInterventions = interventions.filter((i) => i.EquipementId === eq.Id || i.Equipement === eq.Title);
@@ -2022,6 +2022,111 @@
                 h("div", { key: l, style: { padding: 16, background: bg, borderRadius: 12, border: "1px solid " + br } },
                   h("div", { style: { fontSize: 22, fontWeight: 700, color: c } }, v),
                   h("div", { style: { fontSize: 12, color: "#a1a1aa", marginTop: 4 } }, l)))))),
+        // Carnet de bord (MTBF + prediction + top consommables)
+        (function() {
+          // Curatives triees par horametre (sinon par date)
+          var curatTri = curatives.slice().filter(function(i) { return i.Horametre != null && i.Horametre !== ""; }).sort(function(a, b) {
+            var ha = parseFloat(a.Horametre) || 0, hb = parseFloat(b.Horametre) || 0;
+            return ha - hb;
+          });
+          var ecarts = [];
+          for (var k = 1; k < curatTri.length; k++) {
+            var dh = (parseFloat(curatTri[k].Horametre) || 0) - (parseFloat(curatTri[k-1].Horametre) || 0);
+            if (dh > 0) ecarts.push(dh);
+          }
+          var mtbf = ecarts.length > 0 ? Math.round(ecarts.reduce(function(s, x) { return s + x; }, 0) / ecarts.length) : null;
+          var derCurative = curatTri.length > 0 ? curatTri[curatTri.length - 1] : null;
+          var nextPredicted = mtbf && derCurative ? (parseFloat(derCurative.Horametre) || 0) + mtbf : null;
+          var heuresRestantes = nextPredicted != null ? nextPredicted - hmActuel : null;
+          var coutParHeureMachine = hmActuel > 0 ? Math.round(coutTotal / hmActuel) : 0;
+          var totalInt = preventives.length + curatives.length;
+          var ratioPrev = totalInt > 0 ? Math.round((preventives.length / totalInt) * 100) : 0;
+
+          // Top consommables (depuis rapports_forage.consommables_perdus filtres par sondeuse)
+          var rapports2 = dbRapportsForage || [];
+          var consoMap = {};
+          rapports2.forEach(function(r) {
+            if (!r) return;
+            var sondeuse = String(r.sondeuse_code || "").toUpperCase().trim();
+            if (sondeuse !== String(eq.Title || "").toUpperCase().trim()) return;
+            var cons = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+            cons.forEach(function(c) {
+              var name = (c && (c.designation || c.nom || c.reference || c.ref)) || "(inconnu)";
+              var qty = parseFloat(c && (c.quantite || c.qty)) || 1;
+              consoMap[name] = (consoMap[name] || 0) + qty;
+            });
+          });
+          var topConso = Object.keys(consoMap).map(function(name) { return { name: name, qty: consoMap[name] }; })
+            .sort(function(a, b) { return b.qty - a.qty; }).slice(0, 6);
+          var maxConsoQty = topConso.length > 0 ? topConso[0].qty : 1;
+
+          // Couleur statut prediction
+          var predColor = "#fde68a", predBg = "rgba(251,191,36,0.10)", predBorder = "rgba(251,191,36,0.30)";
+          if (heuresRestantes != null && heuresRestantes <= 50) { predColor = "#fda4af"; predBg = "rgba(244,63,94,0.12)"; predBorder = "rgba(244,63,94,0.35)"; }
+
+          return h(Card, { style: { marginBottom: 20 } },
+            h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa", display: "flex", alignItems: "center", gap: 10 } },
+              h(IconText, { icon: "book-open", size: 16, color: "#a78bfa" }, "Carnet de bord")
+            ),
+            // 4 mini KPIs
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 } },
+              h("div", { style: { padding: 14, background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 10 } },
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "MTBF"),
+                h("div", { style: { fontSize: 22, fontWeight: 800, color: "#a5b4fc", marginTop: 4 } }, mtbf != null ? fmtNum(mtbf) + " h" : "N/A"),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, mtbf != null ? "Heures moyennes entre 2 pannes" : "Pas assez de pannes datees")
+              ),
+              h("div", { style: { padding: 14, background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 10 } },
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "Ratio preventif"),
+                h("div", { style: { fontSize: 22, fontWeight: 800, color: ratioPrev > 60 ? "#86efac" : "#fde68a", marginTop: 4 } }, ratioPrev + "%"),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, preventives.length + " preventif / " + curatives.length + " curatif")
+              ),
+              h("div", { style: { padding: 14, background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10 } },
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "Cout par heure machine"),
+                h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fcd34d", marginTop: 4 } }, fmtNum(coutParHeureMachine) + " F/h"),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, fmtMoney(coutTotal) + " total")
+              ),
+              derCurative ? h("div", { style: { padding: 14, background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.25)", borderRadius: 10 } },
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "Derniere panne"),
+                h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fda4af", marginTop: 4 } }, derCurative.Date_Intervention || "-"),
+                h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 2 } }, derCurative.Horametre ? "a " + fmtNum(parseFloat(derCurative.Horametre)) + " h" : "")
+              ) : null
+            ),
+            // Bandeau prediction
+            nextPredicted != null && heuresRestantes != null ? h("div", { style: { padding: 14, background: predBg, border: "1px solid " + predBorder, borderRadius: 10, display: "flex", gap: 12, alignItems: "center", marginBottom: 16 } },
+              h("div", { style: { width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, #f59e0b, #d97706)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                h(Icon, { name: "alert-triangle", size: 18, color: "#fff" })
+              ),
+              h("div", { style: { flex: 1 } },
+                h("div", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } },
+                  heuresRestantes > 0
+                    ? "Prochaine panne probable dans " + fmtNum(Math.round(heuresRestantes)) + " h (horametre ~ " + fmtNum(Math.round(nextPredicted)) + ")"
+                    : "Au-dela de la MTBF moyenne (+" + fmtNum(Math.round(-heuresRestantes)) + " h)"
+                ),
+                h("div", { style: { fontSize: 11.5, color: "#cbd5e1", marginTop: 3 } },
+                  heuresRestantes > 0
+                    ? "Base sur la MTBF de " + fmtNum(mtbf) + " h observee. Considere planifier une visite preventive avant."
+                    : "Surveiller de pres ou planifier un controle preventif maintenant."
+                )
+              )
+            ) : null,
+            // Top consommables
+            topConso.length > 0 ? h("div", null,
+              h("h4", { style: { margin: "0 0 10px", fontSize: 13, fontWeight: 700, color: "#cbd5e1" } }, "Top consommables (depuis rapports forage)"),
+              h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+                topConso.map(function(c, idx) {
+                  var pct = (c.qty / maxConsoQty) * 100;
+                  return h("div", { key: idx, style: { display: "grid", gridTemplateColumns: "1.4fr 3fr 70px", gap: 12, alignItems: "center", fontSize: 13 } },
+                    h("div", { style: { color: "#e4e4e7", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, c.name),
+                    h("div", { style: { background: "rgba(255,255,255,0.05)", borderRadius: 5, height: 12, position: "relative", overflow: "hidden" } },
+                      h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pct + "%", background: "linear-gradient(90deg, #818cf8, #c084fc)", borderRadius: 5 } })
+                    ),
+                    h("div", { style: { textAlign: "right", color: "#cbd5e1", fontWeight: 600 } }, fmtNum(c.qty))
+                  );
+                })
+              )
+            ) : null
+          );
+        }()),
         // Graphique Horametre
         dataHor.length >= 2 && h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 12px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#a78bfa" }, "Evolution Horametre")),
@@ -16999,6 +17104,263 @@
           h("button", { onClick: onLogout, style: { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.15s", fontFamily: "inherit" } }, h(IconText, { icon: "log-out", size: 14, color: "#cbd5e1" }, "Deconnexion"))));
     }
 
+    // ─── Recherche globale (Ctrl+K) ──────────────────────────────────────
+    // Modal de recherche unifie : equipements, personnel, chantiers, pieces,
+    // soumissions (rapports / releves / conges / commandes / interventions).
+    // Ouverture : Ctrl+K ou Cmd+K depuis n'importe quelle page.
+    function RechercheGlobale({ onNavigate }) {
+      var ctx = useAppData();
+      var _open = useState(false); var open = _open[0]; var setOpen = _open[1];
+      var _q = useState(""); var q = _q[0]; var setQ = _q[1];
+      var _focus = useState(0); var focused = _focus[0]; var setFocused = _focus[1];
+      var inputRef = React.useRef(null);
+
+      // Ecoute clavier global pour Ctrl+K / Cmd+K
+      useEffect(function() {
+        function onKey(e) {
+          if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+            e.preventDefault();
+            setOpen(function(v) { return !v; });
+          }
+          if (e.key === "Escape" && open) {
+            e.preventDefault();
+            setOpen(false);
+          }
+        }
+        window.addEventListener("keydown", onKey);
+        return function() { window.removeEventListener("keydown", onKey); };
+      }, [open]);
+
+      // Focus le champ a l'ouverture
+      useEffect(function() {
+        if (open && inputRef.current) {
+          setTimeout(function() { try { inputRef.current.focus(); } catch(e) {} }, 50);
+        }
+        if (!open) { setQ(""); setFocused(0); }
+      }, [open]);
+
+      // ── Construction des items recherchables ──
+      var items = (function() {
+        var out = [];
+        var qq = (q || "").trim().toLowerCase();
+
+        // 1) Equipements
+        (ctx.equipements || []).forEach(function(e) {
+          var label = (e.Title || "") + " " + (e.Nom || "") + " " + (e.Type || "") + " " + (e.Marque || "") + " " + (e.Modele || "");
+          out.push({
+            group: "Equipements",
+            iconKey: "equip",
+            title: e.Title || "(sans code)",
+            sub: (e.Type || "") + (e.Marque ? " - " + e.Marque : "") + (e.Horametre ? " - " + e.Horametre + "h" : "") + (e.Statut ? " - " + e.Statut : ""),
+            label: label,
+            shortcut: "Equipement",
+            action: function() { onNavigate("fiche-equipement", e); }
+          });
+        });
+
+        // 2) Personnel (depuis dbAppUsers + parametres.personnel_data)
+        (ctx.dbAppUsers || []).forEach(function(u) {
+          var label = (u.nom || "") + " " + (u.email || "") + " " + (u.role || "");
+          out.push({
+            group: "Personnel",
+            iconKey: "pers",
+            title: u.nom || u.email,
+            sub: u.email + (u.role ? " - " + u.role : ""),
+            label: label,
+            shortcut: "Utilisateur",
+            action: function() { onNavigate("administration", { tab: "utilisateurs" }); }
+          });
+        });
+        // Personnel terrain (sondeurs avec acces app)
+        var persParam = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
+        if (persParam && persParam.valeur) {
+          try {
+            var persList = JSON.parse(persParam.valeur);
+            persList.forEach(function(p) {
+              if (!p) return;
+              var nom = ((p.prenom || "") + " " + (p.nom || "")).trim();
+              if (!nom) return;
+              var label = nom + " " + (p.code || "") + " " + (p.role || "");
+              out.push({
+                group: "Personnel",
+                iconKey: "pers",
+                title: nom,
+                sub: (p.role || "Sondeur") + (p.code ? " - code: " + p.code : ""),
+                label: label,
+                shortcut: "Personnel",
+                action: function() { onNavigate("personnel"); }
+              });
+            });
+          } catch (e) {}
+        }
+
+        // 3) Chantiers
+        (ctx.dbChantiers || []).forEach(function(c) {
+          var label = (c.titre || "") + " " + (c.nom || "") + " " + (c.client || "") + " " + (c.site || "");
+          out.push({
+            group: "Chantiers",
+            iconKey: "chant",
+            title: c.titre || c.nom || ("Chantier #" + c.id),
+            sub: (c.client || "") + (c.statut ? " - " + c.statut : ""),
+            label: label,
+            shortcut: "Calendrier",
+            action: function() { onNavigate("avancement"); }
+          });
+        });
+
+        // 4) Pieces
+        (ctx.pieces || []).forEach(function(p) {
+          var label = (p.Reference || "") + " " + (p.Designation || "") + " " + (p.Categorie || "") + " " + (p.Fournisseur || "");
+          out.push({
+            group: "Pieces detachees",
+            iconKey: "piece",
+            title: p.Designation || p.Reference || "Piece",
+            sub: (p.Reference || "") + " - Stock " + (p.Stock || 0) + (p.Compatible ? " - Compatible: " + p.Compatible : ""),
+            label: label,
+            shortcut: "Pieces",
+            action: function() { onNavigate("pieces"); }
+          });
+        });
+
+        // 5) Interventions
+        (ctx.interventions || []).forEach(function(i) {
+          var label = (i.Title || "") + " " + (i.Equipement || "") + " " + (i.Technicien || "") + " " + (i.Type || "");
+          out.push({
+            group: "Interventions",
+            iconKey: "soum",
+            title: i.Title || ("Intervention #" + i.Id),
+            sub: (i.Equipement || "") + (i.Type ? " - " + i.Type : "") + (i.Statut_Intervention ? " - " + i.Statut_Intervention : ""),
+            label: label,
+            shortcut: "Interventions",
+            action: function() { onNavigate("interventions", i); }
+          });
+        });
+
+        if (!qq) {
+          // Mode "raccourcis pages" : on retourne juste quelques pages frequentes
+          return [
+            { group: "Pages", iconKey: "page", title: "Accueil",         sub: "Statistiques & KPIs",            label: "accueil",      shortcut: "Page", action: function() { onNavigate("statistiques"); } },
+            { group: "Pages", iconKey: "page", title: "Maintenance",     sub: "Vue d'ensemble interventions",   label: "maintenance",  shortcut: "Page", action: function() { onNavigate("accueil"); } },
+            { group: "Pages", iconKey: "page", title: "Avancement",      sub: "Saisie metres / jour",           label: "avancement",   shortcut: "Page", action: function() { onNavigate("avancement"); } },
+            { group: "Pages", iconKey: "page", title: "Primes",          sub: "Calcul primes de metrage",       label: "primes",       shortcut: "Page", action: function() { onNavigate("primes"); } },
+            { group: "Pages", iconKey: "page", title: "Soumissions",     sub: "Releves / conges / commandes",   label: "soumissions",  shortcut: "Page", action: function() { onNavigate("soumissions"); } },
+            { group: "Pages", iconKey: "page", title: "Alertes saisies", sub: "Rapports / heures manquants",    label: "alertes",      shortcut: "Page", action: function() { onNavigate("alertes-saisies"); } },
+            { group: "Pages", iconKey: "page", title: "Administration",  sub: "Profil, parametres, users",      label: "administration", shortcut: "Page", action: function() { onNavigate("administration"); } }
+          ];
+        }
+        return out.filter(function(it) { return it.label.toLowerCase().indexOf(qq) >= 0; }).slice(0, 50);
+      }());
+
+      // Group items par categorie
+      var grouped = (function() {
+        var byGroup = {};
+        items.forEach(function(it) {
+          if (!byGroup[it.group]) byGroup[it.group] = [];
+          byGroup[it.group].push(it);
+        });
+        var order = ["Pages", "Equipements", "Personnel", "Chantiers", "Pieces detachees", "Interventions"];
+        return order.filter(function(g) { return byGroup[g]; }).map(function(g) { return { group: g, items: byGroup[g] }; });
+      }());
+
+      // Flat list pour navigation clavier
+      var flat = grouped.reduce(function(arr, g) { return arr.concat(g.items); }, []);
+
+      function handleSelect(it) {
+        if (!it) return;
+        setOpen(false);
+        try { it.action(); } catch (e) { console.warn("[recherche] action:", e.message); }
+      }
+
+      function onKeyDown(e) {
+        if (e.key === "ArrowDown") { e.preventDefault(); setFocused(function(f) { return Math.min(flat.length - 1, f + 1); }); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); setFocused(function(f) { return Math.max(0, f - 1); }); }
+        else if (e.key === "Enter") { e.preventDefault(); handleSelect(flat[focused]); }
+      }
+
+      // Auto-scroll vers l'item focused (optionnel, basique)
+      useEffect(function() { setFocused(0); }, [q]);
+
+      function iconCircle(iconKey, label) {
+        var bg = { equip: "rgba(99,102,241,0.25)", pers: "rgba(34,197,94,0.22)", chant: "rgba(245,158,11,0.22)", piece: "rgba(6,182,212,0.22)", soum: "rgba(244,63,94,0.22)", page: "rgba(168,85,247,0.22)" }[iconKey] || "rgba(255,255,255,0.05)";
+        var color = { equip: "#a5b4fc", pers: "#86efac", chant: "#fde68a", piece: "#67e8f9", soum: "#fda4af", page: "#d8b4fe" }[iconKey] || "#cbd5e1";
+        return h("div", { style: { width: 32, height: 32, borderRadius: 8, background: bg, color: color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontWeight: 800, fontSize: 12 } }, label);
+      }
+
+      // Trigger discret en bas a droite (mobile + desktop)
+      var trigger = h("button", {
+        onClick: function() { setOpen(true); },
+        title: "Recherche globale (Ctrl+K)",
+        style: { position: "fixed", bottom: 16, right: 16, zIndex: 90, width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", border: "1px solid rgba(129,140,248,0.5)", color: "#fff", cursor: "pointer", boxShadow: "0 8px 24px rgba(99,102,241,0.4)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }
+      }, h(Icon, { name: "search", size: 20, color: "#fff" }));
+
+      if (!open) return trigger;
+
+      // Modal
+      return h("div", null,
+        trigger,
+        h("div", {
+          onClick: function() { setOpen(false); },
+          style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 200, display: "flex", justifyContent: "center", paddingTop: "10vh" }
+        },
+          h("div", {
+            onClick: function(e) { e.stopPropagation(); },
+            style: { width: "100%", maxWidth: 640, height: "fit-content", maxHeight: "75vh", background: "#1a1d2e", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, boxShadow: "0 30px 90px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden", margin: "0 12px" }
+          },
+            // Champ
+            h("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)" } },
+              h(Icon, { name: "search", size: 18, color: "#a1a1aa" }),
+              h("input", {
+                ref: inputRef,
+                value: q,
+                onChange: function(e) { setQ(e.target.value); },
+                onKeyDown: onKeyDown,
+                placeholder: "Rechercher equipement, employe, chantier, piece, intervention...",
+                style: { flex: 1, background: "transparent", border: "none", outline: "none", color: "#fafafa", fontSize: 15, fontFamily: "inherit" }
+              }),
+              h("span", { style: { padding: "3px 8px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, fontSize: 10.5, fontWeight: 700, color: "#a1a1aa", fontFamily: "ui-monospace, monospace", cursor: "pointer" }, onClick: function() { setOpen(false); } }, "Esc")
+            ),
+            // Resultats
+            h("div", { style: { flex: 1, overflowY: "auto", padding: "4px 0", minHeight: 60 } },
+              grouped.length === 0 ? h("div", { style: { padding: 28, textAlign: "center", color: "#71717a", fontSize: 13 } },
+                q ? "Aucun resultat pour \"" + q + "\"" : "Tape pour rechercher"
+              ) :
+              grouped.map(function(g, gi) {
+                return h("div", { key: g.group, style: { padding: "6px 0" } },
+                  h("div", { style: { padding: "8px 16px 4px", fontSize: 10.5, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.7, fontWeight: 700 } }, g.group + " (" + g.items.length + ")"),
+                  g.items.map(function(it, idx) {
+                    var globalIdx = grouped.slice(0, gi).reduce(function(s, gg) { return s + gg.items.length; }, 0) + idx;
+                    var isFocused = globalIdx === focused;
+                    return h("div", {
+                      key: idx,
+                      onClick: function() { handleSelect(it); },
+                      onMouseEnter: function() { setFocused(globalIdx); },
+                      style: { display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", cursor: "pointer", background: isFocused ? "linear-gradient(90deg, rgba(129,140,248,0.15), rgba(192,132,252,0.05))" : "transparent" }
+                    },
+                      iconCircle(it.iconKey, (it.title || "").substring(0, 2).toUpperCase()),
+                      h("div", { style: { flex: 1, minWidth: 0 } },
+                        h("div", { style: { fontSize: 13.5, fontWeight: 600, color: "#fafafa", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.title),
+                        h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.sub)
+                      ),
+                      h("div", { style: { fontSize: 11, color: "#71717a", padding: "3px 7px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, fontFamily: "ui-monospace, monospace" } }, it.shortcut)
+                    );
+                  })
+                );
+              })
+            ),
+            // Footer
+            h("div", { style: { display: "flex", justifyContent: "space-between", padding: "8px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,0,0,0.2)", fontSize: 11, color: "#71717a" } },
+              h("div", { style: { display: "flex", gap: 14 } },
+                h("div", null, h("span", { style: { background: "rgba(255,255,255,0.06)", padding: "2px 5px", borderRadius: 4, fontFamily: "ui-monospace, monospace", fontWeight: 700, color: "#a1a1aa" } }, "↑↓"), " naviguer"),
+                h("div", null, h("span", { style: { background: "rgba(255,255,255,0.06)", padding: "2px 5px", borderRadius: 4, fontFamily: "ui-monospace, monospace", fontWeight: 700, color: "#a1a1aa" } }, "Enter"), " ouvrir"),
+                h("div", null, h("span", { style: { background: "rgba(255,255,255,0.06)", padding: "2px 5px", borderRadius: 4, fontFamily: "ui-monospace, monospace", fontWeight: 700, color: "#a1a1aa" } }, "Ctrl+K"), " rouvrir")
+              ),
+              h("div", null, "Wallis-Label")
+            )
+          )
+        )
+      );
+    }
+
     // ─── App principale ─────────────────────────────────────────────────
     function App() {
       const [session, setSession] = useState(null);
@@ -18130,6 +18492,8 @@
       var mainPadding = bpInfo.isMobile ? "16px 12px 80px" : bpInfo.isTablet ? "20px 20px" : "24px 32px";
 
       return h(AppContext.Provider, { value: contextValue },
+        // Recherche globale Ctrl+K (modal + bouton flottant)
+        h(RechercheGlobale, { onNavigate: navigate }),
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100vh", minHeight: "100vh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
