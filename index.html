@@ -8260,6 +8260,11 @@
 
       // Pre-construit un index releves par chantier+date (MAX par machine puis SUM)
       // pour eviter de boucler sur dbRelevesJourn dans chaque KPI/chart.
+      // BUG FIX : la cle machine utilise sondeuseCode en priorite (label lisible
+      // commun aux rapports forage ET aux CSV). Sinon, un rapport avec
+      // equipementId=10 et un CSV avec equipementId=null + sondeuseCode="FS1"
+      // creent 2 cles distinctes -> double comptage au 2e passage. Avec ce fix,
+      // mk = "FS1" dans les 2 cas -> MAX correct.
       var relevesIdx = (function() {
         var idx = {};
         var all = ctxAv.dbRelevesJourn || [];
@@ -8269,7 +8274,8 @@
           if (!r.chantierId || !r.dateReleve) continue;
           var ck = String(r.chantierId);
           var dk = r.dateReleve;
-          var mk = String(r.equipementId || r.sondeuseCode || "_no_machine");
+          // Cle machine normalisee : sondeuseCode prioritaire, fallback equipementId
+          var mk = String(r.sondeuseCode || r.equipementId || "_no_machine").toUpperCase().trim();
           var v = parseFloat(r.metrage) || 0;
           if (!idx[ck]) idx[ck] = {};
           if (!idx[ck][dk]) idx[ck][dk] = {};
