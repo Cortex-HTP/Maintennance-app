@@ -11721,9 +11721,21 @@
         var confirmMsg = "Confirmer le reset du mot de passe de " + u.email + " ?\n\nLa session active de l'utilisateur sera fermee. Il devra se reconnecter avec le nouveau mot de passe.";
         if (!window.confirm(confirmMsg)) return;
         try {
-          var sess = await supabase.auth.getSession();
-          var tok = sess && sess.data && sess.data.session && sess.data.session.access_token;
-          if (!tok) { alert("Session admin introuvable, reconnectez-vous."); return; }
+          // Force un refresh du token pour eviter 'invalid token' si la session
+          // a expire entre temps. Si le refresh echoue, on demande la reconnexion.
+          var tok = null;
+          try {
+            var refreshed = await supabase.auth.refreshSession();
+            tok = refreshed && refreshed.data && refreshed.data.session && refreshed.data.session.access_token;
+          } catch (eRef) {
+            // Fallback : on tente la session actuelle
+            var sess = await supabase.auth.getSession();
+            tok = sess && sess.data && sess.data.session && sess.data.session.access_token;
+          }
+          if (!tok) {
+            alert("Session admin expiree. Deconnecte-toi puis reconnecte-toi, puis reessaie.");
+            return;
+          }
           var resp = await fetch("https://employes-psi.vercel.app/api/admin-reset-password", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok },
@@ -11731,7 +11743,14 @@
           });
           var data = await resp.json();
           if (!resp.ok || !data.ok) {
-            alert("Erreur reset MDP : " + (data && data.error ? data.error : ("HTTP " + resp.status)));
+            var errMsg = (data && data.error) || ("HTTP " + resp.status);
+            if (errMsg.indexOf("invalid token") >= 0 || errMsg.indexOf("missing bearer") >= 0) {
+              alert("Session admin expiree ou invalide. Deconnecte-toi puis reconnecte-toi, puis reessaie.\n\n(Details : " + errMsg + ")");
+            } else if (errMsg.indexOf("forbidden") >= 0) {
+              alert("Tu n'as pas les droits administrateur sur l'API. Verifie que ton compte est bien admin.\n\n(Details : " + errMsg + ")");
+            } else {
+              alert("Erreur reset MDP : " + errMsg);
+            }
             return;
           }
           auditLog("reset_password", { actor: ctxAu.userEmail, role: "admin", targetType: "user", targetId: u.email, details: { user_nom: u.nom } });
