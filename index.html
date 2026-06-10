@@ -3658,7 +3658,7 @@
         });
       }, []);
 
-      // Sauvegarde edition
+      // Sauvegarde edition ou creation (selon presence de c.id)
       function saveCarburant(c) {
         var payload = {
           sondeuse_code: String(c.sondeuse_code || "").toUpperCase().trim() || null,
@@ -3668,12 +3668,29 @@
         if (!payload.sondeuse_code) { alert("Code machine requis."); return; }
         if (!payload.date_consommation) { alert("Date requise."); return; }
         if (payload.quantite_l <= 0) { alert("Quantite doit etre > 0."); return; }
-        supabase.from("consommations_carburant").update(payload).eq("id", c.id).select().single().then(function(res) {
-          if (res.error) { alert("Erreur : " + res.error.message); return; }
-          setCarburants(carburants.map(function(x) { return x.id === c.id ? res.data : x; }));
-          setEditing(null);
-          if (ctx.showToast) ctx.showToast("Carburant modifie", "success");
-        });
+        if (c.id) {
+          // Mode edition
+          supabase.from("consommations_carburant").update(payload).eq("id", c.id).select().single().then(function(res) {
+            if (res.error) { alert("Erreur : " + res.error.message); return; }
+            setCarburants(carburants.map(function(x) { return x.id === c.id ? res.data : x; }));
+            setEditing(null);
+            if (ctx.showToast) ctx.showToast("Carburant modifie", "success");
+          });
+        } else {
+          // Mode creation : on n'envoie pas sondeur_id ni rapport_id (saisie admin)
+          supabase.from("consommations_carburant").insert(payload).select().single().then(function(res) {
+            if (res.error) { alert("Erreur creation : " + res.error.message); return; }
+            setCarburants([res.data].concat(carburants));
+            setEditing(null);
+            if (ctx.showToast) ctx.showToast("Saisie carburant ajoutee", "success");
+          });
+        }
+      }
+      // Ouvre le modal en mode creation avec valeurs par defaut
+      function openCreate() {
+        var today = new Date();
+        var iso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+        setEditing({ date_consommation: iso, sondeuse_code: "", quantite_l: "" });
       }
       function deleteCarburant(id) {
         var row = carburants.find(function(x) { return x.id === id; });
@@ -3808,7 +3825,7 @@
       );
 
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les sondeurs (engins + vehicules)" }),
+        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les sondeurs ou ajoutees ici (engins + vehicules)", action: h(Button, { onClick: openCreate }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle saisie")) }),
         // KPIs
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Total litres", value: fmtNum(totalL.toFixed(1)) + " L", color: "#86efac" }),
@@ -3984,7 +4001,7 @@
           )
         ),
         // Modal edition
-        editing ? h(Modal, { title: "Modifier consommation carburant", onClose: function() { setEditing(null); }, size: 460 },
+        editing ? h(Modal, { title: editing.id ? "Modifier consommation carburant" : "Nouvelle saisie carburant", onClose: function() { setEditing(null); }, size: 460 },
           h("div", { style: { display: "grid", gap: 12 } },
             h("div", null,
               h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Date"),
