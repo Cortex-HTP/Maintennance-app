@@ -8618,6 +8618,54 @@
             var remaining = Math.max(0, chantier.metrage - realise);
 
             var caMois = monthMet * (chantier.prixMetre || 0);
+
+            // ── Calcul avance / retard sur le metrage attendu ──
+            // Objectif quotidien = metrage_total / nb_jours_ouvres (Lun-Jeu = 4j/semaine)
+            // Attendu a aujourd'hui = objectif_quotidien * jours_ouvres_ecoules
+            // Avance = realise - attendu
+            var avanceInfo = (function() {
+              if (!chantier.dateDebut || !chantier.dateFin || !chantier.metrage) return null;
+              if (chantier.statut === "A venir") return null;
+              try {
+                var start = new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00");
+                var end = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
+                if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+                // Total jours ouvres (Lun-Jeu) du chantier
+                var totalJoursOuvres = 0;
+                var safe = 0;
+                var cur = new Date(start.getTime());
+                while (cur.getTime() <= end.getTime() && safe < 5000) {
+                  var dow = cur.getDay();
+                  if (dow >= 1 && dow <= 4) totalJoursOuvres++;
+                  cur.setDate(cur.getDate() + 1);
+                  safe++;
+                }
+                if (totalJoursOuvres === 0) return null;
+                var objectifJour = chantier.metrage / totalJoursOuvres;
+                // Jours ouvres ecoules entre dateDebut et min(today, dateFin)
+                var today = new Date();
+                today.setHours(0, 0, 0, 0);
+                var dateRef = today < end ? today : end;
+                if (dateRef < start) return null;
+                var joursOuvresEcoules = 0;
+                var cur2 = new Date(start.getTime());
+                var safe2 = 0;
+                while (cur2.getTime() <= dateRef.getTime() && safe2 < 5000) {
+                  var dow2 = cur2.getDay();
+                  if (dow2 >= 1 && dow2 <= 4) joursOuvresEcoules++;
+                  cur2.setDate(cur2.getDate() + 1);
+                  safe2++;
+                }
+                var attendu = objectifJour * joursOuvresEcoules;
+                return {
+                  avance: realise - attendu,
+                  attendu: attendu,
+                  objectifJour: objectifJour,
+                  joursOuvresEcoules: joursOuvresEcoules,
+                  totalJoursOuvres: totalJoursOuvres
+                };
+              } catch (e) { return null; }
+            }());
             return h("div", { key: chantier.id, style: { marginBottom: 16 } },
               h("div", { style: { background: isExpanded ? "rgba(99,102,241,0.10)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.06)" : "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, padding: 20, border: "1px solid " + (chantier.statut === "A venir" ? "rgba(99,102,241,0.3)" : "rgba(255,255,255,0.07)"), borderLeft: chantier.statut === "A venir" ? "4px solid #6366f1" : "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
                 h("div", { onClick: function() { setExpandedChantier(isExpanded ? null : chantier.id); }, style: { cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 } },
@@ -8631,9 +8679,13 @@
                       h("span", { style: { fontSize: 12, fontWeight: 600, color: "#a1a1aa" } }, formatDateFrAv(chantier.dateDebut) + " - " + formatDateFrAv(chantier.dateFin)),
                       h("span", { style: { fontSize: 11, fontWeight: 600, color: chantier.statut === "Termine" ? "#86efac" : chantier.statut === "A venir" ? "#a5b4fc" : "#fde68a", background: chantier.statut === "Termine" ? "rgba(34,197,94,0.15)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.15)" : "rgba(251,191,36,0.15)", padding: "2px 8px", borderRadius: 3, border: "1px solid " + (chantier.statut === "Termine" ? "rgba(34,197,94,0.3)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.3)" : "rgba(251,191,36,0.3)") } }, chantier.statut)
                     ),
-                    h("div", { style: { display: "flex", gap: 16, fontSize: 12, marginBottom: 8 } },
+                    h("div", { style: { display: "flex", gap: 16, fontSize: 12, marginBottom: 8, flexWrap: "wrap" } },
                       h("span", null, "Mois : " + fmtNum(monthMet) + " m"),
-                      h("span", null, "Reste : " + fmtNum(remaining) + " m")
+                      h("span", null, "Reste : " + fmtNum(remaining) + " m"),
+                      avanceInfo ? h("span", {
+                        title: "Objectif " + Math.round(avanceInfo.objectifJour) + " m/jour ouvre (4j/semaine, Lun-Jeu). Attendu a ce jour : " + Math.round(avanceInfo.attendu) + " m sur " + avanceInfo.joursOuvresEcoules + " jours ecoules sur " + avanceInfo.totalJoursOuvres + " jours du chantier.",
+                        style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceInfo.avance >= 0 ? "#86efac" : "#fda4af" }
+                      }, (avanceInfo.avance >= 0 ? "Avance : +" : "Retard : ") + fmtNum(Math.round(avanceInfo.avance)) + " m") : null
                     ),
                     h("div", { style: { width: "100%", height: 10, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden", marginBottom: 4 } },
                       h("div", { style: { width: Math.min(avancement, 100) + "%", height: "100%", background: avancement >= 75 ? "#059669" : avancement >= 50 ? "#d97706" : "#a1a1aa", transition: "width 0.3s" } })
