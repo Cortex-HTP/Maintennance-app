@@ -12678,6 +12678,7 @@
         { key: "carburant", label: "Carburant", icon: "fuel" },
         { key: "planning", label: "Calendrier", icon: "calendar" },
         { key: "avancement", label: "Avancement", icon: "hard-hat" },
+        { key: "previsionnel", label: "Previsionnel chantier", icon: "trending-up" },
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
@@ -19463,6 +19464,15 @@
       var _q = useState(""); var q = _q[0]; var setQ = _q[1];
       var _focus = useState(0); var focused = _focus[0]; var setFocused = _focus[1];
       var inputRef = React.useRef(null);
+      // ─ Filtre permissions : un non-admin ne voit que les items menant a une page autorisee ─
+      var isAdmin = ctx.isAdmin;
+      var allowedPages = ctx.allowedPages || [];
+      function canAccessPage(pageKey) {
+        if (isAdmin) return true;
+        if (pageKey === "accueil" || pageKey === "fiche-equipement") return true;
+        if (pageKey === "administration") return true; // toujours (profil utilisateur)
+        return allowedPages.indexOf(pageKey) >= 0;
+      }
 
       // Ecoute clavier global pour Ctrl+K / Cmd+K
       useEffect(function() {
@@ -19493,109 +19503,123 @@
         var out = [];
         var qq = (q || "").trim().toLowerCase();
 
-        // 1) Equipements
-        (ctx.equipements || []).forEach(function(e) {
-          var label = (e.Title || "") + " " + (e.Nom || "") + " " + (e.Type || "") + " " + (e.Marque || "") + " " + (e.Modele || "");
-          out.push({
-            group: "Equipements",
-            iconKey: "equip",
-            title: e.Title || "(sans code)",
-            sub: (e.Type || "") + (e.Marque ? " - " + e.Marque : "") + (e.Horametre ? " - " + e.Horametre + "h" : "") + (e.Statut ? " - " + e.Statut : ""),
-            label: label,
-            shortcut: "Equipement",
-            action: function() { onNavigate("fiche-equipement", e); }
-          });
-        });
-
-        // 2) Personnel (depuis dbAppUsers + parametres.personnel_data)
-        (ctx.dbAppUsers || []).forEach(function(u) {
-          var label = (u.nom || "") + " " + (u.email || "") + " " + (u.role || "");
-          out.push({
-            group: "Personnel",
-            iconKey: "pers",
-            title: u.nom || u.email,
-            sub: u.email + (u.role ? " - " + u.role : ""),
-            label: label,
-            shortcut: "Utilisateur",
-            action: function() { onNavigate("administration", { tab: "utilisateurs" }); }
-          });
-        });
-        // Personnel terrain (sondeurs avec acces app)
-        var persParam = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
-        if (persParam && persParam.valeur) {
-          try {
-            var persList = JSON.parse(persParam.valeur);
-            persList.forEach(function(p) {
-              if (!p) return;
-              var nom = ((p.prenom || "") + " " + (p.nom || "")).trim();
-              if (!nom) return;
-              var label = nom + " " + (p.code || "") + " " + (p.role || "");
-              out.push({
-                group: "Personnel",
-                iconKey: "pers",
-                title: nom,
-                sub: (p.role || "Sondeur") + (p.code ? " - code: " + p.code : ""),
-                label: label,
-                shortcut: "Personnel",
-                action: function() { onNavigate("personnel"); }
-              });
+        // 1) Equipements (cache si l'utilisateur n'a pas acces aux equipements)
+        if (canAccessPage("equipements")) {
+          (ctx.equipements || []).forEach(function(e) {
+            var label = (e.Title || "") + " " + (e.Nom || "") + " " + (e.Type || "") + " " + (e.Marque || "") + " " + (e.Modele || "");
+            out.push({
+              group: "Equipements",
+              iconKey: "equip",
+              title: e.Title || "(sans code)",
+              sub: (e.Type || "") + (e.Marque ? " - " + e.Marque : "") + (e.Horametre ? " - " + e.Horametre + "h" : "") + (e.Statut ? " - " + e.Statut : ""),
+              label: label,
+              shortcut: "Equipement",
+              action: function() { onNavigate("fiche-equipement", e); }
             });
-          } catch (e) {}
+          });
         }
 
-        // 3) Chantiers
-        (ctx.dbChantiers || []).forEach(function(c) {
-          var label = (c.titre || "") + " " + (c.nom || "") + " " + (c.client || "") + " " + (c.site || "");
-          out.push({
-            group: "Chantiers",
-            iconKey: "chant",
-            title: c.titre || c.nom || ("Chantier #" + c.id),
-            sub: (c.client || "") + (c.statut ? " - " + c.statut : ""),
-            label: label,
-            shortcut: "Calendrier",
-            action: function() { onNavigate("avancement"); }
+        // 2) Personnel (depuis dbAppUsers + parametres.personnel_data) — admin only
+        if (isAdmin) {
+          (ctx.dbAppUsers || []).forEach(function(u) {
+            var label = (u.nom || "") + " " + (u.email || "") + " " + (u.role || "");
+            out.push({
+              group: "Personnel",
+              iconKey: "pers",
+              title: u.nom || u.email,
+              sub: u.email + (u.role ? " - " + u.role : ""),
+              label: label,
+              shortcut: "Utilisateur",
+              action: function() { onNavigate("administration", { tab: "utilisateurs" }); }
+            });
           });
-        });
+        }
+        // Personnel terrain (sondeurs) — visible si l'utilisateur a acces a personnel
+        if (canAccessPage("personnel")) {
+          var persParam = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
+          if (persParam && persParam.valeur) {
+            try {
+              var persList = JSON.parse(persParam.valeur);
+              persList.forEach(function(p) {
+                if (!p) return;
+                var nom = ((p.prenom || "") + " " + (p.nom || "")).trim();
+                if (!nom) return;
+                var label = nom + " " + (p.code || "") + " " + (p.role || "");
+                out.push({
+                  group: "Personnel",
+                  iconKey: "pers",
+                  title: nom,
+                  sub: (p.role || "Sondeur") + (p.code ? " - code: " + p.code : ""),
+                  label: label,
+                  shortcut: "Personnel",
+                  action: function() { onNavigate("personnel"); }
+                });
+              });
+            } catch (e) {}
+          }
+        }
+
+        // 3) Chantiers (mene a Avancement)
+        if (canAccessPage("avancement")) {
+          (ctx.dbChantiers || []).forEach(function(c) {
+            var label = (c.titre || "") + " " + (c.nom || "") + " " + (c.client || "") + " " + (c.site || "");
+            out.push({
+              group: "Chantiers",
+              iconKey: "chant",
+              title: c.titre || c.nom || ("Chantier #" + c.id),
+              sub: (c.client || "") + (c.statut ? " - " + c.statut : ""),
+              label: label,
+              shortcut: "Calendrier",
+              action: function() { onNavigate("avancement"); }
+            });
+          });
+        }
 
         // 4) Pieces
-        (ctx.pieces || []).forEach(function(p) {
-          var label = (p.Reference || "") + " " + (p.Designation || "") + " " + (p.Categorie || "") + " " + (p.Fournisseur || "");
-          out.push({
-            group: "Pieces detachees",
-            iconKey: "piece",
-            title: p.Designation || p.Reference || "Piece",
-            sub: (p.Reference || "") + " - Stock " + (p.Stock || 0) + (p.Compatible ? " - Compatible: " + p.Compatible : ""),
-            label: label,
-            shortcut: "Pieces",
-            action: function() { onNavigate("pieces"); }
+        if (canAccessPage("pieces")) {
+          (ctx.pieces || []).forEach(function(p) {
+            var label = (p.Reference || "") + " " + (p.Designation || "") + " " + (p.Categorie || "") + " " + (p.Fournisseur || "");
+            out.push({
+              group: "Pieces detachees",
+              iconKey: "piece",
+              title: p.Designation || p.Reference || "Piece",
+              sub: (p.Reference || "") + " - Stock " + (p.Stock || 0) + (p.Compatible ? " - Compatible: " + p.Compatible : ""),
+              label: label,
+              shortcut: "Pieces",
+              action: function() { onNavigate("pieces"); }
+            });
           });
-        });
+        }
 
         // 5) Interventions
-        (ctx.interventions || []).forEach(function(i) {
-          var label = (i.Title || "") + " " + (i.Equipement || "") + " " + (i.Technicien || "") + " " + (i.Type || "");
-          out.push({
-            group: "Interventions",
-            iconKey: "soum",
-            title: i.Title || ("Intervention #" + i.Id),
-            sub: (i.Equipement || "") + (i.Type ? " - " + i.Type : "") + (i.Statut_Intervention ? " - " + i.Statut_Intervention : ""),
-            label: label,
-            shortcut: "Interventions",
-            action: function() { onNavigate("interventions", i); }
+        if (canAccessPage("interventions")) {
+          (ctx.interventions || []).forEach(function(i) {
+            var label = (i.Title || "") + " " + (i.Equipement || "") + " " + (i.Technicien || "") + " " + (i.Type || "");
+            out.push({
+              group: "Interventions",
+              iconKey: "soum",
+              title: i.Title || ("Intervention #" + i.Id),
+              sub: (i.Equipement || "") + (i.Type ? " - " + i.Type : "") + (i.Statut_Intervention ? " - " + i.Statut_Intervention : ""),
+              label: label,
+              shortcut: "Interventions",
+              action: function() { onNavigate("interventions", i); }
+            });
           });
-        });
+        }
 
         if (!qq) {
-          // Mode "raccourcis pages" : on retourne juste quelques pages frequentes
-          return [
-            { group: "Pages", iconKey: "page", title: "Accueil",         sub: "Statistiques & KPIs",            label: "accueil",      shortcut: "Page", action: function() { onNavigate("statistiques"); } },
-            { group: "Pages", iconKey: "page", title: "Maintenance",     sub: "Vue d'ensemble interventions",   label: "maintenance",  shortcut: "Page", action: function() { onNavigate("accueil"); } },
-            { group: "Pages", iconKey: "page", title: "Avancement",      sub: "Saisie metres / jour",           label: "avancement",   shortcut: "Page", action: function() { onNavigate("avancement"); } },
-            { group: "Pages", iconKey: "page", title: "Primes",          sub: "Calcul primes de metrage",       label: "primes",       shortcut: "Page", action: function() { onNavigate("primes"); } },
-            { group: "Pages", iconKey: "page", title: "Soumissions",     sub: "Releves / conges / commandes",   label: "soumissions",  shortcut: "Page", action: function() { onNavigate("soumissions"); } },
-            { group: "Pages", iconKey: "page", title: "Alertes saisies", sub: "Rapports / heures manquants",    label: "alertes",      shortcut: "Page", action: function() { onNavigate("alertes-saisies"); } },
-            { group: "Pages", iconKey: "page", title: "Administration",  sub: "Profil, parametres, users",      label: "administration", shortcut: "Page", action: function() { onNavigate("administration"); } }
+          // Mode "raccourcis pages" : filtre selon allowedPages
+          var raccourcis = [
+            { group: "Pages", iconKey: "page", title: "Accueil",         sub: "Statistiques & KPIs",            label: "accueil",      shortcut: "Page", pageKey: "statistiques",   action: function() { onNavigate("statistiques"); } },
+            { group: "Pages", iconKey: "page", title: "Maintenance",     sub: "Vue d'ensemble interventions",   label: "maintenance",  shortcut: "Page", pageKey: "accueil",        action: function() { onNavigate("accueil"); } },
+            { group: "Pages", iconKey: "page", title: "Avancement",      sub: "Saisie metres / jour",           label: "avancement",   shortcut: "Page", pageKey: "avancement",     action: function() { onNavigate("avancement"); } },
+            { group: "Pages", iconKey: "page", title: "Previsionnel",    sub: "Prevu chantier + meteo",          label: "previsionnel", shortcut: "Page", pageKey: "previsionnel",   action: function() { onNavigate("previsionnel"); } },
+            { group: "Pages", iconKey: "page", title: "Primes",          sub: "Calcul primes de metrage",       label: "primes",       shortcut: "Page", pageKey: "primes",         action: function() { onNavigate("primes"); } },
+            { group: "Pages", iconKey: "page", title: "Soumissions",     sub: "Releves / conges / commandes",   label: "soumissions",  shortcut: "Page", pageKey: "soumissions",    action: function() { onNavigate("soumissions"); } },
+            { group: "Pages", iconKey: "page", title: "Alertes saisies", sub: "Rapports / heures manquants",    label: "alertes",      shortcut: "Page", pageKey: "alertes-saisies", action: function() { onNavigate("alertes-saisies"); } },
+            { group: "Pages", iconKey: "page", title: "Administration",  sub: "Profil, parametres, users",      label: "administration", shortcut: "Page", pageKey: "administration", action: function() { onNavigate("administration"); } }
           ];
+          return raccourcis.filter(function(r) { return canAccessPage(r.pageKey); });
         }
         return out.filter(function(it) { return it.label.toLowerCase().indexOf(qq) >= 0; }).slice(0, 50);
       }());
