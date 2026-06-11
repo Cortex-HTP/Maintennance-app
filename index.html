@@ -1035,6 +1035,8 @@
     // Editeur de gamme (libellés modifiables, sans cases à cocher).
     // Utilisé dans PlanForm. `readOnly` désactive l'édition (non-admin).
     function GammeEditor({ items, onChange, readOnly, emptyHint }) {
+      var ctx = useAppData();
+      var pieces = ctx.pieces || [];
       var list = Array.isArray(items) ? items : [];
       function update(i, patch) {
         var copy = list.slice();
@@ -1049,20 +1051,71 @@
       function add() {
         onChange(list.concat({ id: newGammeId(), label: "" }));
       }
-      return h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      // Toggle expansion locale par item (pour afficher/cacher la section pieces)
+      var _exp = useState({}); var expanded = _exp[0]; var setExpanded = _exp[1];
+      function toggleExp(id) { setExpanded(Object.assign({}, expanded, { [id]: !expanded[id] })); }
+
+      return h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
         list.length === 0 ? h("div", { style: { fontSize: 12, color: "#71717a", fontStyle: "italic", padding: "8px 0" } }, emptyHint || "Aucune etape definie") : null,
         list.map(function(item, i) {
-          return h("div", { key: item.id || i, style: { display: "flex", gap: 8, alignItems: "center" } },
-            h("span", { style: { fontSize: 12, color: "#71717a", minWidth: 18 } }, (i + 1) + "."),
-            h("input", {
-              type: "text",
-              value: item.label || "",
-              onChange: function(e) { update(i, { label: e.target.value }); },
-              disabled: readOnly,
-              placeholder: "Ex: Vidange moteur",
-              style: { ...inputStyle, flex: 1, opacity: readOnly ? 0.6 : 1 }
-            }),
-            !readOnly ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })) : null
+          var hasPiece = !!(item.pieceType || item.pieceRef || item.pieceLabel);
+          var isExp = !!expanded[item.id || i] || hasPiece;
+          return h("div", { key: item.id || i, style: { background: "rgba(255,255,255,0.02)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(255,255,255,0.05)" } },
+            // Ligne principale : numero + label + bouton piece + bouton supprimer
+            h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+              h("span", { style: { fontSize: 12, color: "#71717a", minWidth: 18 } }, (i + 1) + "."),
+              h("input", {
+                type: "text", value: item.label || "",
+                onChange: function(e) { update(i, { label: e.target.value }); },
+                disabled: readOnly,
+                placeholder: "Ex: Vidange moteur",
+                style: { ...inputStyle, flex: 1, opacity: readOnly ? 0.6 : 1 }
+              }),
+              !readOnly ? h("button", { type: "button", onClick: function() { toggleExp(item.id || i); },
+                title: hasPiece ? "Modifier la piece liee" : "Lier une piece / consommable",
+                style: { background: hasPiece ? "rgba(34,197,94,0.15)" : "rgba(99,102,241,0.10)", border: "1px solid " + (hasPiece ? "rgba(34,197,94,0.30)" : "rgba(99,102,241,0.25)"), color: hasPiece ? "#86efac" : "#a5b4fc", padding: "5px 9px", borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600 } },
+                h(Icon, { name: hasPiece ? "package-check" : "package", size: 12, color: hasPiece ? "#86efac" : "#a5b4fc" }),
+                hasPiece ? (item.quantite ? item.quantite + "x" : "1x") + " " + (item.pieceLabel || item.pieceRef || "?") : "Pieces"
+              ) : (hasPiece ? h("span", { style: { fontSize: 11, color: "#86efac", padding: "3px 8px", background: "rgba(34,197,94,0.10)", borderRadius: 4 } }, (item.quantite || 1) + "× " + (item.pieceLabel || item.pieceRef || "?")) : null),
+              !readOnly ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })) : null
+            ),
+            // Section pieces (expanded)
+            isExp && !readOnly ? h("div", { style: { marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.06)", display: "grid", gridTemplateColumns: "1fr 1fr 80px", gap: 6, alignItems: "end" } },
+              // Type
+              h("div", null,
+                h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Type"),
+                h("select", { value: item.pieceType || "", onChange: function(e) { update(i, { pieceType: e.target.value, pieceRef: "", pieceLabel: "" }); },
+                  style: { ...selectStyle, fontSize: 12, padding: "6px 8px" } },
+                  h("option", { value: "" }, "—"),
+                  h("option", { value: "piece" }, "📦 Piece catalogue"),
+                  h("option", { value: "consommable" }, "🛢️ Consommable"),
+                  h("option", { value: "autre" }, "📄 Autre achat")
+                )
+              ),
+              // Reference (selector si piece catalogue, text libre sinon)
+              h("div", null,
+                h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Reference / designation"),
+                item.pieceType === "piece" ?
+                  h("select", { value: item.pieceRef || "", onChange: function(e) {
+                    var p = pieces.find(function(pp) { return String(pp.Id) === e.target.value; });
+                    update(i, { pieceRef: e.target.value, pieceLabel: p ? (p.Designation || p.Reference || "?") : "" });
+                  }, style: { ...selectStyle, fontSize: 12, padding: "6px 8px" } },
+                    h("option", { value: "" }, "Selectionner..."),
+                    pieces.map(function(p) { return h("option", { key: p.Id, value: p.Id }, (p.Reference ? "[" + p.Reference + "] " : "") + (p.Designation || "?")); })
+                  ) :
+                  h("input", { type: "text", value: item.pieceLabel || "", onChange: function(e) { update(i, { pieceLabel: e.target.value, pieceRef: e.target.value }); },
+                    placeholder: item.pieceType === "consommable" ? "Ex: Huile 15W40 5L" : "Ex: Joint plat sur mesure",
+                    style: { ...inputStyle, fontSize: 12, padding: "6px 8px" } })
+              ),
+              // Quantité
+              h("div", null,
+                h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Qte"),
+                h("input", { type: "number", min: "0", step: "0.5", value: item.quantite != null ? item.quantite : "",
+                  onChange: function(e) { update(i, { quantite: e.target.value === "" ? null : parseFloat(e.target.value) }); },
+                  placeholder: "1",
+                  style: { ...inputStyle, fontSize: 12, padding: "6px 8px", textAlign: "center" } })
+              )
+            ) : null
           );
         }),
         !readOnly ? h("button", { type: "button", onClick: add, style: { alignSelf: "flex-start", marginTop: 6, padding: "6px 12px", background: "rgba(99,102,241,0.10)", border: "1px dashed rgba(129,140,248,0.4)", borderRadius: 8, color: "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "plus", size: 12, color: "#a5b4fc" }), "Ajouter une etape") : null
@@ -1092,11 +1145,20 @@
         list.length === 0 ? h("div", { style: { fontSize: 12, color: "#71717a", fontStyle: "italic", padding: "8px 0" } }, allowAddCustom ? "Aucune etape. Cliquez sur '+ Ajouter une etape' pour en creer." : "Aucune etape definie pour cette intervention") : null,
         list.map(function(item, i) {
           var fromPlan = !!item.fromPlan;
-          return h("div", { key: item.id || i, style: { display: "flex", gap: 10, alignItems: "center", padding: "6px 10px", background: item.done ? "rgba(16, 185, 129, 0.08)" : "rgba(255,255,255,0.03)", border: "1px solid " + (item.done ? "rgba(16, 185, 129, 0.2)" : "rgba(255,255,255,0.06)"), borderRadius: 8, transition: "all 0.15s" } },
+          var hasPiece = !!(item.pieceType || item.pieceRef || item.pieceLabel);
+          var pieceBadge = hasPiece ? h("span", {
+            title: "Piece prevue : " + (item.pieceLabel || item.pieceRef || "?") + " x" + (item.quantite || 1),
+            style: { fontSize: 10.5, fontWeight: 700, color: "#86efac", background: "rgba(34,197,94,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.30)", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }
+          },
+            h("span", null, item.pieceType === "piece" ? "📦" : item.pieceType === "consommable" ? "🛢️" : "📄"),
+            (item.quantite || 1) + "× " + (item.pieceLabel || item.pieceRef || "?")
+          ) : null;
+          return h("div", { key: item.id || i, style: { display: "flex", gap: 10, alignItems: "center", padding: "6px 10px", background: item.done ? "rgba(16, 185, 129, 0.08)" : "rgba(255,255,255,0.03)", border: "1px solid " + (item.done ? "rgba(16, 185, 129, 0.2)" : "rgba(255,255,255,0.06)"), borderRadius: 8, transition: "all 0.15s", flexWrap: "wrap" } },
             h("input", { type: "checkbox", checked: !!item.done, onChange: function(e) { update(i, { done: e.target.checked }); }, style: { width: 18, height: 18, accentColor: "#818cf8", cursor: "pointer" } }),
             fromPlan
               ? h("span", { style: { flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }, item.label)
               : h("input", { type: "text", value: item.label || "", onChange: function(e) { update(i, { label: e.target.value }); }, placeholder: "Etape custom", style: { ...inputStyle, flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }),
+            pieceBadge,
             fromPlan ? h("span", { title: "Etape heritee du plan", style: { fontSize: 10, fontWeight: 600, color: "#a5b4fc", background: "rgba(99,102,241,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(99,102,241,0.25)", whiteSpace: "nowrap" } }, "PLAN") : null,
             !fromPlan ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 14, color: "#f43f5e" })) : null
           );
@@ -12790,6 +12852,7 @@
         { key: "plans", label: "Plans", icon: "clipboard-list" },
         { key: "interventions", label: "Interventions", icon: "wrench" },
         { key: "pieces", label: "Pieces detachees", icon: "package" },
+        { key: "achats-previsionnels", label: "Achats previsionnels", icon: "shopping-cart" },
         { key: "carburant", label: "Carburant", icon: "fuel" },
         { key: "planning", label: "Calendrier", icon: "calendar" },
         { key: "avancement", label: "Avancement", icon: "hard-hat" },
@@ -18738,6 +18801,181 @@
       );
     }
 
+    // ─── EcranAchatsPrevisionnels : agrege les besoins materiel des plans a venir ─
+    function EcranAchatsPrevisionnels() {
+      var ctx = useAppData();
+      var plans = ctx.plans || [];
+      var equipements = ctx.equipements || [];
+      var pieces = ctx.pieces || [];
+
+      // Filtres
+      var _horizon = useState("90"); var horizon = _horizon[0]; var setHorizon = _horizon[1];
+      var _equipFilter = useState("all"); var equipFilter = _equipFilter[0]; var setEquipFilter = _equipFilter[1];
+
+      var today = new Date();
+      var horizonDate = new Date(today.getTime() + parseInt(horizon, 10) * 86400000);
+
+      // ─ Calcul des besoins agreges ─
+      // Pour chaque plan actif :
+      //   - On regarde sa prochaine intervention (ProchainIntervention)
+      //   - Si elle tombe dans l'horizon, on cumule les pieces de chaque etape
+      //   - On multiplie par le nombre d'equipements concernes par le plan
+      var besoins = (function() {
+        var map = {}; // ref -> { ref, label, type, qtyTotal, planSources: [], pieceCatalogue (si match) }
+        plans.forEach(function(plan) {
+          if (plan.Statut !== "Actif" && plan.Statut !== "actif") return;
+          var nextDate = plan.ProchainIntervention ? new Date(plan.ProchainIntervention) : null;
+          if (!nextDate || nextDate > horizonDate) return;
+
+          var gamme = Array.isArray(plan.Gamme) ? plan.Gamme : [];
+          if (gamme.length === 0) return;
+
+          // Equipements concernes par ce plan
+          var equipCodes = (plan.Equipements || "").split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+          var nbEquips = equipCodes.length || 1;
+          if (equipFilter !== "all" && equipCodes.indexOf(equipFilter) < 0) return;
+
+          gamme.forEach(function(step) {
+            if (!step || !step.pieceLabel && !step.pieceRef) return;
+            var qty = (parseFloat(step.quantite) || 1) * nbEquips;
+            var refKey = step.pieceType === "piece" && step.pieceRef
+              ? "piece:" + step.pieceRef
+              : "free:" + (step.pieceLabel || step.pieceRef || "?").toLowerCase().trim();
+            if (!map[refKey]) {
+              var pieceCat = step.pieceType === "piece" ? pieces.find(function(p) { return String(p.Id) === String(step.pieceRef); }) : null;
+              map[refKey] = {
+                ref: step.pieceRef || step.pieceLabel,
+                label: pieceCat ? (pieceCat.Designation || pieceCat.Reference) : (step.pieceLabel || step.pieceRef),
+                type: step.pieceType || "autre",
+                qtyTotal: 0,
+                planSources: [],
+                pieceCatalogue: pieceCat
+              };
+            }
+            map[refKey].qtyTotal += qty;
+            map[refKey].planSources.push({
+              planNom: plan.Title || plan.Description,
+              equipCodes: equipCodes,
+              prochaineDate: nextDate,
+              stepLabel: step.label,
+              qtyPerEquip: parseFloat(step.quantite) || 1
+            });
+          });
+        });
+        return Object.values(map).sort(function(a, b) {
+          // Tri : pieces catalogue en deficit d'abord, puis autres
+          var aDef = a.pieceCatalogue ? Math.max(0, a.qtyTotal - (parseFloat(a.pieceCatalogue.Stock) || 0)) : a.qtyTotal;
+          var bDef = b.pieceCatalogue ? Math.max(0, b.qtyTotal - (parseFloat(b.pieceCatalogue.Stock) || 0)) : b.qtyTotal;
+          return bDef - aDef;
+        });
+      }());
+
+      // ─ KPIs ─
+      var totalRefs = besoins.length;
+      var inCatalogue = besoins.filter(function(b) { return b.pieceCatalogue; }).length;
+      var totalUnits = besoins.reduce(function(s, b) { return s + b.qtyTotal; }, 0);
+      var totalDeficit = besoins.reduce(function(s, b) {
+        if (!b.pieceCatalogue) return s;
+        return s + Math.max(0, b.qtyTotal - (parseFloat(b.pieceCatalogue.Stock) || 0));
+      }, 0);
+      var totalCost = besoins.reduce(function(s, b) {
+        var pu = b.pieceCatalogue ? (parseFloat(b.pieceCatalogue.PrixUnitaire) || 0) : 0;
+        if (!pu) return s;
+        var deficit = Math.max(0, b.qtyTotal - (parseFloat(b.pieceCatalogue.Stock) || 0));
+        return s + deficit * pu;
+      }, 0);
+
+      // Liste equipements pour filtre
+      var equipCodesUnique = [];
+      plans.forEach(function(p) {
+        (p.Equipements || "").split(",").map(function(s) { return s.trim(); }).filter(Boolean).forEach(function(c) {
+          if (equipCodesUnique.indexOf(c) < 0) equipCodesUnique.push(c);
+        });
+      });
+
+      var sectionStyle = { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" };
+
+      return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "shopping-cart", size: 20 }, "Achats previsionnels"), subtitle: "Materiel necessaire pour les plans de maintenance a venir" }),
+
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 } },
+          KpiTile({ icon: "package", accent: "#a78bfa", label: "References necessaires", value: totalRefs, hint: inCatalogue + " en catalogue" }),
+          KpiTile({ icon: "boxes", accent: "#22d3ee", label: "Quantite totale", value: Math.round(totalUnits * 100) / 100, hint: "unites a consommer" }),
+          KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Deficit (catalogue)", value: Math.round(totalDeficit * 100) / 100, hint: "manque par rapport au stock" }),
+          KpiTile({ icon: "wallet", accent: "#fbbf24", label: "Cout estime", value: totalCost > 1000000 ? (totalCost / 1000000).toFixed(1) + " MF" : Math.round(totalCost / 1000) + " k", hint: "XPF" })
+        ),
+
+        // Filtres
+        h("div", { style: Object.assign({}, sectionStyle, { padding: 14, marginBottom: 16, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }) },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Horizon"),
+          h("select", { value: horizon, onChange: function(e) { setHorizon(e.target.value); },
+            style: { padding: "7px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit" } },
+            h("option", { value: "30" }, "30 jours"),
+            h("option", { value: "60" }, "60 jours"),
+            h("option", { value: "90" }, "90 jours"),
+            h("option", { value: "180" }, "6 mois"),
+            h("option", { value: "365" }, "1 an")
+          ),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Equipement"),
+          h("select", { value: equipFilter, onChange: function(e) { setEquipFilter(e.target.value); },
+            style: { padding: "7px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit" } },
+            h("option", { value: "all" }, "Tous"),
+            equipCodesUnique.sort().map(function(c) { return h("option", { key: c, value: c }, c); })
+          ),
+          h("span", { style: { marginLeft: "auto", fontSize: 12, color: "#94a3b8" } }, besoins.length + " reference" + (besoins.length > 1 ? "s" : "") + " agregee" + (besoins.length > 1 ? "s" : ""))
+        ),
+
+        // Tableau
+        besoins.length === 0 ?
+          h("div", { style: Object.assign({}, sectionStyle, { padding: 60, textAlign: "center", color: "#71717a" }) },
+            h(Icon, { name: "shopping-cart", size: 48, color: "rgba(255,255,255,0.18)" }),
+            h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucun besoin identifie"),
+            h("div", { style: { marginTop: 4, fontSize: 12 } }, "Lie des pieces aux etapes des plans de maintenance pour generer les previsions.")
+          ) :
+          h("div", { style: Object.assign({}, sectionStyle, { padding: 0, overflow: "hidden" }) },
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", { style: { background: "rgba(99,102,241,0.08)" } },
+                  h("th", { style: { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Type"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Reference / designation"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "right", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Qte besoin"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "right", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Stock"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "right", fontSize: 11, fontWeight: 700, color: "#fda4af", textTransform: "uppercase", letterSpacing: 0.4 } }, "A acheter"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "right", fontSize: 11, fontWeight: 700, color: "#fde68a", textTransform: "uppercase", letterSpacing: 0.4 } }, "Cout estime"),
+                  h("th", { style: { padding: "10px 12px", textAlign: "center", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Plans concernes")
+                )),
+                h("tbody", null, besoins.map(function(b, i) {
+                  var stock = b.pieceCatalogue ? (parseFloat(b.pieceCatalogue.Stock) || 0) : null;
+                  var deficit = stock !== null ? Math.max(0, b.qtyTotal - stock) : b.qtyTotal;
+                  var pu = b.pieceCatalogue ? (parseFloat(b.pieceCatalogue.PrixUnitaire) || 0) : 0;
+                  var cost = deficit * pu;
+                  return h("tr", { key: i, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "9px 12px" } },
+                      h("span", { style: { fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 4,
+                        background: b.type === "piece" ? "rgba(168,139,250,0.18)" : b.type === "consommable" ? "rgba(34,211,238,0.18)" : "rgba(148,163,184,0.18)",
+                        color: b.type === "piece" ? "#c4b5fd" : b.type === "consommable" ? "#67e8f9" : "#94a3b8" } },
+                        b.type === "piece" ? "📦 Piece" : b.type === "consommable" ? "🛢️ Consommable" : "📄 Autre")
+                    ),
+                    h("td", { style: { padding: "9px 12px", color: "#fafafa", fontWeight: 600 } },
+                      b.label,
+                      b.pieceCatalogue && b.pieceCatalogue.Reference ? h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 2 } }, "Ref " + b.pieceCatalogue.Reference) : null
+                    ),
+                    h("td", { style: { padding: "9px 12px", textAlign: "right", color: "#fafafa", fontFamily: "'SF Mono', Consolas, monospace" } }, Math.round(b.qtyTotal * 100) / 100),
+                    h("td", { style: { padding: "9px 12px", textAlign: "right", color: stock === null ? "#71717a" : stock >= b.qtyTotal ? "#86efac" : "#fda4af", fontFamily: "'SF Mono', Consolas, monospace" } }, stock !== null ? stock : "—"),
+                    h("td", { style: { padding: "9px 12px", textAlign: "right", fontWeight: 700, color: deficit > 0 ? "#fda4af" : "#86efac", fontFamily: "'SF Mono', Consolas, monospace" } }, deficit > 0 ? "+" + Math.round(deficit * 100) / 100 : "OK"),
+                    h("td", { style: { padding: "9px 12px", textAlign: "right", color: cost > 0 ? "#fde68a" : "#71717a", fontFamily: "'SF Mono', Consolas, monospace" } }, cost > 0 ? fmtNum(Math.round(cost)) + " XPF" : "—"),
+                    h("td", { style: { padding: "9px 12px", textAlign: "center", fontSize: 11, color: "#a1a1aa" } },
+                      h("div", { title: b.planSources.map(function(s) { return "• " + s.planNom + " (" + s.equipCodes.join(", ") + ") - " + s.prochaineDate.toLocaleDateString("fr-FR"); }).join("\n") }, b.planSources.length + " plan" + (b.planSources.length > 1 ? "s" : ""))
+                    )
+                  );
+                }))
+              )
+            )
+          )
+      );
+    }
+
     // ─── EcranCoffreRH : documents RH par employe ────────────────────────────
     // Acces : Admin OU Secretaire RH (vue admin avec sidebar employes)
     //         OU employe (vue restreinte : ses propres documents seulement)
@@ -19764,6 +20002,7 @@
           { key: "plans", label: "Plans", lucide: "clipboard-list" },
           { key: "interventions", label: "Interventions", lucide: "wrench" },
           { key: "pieces", label: "Pieces detachees", lucide: "package" },
+          { key: "achats-previsionnels", label: "Achats previsionnels", lucide: "shopping-cart" },
           { key: "carburant", label: "Carburant", lucide: "fuel" },
         ]},
         { name: "Chantiers", pages: [
@@ -21242,6 +21481,7 @@
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "previsionnel") return h(EcranPrevisionnel, { initialChantierId: pageData && pageData.chantierId });
         if (currentPage === "coffre-rh") return h(EcranCoffreRH, null);
+        if (currentPage === "achats-previsionnels") return h(EcranAchatsPrevisionnels, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
         if (currentPage === "primes") return h(EcranPrimes, null);
         if (currentPage === "soumissions") return h(EcranSoumissions, { initialTab: pageData && pageData.tab });
