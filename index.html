@@ -18261,14 +18261,17 @@
       var cardStyle = { background: "rgba(255,255,255,0.04)", padding: 14, borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" };
 
       // ─ Render ─
-      // Animation CSS injectee une seule fois (pulsation + shimmer)
+      // Animation CSS subtile : juste un fadeUp d'entree
       useEffect(function() {
         if (document.getElementById("prev-anim-css")) return;
         var st = document.createElement("style");
         st.id = "prev-anim-css";
-        st.textContent = "@keyframes prevPulse{0%,100%{opacity:.85}50%{opacity:1}}@keyframes prevShimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}@keyframes prevFadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}.prev-card{animation:prevFadeUp .4s ease-out both}.prev-shimmer{background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.06) 50%,transparent 100%);background-size:200% 100%;animation:prevShimmer 3s linear infinite}.prev-pulse{animation:prevPulse 2.4s ease-in-out infinite}";
+        st.textContent = "@keyframes prevFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}.prev-card{animation:prevFadeUp .35s ease-out both}";
         document.head.appendChild(st);
       }, []);
+
+      // ─ Hover state pour le chart ─
+      var _hover = useState(null); var hoverIdx = _hover[0]; var setHoverIdx = _hover[1];
 
       // Sparkline SVG (h = React.createElement est dans le scope, on utilise hh/ww pour les dimensions)
       function Sparkline(points, color, height, width) {
@@ -18287,41 +18290,37 @@
         );
       }
 
-      // Helper : KPI tile (gradient, gros chiffre, icone, mini sparkline)
+      // Helper : KPI tile sobre type SaaS pro (Vercel/Linear)
       function KpiTile(opts) {
         return h("div", {
           className: "prev-card",
           style: {
-            background: opts.gradient || "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))",
-            border: "1px solid " + (opts.border || "rgba(99,102,241,0.30)"),
-            borderRadius: 14,
+            background: "#13172a",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 12,
             padding: "16px 18px",
-            position: "relative",
-            overflow: "hidden",
-            minHeight: 130,
+            minHeight: 120,
             display: "flex",
             flexDirection: "column",
             justifyContent: "space-between",
-            transition: "transform 0.2s, box-shadow 0.2s"
+            transition: "border-color 0.15s, background 0.15s"
           },
-          onMouseEnter: function(e) { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 12px 24px rgba(0,0,0,0.25)"; },
-          onMouseLeave: function(e) { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = ""; }
+          onMouseEnter: function(e) { e.currentTarget.style.borderColor = "rgba(255,255,255,0.16)"; e.currentTarget.style.background = "#171b30"; },
+          onMouseLeave: function(e) { e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; e.currentTarget.style.background = "#13172a"; }
         },
           h("div", { style: { display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" } },
             h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-              h("div", { style: { width: 30, height: 30, borderRadius: 9, background: opts.iconBg || "rgba(99,102,241,0.25)", display: "flex", alignItems: "center", justifyContent: "center" } },
-                h(Icon, { name: opts.icon || "circle", size: 15, color: opts.iconColor || "#c4b5fd" })
-              ),
-              h("div", { style: { fontSize: 10.5, fontWeight: 700, color: opts.labelColor || "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.6 } }, opts.label)
+              h(Icon, { name: opts.icon || "circle", size: 14, color: "#64748b" }),
+              h("div", { style: { fontSize: 11, fontWeight: 500, color: "#94a3b8", letterSpacing: 0.1 } }, opts.label)
             ),
-            opts.badge ? h("span", { style: { fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: opts.badgeBg || "rgba(255,255,255,0.08)", color: opts.badgeColor || "#cbd5e1" } }, opts.badge) : null
+            opts.badge ? h("span", { style: { fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4, background: opts.badgeBg || "rgba(255,255,255,0.06)", color: opts.badgeColor || "#cbd5e1", border: "1px solid " + (opts.badgeBorder || "rgba(255,255,255,0.08)") } }, opts.badge) : null
           ),
           h("div", { style: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10 } },
             h("div", null,
-              h("div", { style: { fontSize: opts.bigSize || 28, fontWeight: 800, color: opts.valueColor || "#fafafa", lineHeight: 1, letterSpacing: "-0.02em" } }, opts.value),
-              opts.hint ? h("div", { style: { fontSize: 11, color: opts.hintColor || "#94a3b8", marginTop: 5 } }, opts.hint) : null
+              h("div", { style: { fontSize: opts.bigSize || 28, fontWeight: 600, color: opts.valueColor || "#f8fafc", lineHeight: 1, letterSpacing: "-0.02em", fontFamily: "'SF Mono', Consolas, monospace" } }, opts.value),
+              opts.hint ? h("div", { style: { fontSize: 11, color: "#64748b", marginTop: 6 } }, opts.hint) : null
             ),
-            opts.sparkline ? h("div", { style: { opacity: 0.85 } }, Sparkline(opts.sparkline, opts.sparklineColor || opts.iconColor || "#c4b5fd", 36, 80)) : null
+            opts.sparkline && opts.sparkline.length > 1 ? h("div", { style: { opacity: 0.85 } }, Sparkline(opts.sparkline, opts.sparklineColor || "#818cf8", 32, 64)) : null
           )
         );
       }
@@ -18360,9 +18359,8 @@
         !chantier ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Aucun chantier disponible.")
         : !data ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Donnees insuffisantes.")
         : h("div", null,
-          // ─ HERO : grande carte immersive avec sparkline en fond + KPIs ─
+          // ─ HERO : sobre, structure, type Vercel/Linear ─
           (function() {
-            // Tendance : vitesse moyenne semaine actuelle vs semaine precedente
             var sparkValsAll = data.sparkVitesse.map(function(p) { return p.val; });
             var lastWeek = sparkValsAll.slice(-7);
             var prevWeek = sparkValsAll.slice(-14, -7);
@@ -18370,63 +18368,52 @@
             var pwAvg = prevWeek.reduce(function(s, v) { return s + v; }, 0) / Math.max(1, prevWeek.filter(function(v) { return v > 0; }).length || 1);
             var trendPct = pwAvg > 0 ? Math.round((lwAvg - pwAvg) / pwAvg * 100) : 0;
             var trendUp = trendPct >= 0;
-            var trendColor = trendUp ? "#86efac" : "#fda4af";
-            var trendBg = trendUp ? "rgba(34,197,94,0.18)" : "rgba(244,63,94,0.18)";
 
             return h("div", {
               className: "prev-card",
               style: {
-                position: "relative",
-                overflow: "hidden",
-                background: "linear-gradient(135deg, rgba(99,102,241,0.25) 0%, rgba(192,132,252,0.16) 45%, rgba(34,197,94,0.12) 100%)",
-                border: "1px solid rgba(192,132,252,0.35)",
-                borderRadius: 20,
-                padding: "24px 26px",
-                marginBottom: 18,
-                boxShadow: "0 12px 48px rgba(99,102,241,0.20)"
+                background: "#13172a",
+                border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: 12,
+                padding: "20px 24px",
+                marginBottom: 16,
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 32,
+                justifyContent: "space-between"
               }
             },
-              // Sparkline 30j en arrière-plan (decoratif)
-              h("div", { style: { position: "absolute", inset: 0, opacity: 0.25, pointerEvents: "none" } },
-                Sparkline(data.spark.map(function(p) { return p.val; }), "#a78bfa", 200, 1200)
-              ),
-              // Shimmer en bandeau haut (anime)
-              h("div", { className: "prev-shimmer", style: { position: "absolute", top: 0, left: 0, right: 0, height: 2 } }),
-              // Contenu principal au-dessus
-              h("div", { style: { position: "relative", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 28, justifyContent: "space-between" } },
-                h("div", { style: { display: "flex", alignItems: "center", gap: 22, flex: "1 1 auto" } },
-                  CircleGauge(avancementPct, avancementPct >= 80 ? "#22c55e" : avancementPct >= 50 ? "#a78bfa" : "#fbbf24"),
-                  h("div", null,
-                    h("div", { style: { fontSize: 10.5, fontWeight: 700, color: "#c4b5fd", letterSpacing: 0.9, textTransform: "uppercase", marginBottom: 6, display: "flex", alignItems: "center", gap: 8 } },
-                      h(Icon, { name: "hard-hat", size: 12, color: "#c4b5fd" }), "Chantier suivi"
-                    ),
-                    h("div", { style: { fontSize: 26, fontWeight: 800, color: "#fafafa", marginBottom: 4, letterSpacing: "-0.02em", lineHeight: 1.1 } }, chantier.titre),
-                    h("div", { style: { fontSize: 12.5, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
-                      h("span", { style: { padding: "3px 9px", borderRadius: 999, background: "rgba(167,139,250,0.18)", color: "#c4b5fd", fontWeight: 600 } }, (chantier.dateDebut ? new Date(chantier.dateDebut).toLocaleDateString("fr-FR") : "?") + " → " + (chantier.dateFin ? new Date(chantier.dateFin).toLocaleDateString("fr-FR") : "?")),
-                      h("span", { style: { padding: "3px 9px", borderRadius: 999, background: "rgba(34,197,94,0.18)", color: "#86efac", fontWeight: 600 } }, "Site : " + (chantier.site || "—")),
-                      h("span", { style: { padding: "3px 9px", borderRadius: 999, background: "rgba(251,191,36,0.18)", color: "#fde68a", fontWeight: 600 } }, chantier.statut),
-                      h("span", { style: { padding: "3px 9px", borderRadius: 999, background: trendBg, color: trendColor, fontWeight: 700, display: "flex", alignItems: "center", gap: 3 } },
-                        h(Icon, { name: trendUp ? "trending-up" : "trending-down", size: 12, color: trendColor }),
-                        (trendUp ? "+" : "") + trendPct + "% vs sem. précedente"
-                      )
-                    )
+              h("div", { style: { display: "flex", alignItems: "center", gap: 18, flex: "1 1 auto", minWidth: 280 } },
+                CircleGauge(avancementPct, avancementPct >= 80 ? "#22c55e" : avancementPct >= 50 ? "#818cf8" : "#fbbf24"),
+                h("div", null,
+                  h("div", { style: { fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Chantier"),
+                  h("div", { style: { fontSize: 22, fontWeight: 700, color: "#f8fafc", marginBottom: 6, letterSpacing: "-0.01em", lineHeight: 1.1 } }, chantier.titre),
+                  h("div", { style: { fontSize: 12, color: "#64748b", display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" } },
+                    h("span", null, (chantier.dateDebut ? new Date(chantier.dateDebut).toLocaleDateString("fr-FR") : "?") + " → " + (chantier.dateFin ? new Date(chantier.dateFin).toLocaleDateString("fr-FR") : "?")),
+                    h("span", { style: { color: "#475569" } }, "·"),
+                    h("span", null, chantier.site || "—"),
+                    h("span", { style: { color: "#475569" } }, "·"),
+                    h("span", { style: { color: "#94a3b8" } }, chantier.statut)
                   )
+                )
+              ),
+              h("div", { style: { display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-end" } },
+                h("div", null,
+                  h("div", { style: { fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Réalisé"),
+                  h("div", { style: { fontSize: 22, fontWeight: 700, color: "#f8fafc", lineHeight: 1, fontFamily: "'SF Mono', Consolas, monospace" } }, fmtNum(Math.round(data.realise)) + " m")
                 ),
-                h("div", { style: { display: "flex", gap: 22, flexWrap: "wrap" } },
-                  h("div", { style: { textAlign: "right", borderRight: "1px solid rgba(255,255,255,0.08)", paddingRight: 22 } },
-                    h("div", { style: { fontSize: 10.5, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Réalisé"),
-                    h("div", { style: { fontSize: 24, fontWeight: 800, color: "#86efac", lineHeight: 1 } }, fmtNum(Math.round(data.realise))),
-                    h("div", { style: { fontSize: 11, color: "#86efac", opacity: 0.75, marginTop: 2 } }, "metres")
-                  ),
-                  h("div", { style: { textAlign: "right", borderRight: "1px solid rgba(255,255,255,0.08)", paddingRight: 22 } },
-                    h("div", { style: { fontSize: 10.5, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Reste"),
-                    h("div", { style: { fontSize: 24, fontWeight: 800, color: "#fde68a", lineHeight: 1 } }, fmtNum(Math.round(data.metresRestants))),
-                    h("div", { style: { fontSize: 11, color: "#fde68a", opacity: 0.75, marginTop: 2 } }, "metres")
-                  ),
-                  h("div", { style: { textAlign: "right" } },
-                    h("div", { style: { fontSize: 10.5, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "CA restant"),
-                    h("div", { style: { fontSize: 24, fontWeight: 800, color: "#93c5fd", lineHeight: 1 } }, fmtNum(Math.round(data.metresRestants * (chantier.prixMetre || 0) / 1000))),
-                    h("div", { style: { fontSize: 11, color: "#93c5fd", opacity: 0.75, marginTop: 2 } }, "k XPF")
+                h("div", null,
+                  h("div", { style: { fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Reste"),
+                  h("div", { style: { fontSize: 22, fontWeight: 700, color: "#f8fafc", lineHeight: 1, fontFamily: "'SF Mono', Consolas, monospace" } }, fmtNum(Math.round(data.metresRestants)) + " m")
+                ),
+                h("div", null,
+                  h("div", { style: { fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Productivité 7j"),
+                  h("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } },
+                    h("div", { style: { fontSize: 22, fontWeight: 700, color: "#f8fafc", lineHeight: 1, fontFamily: "'SF Mono', Consolas, monospace" } }, Math.round(lwAvg) + " m/j"),
+                    h("span", { style: { fontSize: 12, fontWeight: 600, color: trendUp ? "#4ade80" : "#f87171", display: "flex", alignItems: "center", gap: 1 } },
+                      trendUp ? "▲" : "▼", " ", Math.abs(trendPct), "%"
+                    )
                   )
                 )
               )
@@ -18489,65 +18476,130 @@
             })
           ),
 
-          // ─ Section : Graphique d'avancement 30 jours (visuel central) ─
-          h("div", {
-            className: "prev-card",
-            style: {
-              background: "rgba(30, 33, 50, 0.55)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 16,
-              padding: 18,
-              marginBottom: 18,
-              backdropFilter: "blur(20px)",
-              WebkitBackdropFilter: "blur(20px)"
+          // ─ Section : Chart d'activite 30 jours (pro avec axes + tooltip) ─
+          (function() {
+            // Dimensions & marges
+            var W = 760, H = 240;
+            var mL = 44, mR = 16, mT = 24, mB = 30;
+            var iw = W - mL - mR, ih = H - mT - mB;
+            var n = data.spark.length;
+            var bw = iw / n;
+            var maxV = Math.max(data.maxSpark, Math.max.apply(null, data.sparkVitesse.map(function(p) { return p.val; })) || 1);
+            // Echelle Y arrondie a la centaine superieure
+            var yTop = Math.ceil(maxV / 100) * 100;
+            // Grille Y : 4 lignes
+            var yTicks = [0, yTop * 0.25, yTop * 0.5, yTop * 0.75, yTop];
+            function yToPx(v) { return mT + ih - (v / yTop) * ih; }
+            function xToPx(i) { return mL + i * bw + bw / 2; }
+
+            // Tooltip data
+            var hoverPoint = (hoverIdx != null && hoverIdx >= 0 && hoverIdx < n) ? data.spark[hoverIdx] : null;
+            var hoverAvg = (hoverIdx != null && hoverIdx >= 0 && hoverIdx < n) ? data.sparkVitesse[hoverIdx] : null;
+            function fmtD(s) {
+              try { var d = new Date(s + "T00:00:00"); return d.toLocaleDateString("fr-FR", { weekday: "short", day: "2-digit", month: "short" }); } catch (e) { return s; }
             }
-          },
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
-              h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
-                h("div", { style: { width: 32, height: 32, borderRadius: 10, background: "rgba(168,85,247,0.20)", display: "flex", alignItems: "center", justifyContent: "center" } },
-                  h(Icon, { name: "activity", size: 16, color: "#d8b4fe" })
-                ),
+
+            return h("div", {
+              className: "prev-card",
+              style: { background: "#13172a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 20, marginBottom: 16 }
+            },
+              // Header
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } },
                 h("div", null,
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fafafa" } }, "Activite des 30 derniers jours"),
-                  h("div", { style: { fontSize: 11, color: "#94a3b8" } }, "Metrage quotidien + moyenne mobile 7 jours")
+                  h("div", { style: { fontSize: 13, fontWeight: 600, color: "#f8fafc", marginBottom: 2 } }, "Production quotidienne"),
+                  h("div", { style: { fontSize: 11.5, color: "#64748b" } }, "Mètres forés par jour · 30 derniers jours · barre = quotidien, ligne = moyenne 7 jours")
+                ),
+                h("div", { style: { display: "flex", gap: 16, fontSize: 11, color: "#94a3b8" } },
+                  h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 9, height: 9, borderRadius: 2, background: "#818cf8" } }), "Quotidien"),
+                  h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 14, height: 2, background: "#4ade80" } }), "Tendance 7j")
                 )
               ),
-              h("div", { style: { display: "flex", gap: 14, fontSize: 11, color: "#94a3b8" } },
-                h("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#818cf8" } }), "Quotidien"),
-                h("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, h("span", { style: { width: 14, height: 2, background: "#86efac" } }), "Moyenne 7j")
-              )
-            ),
-            // Mini bar chart
-            (function() {
-              var W = 600, H = 130;
-              var n = data.spark.length;
-              var bw = (W - 8) / n;
-              var maxV = data.maxSpark;
-              var barCells = data.spark.map(function(p, i) {
-                var bh = maxV > 0 ? (p.val / maxV) * (H - 20) : 0;
-                var x = 4 + i * bw;
-                var col = p.val === 0 ? "rgba(100,116,139,0.20)" : "url(#barGrad)";
-                return h("rect", { key: i, x: x, y: H - 6 - bh, width: bw - 1, height: Math.max(2, bh), fill: col, rx: 1.5 });
-              });
-              // Ligne moyenne 7j
-              var maxAvg = Math.max.apply(null, data.sparkVitesse.map(function(p) { return p.val; })) || 1;
-              var sParts = data.sparkVitesse.map(function(p, i) {
-                var x = 4 + i * bw + bw / 2;
-                var y = H - 6 - (p.val / Math.max(maxV, maxAvg)) * (H - 20);
-                return (i === 0 ? "M" : "L") + x + " " + y;
-              }).join(" ");
-              return h("svg", { width: "100%", height: H, viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none", style: { display: "block" } },
-                h("defs", null,
-                  h("linearGradient", { id: "barGrad", x1: 0, y1: 0, x2: 0, y2: 1 },
-                    h("stop", { offset: "0%", stopColor: "#a78bfa" }),
-                    h("stop", { offset: "100%", stopColor: "#6366f1" })
-                  )
+              // Chart SVG
+              h("div", { style: { position: "relative" } },
+                h("svg", {
+                  width: "100%",
+                  viewBox: "0 0 " + W + " " + H,
+                  preserveAspectRatio: "none",
+                  style: { display: "block", overflow: "visible" },
+                  onMouseLeave: function() { setHoverIdx(null); }
+                },
+                  // Grille Y + labels
+                  yTicks.map(function(v, i) {
+                    var y = yToPx(v);
+                    return h("g", { key: "g" + i },
+                      h("line", { x1: mL, y1: y, x2: mL + iw, y2: y, stroke: "rgba(255,255,255,0.05)", strokeDasharray: i === 0 ? "" : "2 4" }),
+                      h("text", { x: mL - 8, y: y + 4, fill: "#64748b", fontSize: 10, textAnchor: "end" }, Math.round(v) + " m")
+                    );
+                  }),
+                  // Axe X : 4 dates reparties (debut, 1/3, 2/3, fin)
+                  [0, Math.floor(n / 3), Math.floor(2 * n / 3), n - 1].map(function(idx, k) {
+                    if (data.spark[idx] == null) return null;
+                    var d = new Date(data.spark[idx].date + "T00:00:00");
+                    return h("text", { key: "xt" + k, x: xToPx(idx), y: H - 10, fill: "#64748b", fontSize: 10, textAnchor: "middle" },
+                      d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })
+                    );
+                  }),
+                  // Defs gradient barres
+                  h("defs", null,
+                    h("linearGradient", { id: "barGradPro", x1: 0, y1: 0, x2: 0, y2: 1 },
+                      h("stop", { offset: "0%", stopColor: "#818cf8" }),
+                      h("stop", { offset: "100%", stopColor: "#4f46e5" })
+                    )
+                  ),
+                  // Barres + hover zones
+                  data.spark.map(function(p, i) {
+                    var bh = p.val > 0 ? (p.val / yTop) * ih : 0;
+                    var x = mL + i * bw + bw * 0.12;
+                    var bWidth = bw * 0.76;
+                    var fillBar = p.val > 0 ? "url(#barGradPro)" : "rgba(100,116,139,0.18)";
+                    return h("g", { key: i, onMouseEnter: function() { setHoverIdx(i); } },
+                      // Hover zone (transparent, plus large)
+                      h("rect", { x: mL + i * bw, y: mT, width: bw, height: ih, fill: "transparent", style: { cursor: "pointer" } }),
+                      // Barre visible
+                      h("rect", { x: x, y: mT + ih - bh, width: bWidth, height: Math.max(p.val > 0 ? 2 : 0, bh), fill: fillBar, rx: 2, opacity: hoverIdx === null || hoverIdx === i ? 1 : 0.45 })
+                    );
+                  }),
+                  // Ligne de tendance (moyenne 7j) : courbe lissee
+                  (function() {
+                    var pts = data.sparkVitesse.map(function(p, i) { return [xToPx(i), yToPx(p.val)]; }).filter(function(_, i) { return data.sparkVitesse[i].val > 0; });
+                    if (pts.length < 2) return null;
+                    var d = pts.map(function(p, i) { return (i === 0 ? "M" : "L") + p[0] + " " + p[1]; }).join(" ");
+                    return h("path", { d: d, stroke: "#4ade80", strokeWidth: 2, fill: "none", strokeLinejoin: "round", strokeLinecap: "round" });
+                  }()),
+                  // Curseur vertical au hover
+                  hoverIdx != null && hoverIdx >= 0 ? h("line", { x1: xToPx(hoverIdx), y1: mT, x2: xToPx(hoverIdx), y2: mT + ih, stroke: "rgba(255,255,255,0.20)", strokeDasharray: "3 3" }) : null
                 ),
-                barCells,
-                h("path", { d: sParts, stroke: "#86efac", strokeWidth: 2, fill: "none", strokeLinejoin: "round", strokeLinecap: "round" })
-              );
-            }())
-          ),
+                // Tooltip flottant
+                hoverPoint ? h("div", {
+                  style: {
+                    position: "absolute",
+                    pointerEvents: "none",
+                    background: "#1e2640",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    fontSize: 11.5,
+                    color: "#f8fafc",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                    minWidth: 160,
+                    left: Math.min(85, Math.max(5, (hoverIdx / n) * 100)) + "%",
+                    top: 8,
+                    transform: "translateX(-50%)"
+                  }
+                },
+                  h("div", { style: { fontSize: 11, fontWeight: 600, color: "#94a3b8", marginBottom: 6 } }, fmtD(hoverPoint.date)),
+                  h("div", { style: { display: "flex", justifyContent: "space-between", gap: 14, marginBottom: 3 } },
+                    h("span", { style: { display: "flex", alignItems: "center", gap: 5, color: "#cbd5e1" } }, h("span", { style: { width: 8, height: 8, borderRadius: 2, background: "#818cf8" } }), "Quotidien"),
+                    h("span", { style: { fontFamily: "'SF Mono', Consolas, monospace", fontWeight: 700 } }, Math.round(hoverPoint.val) + " m")
+                  ),
+                  hoverAvg && hoverAvg.val > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", gap: 14 } },
+                    h("span", { style: { display: "flex", alignItems: "center", gap: 5, color: "#cbd5e1" } }, h("span", { style: { width: 10, height: 2, background: "#4ade80" } }), "Moy. 7j"),
+                    h("span", { style: { fontFamily: "'SF Mono', Consolas, monospace", fontWeight: 700, color: "#4ade80" } }, Math.round(hoverAvg.val) + " m/j")
+                  ) : null
+                ) : null
+              )
+            );
+          }()),
 
           // ─ Section 2 : Pannes potentielles ─
           h("div", { style: sectionStyle },
