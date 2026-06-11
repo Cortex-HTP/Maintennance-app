@@ -18000,34 +18000,39 @@
 
       var chantier = chantiersActifs.find(function(c) { return String(c.id) === String(selectedId); }) || chantiersActifs[0];
 
-      // ─ Fetch meteo Open-Meteo (avec timeout + diagnostic) ─
+      // ─ Fetch meteo via proxy server-side (employes-psi/api/meteo) ─
+      // Pourquoi un proxy : api.open-meteo.com est parfois bloque par
+      // des AdBlockers / extensions reseau. Le proxy server-side
+      // (Vercel) est invisible pour les bloqueurs.
       useEffect(function() {
         if (!chantier || chantier.latitude == null || chantier.longitude == null) {
           setMeteo(null); setMeteoErr(null); setMeteoLoading(false); return;
         }
         setMeteoLoading(true); setMeteoErr(null); setMeteo(null);
-        var url = "https://api.open-meteo.com/v1/forecast?latitude=" + chantier.latitude + "&longitude=" + chantier.longitude + "&daily=precipitation_sum,temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max&timezone=auto&forecast_days=14";
+        var url = "https://employes-psi.vercel.app/api/meteo?lat=" + chantier.latitude + "&lon=" + chantier.longitude;
         var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
         var tid = setTimeout(function() {
           if (ctrl) ctrl.abort();
-          setMeteoErr("Timeout (15 s sans reponse). Verifie ta connexion ou ton bloqueur de pub.");
+          setMeteoErr("Timeout (15 s sans reponse). Verifie ta connexion.");
           setMeteoLoading(false);
         }, 15000);
         fetch(url, ctrl ? { signal: ctrl.signal } : {}).then(function(r) {
-          if (!r.ok) throw new Error("HTTP " + r.status);
+          if (!r.ok) {
+            return r.json().then(function(j) { throw new Error("HTTP " + r.status + " : " + (j && j.error ? j.error : "?")); }).catch(function() { throw new Error("HTTP " + r.status); });
+          }
           return r.json();
         }).then(function(data) {
           clearTimeout(tid);
           if (!data || !data.daily) {
-            setMeteoErr("Reponse meteo invalide : " + JSON.stringify(data).substring(0, 200));
+            setMeteoErr("Reponse meteo invalide.");
             setMeteoLoading(false);
             return;
           }
           setMeteo(data); setMeteoLoading(false);
         }).catch(function(e) {
           clearTimeout(tid);
-          if (e.name === "AbortError") return; // timeout deja gere
-          setMeteoErr((e.message || "Erreur reseau") + " (url=" + url.substring(0, 80) + "...)");
+          if (e.name === "AbortError") return;
+          setMeteoErr(e.message || "Erreur reseau");
           setMeteoLoading(false);
         });
         return function() { clearTimeout(tid); if (ctrl) ctrl.abort(); };
