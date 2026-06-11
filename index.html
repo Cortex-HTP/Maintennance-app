@@ -18000,18 +18000,37 @@
 
       var chantier = chantiersActifs.find(function(c) { return String(c.id) === String(selectedId); }) || chantiersActifs[0];
 
-      // ─ Fetch meteo Open-Meteo ─
+      // ─ Fetch meteo Open-Meteo (avec timeout + diagnostic) ─
       useEffect(function() {
         if (!chantier || chantier.latitude == null || chantier.longitude == null) {
-          setMeteo(null); setMeteoErr(null); return;
+          setMeteo(null); setMeteoErr(null); setMeteoLoading(false); return;
         }
-        setMeteoLoading(true); setMeteoErr(null);
+        setMeteoLoading(true); setMeteoErr(null); setMeteo(null);
         var url = "https://api.open-meteo.com/v1/forecast?latitude=" + chantier.latitude + "&longitude=" + chantier.longitude + "&daily=precipitation_sum,temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max&timezone=auto&forecast_days=14";
-        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+        var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+        var tid = setTimeout(function() {
+          if (ctrl) ctrl.abort();
+          setMeteoErr("Timeout (15 s sans reponse). Verifie ta connexion ou ton bloqueur de pub.");
+          setMeteoLoading(false);
+        }, 15000);
+        fetch(url, ctrl ? { signal: ctrl.signal } : {}).then(function(r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        }).then(function(data) {
+          clearTimeout(tid);
+          if (!data || !data.daily) {
+            setMeteoErr("Reponse meteo invalide : " + JSON.stringify(data).substring(0, 200));
+            setMeteoLoading(false);
+            return;
+          }
           setMeteo(data); setMeteoLoading(false);
         }).catch(function(e) {
-          setMeteoErr(e.message || "Erreur meteo"); setMeteoLoading(false);
+          clearTimeout(tid);
+          if (e.name === "AbortError") return; // timeout deja gere
+          setMeteoErr((e.message || "Erreur reseau") + " (url=" + url.substring(0, 80) + "...)");
+          setMeteoLoading(false);
         });
+        return function() { clearTimeout(tid); if (ctrl) ctrl.abort(); };
       }, [chantier && chantier.id, chantier && chantier.latitude, chantier && chantier.longitude]);
 
       // ─ Helpers metier ─
@@ -18219,16 +18238,61 @@
       var cardStyle = { background: "rgba(255,255,255,0.04)", padding: 14, borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" };
 
       // ─ Render ─
+      // Helper : KPI tile (gradient, gros chiffre, icone, hint)
+      function KpiTile(opts) {
+        return h("div", {
+          style: {
+            background: opts.gradient || "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))",
+            border: "1px solid " + (opts.border || "rgba(99,102,241,0.30)"),
+            borderRadius: 14,
+            padding: "16px 18px",
+            position: "relative",
+            overflow: "hidden",
+            minHeight: 110,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }
+        },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            h("div", { style: { width: 28, height: 28, borderRadius: 8, background: opts.iconBg || "rgba(99,102,241,0.25)", display: "flex", alignItems: "center", justifyContent: "center" } },
+              h(Icon, { name: opts.icon || "circle", size: 14, color: opts.iconColor || "#c4b5fd" })
+            ),
+            h("div", { style: { fontSize: 10.5, fontWeight: 700, color: opts.labelColor || "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.6 } }, opts.label)
+          ),
+          h("div", null,
+            h("div", { style: { fontSize: opts.bigSize || 26, fontWeight: 800, color: opts.valueColor || "#fafafa", lineHeight: 1.1, letterSpacing: "-0.02em" } }, opts.value),
+            opts.hint ? h("div", { style: { fontSize: 11, color: opts.hintColor || "#94a3b8", marginTop: 4 } }, opts.hint) : null
+          )
+        );
+      }
+
+      // Helper : jauge circulaire (% completion)
+      function CircleGauge(pct, color) {
+        var p = Math.max(0, Math.min(100, pct));
+        var c = color || (p >= 80 ? "#22c55e" : p >= 50 ? "#fbbf24" : "#a5b4fc");
+        var r = 36, cx = 44, cy = 44;
+        var circ = 2 * Math.PI * r;
+        var offset = circ * (1 - p / 100);
+        return h("svg", { width: 88, height: 88, viewBox: "0 0 88 88" },
+          h("circle", { cx: cx, cy: cy, r: r, stroke: "rgba(255,255,255,0.08)", strokeWidth: 8, fill: "none" }),
+          h("circle", { cx: cx, cy: cy, r: r, stroke: c, strokeWidth: 8, fill: "none", strokeDasharray: circ, strokeDashoffset: offset, strokeLinecap: "round", transform: "rotate(-90 " + cx + " " + cy + ")", style: { transition: "stroke-dashoffset 0.5s" } }),
+          h("text", { x: cx, y: cy + 5, textAnchor: "middle", fill: "#fafafa", fontSize: 18, fontWeight: 800 }, Math.round(p) + "%")
+        );
+      }
+
+      var avancementPct = chantier && chantier.metrage > 0 ? (data ? (data.realise / chantier.metrage * 100) : 0) : 0;
+
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "trending-up", size: 20 }, "Previsionnel"), subtitle: "Anticipation chantier : KPIs, pannes, meteo, recommandations" }),
 
         // Selecteur chantier
-        h("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" } },
           h("label", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600 } }, "Chantier :"),
           h("select", {
             value: selectedId || "",
             onChange: function(e) { setSelectedId(e.target.value); },
-            style: { padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.08)", fontSize: 13, fontFamily: "inherit", minWidth: 240 }
+            style: { padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.10)", fontSize: 13.5, fontFamily: "inherit", minWidth: 260, fontWeight: 600 }
           },
             chantiersActifs.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre + " (" + c.statut + ")"); })
           )
@@ -18237,41 +18301,83 @@
         !chantier ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Aucun chantier disponible.")
         : !data ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Donnees insuffisantes.")
         : h("div", null,
-          // ─ Section 1 : KPIs ─
-          h("div", { style: sectionStyle },
-            h("div", { style: sectionTitle }, h(Icon, { name: "bar-chart-3", size: 16, color: "#c4b5fd" }), "Indicateurs previsionnels"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 } },
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Realise"),
-                h("div", { style: kpiVal }, fmtNum(Math.round(data.realise)) + " m"),
-                h("div", { style: kpiHint }, chantier.metrage > 0 ? Math.round(data.realise / chantier.metrage * 100) + " % de l'objectif" : "")
+          // ─ HERO : carte chantier (titre + jauge + barre santé) ─
+          h("div", {
+            style: {
+              background: "linear-gradient(135deg, rgba(99,102,241,0.22) 0%, rgba(192,132,252,0.12) 50%, rgba(34,197,94,0.10) 100%)",
+              border: "1px solid rgba(192,132,252,0.30)",
+              borderRadius: 16,
+              padding: 20,
+              marginBottom: 18,
+              boxShadow: "0 8px 32px rgba(99,102,241,0.15)",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 24,
+              justifyContent: "space-between"
+            }
+          },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 18, flex: "1 1 auto" } },
+              CircleGauge(avancementPct, avancementPct >= 80 ? "#22c55e" : avancementPct >= 50 ? "#a78bfa" : "#fbbf24"),
+              h("div", null,
+                h("div", { style: { fontSize: 11, fontWeight: 700, color: "#c4b5fd", letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 4 } }, "Chantier"),
+                h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fafafa", marginBottom: 2, letterSpacing: "-0.01em" } }, chantier.titre),
+                h("div", { style: { fontSize: 12.5, color: "#a5b4fc", display: "flex", gap: 12, flexWrap: "wrap" } },
+                  h("span", null, chantier.dateDebut ? new Date(chantier.dateDebut).toLocaleDateString("fr-FR") : "?", " → ", chantier.dateFin ? new Date(chantier.dateFin).toLocaleDateString("fr-FR") : "?"),
+                  h("span", { style: { color: "#86efac" } }, "Site : " + (chantier.site || "—")),
+                  h("span", { style: { color: "#fde68a" } }, chantier.statut)
+                )
+              )
+            ),
+            h("div", { style: { display: "flex", gap: 18, flexWrap: "wrap" } },
+              h("div", { style: { textAlign: "right" } },
+                h("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 2 } }, "Realise"),
+                h("div", { style: { fontSize: 18, fontWeight: 800, color: "#86efac" } }, fmtNum(Math.round(data.realise)) + " m")
               ),
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Reste a forer"),
-                h("div", { style: kpiVal }, fmtNum(Math.round(data.metresRestants)) + " m"),
-                h("div", { style: kpiHint }, "CA restant : " + fmtMoney(data.metresRestants * (chantier.prixMetre || 0)))
+              h("div", { style: { textAlign: "right" } },
+                h("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 2 } }, "Reste"),
+                h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fde68a" } }, fmtNum(Math.round(data.metresRestants)) + " m")
               ),
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Vitesse actuelle 14j"),
-                h("div", { style: kpiVal }, fmtNum(Math.round(data.vitesse14j)) + " m/jour"),
-                h("div", { style: kpiHint }, fmtNum(Math.round(data.vitesseParMachine)) + " m/j/machine" + (data.jSolo >= 3 ? " (solo)" : ""))
-              ),
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Cadence requise"),
-                h("div", { style: Object.assign({}, kpiVal, { color: data.cadenceRequise && data.cadenceRequise > data.vitesse14j ? "#fde68a" : "#86efac" }) }, data.cadenceRequise !== null ? fmtNum(Math.round(data.cadenceRequise)) + " m/jour" : "—"),
-                h("div", { style: kpiHint }, "apres " + Math.round(data.tauxAbsence * 100) + " % d'absences hist.")
-              ),
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Machines requises"),
-                h("div", { style: Object.assign({}, kpiVal, { color: data.nbMachinesEntier > Math.ceil(data.moyMachinesRecent) ? "#fde68a" : "#86efac" }) }, data.nbMachinesExact !== null ? data.nbMachinesExact.toFixed(2) : "—"),
-                h("div", { style: kpiHint }, data.nbMachinesEntier ? "min " + data.nbMachinesEntier + " machine(s) a maintenir" : "")
-              ),
-              h("div", { style: kpiStyle },
-                h("div", { style: kpiLbl }, "Fin estimee"),
-                h("div", { style: Object.assign({}, kpiVal, { color: data.decalageJ > 5 ? "#fda4af" : data.decalageJ < -5 ? "#86efac" : "#fde68a" }) }, data.projectionImpossible ? "—" : data.dateFinEst.toLocaleDateString("fr-FR")),
-                h("div", { style: kpiHint }, data.decalageJ !== null ? (data.decalageJ >= 0 ? "+" + data.decalageJ : data.decalageJ) + " j ouvres vs contrat" : "projection impossible")
+              h("div", { style: { textAlign: "right" } },
+                h("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 2 } }, "CA restant"),
+                h("div", { style: { fontSize: 18, fontWeight: 800, color: "#93c5fd" } }, fmtMoney(data.metresRestants * (chantier.prixMetre || 0)))
               )
             )
+          ),
+
+          // ─ Section 1 : KPIs visuels ─
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 18 } },
+            KpiTile({
+              icon: "zap", iconBg: "rgba(168,85,247,0.25)", iconColor: "#d8b4fe",
+              label: "Vitesse actuelle", gradient: "linear-gradient(135deg, rgba(168,85,247,0.15), rgba(168,85,247,0.04))", border: "rgba(168,85,247,0.30)",
+              value: fmtNum(Math.round(data.vitesse14j)) + " m/j",
+              hint: fmtNum(Math.round(data.vitesseParMachine)) + " m/j par machine" + (data.jSolo >= 3 ? " (mesure solo)" : "")
+            }),
+            KpiTile({
+              icon: "gauge", iconBg: "rgba(251,191,36,0.25)", iconColor: "#fde68a",
+              label: "Cadence requise", gradient: "linear-gradient(135deg, rgba(251,191,36,0.15), rgba(251,191,36,0.04))", border: "rgba(251,191,36,0.30)",
+              value: data.cadenceRequise !== null ? fmtNum(Math.round(data.cadenceRequise)) + " m/j" : "—",
+              valueColor: data.cadenceRequise && data.cadenceRequise > data.vitesse14j ? "#fde68a" : "#86efac",
+              hint: "apres " + Math.round(data.tauxAbsence * 100) + " % d'absences hist."
+            }),
+            KpiTile({
+              icon: "settings", iconBg: "rgba(99,102,241,0.30)", iconColor: "#c4b5fd",
+              label: "Machines requises", gradient: "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.04))", border: "rgba(99,102,241,0.30)",
+              value: data.nbMachinesExact !== null ? data.nbMachinesExact.toFixed(2) : "—",
+              valueColor: data.nbMachinesEntier > Math.ceil(data.moyMachinesRecent) ? "#fde68a" : "#86efac",
+              hint: data.nbMachinesEntier ? "min " + data.nbMachinesEntier + " machine(s)" : ""
+            }),
+            KpiTile({
+              icon: "calendar-check", iconBg: data.decalageJ > 5 ? "rgba(244,63,94,0.25)" : data.decalageJ < -5 ? "rgba(34,197,94,0.25)" : "rgba(99,102,241,0.25)",
+              iconColor: data.decalageJ > 5 ? "#fda4af" : data.decalageJ < -5 ? "#86efac" : "#c4b5fd",
+              label: "Fin estimee",
+              gradient: data.decalageJ > 5 ? "linear-gradient(135deg, rgba(244,63,94,0.15), rgba(244,63,94,0.04))" : data.decalageJ < -5 ? "linear-gradient(135deg, rgba(34,197,94,0.15), rgba(34,197,94,0.04))" : "linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.04))",
+              border: data.decalageJ > 5 ? "rgba(244,63,94,0.30)" : data.decalageJ < -5 ? "rgba(34,197,94,0.30)" : "rgba(99,102,241,0.30)",
+              value: data.projectionImpossible ? "—" : data.dateFinEst.toLocaleDateString("fr-FR"),
+              bigSize: 20,
+              valueColor: data.decalageJ > 5 ? "#fda4af" : data.decalageJ < -5 ? "#86efac" : "#fafafa",
+              hint: data.decalageJ !== null ? (data.decalageJ >= 0 ? "+" + data.decalageJ : data.decalageJ) + " j ouvres vs contrat" : "projection impossible"
+            })
           ),
 
           // ─ Section 2 : Pannes potentielles ─
