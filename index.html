@@ -9152,6 +9152,9 @@
                     }
                     var today = new Date();
                     today.setHours(0, 0, 0, 0);
+                    var dDeb = chantier.dateDebut ? new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00") : today;
+                    var saisiesChantier = (ctxAv.dbSaisies && ctxAv.dbSaisies[chantier.id]) ? ctxAv.dbSaisies[chantier.id] : {};
+                    var EXCLUDED_TYPES_PROJ = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1 };
                     // ─ Vitesse moyenne sur les 14 derniers jours productifs (Lun-Jeu) ─
                     // Recolte aussi le nb de machines actives chaque jour pour normaliser.
                     function isoOfDate(dd) {
@@ -9167,7 +9170,12 @@
                       if (!machinesByDateFut[d]) machinesByDateFut[d] = {};
                       machinesByDateFut[d][mk] = 1;
                     });
+                    // ── Vitesse par machine SEPAREE selon le nb de machines actives ──
+                    // On separe les jours-1-machine des jours-2+machines pour avoir
+                    // une vitesse_par_machine plus precise (sans melanger les regimes).
                     var totalMet = 0, nbJoursActifs = 0, sumMachinesRecent = 0;
+                    var metSolo = 0, jSolo = 0;        // jours avec 1 seule machine
+                    var metMulti = 0, machinesMulti = 0; // jours avec 2+ machines (poids = nb machines)
                     var cursor = new Date(today.getTime());
                     var safe = 0;
                     while (nbJoursActifs < 14 && safe < 80) {
@@ -9180,14 +9188,54 @@
                           totalMet += v;
                           nbJoursActifs++;
                           var ms = machinesByDateFut[dStr];
-                          sumMachinesRecent += (ms ? Object.keys(ms).length : 1);
+                          var nbM = ms ? Object.keys(ms).length : 1;
+                          sumMachinesRecent += nbM;
+                          if (nbM <= 1) { metSolo += v; jSolo++; }
+                          else { metMulti += v; machinesMulti += nbM; }
                         }
                       }
                       safe++;
                     }
                     var vitesse14j = nbJoursActifs > 0 ? totalMet / nbJoursActifs : 0;
                     var moyMachinesRecent = nbJoursActifs > 0 ? (sumMachinesRecent / nbJoursActifs) : 1;
-                    var vitesseParMachine = moyMachinesRecent > 0 ? (vitesse14j / moyMachinesRecent) : 0;
+                    // Vitesse par machine : on prefere la mesure pure des jours solo
+                    // (1 machine seule -> metrage_jour = vitesse_pure_machine).
+                    // Si pas assez de jours solo, fallback sur la moyenne globale.
+                    var vitesseParMachineSolo = jSolo > 0 ? (metSolo / jSolo) : null;
+                    var vitesseParMachineMulti = machinesMulti > 0 ? (metMulti / machinesMulti) : null;
+                    var vitesseParMachine;
+                    if (vitesseParMachineSolo !== null && jSolo >= 3) {
+                      vitesseParMachine = vitesseParMachineSolo;
+                    } else if (vitesseParMachineMulti !== null) {
+                      vitesseParMachine = vitesseParMachineMulti;
+                    } else {
+                      vitesseParMachine = moyMachinesRecent > 0 ? (vitesse14j / moyMachinesRecent) : 0;
+                    }
+
+                    // ── Taux d'absence historique (feries / intemperies / pannes
+                    //    / maintenances / arrets / non_productif / conge / chomage
+                    //    / maladie) -> applique aux jours futurs pour realisme ──
+                    var joursOuvresPasses = 0;
+                    var joursAbsentsPasses = 0;
+                    (function() {
+                      var dPast = new Date(dDeb.getTime());
+                      var safeP = 0;
+                      while (dPast < today && safeP < 4000) {
+                        var dowP = dPast.getDay();
+                        if (dowP >= 1 && dowP <= 4) {
+                          joursOuvresPasses++;
+                          var isoP = isoOfDate(dPast);
+                          var sP = saisiesChantier[isoP];
+                          if (sP) {
+                            var tP = (typeof sP === "object" && sP !== null) ? (sP.typeJour || sP.type || "") : "";
+                            if (EXCLUDED_TYPES_PROJ[tP]) joursAbsentsPasses++;
+                          }
+                        }
+                        dPast.setDate(dPast.getDate() + 1);
+                        safeP++;
+                      }
+                    })();
+                    var tauxAbsence = joursOuvresPasses > 0 ? (joursAbsentsPasses / joursOuvresPasses) : 0;
                     if (vitesse14j === 0) {
                       return h("div", { style: { background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12.5, color: "#fde68a" } },
                         h("strong", null, "Previsionnel indisponible : "), "aucun jour productif sur les 14 derniers Lun-Jeu pour ce chantier. Ajoute des saisies pour activer la projection."
@@ -9339,7 +9387,10 @@
                             safeC++;
                           }
                           if (joursOuvresRestantsContrat > 0) {
-                            cadenceRequise = metresRestants / joursOuvresRestantsContrat;
+                            // Applique le taux d'absence historique : on s'attend a perdre
+                            // tauxAbsence x jours_restants pour des feries/intemperies/pannes/etc.
+                            var joursEffectifsRestants = joursOuvresRestantsContrat * (1 - tauxAbsence);
+                            cadenceRequise = metresRestants / Math.max(1, joursEffectifsRestants);
                             nbMachinesMoyenFutur = sumMach / joursOuvresRestantsContrat;
                             if (nbMachinesMoyenFutur > 0) {
                               cadenceParMachine = cadenceRequise / nbMachinesMoyenFutur;
@@ -9395,7 +9446,12 @@
                       ),
                       // Grid KPIs previsionnels
                       h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, fontSize: 12 } },
-                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 }, title: "Vitesse moyenne des 14 derniers jours productifs (Lun-Jeu).\nVitesse par machine : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine\nMoyenne machines recentes : " + moyMachinesRecent.toFixed(1) },
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 }, title: "Vitesse moyenne des 14 derniers jours productifs (Lun-Jeu).\n" +
+                          "Vitesse par machine : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine\n" +
+                          (jSolo >= 3 ? "  -> mesuree sur " + jSolo + " jours avec 1 seule machine" : "  -> mesuree en repartissant les jours multi-machines") + "\n" +
+                          (jSolo > 0 ? "Jours-solo (1 machine) : " + jSolo + " j, vitesse = " + fmtNum(Math.round(vitesseParMachineSolo || 0)) + " m/j\n" : "") +
+                          (machinesMulti > 0 ? "Jours-multi (>=2 machines) : " + (nbJoursActifs - jSolo) + " j, vitesse/machine = " + fmtNum(Math.round(vitesseParMachineMulti || 0)) + " m/j\n" : "") +
+                          "Moyenne machines recentes : " + moyMachinesRecent.toFixed(1) },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Vitesse 14j"),
                           h("div", { style: { fontWeight: 700, fontSize: 14, color: "#a5b4fc" } }, fmtNum(Math.round(vitesse14j)) + " m/jour"),
                           h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, fmtNum(Math.round(vitesseParMachine)) + " m / machine")
@@ -9408,9 +9464,11 @@
                         // ── Cadence requise pour tenir la deadline contractuelle ──
                         cadenceRequise !== null ? h("div", {
                           style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 },
-                          title: "Combien de metres / jour ouvre il faut produire pour finir avant la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
+                          title: "Combien de metres / jour productif il faut produire pour finir avant la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
                             "- Metres restants : " + fmtNum(Math.round(metresRestants)) + " m\n" +
-                            "- Jours ouvres restants jusqu'a la date contrat : " + joursOuvresRestantsContrat + " j\n" +
+                            "- Jours ouvres restants jusqu'a date contrat : " + joursOuvresRestantsContrat + " j (Lun-Jeu bruts)\n" +
+                            "- Taux d'absence historique : " + Math.round(tauxAbsence * 100) + "% (feries/intemperies/pannes/arrets observes sur le chantier)\n" +
+                            "- Jours productifs effectifs estimes : " + Math.round(joursOuvresRestantsContrat * (1 - tauxAbsence)) + " j\n" +
                             "- Machines moyenne prevues d'ici la fin : " + nbMachinesMoyenFutur.toFixed(1) + "\n" +
                             "- Vitesse actuelle 14j : " + fmtNum(Math.round(vitesse14j)) + " m/jour\n" +
                             (cadenceCommentaire ? "Statut : " + cadenceCommentaire : "")
@@ -9424,8 +9482,8 @@
                           style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 },
                           title: "Nombre de sondeuses a maintenir d'ici la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
                             "Formule : ceil(cadence_requise / vitesse_par_machine)\n" +
-                            "- Cadence requise : " + fmtNum(Math.round(cadenceRequise)) + " m/jour\n" +
-                            "- Vitesse par machine (14j) : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine\n" +
+                            "- Cadence requise : " + fmtNum(Math.round(cadenceRequise)) + " m/jour productif (apres deduction " + Math.round(tauxAbsence * 100) + "% d'absences historiques)\n" +
+                            "- Vitesse par machine : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine " + (jSolo >= 3 ? "(mesuree sur " + jSolo + " jours solo)" : "(moyenne ponderee)") + "\n" +
                             "- Valeur exacte (decimale) : " + nbMachinesRequisesExact.toFixed(2) + "\n" +
                             (machinesCommentaire ? "Statut : " + machinesCommentaire : "")
                         },
