@@ -8938,24 +8938,65 @@
                   }
                   return n;
                 }
+                // Helper : compte les "jours-machine" Lun-Jeu entre 2 dates,
+                // en ponderant chaque jour par le nb de machines affectees au
+                // chantier (chantier_equipements). Si pas d'affectation : 1 par defaut.
+                var chantierEquipsAll = ctxAv.dbChantierEquipements || [];
+                var ceForThis = chantierEquipsAll.filter(function(ce) {
+                  return String(ce.chantierId) === String(chantier.id);
+                });
+                var hasCe = ceForThis.length > 0;
+                function countJoursMachine(d1, d2) {
+                  var n = 0, safe = 0;
+                  var cur = new Date(d1.getTime());
+                  while (cur.getTime() <= d2.getTime() && safe < 5000) {
+                    var dow = cur.getDay();
+                    if (dow >= 1 && dow <= 4) {
+                      var dStr = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+                      var nbMach = 0;
+                      ceForThis.forEach(function(ce) {
+                        var dd = (ce.dateDebut || "").substring(0, 10);
+                        var df = (ce.dateFin || "").substring(0, 10);
+                        if (dd && dStr < dd) return;
+                        if (df && dStr > df) return;
+                        nbMach++;
+                      });
+                      if (!hasCe) nbMach = 1; // fallback : 1 machine
+                      n += nbMach;
+                    }
+                    cur.setDate(cur.getDate() + 1);
+                    safe++;
+                  }
+                  return n;
+                }
+                var totalJoursMachine = countJoursMachine(start, end);
+                if (totalJoursMachine === 0) return { total: null, mois: null };
+                // Objectif par jour-machine = metrage / total_jours_machine_contractuels
+                var objectifParJourMachine = chantier.metrage / totalJoursMachine;
+                // Garde l'objectif/jour "nominal" pour info dans le tooltip (sur 1 machine)
                 var totalJoursOuvres = countLunJeu(start, end);
-                if (totalJoursOuvres === 0) return { total: null, mois: null };
-                var objectifJour = chantier.metrage / totalJoursOuvres;
+                var objectifJour = chantier.metrage / Math.max(totalJoursOuvres, 1);
 
-                // ── Avance globale (depuis dateDebut jusqu'a min(today, dateFin)) ──
+                // ── Avance globale (depuis date_ref jusqu'a min(today, dateFin)) ──
                 var today = new Date();
                 today.setHours(0, 0, 0, 0);
                 var dateRefGlobal = today < end ? today : end;
                 var totalInfo = null;
                 if (dateRefGlobal >= start) {
                   var joursEcoules = countLunJeu(start, dateRefGlobal);
-                  var attendu = objectifJour * joursEcoules;
+                  var joursMachineEcoules = countJoursMachine(start, dateRefGlobal);
+                  // Attendu = nb jours-machine ecoules × objectif par jour-machine
+                  var attendu = objectifParJourMachine * joursMachineEcoules;
                   totalInfo = {
                     avance: realise - attendu,
                     attendu: attendu,
                     objectifJour: objectifJour,
+                    objectifParJourMachine: objectifParJourMachine,
                     joursOuvresEcoules: joursEcoules,
-                    totalJoursOuvres: totalJoursOuvres
+                    joursMachineEcoules: joursMachineEcoules,
+                    totalJoursOuvres: totalJoursOuvres,
+                    totalJoursMachine: totalJoursMachine,
+                    hasCe: hasCe
                   };
                 }
 
@@ -8975,12 +9016,16 @@
                   if (today >= effStart && today < effEnd) dateRefMois = today;
                   if (dateRefMois >= effStart) {
                     var joursMois = countLunJeu(effStart, dateRefMois);
-                    var attenduMois = objectifJour * joursMois;
+                    var joursMachineMois = countJoursMachine(effStart, dateRefMois);
+                    var attenduMois = objectifParJourMachine * joursMachineMois;
                     moisInfo = {
                       avance: monthMet - attenduMois,
                       attendu: attenduMois,
                       objectifJour: objectifJour,
-                      joursOuvresMois: joursMois
+                      objectifParJourMachine: objectifParJourMachine,
+                      joursOuvresMois: joursMois,
+                      joursMachineMois: joursMachineMois,
+                      hasCe: hasCe
                     };
                   }
                 }
@@ -9007,11 +9052,11 @@
                       h("span", { style: { marginRight: 8 } }, "Mois : " + fmtNum(monthMet) + " m"),
                       h("span", { style: { marginRight: 8 } }, "Reste : " + fmtNum(remaining) + " m"),
                       avanceMoisInfo ? h("span", {
-                        title: "Objectif " + Math.round(avanceMoisInfo.objectifJour) + " m/jour ouvre (4j/semaine, Lun-Jeu). Attendu sur ce mois a ce jour : " + Math.round(avanceMoisInfo.attendu) + " m sur " + avanceMoisInfo.joursOuvresMois + " jours ouvres du mois.",
+                        title: "Objectif " + Math.round(avanceMoisInfo.objectifParJourMachine) + " m/jour-machine (sur " + Math.round(avanceMoisInfo.objectifJour) + " m/jour nominal a 1 machine).\nAttendu sur ce mois : " + Math.round(avanceMoisInfo.attendu) + " m calcule sur " + avanceMoisInfo.joursMachineMois + " jours-machine (" + avanceMoisInfo.joursOuvresMois + " jours Lun-Jeu x machines actives)." + (avanceMoisInfo.hasCe ? "" : "\n[Aucune affectation machine trouvee : compte 1 machine par defaut]"),
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceMoisInfo.avance >= 0 ? "#86efac" : "#fda4af" }
                       }, "Mois " + (avanceMoisInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceMoisInfo.avance)) + " m") : null,
                       avanceInfo ? h("span", {
-                        title: "Objectif " + Math.round(avanceInfo.objectifJour) + " m/jour ouvre (4j/semaine, Lun-Jeu). Attendu a ce jour : " + Math.round(avanceInfo.attendu) + " m sur " + avanceInfo.joursOuvresEcoules + " jours ecoules sur " + avanceInfo.totalJoursOuvres + " jours du chantier.",
+                        title: "Objectif " + Math.round(avanceInfo.objectifParJourMachine) + " m/jour-machine (sur " + Math.round(avanceInfo.objectifJour) + " m/jour nominal a 1 machine).\nAttendu a ce jour : " + Math.round(avanceInfo.attendu) + " m sur " + avanceInfo.joursMachineEcoules + " jours-machine ecoules (= " + avanceInfo.joursOuvresEcoules + " jours Lun-Jeu x machines actives) sur " + avanceInfo.totalJoursMachine + " jours-machine contractuels." + (avanceInfo.hasCe ? "" : "\n[Aucune affectation machine trouvee : compte 1 machine par defaut]"),
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceInfo.avance >= 0 ? "#86efac" : "#fda4af" }
                       }, "Total " + (avanceInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceInfo.avance)) + " m") : null
                     ),
