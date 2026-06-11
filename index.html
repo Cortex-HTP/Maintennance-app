@@ -9283,6 +9283,52 @@
                       healthMsg = "Rentabilite a risque (" + margePct + "% de marge prevue)";
                       healthDetail = "Marge prevue faible. Revoir les depenses ou negocier le prix metre.";
                     }
+
+                    // ─ Cadence requise : combien de m/jour faut-il faire pour
+                    //   tenir la date de fin contractuelle ? ─
+                    // cadenceTotale = metres_restants / jours_ouvres_restants_contractuels
+                    // cadenceParMachine = cadenceTotale / nb_machines_moyen_planifie_a_venir
+                    var cadenceRequise = null;
+                    var cadenceParMachine = null;
+                    var joursOuvresRestantsContrat = 0;
+                    var nbMachinesMoyenFutur = 0;
+                    if (chantier.dateFin) {
+                      try {
+                        var dContractFin = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
+                        if (today <= dContractFin) {
+                          var cur = new Date(today.getTime());
+                          var sumMach = 0;
+                          var safeC = 0;
+                          while (cur < dContractFin && safeC < 1000) {
+                            cur.setDate(cur.getDate() + 1);
+                            var dowC = cur.getDay();
+                            if (dowC >= 1 && dowC <= 4) {
+                              joursOuvresRestantsContrat++;
+                              var nbM = useFallback ? moyMachinesRecent : nbMachinesPlanifieesLeJour(cur);
+                              sumMach += (nbM > 0 ? nbM : 0);
+                            }
+                            safeC++;
+                          }
+                          if (joursOuvresRestantsContrat > 0) {
+                            cadenceRequise = metresRestants / joursOuvresRestantsContrat;
+                            nbMachinesMoyenFutur = sumMach / joursOuvresRestantsContrat;
+                            if (nbMachinesMoyenFutur > 0) {
+                              cadenceParMachine = cadenceRequise / nbMachinesMoyenFutur;
+                            }
+                          }
+                        }
+                      } catch (e) {}
+                    }
+                    // Comparaison avec vitesse actuelle pour colorer
+                    var cadenceColor = "#a5b4fc";
+                    var cadenceCommentaire = "";
+                    if (cadenceRequise !== null && vitesse14j > 0) {
+                      var ratio = cadenceRequise / vitesse14j;
+                      if (ratio <= 1.05) { cadenceColor = "#86efac"; cadenceCommentaire = "Tenable au rythme actuel"; }
+                      else if (ratio <= 1.25) { cadenceColor = "#fde68a"; cadenceCommentaire = "Tendu - intensifier"; }
+                      else { cadenceColor = "#fda4af"; cadenceCommentaire = "Hors d'atteinte sans renfort"; }
+                    }
+
                     var healthBg = healthClass === "good" ? "rgba(34,197,94,0.10)" : healthClass === "warn" ? "rgba(245,158,11,0.10)" : "rgba(244,63,94,0.10)";
                     var healthBorder = healthClass === "good" ? "rgba(34,197,94,0.30)" : healthClass === "warn" ? "rgba(245,158,11,0.30)" : "rgba(244,63,94,0.30)";
                     var healthColor = healthClass === "good" ? "#86efac" : healthClass === "warn" ? "#fde68a" : "#fda4af";
@@ -9309,6 +9355,20 @@
                           h("div", { style: { fontWeight: 700, fontSize: 14, color: healthColor } }, joursRestants + " j ouvres"),
                           h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, useFallback ? "rythme actuel" : "selon planning")
                         ),
+                        // ── Cadence requise pour tenir la deadline contractuelle ──
+                        cadenceRequise !== null ? h("div", {
+                          style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 },
+                          title: "Combien de metres / jour ouvre il faut produire pour finir avant la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
+                            "- Metres restants : " + fmtNum(Math.round(metresRestants)) + " m\n" +
+                            "- Jours ouvres restants jusqu'a la date contrat : " + joursOuvresRestantsContrat + " j\n" +
+                            "- Machines moyenne prevues d'ici la fin : " + nbMachinesMoyenFutur.toFixed(1) + "\n" +
+                            "- Vitesse actuelle 14j : " + fmtNum(Math.round(vitesse14j)) + " m/jour\n" +
+                            (cadenceCommentaire ? "Statut : " + cadenceCommentaire : "")
+                        },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Cadence requise"),
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: cadenceColor } }, fmtNum(Math.round(cadenceRequise)) + " m/jour"),
+                          h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, cadenceParMachine !== null ? fmtNum(Math.round(cadenceParMachine)) + " m / machine" : "pour tenir le delai")
+                        ) : null,
                         h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Fin estimee"),
                           h("div", { style: { fontWeight: 700, fontSize: 13.5, color: healthColor } }, dateFinEst.toLocaleDateString("fr-FR"))
