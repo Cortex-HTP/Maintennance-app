@@ -9810,22 +9810,83 @@
                       if (v > maxDayVal) maxDayVal = v;
                     }
                     if (maxDayVal === 0) return null;
+                    // ─ Calcul vitesse moyenne 14 derniers jours productifs (pour previsions) ─
+                    var pTot = 0, pNb = 0, pSumMach = 0;
+                    var pMachByDate = {};
+                    (ctxAv.dbRelevesJourn || []).forEach(function(r) {
+                      if (!r || String(r.chantierId) !== String(chantier.id) || !r.dateReleve) return;
+                      var dk = String(r.dateReleve).substring(0, 10);
+                      var mk = String(r.equipementId || r.sondeuseCode || "_no").toUpperCase().trim();
+                      if (!pMachByDate[dk]) pMachByDate[dk] = {};
+                      pMachByDate[dk][mk] = 1;
+                    });
+                    var pCursor = new Date(today.getTime()); var pSafe = 0;
+                    while (pNb < 14 && pSafe < 80) {
+                      pCursor.setDate(pCursor.getDate() - 1);
+                      var pDow = pCursor.getDay();
+                      if (pDow >= 1 && pDow <= 4) {
+                        var pIso = pCursor.getFullYear() + "-" + String(pCursor.getMonth() + 1).padStart(2, "0") + "-" + String(pCursor.getDate()).padStart(2, "0");
+                        var pV = getDailyMetrageChantier(chantier.id, pIso);
+                        if (pV > 0) {
+                          pTot += pV; pNb++;
+                          var pMs = pMachByDate[pIso];
+                          pSumMach += (pMs ? Object.keys(pMs).length : 1);
+                        }
+                      }
+                      pSafe++;
+                    }
+                    var pVitesse = pNb > 0 ? pTot / pNb : 0;
+                    var pMoyMach = pNb > 0 ? (pSumMach / pNb) : 1;
+                    var pVitParMach = pMoyMach > 0 ? (pVitesse / pMoyMach) : 0;
+                    var pVitQuot = pVitParMach * pMoyMach;
+                    // ─ Calcul previsions futures ajustees meteo ─
+                    var meteoMapBC = meteoByChantier[chantier.id] || {};
+                    var forecastVals = []; // { idx, val, isWE, intemp }
+                    var todayDateNum = today.getDate();
+                    var todayMonth = today.getMonth();
+                    var todayYear = today.getFullYear();
+                    for (var fd = 1; fd <= daysInMonth; fd++) {
+                      var fDate = new Date(year, monthIdx, fd);
+                      // Pas de prevision pour les jours passes ou aujourd'hui (deja sur dayVals)
+                      var isFuture = (fDate.getTime() > today.getTime());
+                      if (!isFuture) { forecastVals.push(null); continue; }
+                      var fDow = fDate.getDay();
+                      var fIsWE = fDow === 0 || fDow === 5 || fDow === 6;
+                      if (fIsWE || pVitQuot <= 0) { forecastVals.push(null); continue; }
+                      var fIso = fDate.getFullYear() + "-" + String(fDate.getMonth() + 1).padStart(2, "0") + "-" + String(fDate.getDate()).padStart(2, "0");
+                      var fMeteo = meteoMapBC[fIso];
+                      var fVal = pVitQuot;
+                      var fIntemp = false;
+                      if (fMeteo) {
+                        fIntemp = (fMeteo.prec || 0) > 15 || (fMeteo.wind || 0) > 60 || (fMeteo.code || 0) >= 95;
+                        if (fIntemp) fVal = 0;
+                        else if ((fMeteo.prec || 0) > 5) fVal = pVitQuot * 0.6;
+                      }
+                      if (fVal > 0) {
+                        forecastVals.push({ idx: fd - 1, val: fVal, intemp: fIntemp, hasMeteo: !!fMeteo });
+                        if (fVal > maxDayVal) maxDayVal = fVal;
+                      } else {
+                        forecastVals.push({ idx: fd - 1, val: 0, intemp: fIntemp, hasMeteo: !!fMeteo });
+                      }
+                    }
                     var barW = Math.max(Math.floor(800 / daysInMonth) - 2, 8);
                     var chartH2 = 120;
                     var topPad = 26; // place pour labels CA semaine
                     var svgW2 = daysInMonth * (barW + 2) + 40;
                     var prixMet = chantier.prixMetre || 0;
-                    // Construction des semaines (lundi -> dimanche)
+                    // Construction des semaines (lundi -> dimanche) - intègre les forecasts au CA
                     var weeksMini = [];
                     var curMW = null;
                     for (var wj = 0; wj < daysInMonth; wj++) {
                       var dwj = new Date(year, monthIdx, wj + 1).getDay();
+                      var weekVal = dayVals[wj] || 0;
+                      if (weekVal === 0 && forecastVals[wj]) weekVal = forecastVals[wj].val;
                       if (curMW === null || dwj === 1) {
                         if (curMW) weeksMini.push(curMW);
-                        curMW = { startIdx: wj, endIdx: wj, caSum: dayVals[wj] * prixMet };
+                        curMW = { startIdx: wj, endIdx: wj, caSum: weekVal * prixMet };
                       } else {
                         curMW.endIdx = wj;
-                        curMW.caSum += dayVals[wj] * prixMet;
+                        curMW.caSum += weekVal * prixMet;
                       }
                     }
                     if (curMW) weeksMini.push(curMW);
@@ -9865,8 +9926,40 @@
                               h("text", { x: x + barW / 2, y: chartH2 + 14, textAnchor: "middle", fontSize: 8, fill: isWE2 ? "#a78bfa" : "#a1a1aa" }, String(idx + 1))
                             );
                           }),
+                          // ─ Barres previsionnelles (jours futurs) ─
+                          // Style : hachures rayees, opacite 0.55, couleur ajustee meteo
+                          // - Vert si meteo OK
+                          // - Bleu si pluie moderee (60%)
+                          // - Rouge sombre si intemperies (0m projete)
+                          h("defs", null,
+                            h("pattern", { id: "fcStripe" + chantier.id, width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" },
+                              h("rect", { width: 6, height: 6, fill: "transparent" }),
+                              h("line", { x1: 0, y1: 0, x2: 0, y2: 6, stroke: "rgba(255,255,255,0.20)", strokeWidth: 1.5 })
+                            )
+                          ),
+                          forecastVals.map(function(fv, idx) {
+                            if (!fv || fv.val <= 0) return null;
+                            var barH = maxDayVal > 0 ? (fv.val / maxDayVal) * (chartH2 - topPad) : 0;
+                            var x = 20 + idx * (barW + 2);
+                            var baseColor = fv.intemp ? "#dc2626" : (fv.hasMeteo ? "#3b82f6" : "#7c3aed");
+                            var lightColor = fv.intemp ? "#fda4af" : (fv.hasMeteo ? "#93c5fd" : "#c4b5fd");
+                            return h("g", { key: "fbar" + idx, style: { opacity: 0.55 } },
+                              // Fond couleur ajustee meteo
+                              h("rect", { x: x, y: chartH2 - barH, width: barW, height: Math.max(barH, 0), rx: 2, fill: lightColor, stroke: baseColor, strokeWidth: 1, strokeDasharray: "2 2" }),
+                              // Surcouche hachuree pour distinguer du reel
+                              h("rect", { x: x, y: chartH2 - barH, width: barW, height: Math.max(barH, 0), rx: 2, fill: "url(#fcStripe" + chantier.id + ")" }),
+                              fv.val > 0 && barH > 14 ? h("text", { x: x + barW / 2, y: chartH2 - barH + 12, textAnchor: "middle", fontSize: 7, fill: "white", fontWeight: 700, opacity: 0.85, fontStyle: "italic" }, Math.round(fv.val)) : null
+                            );
+                          }),
                           h("line", { x1: 18, x2: svgW2 - 2, y1: chartH2, y2: chartH2, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 })
                         )
+                      ),
+                      // Legende barres reelles vs previsionnelles
+                      h("div", { style: { display: "flex", gap: 14, fontSize: 10, color: "#94a3b8", marginTop: 8, flexWrap: "wrap" } },
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#7c3aed" } }), "Réalisé"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#c4b5fd", border: "1px dashed #7c3aed" } }), "Prévision météo OK"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#93c5fd", border: "1px dashed #3b82f6" } }), "Pluie modérée (×0,6)"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#fda4af", border: "1px dashed #dc2626" } }), "Intempéries (perdu)")
                       )
                     );
                   })(),
