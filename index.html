@@ -7554,15 +7554,39 @@
       var roBg = isSpecial ? TYPE_COLORS[typeJour] || "#f59e0b" : val ? "rgba(34,197,94,0.18)" : isWeekend ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.03)";
       var roColor = isSpecial ? "white" : val ? "#86efac" : "#a1a1aa";
       var roBorder = isSpecial ? "1px solid " + (TYPE_COLORS[typeJour] || "#f59e0b") : val ? "1px solid rgba(34,197,94,0.35)" : isWeekend ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.07)";
+      // ─ Meteo overlay : emoji semi-transparent en arriere-plan + teinte de fond
+      var meteoDay = props.meteoDay || null;
+      var meteoBgColor = meteoDay ? meteoBg(meteoDay) : null;
+      var cellBg = meteoBgColor || bgColor;
+      var meteoTitle = meteoDay ? ("Meteo : " + meteoEmoji(meteoDay.code, meteoDay.prec) + " · " + (meteoDay.prec || 0).toFixed(1) + " mm · " + (meteoDay.tMax != null ? Math.round(meteoDay.tMax) + "°C · " : "") + Math.round(meteoDay.wind || 0) + " km/h") : "";
+
       return h("div", {
         onClick: effectiveBrush ? handleBrushClick : undefined,
         onMouseDown: effectiveBrush ? function(e) { e.preventDefault(); if (props.onPaintStart) props.onPaintStart(); handleBrushClick(); } : undefined,
         onMouseEnter: effectiveBrush && props.isPainting ? handleBrushClick : undefined,
-        style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: bgColor, textAlign: "center", cursor: effectiveBrush ? "pointer" : "default" }
+        title: meteoTitle,
+        style: { width: 48, flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)", background: cellBg, textAlign: "center", cursor: effectiveBrush ? "pointer" : "default", position: "relative" }
       },
-        h("div", { title: machineLabel ? "Sondeuse: " + machineLabel : "", style: { height: 14, fontSize: 9, fontWeight: 700, lineHeight: "14px", color: machineLabel ? "#a5b4fc" : "rgba(255,255,255,0.04)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: 0.3 } }, machineLabel || "—"),
-        h("div", { style: { height: 20, fontSize: 9, fontWeight: 600, lineHeight: "20px", color: isWeekend ? "#71717a" : isToday ? "#7c3aed" : "#a1a1aa" } }, dayLetter),
-        h("div", { style: { height: 18, fontSize: 11, fontWeight: 700, lineHeight: "18px", borderBottom: "1px solid rgba(255,255,255,0.07)", color: isToday ? "#7c3aed" : "#e5e7eb" } }, String(dayNum)),
+        // Emoji meteo transparent en arriere-plan
+        meteoDay ? h("div", {
+          style: {
+            position: "absolute",
+            top: 28,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 20,
+            opacity: 0.22,
+            pointerEvents: "none",
+            zIndex: 0
+          }
+        }, meteoEmoji(meteoDay.code, meteoDay.prec)) : null,
+        h("div", { title: machineLabel ? "Sondeuse: " + machineLabel : "", style: { height: 14, fontSize: 9, fontWeight: 700, lineHeight: "14px", color: machineLabel ? "#a5b4fc" : "rgba(255,255,255,0.04)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: 0.3, position: "relative", zIndex: 1 } }, machineLabel || "—"),
+        h("div", { style: { height: 20, fontSize: 9, fontWeight: 600, lineHeight: "20px", color: isWeekend ? "#71717a" : isToday ? "#7c3aed" : "#a1a1aa", position: "relative", zIndex: 1 } }, dayLetter),
+        h("div", { style: { height: 18, fontSize: 11, fontWeight: 700, lineHeight: "18px", borderBottom: "1px solid rgba(255,255,255,0.07)", color: isToday ? "#7c3aed" : "#e5e7eb", position: "relative", zIndex: 1 } }, String(dayNum)),
         readOnly ?
           h("div", { style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center" } },
             isSpecial ? h("div", { style: { position: "absolute", top: -1, left: 2, fontSize: 7, fontWeight: 800, color: TYPE_COLORS[typeJour], textTransform: "uppercase", zIndex: 1 } }, TYPE_LABELS[typeJour]) : null,
@@ -8160,6 +8184,30 @@
       );
     }
 
+    // Mapping weather code -> emoji (Open-Meteo / met.no compatible)
+    function meteoEmoji(code, prec) {
+      var c = code || 0;
+      var p = prec || 0;
+      if (c >= 95) return "⛈";
+      if (c >= 80 || p > 5) return "🌧";
+      if (c >= 71) return "❄";
+      if (c >= 61) return "🌧";
+      if (c >= 51) return "🌦";
+      if (c >= 45) return "🌫";
+      if (c >= 2) return "⛅";
+      if (c >= 1) return "🌤";
+      return "☀";
+    }
+    // Severite d'intemperies pour fond colore (verge si calme, bleu si pluie, violet si orage)
+    function meteoBg(d) {
+      if (!d) return null;
+      if (d.code >= 95) return "rgba(168,85,247,0.18)"; // orage
+      if (d.code >= 80 || (d.prec || 0) > 15) return "rgba(59,130,246,0.20)"; // pluie forte
+      if (d.code >= 61 || (d.prec || 0) > 5) return "rgba(59,130,246,0.12)"; // pluie moderee
+      if ((d.wind || 0) > 60) return "rgba(168,85,247,0.12)"; // vent fort
+      return null;
+    }
+
     // ─── EcranAvancement ────────────────────────────────────────────────
     function EcranAvancement() {
       var ctxAv = useAppData();
@@ -8169,6 +8217,37 @@
       var expandedChantier = _exp[0]; var setExpandedChantier = _exp[1];
       var _showImport = useState(false);
       var showImport = _showImport[0]; var setShowImport = _showImport[1];
+      // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
+      var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
+      // Fetch meteo quand un chantier est deplie (cache local par chantier)
+      useEffect(function() {
+        if (!expandedChantier) return;
+        var chs = ctxAv.dbChantiers || [];
+        var c = chs.find(function(x) { return String(x.id) === String(expandedChantier); });
+        if (!c || c.latitude == null || c.longitude == null) return;
+        if (meteoByChantier[c.id]) return; // deja en cache
+        var url = "https://employes-psi.vercel.app/api/meteo?lat=" + c.latitude + "&lon=" + c.longitude;
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+          if (!data || !data.daily || !data.daily.time) return;
+          var dateMap = {};
+          var t = data.daily.time;
+          for (var i = 0; i < t.length; i++) {
+            dateMap[t[i]] = {
+              code: data.daily.weather_code ? data.daily.weather_code[i] : (data.daily.weathercode ? data.daily.weathercode[i] : 0),
+              prec: data.daily.precipitation_sum ? data.daily.precipitation_sum[i] : 0,
+              wind: data.daily.wind_speed_10m_max ? data.daily.wind_speed_10m_max[i] : 0,
+              tMax: data.daily.temperature_2m_max ? data.daily.temperature_2m_max[i] : null
+            };
+          }
+          setMeteoByChantier(function(prev) {
+            var nm = {};
+            var pk = Object.keys(prev);
+            for (var k = 0; k < pk.length; k++) nm[pk[k]] = prev[pk[k]];
+            nm[c.id] = dateMap;
+            return nm;
+          });
+        }).catch(function() {});
+      }, [expandedChantier]);
       // Cles "${chantierId}_${equipementId}" des lignes machine debloquees pour edition
       var _unlocked = useState({});
       var unlockedMachineRows = _unlocked[0]; var setUnlockedMachineRows = _unlocked[1];
@@ -9588,7 +9667,7 @@
                           KpiTile({
                             icon: "wallet", accent: "#22d3ee",
                             label: "CA restant",
-                            value: fmtNum(Math.round(caRestant / 1000)) + " k",
+                            value: caRestant >= 1000000 ? (caRestant / 1000000).toFixed(1) + " MF" : fmtNum(Math.round(caRestant / 1000)) + " k",
                             valueColor: "#67e8f9",
                             hint: "XPF",
                             badge: "facturer",
@@ -9599,7 +9678,7 @@
                             icon: "trending-up",
                             accent: margePct >= 20 ? "#22c55e" : margePct >= 10 ? "#fbbf24" : "#f43f5e",
                             label: "Marge",
-                            value: coutTotalPrevu > 0 ? fmtNum(Math.round(margeEstimee / 1000)) + " k" : "N/A",
+                            value: coutTotalPrevu > 0 ? (margeEstimee >= 1000000 ? (margeEstimee / 1000000).toFixed(1) + " MF" : fmtNum(Math.round(margeEstimee / 1000)) + " k") : "N/A",
                             valueColor: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af",
                             hint: coutTotalPrevu > 0 ? margePct + " %" : "renseigne dép.",
                             badge: coutTotalPrevu > 0 ? (margePct >= 20 ? "Bonne" : margePct >= 10 ? "Limite" : "Risque") : "—",
@@ -9777,9 +9856,9 @@
                             var isWE = dow === 0 || dow === 6;
                             var isTD = dayOfMonth === todayDate.getDate() && monthIdx === todayDate.getMonth() && year === todayDate.getFullYear();
                             var ds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (dayOfMonth < 10 ? "0" : "") + dayOfMonth;
-                            // Quand plusieurs machines sur le site, on retire le nom de la sondeuse
-                            // au-dessus des jours (l'info est portee par les sous-lignes).
                             var mLabel = (machines.length >= 2) ? "" : findMachineForDate(chantier.id, ds);
+                            var meteoMap = meteoByChantier[chantier.id];
+                            var mDay = meteoMap ? meteoMap[ds] : null;
                             return h(SaisieCell, {
                               key: ds,
                               chantierId: chantier.id,
@@ -9796,7 +9875,8 @@
                               onPaintStart: function() { setChPainting(true); },
                               onBrushApply: propagateBrushToEmployees,
                               readOnly: hasMachines,
-                              overrideValue: hasMachines ? (sumPerDay[dayOfMonth] || 0) : undefined
+                              overrideValue: hasMachines ? (sumPerDay[dayOfMonth] || 0) : undefined,
+                              meteoDay: mDay
                             });
                           }),
                           h("div", { style: { width: 60, flexShrink: 0, borderLeft: "2px solid rgba(255,255,255,0.08)", background: "rgba(34,197,94,0.12)", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" } },
