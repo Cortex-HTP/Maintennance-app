@@ -8258,13 +8258,10 @@
       var showImport = _showImport[0]; var setShowImport = _showImport[1];
       // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
       var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
-      // Fetch meteo quand un chantier est deplie (cache local par chantier)
-      useEffect(function() {
-        if (!expandedChantier) return;
-        var chs = ctxAv.dbChantiers || [];
-        var c = chs.find(function(x) { return String(x.id) === String(expandedChantier); });
+      // Helper de fetch meteo pour 1 chantier (idempotent : skip si deja en cache)
+      function fetchMeteoForChantier(c) {
         if (!c || c.latitude == null || c.longitude == null) return;
-        if (meteoByChantier[c.id]) return; // deja en cache
+        if (meteoByChantier[c.id]) return;
         var url = "https://employes-psi.vercel.app/api/meteo?lat=" + c.latitude + "&lon=" + c.longitude;
         fetch(url).then(function(r) { return r.json(); }).then(function(data) {
           if (!data || !data.daily || !data.daily.time) return;
@@ -8286,6 +8283,22 @@
             return nm;
           });
         }).catch(function() {});
+      }
+      // Pre-fetch meteo pour TOUS les chantiers actifs des le chargement de la
+      // page Avancement (necessaire pour que le chart 'Progression globale'
+      // affiche les previsions ajustees meteo des le premier rendu).
+      useEffect(function() {
+        var chs = ctxAv.dbChantiers || [];
+        var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; });
+        // Throttle leger pour ne pas blaster l'API en parallele (max 4 a la fois)
+        actifs.slice(0, 8).forEach(function(c) { fetchMeteoForChantier(c); });
+      }, [ctxAv.dbChantiers]);
+      // Fetch meteo quand un chantier est deplie (cas chantier sans pre-fetch)
+      useEffect(function() {
+        if (!expandedChantier) return;
+        var chs = ctxAv.dbChantiers || [];
+        var c = chs.find(function(x) { return String(x.id) === String(expandedChantier); });
+        if (c) fetchMeteoForChantier(c);
       }, [expandedChantier]);
       // Cles "${chantierId}_${equipementId}" des lignes machine debloquees pour edition
       var _unlocked = useState({});
