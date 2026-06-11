@@ -8919,49 +8919,64 @@
                 var rapports = (ctxAv.dbRapportsForage || []).filter(function(r) {
                   return r && String(r.chantier_id) === String(chantier.id);
                 });
-                var minutesForationTotal = 0;
-                rapports.forEach(function(r) {
+                // Pour chaque rapport, on essaie 2 sources d'heures dans l'ordre :
+                //  1) Activites avec libelle 'forat'/'forag' (heures de foration pures)
+                //  2) Fallback : r.total_heures (heures totales du rapport, moins precis)
+                function extractHeuresRapport(r) {
+                  if (!r) return { heures: 0, source: "none" };
                   var acts = Array.isArray(r.activites) ? r.activites : [];
+                  var minutesForat = 0;
                   acts.forEach(function(a) {
                     if (!a) return;
                     if (isForation(a.libelle || a.type || a.nom)) {
-                      minutesForationTotal += durMin(a.debut || a.start, a.fin || a.end);
+                      minutesForat += durMin(a.debut || a.start, a.fin || a.end);
                     }
                   });
+                  if (minutesForat > 0) return { heures: minutesForat / 60, source: "foration" };
+                  var tot = parseFloat(r.total_heures);
+                  if (!isNaN(tot) && tot > 0) return { heures: tot, source: "total" };
+                  return { heures: 0, source: "none" };
+                }
+                var heuresTotal = 0;
+                var sourceUsed = "none";
+                rapports.forEach(function(r) {
+                  var h = extractHeuresRapport(r);
+                  heuresTotal += h.heures;
+                  if (h.source === "foration") sourceUsed = "foration";
+                  else if (h.source === "total" && sourceUsed !== "foration") sourceUsed = "total";
                 });
-                var heuresForationTotal = minutesForationTotal / 60;
-                var attenduTotal = heuresForationTotal * VITESSE_NORMATIVE_MH;
+                var attenduTotal = heuresTotal * VITESSE_NORMATIVE_MH;
                 var totalInfo = {
                   avance: realise - attenduTotal,
                   attendu: attenduTotal,
-                  heuresForation: heuresForationTotal,
+                  heuresForation: heuresTotal,
                   vitesseNormative: VITESSE_NORMATIVE_MH,
-                  vitesseReelle: heuresForationTotal > 0 ? (realise / heuresForationTotal) : 0
+                  vitesseReelle: heuresTotal > 0 ? (realise / heuresTotal) : 0,
+                  source: sourceUsed,
+                  nbRapports: rapports.length
                 };
 
                 var year = currentMonth.getFullYear();
                 var monthIdx = currentMonth.getMonth();
                 var monthPrefix = year + "-" + String(monthIdx + 1).padStart(2, "0");
-                var minutesForationMois = 0;
+                var heuresMois = 0;
+                var sourceMois = "none";
                 rapports.forEach(function(r) {
                   var d = String(r.date_rapport || "").substring(0, 7);
                   if (d !== monthPrefix) return;
-                  var acts = Array.isArray(r.activites) ? r.activites : [];
-                  acts.forEach(function(a) {
-                    if (!a) return;
-                    if (isForation(a.libelle || a.type || a.nom)) {
-                      minutesForationMois += durMin(a.debut || a.start, a.fin || a.end);
-                    }
-                  });
+                  var h = extractHeuresRapport(r);
+                  heuresMois += h.heures;
+                  if (h.source === "foration") sourceMois = "foration";
+                  else if (h.source === "total" && sourceMois !== "foration") sourceMois = "total";
                 });
-                var heuresForationMois = minutesForationMois / 60;
-                var attenduMois = heuresForationMois * VITESSE_NORMATIVE_MH;
+                var attenduMois = heuresMois * VITESSE_NORMATIVE_MH;
                 var moisInfo = {
                   avance: monthMet - attenduMois,
                   attendu: attenduMois,
-                  heuresForation: heuresForationMois,
+                  heuresForation: heuresMois,
                   vitesseNormative: VITESSE_NORMATIVE_MH,
-                  vitesseReelle: heuresForationMois > 0 ? (monthMet / heuresForationMois) : 0
+                  vitesseReelle: heuresMois > 0 ? (monthMet / heuresMois) : 0,
+                  source: sourceMois
                 };
 
                 return { total: totalInfo, mois: moisInfo };
@@ -8985,14 +9000,20 @@
                     h("div", { style: { display: "flex", gap: 8, fontSize: 12, marginBottom: 8, flexWrap: "wrap", alignItems: "center" } },
                       h("span", { style: { marginRight: 8 } }, "Mois : " + fmtNum(monthMet) + " m"),
                       h("span", { style: { marginRight: 8 } }, "Reste : " + fmtNum(remaining) + " m"),
-                      avanceMoisInfo && avanceMoisInfo.heuresForation > 0 ? h("span", {
-                        title: "Cible : " + avanceMoisInfo.vitesseNormative + " m/h.\nHeures de foration ce mois : " + avanceMoisInfo.heuresForation.toFixed(1) + " h\nAttendu : " + Math.round(avanceMoisInfo.attendu) + " m (= " + avanceMoisInfo.heuresForation.toFixed(1) + " h x " + avanceMoisInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(monthMet) + " m\nVitesse reelle ce mois : " + avanceMoisInfo.vitesseReelle.toFixed(1) + " m/h",
+                      avanceMoisInfo ? (avanceMoisInfo.heuresForation > 0 ? h("span", {
+                        title: "Cible : " + avanceMoisInfo.vitesseNormative + " m/h.\nHeures " + (avanceMoisInfo.source === "foration" ? "de foration" : "totales (fallback)") + " ce mois : " + avanceMoisInfo.heuresForation.toFixed(1) + " h\nAttendu : " + Math.round(avanceMoisInfo.attendu) + " m (= " + avanceMoisInfo.heuresForation.toFixed(1) + " h x " + avanceMoisInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(monthMet) + " m\nVitesse reelle ce mois : " + avanceMoisInfo.vitesseReelle.toFixed(1) + " m/h",
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceMoisInfo.avance >= 0 ? "#86efac" : "#fda4af" }
-                      }, "Mois " + (avanceMoisInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceMoisInfo.avance)) + " m") : null,
-                      avanceInfo && avanceInfo.heuresForation > 0 ? h("span", {
-                        title: "Cible : " + avanceInfo.vitesseNormative + " m/h.\nHeures de foration totales : " + avanceInfo.heuresForation.toFixed(1) + " h\nAttendu : " + Math.round(avanceInfo.attendu) + " m (= " + avanceInfo.heuresForation.toFixed(1) + " h x " + avanceInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(realise) + " m\nVitesse reelle moyenne : " + avanceInfo.vitesseReelle.toFixed(1) + " m/h",
+                      }, "Mois " + (avanceMoisInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceMoisInfo.avance)) + " m") : h("span", {
+                        title: "Pas de rapport forage avec heures saisies ce mois pour ce chantier.",
+                        style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: "rgba(113,113,122,0.15)", border: "1px solid rgba(113,113,122,0.35)", color: "#a1a1aa" }
+                      }, "Mois : pas de donnees")) : null,
+                      avanceInfo ? (avanceInfo.heuresForation > 0 ? h("span", {
+                        title: "Cible : " + avanceInfo.vitesseNormative + " m/h.\nHeures " + (avanceInfo.source === "foration" ? "de foration" : "totales (fallback)") + " : " + avanceInfo.heuresForation.toFixed(1) + " h (sur " + avanceInfo.nbRapports + " rapports)\nAttendu : " + Math.round(avanceInfo.attendu) + " m (= " + avanceInfo.heuresForation.toFixed(1) + " h x " + avanceInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(realise) + " m\nVitesse reelle moyenne : " + avanceInfo.vitesseReelle.toFixed(1) + " m/h",
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceInfo.avance >= 0 ? "#86efac" : "#fda4af" }
-                      }, "Total " + (avanceInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceInfo.avance)) + " m") : null
+                      }, "Total " + (avanceInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceInfo.avance)) + " m") : h("span", {
+                        title: "Aucun rapport forage avec heures saisies pour ce chantier (" + avanceInfo.nbRapports + " rapports trouves). Verifie que les sondeurs saisissent bien les activites et leurs durees.",
+                        style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: "rgba(113,113,122,0.15)", border: "1px solid rgba(113,113,122,0.35)", color: "#a1a1aa" }
+                      }, "Total : pas de donnees")) : null
                     ),
                     h("div", { style: { width: "100%", height: 10, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden", marginBottom: 4 } },
                       h("div", { style: { width: Math.min(avancement, 100) + "%", height: "100%", background: avancement >= 75 ? "#059669" : avancement >= 50 ? "#d97706" : "#a1a1aa", transition: "width 0.3s" } })
