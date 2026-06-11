@@ -8893,15 +8893,39 @@
 
             // ── Calcul avance / retard sur le metrage attendu (total + mois) ──
             // Objectif quotidien = metrage_total / nb_jours_ouvres (Lun-Jeu = 4j/semaine)
+            // Date de reference = MAX(dateDebut chantier, 1er releve reel) pour ne pas
+            // gonfler l'attendu si le chantier a ete cree en avance par rapport au
+            // demarrage effectif des saisies.
             // Attendu a aujourd'hui = objectif_quotidien * jours_ouvres_ecoules
             // Avance = realise - attendu
             var avanceCalc = (function() {
               if (!chantier.dateDebut || !chantier.dateFin || !chantier.metrage) return { total: null, mois: null };
               if (chantier.statut === "A venir") return { total: null, mois: null };
               try {
-                var start = new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00");
+                var startContractuel = new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00");
                 var end = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
-                if (isNaN(start.getTime()) || isNaN(end.getTime())) return { total: null, mois: null };
+                if (isNaN(startContractuel.getTime()) || isNaN(end.getTime())) return { total: null, mois: null };
+                // Recupere la date du 1er releve effectif pour ce chantier (relevesIdx ou saisies)
+                var firstReleveStr = null;
+                var ck = String(chantier.id);
+                if (relevesIdx[ck]) {
+                  var allDates = Object.keys(relevesIdx[ck]).sort();
+                  if (allDates.length > 0) firstReleveStr = allDates[0];
+                }
+                if (saisies[chantier.id]) {
+                  var sDates = Object.keys(saisies[chantier.id]).filter(function(d) {
+                    var v = saisies[chantier.id][d];
+                    if (typeof v === "object") return (parseFloat(v.valeur || 0) > 0);
+                    return parseFloat(v || 0) > 0;
+                  }).sort();
+                  if (sDates.length > 0 && (firstReleveStr == null || sDates[0] < firstReleveStr)) firstReleveStr = sDates[0];
+                }
+                // Date de reference = max(dateDebut contractuelle, 1er releve effectif)
+                var start = startContractuel;
+                if (firstReleveStr) {
+                  var firstReleveDate = new Date(firstReleveStr + "T00:00:00");
+                  if (!isNaN(firstReleveDate.getTime()) && firstReleveDate > startContractuel) start = firstReleveDate;
+                }
                 // Helper : compte les jours Lun-Jeu entre 2 dates (inclus)
                 function countLunJeu(d1, d2) {
                   var n = 0, safe = 0;
