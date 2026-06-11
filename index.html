@@ -18608,6 +18608,55 @@
     // Le carburant n'est plus verifie (regle a affiner).
     // Tout manquement donne lieu a un item. La liste est groupee par jour, du plus
     // recent au plus ancien.
+    // Compte le nombre de references en deficit dans les achats previsionnels.
+    // Une ref est en deficit si : piece catalogue avec stock < besoin_total
+    // OU consommable / autre dont la qty totale > 0 (besoin a couvrir).
+    // Horizon par defaut : 90 jours.
+    function computeAchatsPrevisionnelsPending(args) {
+      var plans = args.plans || [];
+      var pieces = args.pieces || [];
+      var horizonDays = args.horizonDays || 90;
+      var today = args.today || new Date();
+      var horizonDate = new Date(today.getTime() + horizonDays * 86400000);
+      var map = {};
+      plans.forEach(function(plan) {
+        if (plan.Statut !== "Actif" && plan.Statut !== "actif") return;
+        var nextDate = plan.ProchainIntervention ? new Date(plan.ProchainIntervention) : null;
+        if (!nextDate || nextDate > horizonDate) return;
+        var gamme = Array.isArray(plan.Gamme) ? plan.Gamme : [];
+        if (gamme.length === 0) return;
+        var equipCodes = (plan.Equipements || "").split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+        var nbEquips = equipCodes.length || 1;
+        gamme.forEach(function(step) {
+          if (!step || (!step.pieceLabel && !step.pieceRef)) return;
+          var qty = (parseFloat(step.quantite) || 1) * nbEquips;
+          var refKey = step.pieceType === "piece" && step.pieceRef
+            ? "piece:" + step.pieceRef
+            : "free:" + (step.pieceLabel || step.pieceRef || "?").toLowerCase().trim();
+          if (!map[refKey]) {
+            var pieceCat = step.pieceType === "piece" ? pieces.find(function(p) { return String(p.Id) === String(step.pieceRef); }) : null;
+            map[refKey] = { qty: 0, pieceCatalogue: pieceCat };
+          }
+          map[refKey].qty += qty;
+        });
+      });
+      // Compte ceux en deficit reel
+      var deficitCount = 0;
+      var refsCount = 0;
+      Object.keys(map).forEach(function(k) {
+        var b = map[k];
+        refsCount++;
+        if (b.pieceCatalogue) {
+          var stock = parseFloat(b.pieceCatalogue.Stock) || 0;
+          if (stock < b.qty) deficitCount++;
+        } else {
+          // Consommable / autre sans suivi de stock = toujours considere a acheter
+          deficitCount++;
+        }
+      });
+      return { count: deficitCount, totalRefs: refsCount };
+    }
+
     function computeAlertesSaisies(args) {
       var today          = args.today;
       var daysWindow     = args.daysWindow != null ? args.daysWindow : 7;
@@ -20028,7 +20077,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -20106,7 +20155,8 @@
                 p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / heures) depuis le 1er juin" }, alertesSaisiesPending) : null,
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
-                p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null
+                p.key === "emprunts" && empruntsFinProche > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #fcd34d, #ca8a04)", color: "#1c1917", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(252, 211, 77, 0.4)" }, title: "Pret(s) arrivant a terme dans les 30 jours" }, empruntsFinProche) : null,
+                p.key === "achats-previsionnels" && achatsPrevisionnelsPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: achatsPrevisionnelsPending + " reference(s) en deficit dans les 90 prochains jours" }, achatsPrevisionnelsPending) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -20660,6 +20710,18 @@
           return res;
         } catch (e) { console.warn("[alertes-saisies] compute:", e.message); return { list: [], count: 0 }; }
       }, [dbChantiers, equipements, dbChantierEquipements, dbRapportsForage, recentRelHeures, dbSaisies]);
+
+      // ── Achats previsionnels en attente (refs avec deficit dans l'horizon 90j) ──
+      const achatsPrevisionnelsPending = useMemo(function() {
+        try {
+          return computeAchatsPrevisionnelsPending({
+            plans: plans || [],
+            pieces: pieces || [],
+            today: new Date(),
+            horizonDays: 90
+          }).count;
+        } catch (e) { return 0; }
+      }, [plans, pieces]);
 
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
@@ -21563,7 +21625,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
