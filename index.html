@@ -8225,6 +8225,32 @@
       var chantiers = ctxAv.dbChantiers;
       var setChantiers = ctxAv.setDbChantiers;
       var saisies = ctxAv.dbSaisies;
+
+      // ── Cout/m global moyen (utilise par le previsionnel chantier) ──
+      // Estimation : (masse_salariale x 1.30 + charges_fixes + emprunts) mensuel
+      // divise par les metres realises mensuels moyens (90 derniers jours).
+      // Le carburant est ignore (~5-10% du total, marge d'erreur acceptable
+      // vs la complexite de l'inclure ici).
+      var coutMetreGlobalEstime = (function() {
+        try {
+          var persList = loadPersonnelFromParametres(ctxAv.parametres || []);
+          var masseSalarialeMensuelle = persList.reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0) * 1.30;
+          var chargesFixesMensuel = (ctxAv.dbChargesFixes || []).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+          var empruntsMensuel = (ctxAv.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+          var coutMensuelTotal = masseSalarialeMensuelle + chargesFixesMensuel + empruntsMensuel;
+          if (coutMensuelTotal <= 0) return 0;
+          // Metres realises sur les 90 derniers jours (tous chantiers confondus)
+          var today2 = new Date();
+          var d90 = new Date(today2.getTime() - 90 * 86400 * 1000);
+          var iso90 = d90.toISOString().substring(0, 10);
+          var totalMetres90j = (ctxAv.dbRelevesJourn || []).filter(function(r) {
+            return (r.dateReleve || "") >= iso90;
+          }).reduce(function(s, r) { return s + (parseFloat(r.metrage) || 0); }, 0);
+          if (totalMetres90j <= 0) return 0;
+          var metresMensuelMoyen = totalMetres90j / 3;
+          return metresMensuelMoyen > 0 ? coutMensuelTotal / metresMensuelMoyen : 0;
+        } catch (e) { return 0; }
+      }());
       var setSaisiesState = ctxAv.setDbSaisies;
       var affectationsAv = ctxAv.dbAffectations || [];
       var setAffectationsAv = ctxAv.setDbAffectations;
@@ -8976,7 +9002,17 @@
                     var prixMetre = chantier.prixMetre || 0;
                     var caTotal = chantier.metrage * prixMetre;
                     var caRestant = metresRestants * prixMetre;
-                    var coutTotalPrevu = chantier.depensesPrevues || 0;
+                    // ── Estimation des couts du chantier ──
+                    // Priorite : depensesPrevues du formulaire chantier si renseigne ;
+                    // sinon, on applique le cout/m global moyen aux metres prevus.
+                    var coutTotalPrevu = parseFloat(chantier.depensesPrevues) || 0;
+                    var coutSource = "Saisi dans le chantier (depenses prevues)";
+                    if (coutTotalPrevu <= 0 && coutMetreGlobalEstime > 0) {
+                      coutTotalPrevu = coutMetreGlobalEstime * chantier.metrage;
+                      coutSource = "Estime via le cout/m global (" + fmtNum(Math.round(coutMetreGlobalEstime)) + " XPF/m sur 90j)";
+                    } else if (coutTotalPrevu <= 0) {
+                      coutSource = "Cout indisponible - renseigne 'depenses prevues' sur le chantier";
+                    }
                     var margeEstimee = caTotal - coutTotalPrevu;
                     var margePct = caTotal > 0 ? Math.round((margeEstimee / caTotal) * 100) : 0;
 
@@ -9024,9 +9060,10 @@
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "CA restant"),
                           h("div", { style: { fontWeight: 700, fontSize: 14, color: "#86efac" } }, fmtMoney(caRestant))
                         ),
-                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 }, title: "Cout total estime : " + fmtMoney(coutTotalPrevu) + "\nSource : " + coutSource },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Marge prevue"),
-                          h("div", { style: { fontWeight: 700, fontSize: 14, color: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af" } }, fmtMoney(margeEstimee) + " (" + margePct + "%)")
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af" } }, coutTotalPrevu > 0 ? fmtMoney(margeEstimee) + " (" + margePct + "%)" : "N/A"),
+                          h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, "Cout total : " + (coutTotalPrevu > 0 ? fmtMoney(coutTotalPrevu) : "indispo"))
                         )
                       )
                     );
