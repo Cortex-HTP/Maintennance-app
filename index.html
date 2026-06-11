@@ -359,10 +359,12 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "" };
+      return { id: r.id, titre: r.titre || "", dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
     }
     function chantierToDb(c) {
-      return { titre: c.titre, date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "" };
+      var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
+      var lon = c.longitude !== "" && c.longitude !== null && c.longitude !== undefined ? parseFloat(c.longitude) : null;
+      return { titre: c.titre, date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
     }
     function declarationFromDb(r) {
       return { id: r.id, titre: r.titre || "", montant: r.montant || 0, recurrence: r.recurrence || "Mensuel", status: r.status || "A venir", dateFait: r.date_fait || null, dateDebutPeriode: r.date_debut_periode || null, dateFinPeriode: r.date_fin_periode || null };
@@ -6014,7 +6016,7 @@
       };
 
       // ── CRUD Chantiers ──
-      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, depensesPrevues: 0, statut: "A venir", site: "" }); setShowModal(true); };
+      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
@@ -7034,6 +7036,11 @@
             )),
             f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: Object.assign({}, inputStyle, { textTransform: "uppercase" }), placeholder: "EX: KOUAOUA, KOPETO...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value.toUpperCase()); } })) : null,
             f.newSite !== undefined ? h("div", { style: { background: "rgba(99,102,241,0.15)", padding: "8px 12px", borderRadius: 6, fontSize: 12, color: "#4f46e5" } }, "Les seuils et coefficients se configurent dans la page Primes.") : null,
+            // ─ Coordonnees GPS pour previsions meteo ─
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(FormField, { label: "Latitude (meteo)" }, h("input", { type: "number", step: "0.0001", placeholder: "-20.7510", style: inputStyle, value: f.latitude != null ? f.latitude : "", onChange: function(e) { upd("latitude", e.target.value === "" ? null : parseFloat(e.target.value)); } })),
+              h(FormField, { label: "Longitude (meteo)" }, h("input", { type: "number", step: "0.0001", placeholder: "164.2350", style: inputStyle, value: f.longitude != null ? f.longitude : "", onChange: function(e) { upd("longitude", e.target.value === "" ? null : parseFloat(e.target.value)); } }))
+            ),
             h("div", { style: { background: "rgba(34,197,94,0.12)", padding: 12, borderRadius: 8, marginTop: 8, fontSize: 14, fontWeight: 600, color: "#059669" } }, "CA prevu : " + fmtMoney(caPreview)),
             h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
               h(Button, { variant: "secondary", onClick: closeModal }, "Annuler"),
@@ -8490,7 +8497,7 @@
 
       // CRUD handlers
       var openNewChantier = function() {
-        setEditing({ id: null, titre: "", dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, depensesPrevues: 0, statut: "A venir", site: "" });
+        setEditing({ id: null, titre: "", dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
         setShowModal(true);
       };
       var openEditChantier = function(c) {
@@ -8787,6 +8794,12 @@
             )),
             f.newSite !== undefined ? h(FormField, { label: "Nom du nouveau site" }, h("input", { type: "text", style: Object.assign({}, inputStyle, { textTransform: "uppercase" }), placeholder: "EX: KOUAOUA, KOPETO...", value: f.newSite || "", onChange: function(e) { upd("newSite", e.target.value.toUpperCase()); } })) : null,
             f.newSite !== undefined ? h("div", { style: { background: "rgba(99,102,241,0.15)", padding: "8px 12px", borderRadius: 6, fontSize: 12, color: "#4f46e5" } }, "Les seuils et coefficients se configurent dans la page Primes.") : null,
+            // ─ Coordonnees GPS pour previsions meteo (optionnel) ─
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(FormField, { label: "Latitude (pour meteo)" }, h("input", { type: "number", step: "0.0001", placeholder: "ex: -20.7510 (Tiebaghi)", style: inputStyle, value: f.latitude != null ? f.latitude : "", onChange: function(e) { upd("latitude", e.target.value === "" ? null : parseFloat(e.target.value)); } })),
+              h(FormField, { label: "Longitude (pour meteo)" }, h("input", { type: "number", step: "0.0001", placeholder: "ex: 164.2350 (Tiebaghi)", style: inputStyle, value: f.longitude != null ? f.longitude : "", onChange: function(e) { upd("longitude", e.target.value === "" ? null : parseFloat(e.target.value)); } }))
+            ),
+            h("div", { style: { background: "rgba(99,102,241,0.10)", padding: "6px 10px", borderRadius: 4, fontSize: 11, color: "#94a3b8" } }, "Renseigner les coordonnees GPS active les previsions meteo et l'estimation d'intemperies sur la page Previsionnel."),
             h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 } },
               h(Button, { onClick: closeModalAv, variant: "secondary" }, "Annuler"),
               h(Button, { onClick: function() { if (!f.titre) return alert("Le titre est obligatoire"); if (f.newSite !== undefined && !f.newSite.trim()) return alert("Veuillez saisir le nom du nouveau site"); saveChantier(f); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
@@ -17973,6 +17986,450 @@
       return { list: items, count: total, daysChecked: days };
     }
 
+    // ─── Ecran : Previsionnel detaille par chantier ──────────────────────────
+    // Aggrège : KPIs prévisionnels, pannes potentielles (via logique Equipement),
+    // météo Open-Meteo, stats historiques + financier + personnel, recommandations.
+    function EcranPrevisionnel({ initialChantierId }) {
+      var ctx = useAppData();
+      var chantiersActifs = (ctx.dbChantiers || []).filter(function(c) { return c.statut !== "Termine"; });
+      var defaultId = initialChantierId || (chantiersActifs[0] && chantiersActifs[0].id) || null;
+      var _sel = useState(defaultId); var selectedId = _sel[0]; var setSelectedId = _sel[1];
+      var _meteo = useState(null); var meteo = _meteo[0]; var setMeteo = _meteo[1];
+      var _mLoad = useState(false); var meteoLoading = _mLoad[0]; var setMeteoLoading = _mLoad[1];
+      var _mErr = useState(null); var meteoErr = _mErr[0]; var setMeteoErr = _mErr[1];
+
+      var chantier = chantiersActifs.find(function(c) { return String(c.id) === String(selectedId); }) || chantiersActifs[0];
+
+      // ─ Fetch meteo Open-Meteo ─
+      useEffect(function() {
+        if (!chantier || chantier.latitude == null || chantier.longitude == null) {
+          setMeteo(null); setMeteoErr(null); return;
+        }
+        setMeteoLoading(true); setMeteoErr(null);
+        var url = "https://api.open-meteo.com/v1/forecast?latitude=" + chantier.latitude + "&longitude=" + chantier.longitude + "&daily=precipitation_sum,temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max&timezone=auto&forecast_days=14";
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+          setMeteo(data); setMeteoLoading(false);
+        }).catch(function(e) {
+          setMeteoErr(e.message || "Erreur meteo"); setMeteoLoading(false);
+        });
+      }, [chantier && chantier.id, chantier && chantier.latitude, chantier && chantier.longitude]);
+
+      // ─ Helpers metier ─
+      var today = new Date(); today.setHours(0, 0, 0, 0);
+      var EXCLUDED_TYPES = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1 };
+      function isoOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+      function isJourOuvre(d) { var dow = d.getDay(); return dow >= 1 && dow <= 4; }
+
+      // ─ Donnees agreges pour le chantier selectionne ─
+      var data = (function() {
+        if (!chantier) return null;
+        var dDeb = chantier.dateDebut ? new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00") : null;
+        var dFin = chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00") : null;
+        var saisies = (ctx.dbSaisies && ctx.dbSaisies[chantier.id]) ? ctx.dbSaisies[chantier.id] : {};
+
+        // ─ Releves par chantier+date ─ (somme MAX par machine)
+        var relevesIdx = {};
+        var machinesByDate = {};
+        var allMachineKeys = {};
+        (ctx.dbRelevesJourn || []).forEach(function(r) {
+          if (!r || String(r.chantierId) !== String(chantier.id) || !r.dateReleve) return;
+          var d = String(r.dateReleve).substring(0, 10);
+          var mk = String(r.equipementId || r.sondeuseCode || "_no").toUpperCase().trim();
+          if (!relevesIdx[d]) relevesIdx[d] = {};
+          var v = parseFloat(r.metrage) || 0;
+          if (v > (relevesIdx[d][mk] || 0)) relevesIdx[d][mk] = v;
+          if (!machinesByDate[d]) machinesByDate[d] = {};
+          machinesByDate[d][mk] = 1;
+          if (mk !== "_NO") allMachineKeys[mk] = 1;
+        });
+        function dailyMet(d) {
+          var iso = String(d).substring(0, 10);
+          if (relevesIdx[iso]) {
+            var s = 0;
+            Object.keys(relevesIdx[iso]).forEach(function(k) { s += relevesIdx[iso][k]; });
+            return s;
+          }
+          if (saisies[iso]) {
+            var sv = saisies[iso];
+            return typeof sv === "object" ? (parseFloat(sv.valeur) || 0) : (parseFloat(sv) || 0);
+          }
+          return 0;
+        }
+        // Realise total
+        var allDates = {};
+        Object.keys(relevesIdx).forEach(function(d) { allDates[d] = 1; });
+        Object.keys(saisies).forEach(function(d) { allDates[d] = 1; });
+        var realise = 0;
+        Object.keys(allDates).forEach(function(d) { realise += dailyMet(d); });
+        var metresRestants = Math.max(0, (chantier.metrage || 0) - realise);
+
+        // ─ Vitesse par machine 14 derniers jours productifs ─
+        var totalMet = 0, nbJoursActifs = 0, sumMachinesRecent = 0;
+        var metSolo = 0, jSolo = 0, metMulti = 0, machinesMulti = 0;
+        var cursor = new Date(today.getTime());
+        var safe = 0;
+        while (nbJoursActifs < 14 && safe < 80) {
+          cursor.setDate(cursor.getDate() - 1);
+          if (cursor.getDay() >= 1 && cursor.getDay() <= 4) {
+            var dStr = isoOf(cursor);
+            var v = dailyMet(dStr);
+            if (v > 0) {
+              totalMet += v; nbJoursActifs++;
+              var ms = machinesByDate[dStr];
+              var nbM = ms ? Object.keys(ms).length : 1;
+              sumMachinesRecent += nbM;
+              if (nbM <= 1) { metSolo += v; jSolo++; }
+              else { metMulti += v; machinesMulti += nbM; }
+            }
+          }
+          safe++;
+        }
+        var vitesse14j = nbJoursActifs > 0 ? totalMet / nbJoursActifs : 0;
+        var moyMachinesRecent = nbJoursActifs > 0 ? (sumMachinesRecent / nbJoursActifs) : 1;
+        var vitesseSolo = jSolo > 0 ? (metSolo / jSolo) : null;
+        var vitesseMulti = machinesMulti > 0 ? (metMulti / machinesMulti) : null;
+        var vitesseParMachine;
+        if (vitesseSolo !== null && jSolo >= 3) vitesseParMachine = vitesseSolo;
+        else if (vitesseMulti !== null) vitesseParMachine = vitesseMulti;
+        else vitesseParMachine = moyMachinesRecent > 0 ? (vitesse14j / moyMachinesRecent) : 0;
+
+        // ─ Taux d'absence historique ─
+        var joursOuvresPasses = 0, joursAbsentsPasses = 0;
+        var nbFerie = 0, nbIntemp = 0, nbPanne = 0, nbArret = 0, nbAutres = 0;
+        if (dDeb) {
+          var dPast = new Date(dDeb.getTime()); var sP = 0;
+          while (dPast < today && sP < 4000) {
+            if (isJourOuvre(dPast)) {
+              joursOuvresPasses++;
+              var iso = isoOf(dPast);
+              var s = saisies[iso];
+              if (s) {
+                var t = (typeof s === "object" && s !== null) ? (s.typeJour || s.type || "") : "";
+                if (EXCLUDED_TYPES[t]) {
+                  joursAbsentsPasses++;
+                  if (t === "ferie") nbFerie++;
+                  else if (t === "intemperies") nbIntemp++;
+                  else if (t === "panne") nbPanne++;
+                  else if (t === "arret") nbArret++;
+                  else nbAutres++;
+                }
+              }
+            }
+            dPast.setDate(dPast.getDate() + 1);
+            sP++;
+          }
+        }
+        var tauxAbsence = joursOuvresPasses > 0 ? (joursAbsentsPasses / joursOuvresPasses) : 0;
+        var joursProductifsPasses = joursOuvresPasses - joursAbsentsPasses;
+
+        // ─ Jours ouvres restants jusqu'au contrat ─
+        var joursOuvresRestants = 0;
+        if (dFin && today < dFin) {
+          var cur = new Date(today.getTime()); var sC = 0;
+          while (cur < dFin && sC < 1000) {
+            cur.setDate(cur.getDate() + 1);
+            if (isJourOuvre(cur)) joursOuvresRestants++;
+            sC++;
+          }
+        }
+        var joursEffectifsRestants = joursOuvresRestants * (1 - tauxAbsence);
+        var cadenceRequise = joursEffectifsRestants > 0 ? (metresRestants / joursEffectifsRestants) : null;
+        var nbMachinesExact = (cadenceRequise !== null && vitesseParMachine > 0) ? (cadenceRequise / vitesseParMachine) : null;
+        var nbMachinesEntier = nbMachinesExact !== null ? Math.max(1, Math.ceil(nbMachinesExact)) : null;
+
+        // ─ Fin estimee : projection avec planning machines + meteo absences ─
+        var cesFuturs = (ctx.dbChantierEquipements || []).filter(function(ce) { return ce && String(ce.chantierId) === String(chantier.id); }).map(function(ce) {
+          return { deb: ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00") : null, fin: ce.dateFin ? new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00") : null, eq: ce.equipementId };
+        }).filter(function(x) { return x.deb && x.fin && x.fin >= today; });
+        var hasPlanning = cesFuturs.length > 0;
+        function nbMachinesPlanifiees(d) {
+          if (!hasPlanning) return moyMachinesRecent;
+          var c = 0, seen = {};
+          for (var i = 0; i < cesFuturs.length; i++) {
+            var x = cesFuturs[i];
+            if (d >= x.deb && d <= x.fin) {
+              var k = String(x.eq || ("anon-" + i));
+              if (!seen[k]) { seen[k] = 1; c++; }
+            }
+          }
+          return c > 0 ? c : moyMachinesRecent;
+        }
+        var metresProjetes = 0, jProj = 0;
+        var dateFinEst = new Date(today.getTime()); var sP2 = 0;
+        while (metresProjetes < metresRestants && sP2 < 1500) {
+          dateFinEst.setDate(dateFinEst.getDate() + 1);
+          if (isJourOuvre(dateFinEst)) {
+            var nbMach = nbMachinesPlanifiees(dateFinEst);
+            if (nbMach > 0) {
+              // Applique le taux d'absence sur la projection
+              metresProjetes += vitesseParMachine * nbMach * (1 - tauxAbsence);
+              jProj++;
+            }
+          }
+          sP2++;
+        }
+        var projectionImpossible = metresProjetes < metresRestants;
+
+        // ─ Decalage vs contrat (en jours ouvres) ─
+        var decalageJ = null;
+        if (dFin && !projectionImpossible) {
+          var debC, finC, sign;
+          if (dateFinEst >= dFin) { debC = dFin; finC = dateFinEst; sign = 1; } else { debC = dateFinEst; finC = dFin; sign = -1; }
+          var ct = 0, dc = new Date(debC.getTime()), sCt = 0;
+          while (dc < finC && sCt < 4000) {
+            dc.setDate(dc.getDate() + 1);
+            if (isJourOuvre(dc)) ct++;
+            sCt++;
+          }
+          decalageJ = sign * ct;
+        }
+
+        // ─ Machines actives sur ce chantier ─
+        var machinesActives = Object.keys(allMachineKeys).map(function(mk) {
+          // Cherche l'equipement correspondant (par sondeuseCode ou id)
+          var eq = (ctx.equipements || []).find(function(e) {
+            return String(e.Id) === mk || String(e.Title || "").toUpperCase().trim() === mk || String(e.Code || "").toUpperCase().trim() === mk;
+          });
+          return { key: mk, equipement: eq };
+        }).filter(function(x) { return x.equipement; });
+
+        return {
+          dDeb: dDeb, dFin: dFin, realise: realise, metresRestants: metresRestants,
+          vitesse14j: vitesse14j, vitesseParMachine: vitesseParMachine,
+          moyMachinesRecent: moyMachinesRecent, jSolo: jSolo,
+          vitesseSolo: vitesseSolo, vitesseMulti: vitesseMulti,
+          joursOuvresPasses: joursOuvresPasses, joursAbsentsPasses: joursAbsentsPasses,
+          joursProductifsPasses: joursProductifsPasses, tauxAbsence: tauxAbsence,
+          nbFerie: nbFerie, nbIntemp: nbIntemp, nbPanne: nbPanne, nbArret: nbArret, nbAutres: nbAutres,
+          joursOuvresRestants: joursOuvresRestants, joursEffectifsRestants: joursEffectifsRestants,
+          cadenceRequise: cadenceRequise, nbMachinesExact: nbMachinesExact, nbMachinesEntier: nbMachinesEntier,
+          dateFinEst: dateFinEst, decalageJ: decalageJ, projectionImpossible: projectionImpossible,
+          hasPlanning: hasPlanning, machinesActives: machinesActives
+        };
+      })();
+
+      // ─ Styles ─
+      var sectionStyle = { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, padding: 18, border: "1px solid rgba(255,255,255,0.07)", marginBottom: 16 };
+      var sectionTitle = { fontSize: 15, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8, color: "#e0e7ff" };
+      var kpiStyle = { background: "rgba(255,255,255,0.04)", padding: 12, borderRadius: 8 };
+      var kpiLbl = { color: "#a1a1aa", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 };
+      var kpiVal = { fontSize: 18, fontWeight: 700, color: "#fafafa" };
+      var kpiHint = { color: "#64748b", fontSize: 10.5, marginTop: 3 };
+      var lineStyle = { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px dashed rgba(255,255,255,0.05)", fontSize: 12.5 };
+      var cardStyle = { background: "rgba(255,255,255,0.04)", padding: 14, borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" };
+
+      // ─ Render ─
+      return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "trending-up", size: 20 }, "Previsionnel"), subtitle: "Anticipation chantier : KPIs, pannes, meteo, recommandations" }),
+
+        // Selecteur chantier
+        h("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 } },
+          h("label", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600 } }, "Chantier :"),
+          h("select", {
+            value: selectedId || "",
+            onChange: function(e) { setSelectedId(e.target.value); },
+            style: { padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.08)", fontSize: 13, fontFamily: "inherit", minWidth: 240 }
+          },
+            chantiersActifs.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre + " (" + c.statut + ")"); })
+          )
+        ),
+
+        !chantier ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Aucun chantier disponible.")
+        : !data ? h("div", { style: { padding: 24, textAlign: "center", color: "#94a3b8" } }, "Donnees insuffisantes.")
+        : h("div", null,
+          // ─ Section 1 : KPIs ─
+          h("div", { style: sectionStyle },
+            h("div", { style: sectionTitle }, h(Icon, { name: "bar-chart-3", size: 16, color: "#c4b5fd" }), "Indicateurs previsionnels"),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 } },
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Realise"),
+                h("div", { style: kpiVal }, fmtNum(Math.round(data.realise)) + " m"),
+                h("div", { style: kpiHint }, chantier.metrage > 0 ? Math.round(data.realise / chantier.metrage * 100) + " % de l'objectif" : "")
+              ),
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Reste a forer"),
+                h("div", { style: kpiVal }, fmtNum(Math.round(data.metresRestants)) + " m"),
+                h("div", { style: kpiHint }, "CA restant : " + fmtMoney(data.metresRestants * (chantier.prixMetre || 0)))
+              ),
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Vitesse actuelle 14j"),
+                h("div", { style: kpiVal }, fmtNum(Math.round(data.vitesse14j)) + " m/jour"),
+                h("div", { style: kpiHint }, fmtNum(Math.round(data.vitesseParMachine)) + " m/j/machine" + (data.jSolo >= 3 ? " (solo)" : ""))
+              ),
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Cadence requise"),
+                h("div", { style: Object.assign({}, kpiVal, { color: data.cadenceRequise && data.cadenceRequise > data.vitesse14j ? "#fde68a" : "#86efac" }) }, data.cadenceRequise !== null ? fmtNum(Math.round(data.cadenceRequise)) + " m/jour" : "—"),
+                h("div", { style: kpiHint }, "apres " + Math.round(data.tauxAbsence * 100) + " % d'absences hist.")
+              ),
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Machines requises"),
+                h("div", { style: Object.assign({}, kpiVal, { color: data.nbMachinesEntier > Math.ceil(data.moyMachinesRecent) ? "#fde68a" : "#86efac" }) }, data.nbMachinesExact !== null ? data.nbMachinesExact.toFixed(2) : "—"),
+                h("div", { style: kpiHint }, data.nbMachinesEntier ? "min " + data.nbMachinesEntier + " machine(s) a maintenir" : "")
+              ),
+              h("div", { style: kpiStyle },
+                h("div", { style: kpiLbl }, "Fin estimee"),
+                h("div", { style: Object.assign({}, kpiVal, { color: data.decalageJ > 5 ? "#fda4af" : data.decalageJ < -5 ? "#86efac" : "#fde68a" }) }, data.projectionImpossible ? "—" : data.dateFinEst.toLocaleDateString("fr-FR")),
+                h("div", { style: kpiHint }, data.decalageJ !== null ? (data.decalageJ >= 0 ? "+" + data.decalageJ : data.decalageJ) + " j ouvres vs contrat" : "projection impossible")
+              )
+            )
+          ),
+
+          // ─ Section 2 : Pannes potentielles ─
+          h("div", { style: sectionStyle },
+            h("div", { style: sectionTitle }, h(Icon, { name: "settings", size: 16, color: "#fde68a" }), "Pannes potentielles (machines actives)"),
+            data.machinesActives.length === 0 ? h("div", { style: { color: "#94a3b8", fontSize: 13, padding: 8 } }, "Aucune machine detectee sur ce chantier dans les releves.")
+            : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 } },
+              data.machinesActives.map(function(m) {
+                var eq = m.equipement;
+                var mh = parseFloat(eq.Horametre) || 0;
+                var lastEntH = parseFloat(eq.DernierEntretienH) || 0;
+                var deltaMh = mh - lastEntH;
+                var seuilVidange = 250;
+                var pctVidange = Math.min(100, Math.round((deltaMh / seuilVidange) * 100));
+                var risqueColor = pctVidange >= 90 ? "#fda4af" : pctVidange >= 70 ? "#fde68a" : "#86efac";
+                var risqueTag = pctVidange >= 90 ? "Risque eleve" : pctVidange >= 70 ? "Risque modere" : "RAS";
+                return h("div", { key: m.key, style: cardStyle },
+                  h("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                    eq.Title || m.key,
+                    h("span", { style: { background: pctVidange >= 90 ? "rgba(244,63,94,0.15)" : pctVidange >= 70 ? "rgba(245,158,11,0.15)" : "rgba(34,197,94,0.15)", color: risqueColor, padding: "2px 8px", borderRadius: 4, fontSize: 10.5, fontWeight: 600 } }, risqueTag)
+                  ),
+                  h("div", { style: lineStyle }, h("span", null, "MH actuelles"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(mh)) + " h")),
+                  h("div", { style: lineStyle }, h("span", null, "Depuis dernier entretien"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(deltaMh)) + " h")),
+                  h("div", { style: lineStyle }, h("span", null, "Avant prochaine vidange (~" + seuilVidange + "h)"), h("span", { style: { fontWeight: 600, color: risqueColor } }, fmtNum(Math.max(0, seuilVidange - deltaMh)) + " h")),
+                  h("div", { style: { height: 8, background: "rgba(255,255,255,0.08)", borderRadius: 4, marginTop: 8, overflow: "hidden" } },
+                    h("div", { style: { width: pctVidange + "%", height: "100%", background: "linear-gradient(90deg, #22c55e, " + risqueColor + ")" } })
+                  ),
+                  eq.Statut ? h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 8 } }, "Statut : " + eq.Statut) : null
+                );
+              })
+            )
+          ),
+
+          // ─ Section 3 : Meteo ─
+          h("div", { style: sectionStyle },
+            h("div", { style: sectionTitle }, h(Icon, { name: "cloud-rain", size: 16, color: "#93c5fd" }), "Meteo 14 jours (Open-Meteo)"),
+            chantier.latitude == null || chantier.longitude == null ?
+              h("div", { style: { color: "#94a3b8", fontSize: 13, padding: 12, background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8 } },
+                "Renseigne la latitude et la longitude du chantier dans son formulaire (modifier le chantier) pour activer les previsions meteo."
+              )
+            : meteoLoading ? h("div", { style: { color: "#94a3b8", fontSize: 13 } }, "Chargement de la meteo...")
+            : meteoErr ? h("div", { style: { color: "#fda4af", fontSize: 13 } }, "Erreur meteo : " + meteoErr)
+            : !meteo || !meteo.daily ? h("div", { style: { color: "#94a3b8" } }, "Aucune donnee meteo recue.")
+            : (function() {
+              var d = meteo.daily;
+              var nbIntempProb = 0, nbProductifsMeteo = 0;
+              var weatherDays = (d.time || []).map(function(t, i) {
+                var dt = new Date(t + "T12:00:00");
+                var dow = dt.getDay();
+                var isWE = dow === 0 || dow === 5 || dow === 6;
+                var prec = d.precipitation_sum ? d.precipitation_sum[i] : 0;
+                var wind = d.wind_speed_10m_max ? d.wind_speed_10m_max[i] : 0;
+                var code = d.weathercode ? d.weathercode[i] : 0;
+                var tMax = d.temperature_2m_max ? d.temperature_2m_max[i] : null;
+                var intemp = !isWE && (prec > 15 || wind > 60 || (code >= 95));
+                if (!isWE) {
+                  if (intemp) nbIntempProb++; else nbProductifsMeteo++;
+                }
+                return { date: dt, dow: dow, isWE: isWE, prec: prec, wind: wind, code: code, tMax: tMax, intemp: intemp };
+              });
+              var jourLabels = ["D", "L", "M", "M", "J", "V", "S"];
+              function emoji(c, prec) {
+                if (c >= 95) return "⛈️";
+                if (c >= 80 || prec > 5) return "🌧️";
+                if (c >= 51) return "🌦️";
+                if (c >= 45) return "🌫️";
+                if (c >= 1) return "⛅";
+                return "☀️";
+              }
+              var metragePrev14j = nbProductifsMeteo * data.vitesse14j;
+              return h("div", null,
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(14, 1fr)", gap: 4, marginBottom: 12 } },
+                  weatherDays.map(function(w, i) {
+                    var bg = w.isWE ? "rgba(100,116,139,0.10)" : w.intemp ? "rgba(59,130,246,0.15)" : "rgba(251,191,36,0.10)";
+                    var bd = w.isWE ? "rgba(100,116,139,0.20)" : w.intemp ? "rgba(59,130,246,0.30)" : "rgba(251,191,36,0.25)";
+                    var col = w.isWE ? "#64748b" : w.intemp ? "#93c5fd" : "#fde68a";
+                    return h("div", { key: i, style: { aspectRatio: "1", padding: 4, borderRadius: 6, background: bg, border: "1px solid " + bd, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontSize: 10, textAlign: "center", color: col } },
+                      h("div", { style: { fontWeight: 700 } }, jourLabels[w.dow]),
+                      h("div", { style: { fontSize: 9 } }, (w.date.getDate())),
+                      w.isWE ? h("div", { style: { fontSize: 10 } }, "—") : h("div", { style: { fontSize: 14 } }, emoji(w.code, w.prec)),
+                      !w.isWE && w.tMax !== null ? h("div", { style: { fontSize: 9 } }, Math.round(w.tMax) + "°") : null
+                    );
+                  })
+                ),
+                h("div", { style: lineStyle }, h("span", null, "Jours productifs prevus (Lun-Jeu sans intemperies)"), h("span", { style: { fontWeight: 600, color: "#86efac" } }, nbProductifsMeteo + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Jours intemperies probables"), h("span", { style: { fontWeight: 600, color: "#93c5fd" } }, nbIntempProb + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Metrage previsionnel 14 j (vitesse actuelle)"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(metragePrev14j)) + " m")),
+                h("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8, fontStyle: "italic" } }, "Definition 'intemperies' : > 15 mm/jour OU vent > 60 km/h OU orage. Configurable.")
+              );
+            }())
+          ),
+
+          // ─ Section 4 : Stats ─
+          h("div", { style: sectionStyle },
+            h("div", { style: sectionTitle }, h(Icon, { name: "bar-chart", size: 16, color: "#86efac" }), "Statistiques du chantier"),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+              h("div", { style: cardStyle },
+                h("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 6 } }, "Productivite"),
+                h("div", { style: lineStyle }, h("span", null, "Realise / Prevu"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(data.realise)) + " / " + fmtNum(chantier.metrage) + " m")),
+                h("div", { style: lineStyle }, h("span", null, "Vitesse 14j"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(data.vitesse14j)) + " m/j")),
+                data.vitesseSolo !== null ? h("div", { style: lineStyle }, h("span", null, "Vitesse solo (1 machine)"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(data.vitesseSolo)) + " m/j")) : null,
+                data.vitesseMulti !== null ? h("div", { style: lineStyle }, h("span", null, "Vitesse multi/machine"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(data.vitesseMulti)) + " m/j/machine")) : null,
+                h("div", { style: lineStyle }, h("span", null, "Machines distinctes detectees"), h("span", { style: { fontWeight: 600 } }, data.machinesActives.length))
+              ),
+              h("div", { style: cardStyle },
+                h("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 6 } }, "Repartition jours (depuis debut)"),
+                h("div", { style: lineStyle }, h("span", null, "Jours ouvres ecoules"), h("span", { style: { fontWeight: 600 } }, data.joursOuvresPasses + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Jours productifs"), h("span", { style: { fontWeight: 600, color: "#86efac" } }, data.joursProductifsPasses + " j (" + Math.round((1 - data.tauxAbsence) * 100) + " %)")),
+                h("div", { style: lineStyle }, h("span", null, "Feries"), h("span", { style: { fontWeight: 600 } }, data.nbFerie + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Intemperies"), h("span", { style: { fontWeight: 600, color: "#93c5fd" } }, data.nbIntemp + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Pannes"), h("span", { style: { fontWeight: 600, color: "#fda4af" } }, data.nbPanne + " j")),
+                h("div", { style: lineStyle }, h("span", null, "Arrets / autres"), h("span", { style: { fontWeight: 600 } }, (data.nbArret + data.nbAutres) + " j"))
+              ),
+              h("div", { style: cardStyle },
+                h("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 6 } }, "Financier"),
+                h("div", { style: lineStyle }, h("span", null, "CA total contrat"), h("span", { style: { fontWeight: 600 } }, fmtMoney(chantier.metrage * (chantier.prixMetre || 0)))),
+                h("div", { style: lineStyle }, h("span", null, "CA realise"), h("span", { style: { fontWeight: 600, color: "#86efac" } }, fmtMoney(data.realise * (chantier.prixMetre || 0)))),
+                h("div", { style: lineStyle }, h("span", null, "CA restant"), h("span", { style: { fontWeight: 600 } }, fmtMoney(data.metresRestants * (chantier.prixMetre || 0)))),
+                chantier.depensesPrevues ? h("div", { style: lineStyle }, h("span", null, "Depenses prevues"), h("span", { style: { fontWeight: 600 } }, fmtMoney(chantier.depensesPrevues))) : null,
+                chantier.depensesPrevues ? h("div", { style: lineStyle }, h("span", null, "Marge prevue"), h("span", { style: { fontWeight: 600, color: "#86efac" } }, fmtMoney(chantier.metrage * (chantier.prixMetre || 0) - chantier.depensesPrevues))) : null
+              )
+            )
+          ),
+
+          // ─ Section 5 : Recommandations ─
+          h("div", { style: sectionStyle },
+            h("div", { style: sectionTitle }, h(Icon, { name: "target", size: 16, color: "#a5b4fc" }), "Recommandations actionnables"),
+            (function() {
+              var recos = [];
+              if (data.projectionImpossible) recos.push({ pri: "haute", txt: "Projection impossible au rythme actuel : ajouter des machines OU revoir le metrage objectif." });
+              if (data.nbMachinesEntier && data.nbMachinesEntier > Math.ceil(data.moyMachinesRecent)) {
+                recos.push({ pri: "haute", txt: "Renforcer le chantier : il faudrait " + data.nbMachinesEntier + " machines en moyenne, actuellement ~" + data.moyMachinesRecent.toFixed(1) + "." });
+              }
+              if (data.decalageJ && data.decalageJ > 7) recos.push({ pri: "moyenne", txt: "Retard estime de " + data.decalageJ + " jours ouvres. Anticiper le decalage avec le client si non rattrapable." });
+              data.machinesActives.forEach(function(m) {
+                var eq = m.equipement;
+                var deltaMh = (parseFloat(eq.Horametre) || 0) - (parseFloat(eq.DernierEntretienH) || 0);
+                if (deltaMh > 220) recos.push({ pri: "haute", txt: "Vidange imminente sur " + (eq.Title || m.key) + " : +" + Math.round(deltaMh) + " h depuis le dernier entretien." });
+              });
+              if (data.tauxAbsence > 0.20) recos.push({ pri: "moyenne", txt: "Taux d'absence eleve (" + Math.round(data.tauxAbsence * 100) + " %). Analyser les causes (intemperies recurrentes, pannes a repetition...)." });
+              if (chantier.latitude == null) recos.push({ pri: "basse", txt: "Renseigner les coordonnees GPS du chantier pour activer les previsions meteo." });
+              if (!data.hasPlanning) recos.push({ pri: "basse", txt: "Definir le planning machines (Planning Engins) pour affiner les projections de fin de chantier." });
+              if (recos.length === 0) recos.push({ pri: "basse", txt: "Aucune action critique. Le chantier est sur les rails." });
+              var priColor = { haute: "#fda4af", moyenne: "#fde68a", basse: "#86efac" };
+              return h("ol", { style: { paddingLeft: 20, lineHeight: 1.8, fontSize: 13, color: "#cbd5e1", listStyle: "decimal" } },
+                recos.map(function(r, i) {
+                  return h("li", { key: i, style: { marginBottom: 4 } },
+                    h("span", { style: { display: "inline-block", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.05)", color: priColor[r.pri], marginRight: 6, textTransform: "uppercase" } }, r.pri),
+                    r.txt
+                  );
+                })
+              );
+            }())
+          )
+        )
+      );
+    }
+
     // ─── Ecran : Alertes de saisies manquantes (rapport / carburant / heures) ───
     function EcranAlertesSaisies({ onNavigate }) {
       var ctx = useAppData();
@@ -18087,6 +18544,7 @@
         { name: "Chantiers", pages: [
           { key: "planning", label: "Calendrier", lucide: "calendar" },
           { key: "avancement", label: "Avancement", lucide: "hard-hat" },
+          { key: "previsionnel", label: "Previsionnel", lucide: "trending-up" },
           { key: "planning-employes", label: "Planning Employes", lucide: "users" },
           { key: "primes", label: "Primes", lucide: "trophy" },
         ]},
@@ -19529,6 +19987,7 @@
         if (currentPage === "charges-fixes") return h(EcranChargesFixes, null);
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
+        if (currentPage === "previsionnel") return h(EcranPrevisionnel, { initialChantierId: pageData && pageData.chantierId });
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
         if (currentPage === "primes") return h(EcranPrimes, null);
         if (currentPage === "soumissions") return h(EcranSoumissions, { initialTab: pageData && pageData.tab });
