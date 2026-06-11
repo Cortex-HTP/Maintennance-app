@@ -13493,6 +13493,29 @@
       var carburants = _carburants[0]; var setCarburants = _carburants[1];
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
+      // ─ Cache meteo par chantier (pour previsions ajustees) ─
+      var _mbs = useState({}); var meteoByChantierStat = _mbs[0]; var setMeteoByChantierStat = _mbs[1];
+      useEffect(function() {
+        var chs = ctx.dbChantiers || [];
+        var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; });
+        actifs.slice(0, 8).forEach(function(c) {
+          if (meteoByChantierStat[c.id]) return;
+          var url = "https://employes-psi.vercel.app/api/meteo?lat=" + c.latitude + "&lon=" + c.longitude;
+          fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+            if (!data || !data.daily || !data.daily.time) return;
+            var dateMap = {};
+            var t = data.daily.time;
+            for (var i = 0; i < t.length; i++) {
+              dateMap[t[i]] = {
+                code: data.daily.weather_code ? data.daily.weather_code[i] : (data.daily.weathercode ? data.daily.weathercode[i] : 0),
+                prec: data.daily.precipitation_sum ? data.daily.precipitation_sum[i] : 0,
+                wind: data.daily.wind_speed_10m_max ? data.daily.wind_speed_10m_max[i] : 0
+              };
+            }
+            setMeteoByChantierStat(function(prev) { var nm = {}; var pk = Object.keys(prev); for (var k = 0; k < pk.length; k++) nm[pk[k]] = prev[pk[k]]; nm[c.id] = dateMap; return nm; });
+          }).catch(function() {});
+        });
+      }, [ctx.dbChantiers]);
       var _refresh = useState(0);
       var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
 
@@ -13834,22 +13857,80 @@
           startDate = new Date(now.getTime() - 90 * 86400000);
           endDate = new Date(now);
         }
+        // ─ Calcul des forecasts ajustes meteo pour les jours futurs ─
+        // Vitesse quotidienne par chantier (sur les 14 derniers jours productifs)
+        var bcToday = new Date(now.getTime()); bcToday.setHours(0, 0, 0, 0);
+        var activeChForFc = (dbChantiers || []).filter(function(c) {
+          if (c.statut === "Termine") return false;
+          if (chantierF !== "all" && String(c.id) !== String(chantierF)) return false;
+          return true;
+        });
+        var vitesseParChFc = {};
+        activeChForFc.forEach(function(c) {
+          // somme metres des 14 derniers jours productifs (sur la base des rapports filtered)
+          var pTot = 0, pNb = 0;
+          var pCursor = new Date(bcToday.getTime()); var pSafe = 0;
+          while (pNb < 14 && pSafe < 80) {
+            pCursor.setDate(pCursor.getDate() - 1);
+            var pDow = pCursor.getDay();
+            if (pDow >= 1 && pDow <= 4) {
+              var pIso = pCursor.getFullYear() + "-" + String(pCursor.getMonth() + 1).padStart(2, "0") + "-" + String(pCursor.getDate()).padStart(2, "0");
+              // metres du chantier ce jour : somme rapports
+              var dayMet = 0;
+              (rapports || []).forEach(function(r) {
+                if (r.chantier_id != null && String(r.chantier_id) === String(c.id) && r.date_rapport && String(r.date_rapport).substring(0, 10) === pIso) {
+                  dayMet += parseFloat(r.total_metres) || 0;
+                }
+              });
+              if (dayMet > 0) { pTot += dayMet; pNb++; }
+            }
+            pSafe++;
+          }
+          vitesseParChFc[c.id] = pNb > 0 ? pTot / pNb : 0;
+        });
         var cur = new Date(startDate);
         cur.setHours(0, 0, 0, 0);
         while (cur <= endDate) {
           var dStr = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
           var dow = cur.getDay();
+          var isWE = (dow === 0 || dow === 6);
+          var realVal = dayMap[dStr] || 0;
+          // Forecast uniquement pour les jours FUTURS Lun-Jeu sans donnees reelles
+          var isFuture = cur.getTime() > bcToday.getTime();
+          var fcVal = 0, fcCA = 0, fcIntemp = false, fcReduced = false;
+          if (isFuture && dow >= 1 && dow <= 4 && realVal === 0) {
+            activeChForFc.forEach(function(c) {
+              var vQuot = vitesseParChFc[c.id] || 0;
+              if (vQuot <= 0) return;
+              var mMap = meteoByChantierStat[c.id];
+              var mDay = mMap ? mMap[dStr] : null;
+              var fact = meteoMetrageFactor(mDay);
+              var val = vQuot * fact;
+              if (val > 0) {
+                fcVal += val;
+                fcCA += val * (parseFloat(c.prixMetre) || 0);
+                if (fact < 1) fcReduced = true;
+              } else {
+                if (fact === 0) fcIntemp = true;
+              }
+            });
+          }
           chartData.push({
             label: String(cur.getDate()),
-            value: dayMap[dStr] || 0,
+            value: realVal,
             ca: caByDate[dStr] || 0,
             jsDate: new Date(cur),
-            isWE: (dow === 0 || dow === 6)
+            isWE: isWE,
+            forecast: fcVal,
+            forecastCA: fcCA,
+            hasForecast: fcVal > 0 || fcIntemp,
+            fcIntemp: fcIntemp,
+            fcReduced: fcReduced
           });
           cur.setDate(cur.getDate() + 1);
         }
       }
-      var maxDay = Math.max.apply(null, chartData.map(function(d) { return d.value; }).concat(1));
+      var maxDay = Math.max.apply(null, chartData.map(function(d) { return Math.max(d.value, d.forecast || 0); }).concat(1));
 
       // ── Top consommables (tous, tries par cout decroissant) ──
       // Les 6 premiers sont visibles d'office, le reste est accessible par scroll vertical.
@@ -14580,10 +14661,18 @@
                       h("text", { x: cx, y: 13, textAnchor: "middle", fontSize: 8, fill: "#c4b5fd", fontWeight: 700 }, "Sem : " + fmtCompactXPF(w.totalCa) + " XPF")
                     );
                   }) : null,
+                  // Pattern de hachures (defini une fois pour les forecasts)
+                  !isMonthlyView ? h("defs", { key: "statDefs" },
+                    h("pattern", { id: "statFcStripe", width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" },
+                      h("rect", { width: 6, height: 6, fill: "transparent" }),
+                      h("line", { x1: 0, y1: 0, x2: 0, y2: 6, stroke: "rgba(255,255,255,0.18)", strokeWidth: 1.5 })
+                    )
+                  ) : null,
                   // Barres : vert si depasse le seuil journalier/mensuel, rouge sinon
                   // En vue journaliere, les week-ends (non travailles) restent en couleur neutre.
                   chartData.map(function(d, idx) {
                     var barH = maxDay > 0 ? (d.value / maxDay) * (chartH - topPad) : 0;
+                    var fcH = maxDay > 0 ? ((d.forecast || 0) / maxDay) * (chartH - topPad) : 0;
                     var x = paddingLR + idx * (barW + gap);
                     var seuilForBar = isMonthlyView ? seuilMois : seuilJour;
                     var canCompare = seuilForBar > 0 && d.value > 0 && (isMonthlyView || !d.isWE);
@@ -14594,9 +14683,20 @@
                       barColor = isMonthlyView ? "#7c3aed" : (d.isWE ? "#c4b5fd" : "#7c3aed");
                     }
                     var showLabel = isMonthlyView || n <= 31 || d.jsDate.getDate() === 1 || idx === 0 || idx === n - 1;
+                    // Couleur barre previsionnelle selon impact meteo
+                    var fcBase, fcLight;
+                    if (d.fcIntemp) { fcBase = "#dc2626"; fcLight = "#fda4af"; }
+                    else if (d.fcReduced) { fcBase = "#3b82f6"; fcLight = "#93c5fd"; }
+                    else { fcBase = "#7c3aed"; fcLight = "#c4b5fd"; }
                     return h("g", { key: "b" + idx },
                       h("rect", { x: x, y: chartH - barH, width: Math.max(barW, 1), height: Math.max(barH, 0), rx: 1.5, fill: barColor, opacity: d.value > 0 ? 1 : 0.15 }),
                       d.value > 0 && barH > 14 ? h("text", { x: x + barW / 2, y: chartH - barH + 12, textAnchor: "middle", fontSize: 8, fill: "white", fontWeight: 700 }, Math.round(d.value)) : null,
+                      // Barre previsionnelle (jours futurs)
+                      d.hasForecast && (d.forecast || 0) > 0 ? h("g", { style: { opacity: 0.65 } },
+                        h("rect", { x: x, y: chartH - fcH, width: Math.max(barW, 1), height: Math.max(fcH, 0), rx: 1.5, fill: fcLight, stroke: fcBase, strokeWidth: 1, strokeDasharray: "2 2" }),
+                        h("rect", { x: x, y: chartH - fcH, width: Math.max(barW, 1), height: Math.max(fcH, 0), rx: 1.5, fill: "url(#statFcStripe)" }),
+                        fcH > 14 ? h("text", { x: x + barW / 2, y: chartH - fcH + 12, textAnchor: "middle", fontSize: 8, fill: "white", fontWeight: 700, fontStyle: "italic", opacity: 0.85 }, Math.round(d.forecast)) : null
+                      ) : null,
                       showLabel ? h("text", { x: x + barW / 2, y: chartH + 12, textAnchor: "middle", fontSize: 8, fill: (d.isWE ? "#a78bfa" : "#a1a1aa"), fontWeight: isMonthlyView ? 700 : 400 }, d.label) : null
                     );
                   }),
