@@ -12800,6 +12800,7 @@
         { key: "emprunts", label: "Emprunts", icon: "landmark" },
         { key: "charges-fixes", label: "Charges fixes", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
+        { key: "coffre-rh", label: "Coffre-fort RH", icon: "folder-lock" },
         { key: "messages", label: "Messages", icon: "mail" },
         { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
         { key: "alertes-saisies", label: "Alertes saisies", icon: "alert-triangle", adminOnly: true },
@@ -13015,6 +13016,7 @@
                 }
               } },
                 h("option", { value: "Administrateur" }, "Administrateur"),
+                h("option", { value: "Secretaire" }, "Secretaire RH"),
                 h("option", { value: "Utilisateur" }, "Utilisateur")
               )),
               h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
@@ -13140,7 +13142,7 @@
                         ),
                         h("td", { style: Object.assign({}, tdStyle, { color: "#a1a1aa" }) }, u.email),
                         h("td", { style: tdStyle },
-                          h("span", { style: { fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4, background: u.role === "Administrateur" ? "rgba(167,139,250,0.15)" : "rgba(34,197,94,0.12)", color: u.role === "Administrateur" ? "#a78bfa" : "#86efac", border: "1px solid " + (u.role === "Administrateur" ? "rgba(167,139,250,0.3)" : "rgba(34,197,94,0.3)") } }, u.role)
+                          h("span", { style: { fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4, background: u.role === "Administrateur" ? "rgba(167,139,250,0.15)" : u.role === "Secretaire" ? "rgba(6,182,212,0.15)" : "rgba(34,197,94,0.12)", color: u.role === "Administrateur" ? "#a78bfa" : u.role === "Secretaire" ? "#67e8f9" : "#86efac", border: "1px solid " + (u.role === "Administrateur" ? "rgba(167,139,250,0.3)" : u.role === "Secretaire" ? "rgba(6,182,212,0.3)" : "rgba(34,197,94,0.3)") } }, u.role === "Secretaire" ? "Secretaire RH" : u.role)
                         ),
                         h("td", { style: tdStyle },
                           h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa" } }, pageCount + " / " + ALL_PAGES.length + " pages")
@@ -18677,6 +18679,260 @@
       return { list: items, count: total, daysChecked: days };
     }
 
+    // ─── SignaturePad : canvas dessin libre (souris + tactile) ───────────────
+    function SignaturePad({ onChange, height }) {
+      var canvasRef = React.useRef(null);
+      var stateRef = React.useRef({ drawing: false, lastX: 0, lastY: 0, dirty: false });
+      useEffect(function() {
+        var c = canvasRef.current; if (!c) return;
+        // Match logique width/height au CSS pixel ratio
+        var ratio = window.devicePixelRatio || 1;
+        var w = c.clientWidth, hh = height || 160;
+        c.width = w * ratio; c.height = hh * ratio;
+        var ctx = c.getContext("2d");
+        ctx.scale(ratio, ratio);
+        ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#1a1a2e";
+        function pos(e) {
+          var rect = c.getBoundingClientRect();
+          var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+          var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+          return { x: x, y: y };
+        }
+        function start(e) { e.preventDefault(); var p = pos(e); stateRef.current.drawing = true; stateRef.current.lastX = p.x; stateRef.current.lastY = p.y; }
+        function move(e) {
+          if (!stateRef.current.drawing) return; e.preventDefault();
+          var p = pos(e);
+          ctx.beginPath(); ctx.moveTo(stateRef.current.lastX, stateRef.current.lastY); ctx.lineTo(p.x, p.y); ctx.stroke();
+          stateRef.current.lastX = p.x; stateRef.current.lastY = p.y; stateRef.current.dirty = true;
+          if (onChange) onChange(c.toDataURL("image/png"));
+        }
+        function end() { stateRef.current.drawing = false; }
+        c.addEventListener("mousedown", start); c.addEventListener("mousemove", move);
+        c.addEventListener("mouseup", end); c.addEventListener("mouseleave", end);
+        c.addEventListener("touchstart", start, { passive: false });
+        c.addEventListener("touchmove", move, { passive: false });
+        c.addEventListener("touchend", end);
+        return function() {
+          c.removeEventListener("mousedown", start); c.removeEventListener("mousemove", move);
+          c.removeEventListener("mouseup", end); c.removeEventListener("mouseleave", end);
+          c.removeEventListener("touchstart", start); c.removeEventListener("touchmove", move);
+          c.removeEventListener("touchend", end);
+        };
+      }, []);
+      function clear() {
+        var c = canvasRef.current; if (!c) return;
+        var ctx = c.getContext("2d");
+        ctx.clearRect(0, 0, c.width, c.height);
+        stateRef.current.dirty = false;
+        if (onChange) onChange(null);
+      }
+      return h("div", null,
+        h("canvas", {
+          ref: canvasRef,
+          style: { width: "100%", height: (height || 160) + "px", cursor: "crosshair", touchAction: "none", background: "#fff", borderRadius: 4 }
+        }),
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, fontSize: 11, color: "#71717a" } },
+          h("span", null, "Dessine ta signature avec la souris ou le doigt"),
+          h("button", { onClick: clear, style: { padding: "4px 10px", background: "#eee", border: "1px solid #ccc", borderRadius: 4, color: "#666", fontSize: 11, cursor: "pointer", fontFamily: "inherit" } }, "Effacer")
+        )
+      );
+    }
+
+    // ─── EcranCoffreRH : documents RH par employe ────────────────────────────
+    // Acces : Admin OU Secretaire RH (vue admin avec sidebar employes)
+    //         OU employe (vue restreinte : ses propres documents seulement)
+    var RH_DOC_TYPES = [
+      { key: "contrat",       label: "Contrat de travail",           icon: "📜", accent: "#a78bfa" },
+      { key: "avenant",       label: "Avenant au contrat",           icon: "📜", accent: "#a78bfa" },
+      { key: "fiche_paie",    label: "Fiche de paie",                icon: "💰", accent: "#22c55e" },
+      { key: "solde",         label: "Solde de tout compte",         icon: "💰", accent: "#22c55e" },
+      { key: "caces",         label: "Permis CACES",                 icon: "🛠️", accent: "#fbbf24" },
+      { key: "permis",        label: "Permis de conduire",           icon: "🚗", accent: "#fbbf24" },
+      { key: "medecine",      label: "Certificat medecine du travail", icon: "⚕️", accent: "#06b6d4" },
+      { key: "habilitation",  label: "Habilitation electrique",      icon: "⚡", accent: "#f43f5e" },
+      { key: "diplome",       label: "Diplome / Formation",          icon: "🎓", accent: "#8b5cf6" },
+      { key: "id",            label: "Carte d'identite / Passeport", icon: "🆔", accent: "#64748b" },
+      { key: "autre",         label: "Autre",                        icon: "📄", accent: "#94a3b8" }
+    ];
+    function getRhDocTypeInfo(key) {
+      return RH_DOC_TYPES.find(function(t) { return t.key === key; }) || RH_DOC_TYPES[RH_DOC_TYPES.length - 1];
+    }
+
+    function EcranCoffreRH() {
+      var ctx = useAppData();
+      var isAdmin = ctx.isAdmin;
+      var isSecretaire = ctx.isSecretaire;
+      var isRH = isAdmin || isSecretaire;
+      var userEmail = ctx.userEmail || "";
+
+      // ─ Personnel : depuis parametres.personnel_data ─
+      var personnelList = (function() {
+        var pdRow = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
+        if (!pdRow || !pdRow.valeur) return [];
+        try { return JSON.parse(pdRow.valeur) || []; } catch (e) { return []; }
+      }());
+
+      // Si non-RH, on filtre sur l'employe connecte (matching par email)
+      var ownPersonnel = personnelList.find(function(p) {
+        return p && p.email && p.email.toLowerCase() === userEmail.toLowerCase();
+      });
+
+      // ─ State ─
+      var _sel = useState(isRH ? (personnelList[0] && personnelList[0].code) : (ownPersonnel && ownPersonnel.code));
+      var selectedCode = _sel[0]; var setSelectedCode = _sel[1];
+      var _docs = useState([]); var docs = _docs[0]; var setDocs = _docs[1];
+      var _loading = useState(true); var loading = _loading[0]; var setLoading = _loading[1];
+      var _search = useState(""); var search = _search[0]; var setSearch = _search[1];
+      var _typeFilter = useState("all"); var typeFilter = _typeFilter[0]; var setTypeFilter = _typeFilter[1];
+
+      // ─ Fetch docs ─
+      function fetchDocs() {
+        setLoading(true);
+        var q = supabase.from("rh_documents").select("*").order("uploaded_at", { ascending: false });
+        if (!isRH) q = q.eq("personnel_code", ownPersonnel ? ownPersonnel.code : "__nope__");
+        q.then(function(res) {
+          if (res.error) { console.warn("[coffre-rh] fetch:", res.error.message); setLoading(false); return; }
+          setDocs(res.data || []);
+          setLoading(false);
+        });
+      }
+      useEffect(function() { fetchDocs(); }, []);
+
+      // ─ Docs du selectionne ─
+      var selectedPersonnel = personnelList.find(function(p) { return p.code === selectedCode; });
+      var docsForSelected = docs.filter(function(d) { return d.personnel_code === selectedCode; });
+      if (typeFilter !== "all") docsForSelected = docsForSelected.filter(function(d) { return d.type_document === typeFilter; });
+
+      // ─ KPIs globaux (admin/secretaire seulement) ─
+      var now = new Date();
+      var soon = new Date(now.getTime() + 30 * 86400000);
+      var totalDocs = docs.length;
+      var expiringSoon = docs.filter(function(d) { return d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; }).length;
+      var expired = docs.filter(function(d) { return d.date_expiration && new Date(d.date_expiration) < now; }).length;
+      var pendingSignatures = docs.filter(function(d) { return d.status === "pending_signature"; }).length;
+
+      // ─ Liste employes filtree par search ─
+      var filteredPersonnel = personnelList.filter(function(p) {
+        if (!search) return true;
+        var s = search.toLowerCase();
+        var nom = ((p.prenom || "") + " " + (p.nom || "")).toLowerCase();
+        return nom.indexOf(s) >= 0 || (p.code || "").toLowerCase().indexOf(s) >= 0;
+      });
+
+      // ─ Styles ─
+      var sectionStyle = { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" };
+
+      return h("div", null,
+        h(PageHeader, { title: h(IconText, { icon: "folder-lock", size: 20 }, "Coffre-fort RH"), subtitle: isRH ? "Documents administratifs des employes" : "Mes documents administratifs et signatures en attente" }),
+
+        // KPIs (RH seulement)
+        isRH ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 } },
+          KpiTile({ icon: "folder", accent: "#a78bfa", label: "Documents stockes", value: totalDocs, hint: "sur " + personnelList.length + " employes" }),
+          KpiTile({ icon: "clock", accent: "#fbbf24", label: "Expirent <30j", value: expiringSoon, hint: "permis / medecine / habilitations" }),
+          KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Deja expires", value: expired, hint: "a renouveler en urgence" }),
+          KpiTile({ icon: "pen-tool", accent: "#06b6d4", label: "Signatures en attente", value: pendingSignatures, hint: "documents en cours de signature" })
+        ) : null,
+
+        loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } }, "Chargement des documents...") :
+        h("div", { style: { display: "grid", gridTemplateColumns: isRH ? "320px 1fr" : "1fr", gap: 16 } },
+          // Sidebar employes (RH seulement)
+          isRH ? h("div", Object.assign({}, { style: Object.assign({}, sectionStyle, { padding: 14, maxHeight: 700, overflowY: "auto" }) }),
+            h("input", {
+              type: "text", placeholder: "Chercher un employe...",
+              value: search, onChange: function(e) { setSearch(e.target.value); },
+              style: { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, marginBottom: 12, fontSize: 13, fontFamily: "inherit", outline: "none" }
+            }),
+            filteredPersonnel.length === 0 ? h("div", { style: { padding: 12, color: "#71717a", fontSize: 12 } }, "Aucun employe") :
+            filteredPersonnel.map(function(p) {
+              var isActive = p.code === selectedCode;
+              var pDocs = docs.filter(function(d) { return d.personnel_code === p.code; });
+              var hasExpired = pDocs.some(function(d) { return d.date_expiration && new Date(d.date_expiration) < now; });
+              var hasExpiringSoon = pDocs.some(function(d) { return d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; });
+              var initials = ((p.prenom || "?")[0] + (p.nom || "?")[0]).toUpperCase();
+              return h("div", { key: p.code, onClick: function() { setSelectedCode(p.code); },
+                style: { padding: "10px 12px", borderRadius: 8, marginBottom: 6, display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
+                  background: isActive ? "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.06))" : "transparent",
+                  border: isActive ? "1px solid rgba(99,102,241,0.30)" : "1px solid transparent" } },
+                h("div", { style: { width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, color: "white", flexShrink: 0 } }, initials),
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ((p.prenom || "") + " " + (p.nom || "")).trim()),
+                  h("div", { style: { fontSize: 11, color: "#94a3b8" } }, (p.role || "?") + " · " + (p.code || "?"))
+                ),
+                h("span", { style: { fontSize: 9.5, fontWeight: 700, padding: "1px 6px", borderRadius: 999,
+                  background: hasExpired ? "rgba(244,63,94,0.18)" : hasExpiringSoon ? "rgba(251,191,36,0.18)" : "rgba(34,197,94,0.18)",
+                  color: hasExpired ? "#fda4af" : hasExpiringSoon ? "#fde68a" : "#86efac"
+                } }, pDocs.length)
+              );
+            })
+          ) : null,
+
+          // Détail employé
+          h("div", { style: Object.assign({}, sectionStyle, { padding: 18 }) },
+            !selectedPersonnel ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Selectionne un employe pour voir ses documents.") :
+            h(React.Fragment, null,
+              h("div", { style: { display: "flex", alignItems: "center", gap: 14, marginBottom: 18, paddingBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.06)" } },
+                h("div", { style: { width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 20, color: "white", flexShrink: 0 } }, ((selectedPersonnel.prenom || "?")[0] + (selectedPersonnel.nom || "?")[0]).toUpperCase()),
+                h("div", null,
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fafafa" } }, ((selectedPersonnel.prenom || "") + " " + (selectedPersonnel.nom || "")).trim()),
+                  h("div", { style: { fontSize: 12, color: "#94a3b8", display: "flex", gap: 10, marginTop: 2, flexWrap: "wrap" } },
+                    h("span", null, selectedPersonnel.role || "?"),
+                    h("span", null, "Code " + (selectedPersonnel.code || "?")),
+                    h("span", { style: { color: "#86efac" } }, docsForSelected.length + " document" + (docsForSelected.length > 1 ? "s" : ""))
+                  )
+                ),
+                isRH ? h("button", { onClick: function() { alert("Upload sera dispo dans la prochaine etape (signatures + storage)."); }, style: { marginLeft: "auto", padding: "10px 16px", borderRadius: 8, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", border: "none", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 } }, "+ Ajouter un document") : null
+              ),
+
+              // Filtres types
+              h("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" } },
+                h("div", { onClick: function() { setTypeFilter("all"); }, style: { padding: "5px 12px", borderRadius: 999, fontSize: 11, fontWeight: 600, cursor: "pointer", background: typeFilter === "all" ? "rgba(99,102,241,0.20)" : "rgba(255,255,255,0.05)", color: typeFilter === "all" ? "#c4b5fd" : "#cbd5e1", border: "1px solid " + (typeFilter === "all" ? "rgba(99,102,241,0.45)" : "rgba(255,255,255,0.08)") } }, "Tous (" + docs.filter(function(d) { return d.personnel_code === selectedCode; }).length + ")"),
+                RH_DOC_TYPES.map(function(t) {
+                  var count = docs.filter(function(d) { return d.personnel_code === selectedCode && d.type_document === t.key; }).length;
+                  if (count === 0) return null;
+                  return h("div", { key: t.key, onClick: function() { setTypeFilter(t.key); },
+                    style: { padding: "5px 12px", borderRadius: 999, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                      background: typeFilter === t.key ? "rgba(99,102,241,0.20)" : "rgba(255,255,255,0.05)",
+                      color: typeFilter === t.key ? "#c4b5fd" : "#cbd5e1",
+                      border: "1px solid " + (typeFilter === t.key ? "rgba(99,102,241,0.45)" : "rgba(255,255,255,0.08)") } },
+                    t.icon + " " + t.label + " (" + count + ")");
+                })
+              ),
+
+              // Documents
+              docsForSelected.length === 0 ? h("div", { style: { padding: 50, textAlign: "center", color: "#71717a", fontSize: 13 } },
+                h("div", { style: { fontSize: 40, marginBottom: 10, opacity: 0.4 } }, "📁"),
+                h("div", { style: { fontWeight: 600, marginBottom: 4 } }, "Aucun document"),
+                h("div", { style: { fontSize: 12 } }, isRH ? "Clique sur 'Ajouter un document' pour commencer." : "Aucun document n'a encore ete ajoute pour vous.")
+              ) :
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 } },
+                docsForSelected.map(function(d) {
+                  var info = getRhDocTypeInfo(d.type_document);
+                  var expired = d.date_expiration && new Date(d.date_expiration) < now;
+                  var expiringSoon2 = d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon;
+                  var expColor = expired ? "#fda4af" : expiringSoon2 ? "#fde68a" : "#86efac";
+                  return h("div", { key: d.id, style: { background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 14, borderLeft: "3px solid " + info.accent } },
+                    h("div", { style: { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 } },
+                      h("div", { style: { width: 36, height: 36, borderRadius: 8, background: info.accent + "30", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 } }, info.icon),
+                      h("div", { style: { flex: 1, minWidth: 0 } },
+                        h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 } }, info.label),
+                        h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, d.nom_fichier)
+                      )
+                    ),
+                    h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.05)" } },
+                      h("span", null, d.date_emission ? new Date(d.date_emission).toLocaleDateString("fr-FR") : "?"),
+                      d.date_expiration ? h("span", { style: { color: expColor } }, "Exp " + new Date(d.date_expiration).toLocaleDateString("fr-FR")) : h("span", null, "Sans expiration")
+                    ),
+                    d.status === "pending_signature" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(251,191,36,0.18)", color: "#fde68a", fontSize: 11, fontWeight: 700, textAlign: "center" } }, "✍️ En attente de signature") : null,
+                    d.status === "signed" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(34,197,94,0.15)", color: "#86efac", fontSize: 11, fontWeight: 700, textAlign: "center" } }, "✓ Signe le " + new Date(d.signed_at).toLocaleDateString("fr-FR")) : null
+                  );
+                })
+              )
+            )
+          )
+        )
+      );
+    }
+
     // ─── Ecran : Previsionnel detaille par chantier ──────────────────────────
     // Aggrège : KPIs prévisionnels, pannes potentielles (via logique Equipement),
     // météo Open-Meteo, stats historiques + financier + personnel, recommandations.
@@ -19497,7 +19753,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -19519,6 +19775,7 @@
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
+          { key: "coffre-rh", label: "Coffre-fort RH", lucide: "folder-lock" },
           { key: "messages", label: "Messages", lucide: "mail" },
         ]},
         { name: "Finances", pages: [
@@ -19552,7 +19809,7 @@
         h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
           sections.map((section) => h("div", { key: section.name },
             h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
-            section.pages.filter(function(p) { if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
+            section.pages.filter(function(p) { if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh" && (isAdmin || isSecretaire)) return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
               return h("button", { key: p.key, onClick: () => navigateThenClose(p.key),
                 style: {
@@ -20632,6 +20889,10 @@
       }
       // isAdmin: true if role is "Administrateur" OR if email matches ADMIN_EMAIL (fallback)
       const isAdmin = !!(currentAppUser && currentAppUser.role === "Administrateur") || !!((userEmail || "").toLowerCase() === ADMIN_EMAIL);
+      // isSecretaire: role "Secretaire" -> acces complet au coffre RH uniquement
+      const isSecretaire = !!(currentAppUser && currentAppUser.role === "Secretaire");
+      // Peut acceder au coffre RH (admin OR secretaire OR utilisateur avec page autorisee)
+      const isRH = isAdmin || isSecretaire;
       // Allowed pages: admin gets everything, others get only assigned pages
       var allowedPages = null; // null = all pages (admin)
       if (!isAdmin && currentAppUser) {
@@ -20920,7 +21181,7 @@
 
       const contextValue = {
         interventions, equipements, plans, pieces, releves, piecesEquipements, parametres, setParametres,
-        isAdmin, userEmail, pendingValidations, validationLog, allowedPages,
+        isAdmin, isSecretaire, isRH, userEmail, pendingValidations, validationLog, allowedPages,
         dbChantiers, setDbChantiers, dbSaisies, setDbSaisies,
         dbDeclarations, setDbDeclarations, dbRenouvellements, setDbRenouvellements,
         dbAppUsers, setDbAppUsers, dbAffectations, setDbAffectations, dbPaliers, setDbPaliers,
@@ -20958,7 +21219,7 @@
 
       const renderPage = () => {
         // Check page access for non-admins
-        if (!isAdmin && allowedPages && currentPage !== "accueil" && currentPage !== "fiche-equipement" && currentPage !== "administration" && currentPage !== "alertes-saisies" && allowedPages.indexOf(currentPage) < 0) {
+        if (!isAdmin && allowedPages && currentPage !== "accueil" && currentPage !== "fiche-equipement" && currentPage !== "administration" && currentPage !== "alertes-saisies" && !(currentPage === "coffre-rh" && (isAdmin || isSecretaire)) && allowedPages.indexOf(currentPage) < 0) {
           return h(EcranAccueil, { onNavigate: navigate });
         }
         // Alertes saisies est admin only
@@ -20980,6 +21241,7 @@
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "previsionnel") return h(EcranPrevisionnel, { initialChantierId: pageData && pageData.chantierId });
+        if (currentPage === "coffre-rh") return h(EcranCoffreRH, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
         if (currentPage === "primes") return h(EcranPrimes, null);
         if (currentPage === "soumissions") return h(EcranSoumissions, { initialTab: pageData && pageData.tab });
@@ -21000,7 +21262,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "var(--bg)", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
