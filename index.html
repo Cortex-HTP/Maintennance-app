@@ -8257,6 +8257,36 @@
           var pmRow = parametresList.find(function(p) { return p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre"); });
           if (pmRow && pmRow.valeur) prixMazout = parseFloat(pmRow.valeur) || 175;
           var coutCarburant90j = (carbs90j || []).reduce(function(s, c) { return s + ((parseFloat(c.quantite_l) || 0) * prixMazout); }, 0);
+          // Consommables sondeuses 90j (forets, joints, etc. depuis consommables_perdus des rapports)
+          var piecesList = ctxAv.pieces || [];
+          var pieceIdxCG = {};
+          piecesList.forEach(function(p) {
+            var dKey = String(p.Designation || "").trim().toLowerCase();
+            var rKey = String(p.Reference || "").trim().toLowerCase();
+            var prix = parseFloat(p.PrixUnitaire) || 0;
+            if (dKey) pieceIdxCG[dKey] = prix;
+            if (rKey) pieceIdxCG["ref:" + rKey] = prix;
+          });
+          function lookPriceCG(des, ref) {
+            var d = String(des || "").trim().toLowerCase();
+            var r = String(ref || "").trim().toLowerCase();
+            if (d && pieceIdxCG[d] != null) return pieceIdxCG[d];
+            if (r && pieceIdxCG["ref:" + r] != null) return pieceIdxCG["ref:" + r];
+            return 0;
+          }
+          var todayCG = new Date();
+          var d90CG = new Date(todayCG.getTime() - 90 * 86400 * 1000);
+          var iso90CG = d90CG.toISOString().substring(0, 10);
+          var coutConsoSondeuses90j = 0;
+          (ctxAv.dbRapportsForage || []).forEach(function(rr) {
+            if (!rr || !rr.date_rapport || rr.date_rapport < iso90CG) return;
+            var cons = Array.isArray(rr.consommables_perdus) ? rr.consommables_perdus : [];
+            cons.forEach(function(cc) {
+              var qty = parseFloat(cc.qty != null ? cc.qty : (cc.quantite != null ? cc.quantite : (cc.qte || 0))) || 0;
+              var prix = lookPriceCG(cc.designation || cc.nom, cc.ref || cc.reference);
+              coutConsoSondeuses90j += qty * prix;
+            });
+          });
           // Primes 90j (meme calcul que page Primes / page Accueil)
           var today2 = new Date();
           var d90 = new Date(today2.getTime() - 90 * 86400 * 1000);
@@ -8284,8 +8314,8 @@
             });
             coutPrimes90j = (totalPrimesBrutes || 0) * 1.30;
           } catch (e) {}
-          // Total couts 90j
-          var coutTotal90j = coutPersonnel90j + coutChargesFixes90j + coutEmprunts90j + coutCarburant90j + coutPrimes90j;
+          // Total couts 90j (alignement complet avec la formule Accueil)
+          var coutTotal90j = coutPersonnel90j + coutChargesFixes90j + coutEmprunts90j + coutCarburant90j + coutPrimes90j + coutConsoSondeuses90j;
           if (coutTotal90j <= 0) return 0;
           // Metres 90j (tous chantiers confondus)
           var iso90 = d90.toISOString().substring(0, 10);
