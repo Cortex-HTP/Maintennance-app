@@ -9705,6 +9705,97 @@
                             tooltip: coutSource
                           })
                         );
+                      }()),
+                      // ─ Courbe previsionnel 14 jours : impact meteo ─
+                      // Compare le metrage cumule ideal (rythme normal) au metrage
+                      // ajuste meteo (intemperies -> jour perdu). Donne une lecture
+                      // visuelle immediate de l'impact de la meteo a venir.
+                      (function() {
+                        var meteoMap = meteoByChantier[chantier.id];
+                        if (!meteoMap || !vitesseParMachine || vitesseParMachine <= 0) return null;
+                        var vitesseQuotidienne = vitesseParMachine * moyMachinesRecent;
+                        if (vitesseQuotidienne <= 0) return null;
+                        var nbDays = 14;
+                        var pts = [];
+                        var cumIdeal = 0, cumReel = 0;
+                        var cursor = new Date(today.getTime());
+                        for (var di = 0; di < nbDays; di++) {
+                          cursor.setDate(cursor.getDate() + 1);
+                          var dow = cursor.getDay();
+                          var iso = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
+                          var isWE = dow === 0 || dow === 5 || dow === 6;
+                          var dayIdeal = isWE ? 0 : vitesseQuotidienne;
+                          var dayReel = dayIdeal;
+                          var m = meteoMap[iso];
+                          var intemp = false;
+                          if (m && !isWE) {
+                            // Intemperies = pluie > 15 mm OU vent > 60 km/h OU orage
+                            intemp = (m.prec || 0) > 15 || (m.wind || 0) > 60 || (m.code || 0) >= 95;
+                            if (intemp) dayReel = 0;
+                            else if ((m.prec || 0) > 5) dayReel = dayIdeal * 0.6; // pluie moderee = 60%
+                          }
+                          cumIdeal += dayIdeal;
+                          cumReel += dayReel;
+                          pts.push({ date: cursor.toLocaleDateString("fr-FR", { weekday: "short", day: "2-digit" }), dow: dow, isWE: isWE, ideal: cumIdeal, reel: cumReel, intemp: intemp, meteo: m });
+                        }
+                        var maxY = Math.max(cumIdeal, 1);
+                        var deficit = cumIdeal - cumReel;
+                        var W = 760, H = 130, mL = 38, mR = 12, mT = 10, mB = 22;
+                        var iw = W - mL - mR, ih = H - mT - mB;
+                        var n = pts.length;
+                        var step = iw / Math.max(1, n - 1);
+                        function xPx(i) { return mL + i * step; }
+                        function yPx(v) { return mT + ih - (v / maxY) * ih; }
+                        var idealPath = pts.map(function(p, i) { return (i === 0 ? "M" : "L") + xPx(i) + " " + yPx(p.ideal); }).join(" ");
+                        var reelPath = pts.map(function(p, i) { return (i === 0 ? "M" : "L") + xPx(i) + " " + yPx(p.reel); }).join(" ");
+                        var reelArea = pts.map(function(p, i) { return (i === 0 ? "M" : "L") + xPx(i) + " " + yPx(p.reel); }).join(" ") + " L " + xPx(n - 1) + " " + (mT + ih) + " L " + xPx(0) + " " + (mT + ih) + " Z";
+                        // Ticks Y : 0 et max
+                        return h("div", { style: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: "10px 12px", marginTop: 12 } },
+                          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, fontSize: 12 } },
+                            h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: "#e0e7ff" } },
+                              h(Icon, { name: "cloud-rain", size: 13, color: "#93c5fd" }),
+                              "Prévisionnel 14 j ajusté météo"
+                            ),
+                            h("div", { style: { display: "flex", gap: 14, fontSize: 10.5, color: "#a1a1aa" } },
+                              h("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, h("span", { style: { width: 12, height: 1.5, background: "#c4b5fd", borderTop: "1.5px dashed #c4b5fd" } }), "Théorique"),
+                              h("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, h("span", { style: { width: 12, height: 2, background: "#86efac" } }), "Avec météo"),
+                              deficit > 0 ? h("span", { style: { color: "#fda4af", fontWeight: 600 } }, "Déficit : " + fmtNum(Math.round(deficit)) + " m") : null
+                            )
+                          ),
+                          h("svg", { width: "100%", viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none", style: { display: "block" } },
+                            h("defs", null,
+                              h("linearGradient", { id: "previForeGrad" + chantier.id, x1: 0, y1: 0, x2: 0, y2: 1 },
+                                h("stop", { offset: "0%", stopColor: "rgba(134,239,172,0.30)" }),
+                                h("stop", { offset: "100%", stopColor: "rgba(134,239,172,0.02)" })
+                              )
+                            ),
+                            // Grille Y (0, mi, max)
+                            [0, maxY / 2, maxY].map(function(v, gi) {
+                              var y = yPx(v);
+                              return h("g", { key: "yt" + gi },
+                                h("line", { x1: mL, y1: y, x2: W - mR, y2: y, stroke: "rgba(255,255,255,0.05)", strokeDasharray: gi === 0 ? "" : "2 4" }),
+                                h("text", { x: mL - 6, y: y + 3, fill: "#64748b", fontSize: 9, textAnchor: "end" }, Math.round(v) + " m")
+                              );
+                            }),
+                            // Zones grisées pour week-ends + intempéries
+                            pts.map(function(p, i) {
+                              if (!p.isWE && !p.intemp) return null;
+                              var x = xPx(i) - step * 0.4;
+                              var col = p.intemp ? "rgba(244,63,94,0.10)" : "rgba(100,116,139,0.10)";
+                              return h("rect", { key: "z" + i, x: x, y: mT, width: step * 0.8, height: ih, fill: col });
+                            }),
+                            // Area sous la courbe reelle
+                            h("path", { d: reelArea, fill: "url(#previForeGrad" + chantier.id + ")", stroke: "none" }),
+                            // Courbe ideale (pointille violet)
+                            h("path", { d: idealPath, stroke: "#c4b5fd", strokeWidth: 1.5, fill: "none", strokeDasharray: "4 3", strokeLinejoin: "round", strokeLinecap: "round" }),
+                            // Courbe reelle (vert plein)
+                            h("path", { d: reelPath, stroke: "#86efac", strokeWidth: 2, fill: "none", strokeLinejoin: "round", strokeLinecap: "round" }),
+                            // Labels X (1er, milieu, dernier)
+                            [0, Math.floor(n / 2), n - 1].map(function(i, ki) {
+                              return h("text", { key: "xt" + ki, x: xPx(i), y: H - 6, fill: "#64748b", fontSize: 9, textAnchor: "middle" }, pts[i].date);
+                            })
+                          )
+                        );
                       }())
                     );
                   }()),
