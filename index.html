@@ -8891,129 +8891,91 @@
 
             var caMois = monthMet * (chantier.prixMetre || 0);
 
-            // ── Calcul avance / retard base sur la productivite (26 m/h) ──
-            // Avance = realise - (heures_foration x 26)
-            // Heures_foration : extraites des activites des rapports_forage du chantier
-            // (toute activite dont le libelle contient 'forat' ou 'forag').
-            // Independant des dates, du nb de machines, des feries / intemperies.
-            var VITESSE_NORMATIVE_MH = 26;
+            // ── Calcul avance / retard : proportionnel a la duree (jours ouvres) ──
+            // Principe :
+            //   attendu = metrage_total x (jours_ouvres_passes / jours_ouvres_total)
+            //   avance  = realise - attendu
+            // Jours ouvres = lundi -> jeudi (4j/semaine). Vendredi/samedi/dimanche exclus.
+            // On exclut aussi les jours marques sur ce chantier dans les saisies comme :
+            //   ferie, intemperies, panne, arret, non_productif, conge, chomage, maladie
             var avanceCalc = (function() {
               if (chantier.statut === "A venir") return { total: null, mois: null };
               try {
-                function t2m(t) {
-                  if (!t) return 0;
-                  var p = String(t).split(":");
-                  return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+                var metrageTotal = parseFloat(chantier.metrage) || 0;
+                if (!metrageTotal || !chantier.dateDebut || !chantier.dateFin) return { total: null, mois: null };
+                var dDeb = new Date(String(chantier.dateDebut).substring(0, 10) + "T00:00:00");
+                var dFin = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
+                if (isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return { total: null, mois: null };
+                var today = new Date();
+                today.setHours(0, 0, 0, 0);
+                var saisiesChantier = (ctxAv.dbSaisies && ctxAv.dbSaisies[chantier.id]) ? ctxAv.dbSaisies[chantier.id] : {};
+                var EXCLUDED_TYPES = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1 };
+
+                function isoOf(d) {
+                  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
                 }
-                function durMin(deb, fin) {
-                  if (!deb || !fin) return 0;
-                  var m = t2m(fin) - t2m(deb);
-                  if (m < 0) m += 24 * 60;
-                  return m;
+                function isWorkDay(d) {
+                  var dow = d.getDay(); // 0=dim, 1=lun, ..., 6=sam
+                  // Lundi (1) a jeudi (4) seulement. 4j / semaine.
+                  if (dow < 1 || dow > 4) return false;
+                  var iso = isoOf(d);
+                  var s = saisiesChantier[iso];
+                  if (s) {
+                    var t = (typeof s === "object" && s !== null) ? (s.typeJour || s.type || "") : "";
+                    if (EXCLUDED_TYPES[t]) return false;
+                  }
+                  return true;
                 }
-                function isForation(s) {
-                  if (!s) return false;
-                  var l = String(s).toLowerCase();
-                  return l.indexOf("forat") >= 0 || l.indexOf("forag") >= 0;
+                function countWorkDays(from, to) {
+                  if (from > to) return 0;
+                  var c = 0;
+                  var d = new Date(from.getTime());
+                  var safe = 0;
+                  while (d <= to && safe < 4000) {
+                    if (isWorkDay(d)) c++;
+                    d.setDate(d.getDate() + 1);
+                    safe++;
+                  }
+                  return c;
                 }
-                // ── Heures par chantier : 3 sources possibles (cascade) ──
-                // 1) Rapports_forage liees par chantier_id : on prend les activites
-                //    'forat'/'forag', sinon r.total_heures
-                // 2) Fallback : Releves_journaliers liees au chantier (somme MAX par
-                //    jour-machine pour eviter de cumuler 2 employes sur la meme machine)
-                var rapports = (ctxAv.dbRapportsForage || []).filter(function(r) {
-                  return r && String(r.chantier_id) === String(chantier.id);
-                });
-                function extractHeuresRapport(r) {
-                  if (!r) return { heures: 0, source: "none" };
-                  var acts = Array.isArray(r.activites) ? r.activites : [];
-                  var minutesForat = 0;
-                  acts.forEach(function(a) {
-                    if (!a) return;
-                    if (isForation(a.libelle || a.type || a.nom)) {
-                      minutesForat += durMin(a.debut || a.start, a.fin || a.end);
-                    }
-                  });
-                  if (minutesForat > 0) return { heures: minutesForat / 60, source: "foration" };
-                  var tot = parseFloat(r.total_heures);
-                  if (!isNaN(tot) && tot > 0) return { heures: tot, source: "total" };
-                  return { heures: 0, source: "none" };
+
+                var endTotal = today < dFin ? today : dFin;
+                if (today < dDeb) {
+                  // Chantier pas encore demarre
+                  return { total: { avance: 0, attendu: 0, joursPasses: 0, joursTotal: 0, metragePerDay: 0, metrageTotal: metrageTotal, realise: realise, hasData: false }, mois: null };
                 }
-                // Source 1 + 2 via rapports_forage
-                var heuresTotal = 0;
-                var sourceUsed = "none";
-                rapports.forEach(function(r) {
-                  var h = extractHeuresRapport(r);
-                  heuresTotal += h.heures;
-                  if (h.source === "foration") sourceUsed = "foration";
-                  else if (h.source === "total" && sourceUsed !== "foration") sourceUsed = "total";
-                });
-                // Source 3 (fallback) : releves_journaliers, MAX par jour-machine pour dedup
-                if (heuresTotal === 0) {
-                  var heuresParJourMachine = {};
-                  (ctxAv.dbRelevesJourn || []).forEach(function(rj) {
-                    if (!rj || String(rj.chantierId) !== String(chantier.id)) return;
-                    var d = String(rj.dateReleve || "").substring(0, 10);
-                    if (!d) return;
-                    var mkey = String(rj.equipementId || rj.sondeuseCode || "_none").toUpperCase().trim();
-                    var key = d + "|" + mkey;
-                    var h = parseFloat(rj.heures) || 0;
-                    if (h > (heuresParJourMachine[key] || 0)) heuresParJourMachine[key] = h;
-                  });
-                  Object.keys(heuresParJourMachine).forEach(function(k) {
-                    heuresTotal += heuresParJourMachine[k];
-                  });
-                  if (heuresTotal > 0) sourceUsed = "releves";
-                }
-                var attenduTotal = heuresTotal * VITESSE_NORMATIVE_MH;
+                var joursTotal = countWorkDays(dDeb, dFin);
+                var joursPasses = countWorkDays(dDeb, endTotal);
+                var metragePerDay = joursTotal > 0 ? (metrageTotal / joursTotal) : 0;
+                var attenduTotal = metragePerDay * joursPasses;
                 var totalInfo = {
                   avance: realise - attenduTotal,
                   attendu: attenduTotal,
-                  heuresForation: heuresTotal,
-                  vitesseNormative: VITESSE_NORMATIVE_MH,
-                  vitesseReelle: heuresTotal > 0 ? (realise / heuresTotal) : 0,
-                  source: sourceUsed,
-                  nbRapports: rapports.length
+                  joursPasses: joursPasses,
+                  joursTotal: joursTotal,
+                  metragePerDay: metragePerDay,
+                  metrageTotal: metrageTotal,
+                  realise: realise,
+                  hasData: joursTotal > 0
                 };
 
+                // Mois en cours
                 var year = currentMonth.getFullYear();
                 var monthIdx = currentMonth.getMonth();
-                var monthPrefix = year + "-" + String(monthIdx + 1).padStart(2, "0");
-                var heuresMois = 0;
-                var sourceMois = "none";
-                rapports.forEach(function(r) {
-                  var d = String(r.date_rapport || "").substring(0, 7);
-                  if (d !== monthPrefix) return;
-                  var h = extractHeuresRapport(r);
-                  heuresMois += h.heures;
-                  if (h.source === "foration") sourceMois = "foration";
-                  else if (h.source === "total" && sourceMois !== "foration") sourceMois = "total";
-                });
-                // Fallback releves_journaliers pour le mois
-                if (heuresMois === 0) {
-                  var heuresParJMois = {};
-                  (ctxAv.dbRelevesJourn || []).forEach(function(rj) {
-                    if (!rj || String(rj.chantierId) !== String(chantier.id)) return;
-                    var d = String(rj.dateReleve || "").substring(0, 10);
-                    if (d.substring(0, 7) !== monthPrefix) return;
-                    var mkey = String(rj.equipementId || rj.sondeuseCode || "_none").toUpperCase().trim();
-                    var key = d + "|" + mkey;
-                    var h = parseFloat(rj.heures) || 0;
-                    if (h > (heuresParJMois[key] || 0)) heuresParJMois[key] = h;
-                  });
-                  Object.keys(heuresParJMois).forEach(function(k) {
-                    heuresMois += heuresParJMois[k];
-                  });
-                  if (heuresMois > 0) sourceMois = "releves";
-                }
-                var attenduMois = heuresMois * VITESSE_NORMATIVE_MH;
+                var monthStart = new Date(year, monthIdx, 1);
+                var monthEnd = new Date(year, monthIdx + 1, 0);
+                var moisStart = monthStart < dDeb ? dDeb : monthStart;
+                var moisEnd = monthEnd > dFin ? dFin : monthEnd;
+                if (moisEnd > today) moisEnd = today;
+                var joursMois = (moisStart <= moisEnd) ? countWorkDays(moisStart, moisEnd) : 0;
+                var attenduMois = metragePerDay * joursMois;
                 var moisInfo = {
                   avance: monthMet - attenduMois,
                   attendu: attenduMois,
-                  heuresForation: heuresMois,
-                  vitesseNormative: VITESSE_NORMATIVE_MH,
-                  vitesseReelle: heuresMois > 0 ? (monthMet / heuresMois) : 0,
-                  source: sourceMois
+                  joursPasses: joursMois,
+                  metragePerDay: metragePerDay,
+                  realise: monthMet,
+                  hasData: joursMois > 0
                 };
 
                 return { total: totalInfo, mois: moisInfo };
@@ -9037,20 +8999,24 @@
                     h("div", { style: { display: "flex", gap: 8, fontSize: 12, marginBottom: 8, flexWrap: "wrap", alignItems: "center" } },
                       h("span", { style: { marginRight: 8 } }, "Mois : " + fmtNum(monthMet) + " m"),
                       h("span", { style: { marginRight: 8 } }, "Reste : " + fmtNum(remaining) + " m"),
-                      avanceMoisInfo ? (avanceMoisInfo.heuresForation > 0 ? h("span", {
-                        title: "Cible : " + avanceMoisInfo.vitesseNormative + " m/h.\nHeures " + (avanceMoisInfo.source === "foration" ? "de foration" : "totales (fallback)") + " ce mois : " + avanceMoisInfo.heuresForation.toFixed(1) + " h\nAttendu : " + Math.round(avanceMoisInfo.attendu) + " m (= " + avanceMoisInfo.heuresForation.toFixed(1) + " h x " + avanceMoisInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(monthMet) + " m\nVitesse reelle ce mois : " + avanceMoisInfo.vitesseReelle.toFixed(1) + " m/h",
+                      avanceMoisInfo && avanceMoisInfo.hasData ? h("span", {
+                        title: "Avance/retard du mois : compare le metrage realise ce mois au metrage proportionnel attendu.\n" +
+                          "- Jours ouvres ecoules ce mois (Lun-Jeu, hors feries/intemperies/pannes) : " + avanceMoisInfo.joursPasses + " j\n" +
+                          "- Rythme contractuel : " + fmtNum(Math.round(avanceMoisInfo.metragePerDay)) + " m/jour ouvre\n" +
+                          "- Attendu ce mois : " + fmtNum(Math.round(avanceMoisInfo.attendu)) + " m\n" +
+                          "- Realise ce mois : " + fmtNum(Math.round(monthMet)) + " m",
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceMoisInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceMoisInfo.avance >= 0 ? "#86efac" : "#fda4af" }
-                      }, "Mois " + (avanceMoisInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceMoisInfo.avance)) + " m") : h("span", {
-                        title: "Pas de rapport forage avec heures saisies ce mois pour ce chantier.",
-                        style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: "rgba(113,113,122,0.15)", border: "1px solid rgba(113,113,122,0.35)", color: "#a1a1aa" }
-                      }, "Mois : pas de donnees")) : null,
-                      avanceInfo ? (avanceInfo.heuresForation > 0 ? h("span", {
-                        title: "Cible : " + avanceInfo.vitesseNormative + " m/h.\nHeures " + (avanceInfo.source === "foration" ? "de foration" : "totales (fallback)") + " : " + avanceInfo.heuresForation.toFixed(1) + " h (sur " + avanceInfo.nbRapports + " rapports)\nAttendu : " + Math.round(avanceInfo.attendu) + " m (= " + avanceInfo.heuresForation.toFixed(1) + " h x " + avanceInfo.vitesseNormative + " m/h)\nRealise : " + Math.round(realise) + " m\nVitesse reelle moyenne : " + avanceInfo.vitesseReelle.toFixed(1) + " m/h",
+                      }, "Mois " + (avanceMoisInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceMoisInfo.avance)) + " m") : null,
+                      avanceInfo && avanceInfo.hasData ? h("span", {
+                        title: "Avance/retard total : compare le metrage realise depuis le debut au metrage attendu proportionnellement a la duree ecoulee.\n" +
+                          "- Duree contractuelle (Lun-Jeu hors feries/intemperies/pannes) : " + avanceInfo.joursTotal + " jours ouvres\n" +
+                          "- Jours ouvres deja ecoules : " + avanceInfo.joursPasses + " j\n" +
+                          "- Rythme contractuel : " + fmtNum(Math.round(avanceInfo.metragePerDay)) + " m/jour ouvre\n" +
+                          "- Attendu a ce jour : " + fmtNum(Math.round(avanceInfo.attendu)) + " m\n" +
+                          "- Realise : " + fmtNum(Math.round(realise)) + " m\n" +
+                          "- Objectif total : " + fmtNum(avanceInfo.metrageTotal) + " m",
                         style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: avanceInfo.avance >= 0 ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)", border: "1px solid " + (avanceInfo.avance >= 0 ? "rgba(34,197,94,0.35)" : "rgba(244,63,94,0.35)"), color: avanceInfo.avance >= 0 ? "#86efac" : "#fda4af" }
-                      }, "Total " + (avanceInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceInfo.avance)) + " m") : h("span", {
-                        title: "Aucun rapport forage avec heures saisies pour ce chantier (" + avanceInfo.nbRapports + " rapports trouves). Verifie que les sondeurs saisissent bien les activites et leurs durees.",
-                        style: { fontWeight: 700, padding: "2px 10px", borderRadius: 999, fontSize: 11.5, background: "rgba(113,113,122,0.15)", border: "1px solid rgba(113,113,122,0.35)", color: "#a1a1aa" }
-                      }, "Total : pas de donnees")) : null
+                      }, "Total " + (avanceInfo.avance >= 0 ? "+" : "") + fmtNum(Math.round(avanceInfo.avance)) + " m") : null
                     ),
                     h("div", { style: { width: "100%", height: 10, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden", marginBottom: 4 } },
                       h("div", { style: { width: Math.min(avancement, 100) + "%", height: "100%", background: avancement >= 75 ? "#059669" : avancement >= 50 ? "#d97706" : "#a1a1aa", transition: "width 0.3s" } })
