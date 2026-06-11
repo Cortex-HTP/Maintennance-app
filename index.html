@@ -9194,8 +9194,11 @@
                       );
                     }
 
-                    // ─ Affectations machines futures (chantier_equipements) ─
-                    var cesFuturs = (ctxAv.dbChantierEquipements || []).filter(function(ce) {
+                    // ─ Affectations machines (chantier_equipements) ─
+                    // On ne considere que celles qui s'etendent dans le futur
+                    // (date_fin >= today). Sinon : on ne sait plus combien de
+                    // machines tournent demain -> fallback rythme actuel.
+                    var cesAll = (ctxAv.dbChantierEquipements || []).filter(function(ce) {
                       return ce && String(ce.chantierId) === String(chantier.id);
                     }).map(function(ce) {
                       return {
@@ -9204,8 +9207,9 @@
                         eq: ce.equipementId
                       };
                     }).filter(function(x) { return x.deb && x.fin && !isNaN(x.deb.getTime()) && !isNaN(x.fin.getTime()); });
+                    var cesFuturs = cesAll.filter(function(x) { return x.fin >= today; });
                     function nbMachinesPlanifieesLeJour(d) {
-                      if (cesFuturs.length === 0) return null; // pas de planning -> fallback
+                      if (cesFuturs.length === 0) return null;
                       var c = 0;
                       var seen = {};
                       for (var i = 0; i < cesFuturs.length; i++) {
@@ -9224,14 +9228,21 @@
                     var dateFinEst = new Date(today.getTime());
                     var safe2 = 0;
                     var useFallback = cesFuturs.length === 0;
-                    while (metresProjetes < metresRestants && safe2 < 800) {
+                    var projectionImpossible = false;
+                    while (metresProjetes < metresRestants && safe2 < 1500) {
                       dateFinEst.setDate(dateFinEst.getDate() + 1);
                       var dow2 = dateFinEst.getDay();
                       if (dow2 >= 1 && dow2 <= 4) {
-                        var nbMach = useFallback ? moyMachinesRecent : nbMachinesPlanifieesLeJour(dateFinEst);
-                        // Si planning vide ce jour mais on a un planning sur d'autres
-                        // jours : on suppose 0 machine ce jour (pas de projection).
-                        // Pas d'ajout au metrage, mais le compteur avance quand meme.
+                        var nbMach;
+                        if (useFallback) {
+                          nbMach = moyMachinesRecent;
+                        } else {
+                          var planned = nbMachinesPlanifieesLeJour(dateFinEst);
+                          // Si plus aucune machine planifiee a partir de cette date,
+                          // on rebascule sur le rythme actuel pour ne pas bloquer.
+                          if (planned <= 0) { nbMach = moyMachinesRecent; useFallback = true; }
+                          else nbMach = planned;
+                        }
                         if (nbMach > 0) {
                           metresProjetes += vitesseParMachine * nbMach;
                           joursRestants++;
@@ -9239,12 +9250,26 @@
                       }
                       safe2++;
                     }
-                    // Decalage vs date fin contractuelle
+                    // Si on a tape le plafond sans finir, projection inutilisable
+                    if (metresProjetes < metresRestants) projectionImpossible = true;
+
+                    // Decalage vs date fin contractuelle (jours ouvres Lun-Jeu plutot que calendrier)
                     var decalageJ = null;
-                    if (chantier.dateFin) {
+                    if (chantier.dateFin && !projectionImpossible) {
                       try {
                         var dateFinContract = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
-                        decalageJ = Math.round((dateFinEst.getTime() - dateFinContract.getTime()) / 86400000);
+                        // Decalage en jours OUVRES, plus parlant
+                        var debCmp, finCmp, sign;
+                        if (dateFinEst >= dateFinContract) { debCmp = dateFinContract; finCmp = dateFinEst; sign = 1; }
+                        else { debCmp = dateFinEst; finCmp = dateFinContract; sign = -1; }
+                        var cnt = 0, dc = new Date(debCmp.getTime()), sCnt = 0;
+                        while (dc < finCmp && sCnt < 4000) {
+                          dc.setDate(dc.getDate() + 1);
+                          var dd = dc.getDay();
+                          if (dd >= 1 && dd <= 4) cnt++;
+                          sCnt++;
+                        }
+                        decalageJ = sign * cnt;
                       } catch (e) {}
                     }
                     // CA restant + marge prevue
@@ -9268,9 +9293,13 @@
                     var seuilRetardMetres = chantier.metrage * 0.05; // 5% du metrage total
 
                     var healthClass = "good", healthMsg = "Sur les rails", healthDetail = "Le chantier devrait tenir ses delais.";
-                    if (decalageJ !== null && decalageJ > 7) {
+                    if (projectionImpossible) {
+                      healthClass = "bad";
+                      healthMsg = "Projection impossible au rythme actuel";
+                      healthDetail = "Au rythme des 14 derniers jours et avec le planning machines actuel, le chantier ne se terminera pas dans un horizon raisonnable. Verifie la productivite, le planning des sondeuses et le metrage saisi.";
+                    } else if (decalageJ !== null && decalageJ > 5) {
                       healthClass = "warn";
-                      healthMsg = "En retard de " + decalageJ + " jours";
+                      healthMsg = "En retard de " + decalageJ + " jours ouvres";
                       healthDetail = "Fin estimee : " + dateFinEst.toLocaleDateString("fr-FR") + " au lieu de " + new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") + ". Considere renforcer l'equipe.";
                     } else if (retardMetres > seuilRetardMetres) {
                       // Retard significatif en metrage (>5% du contrat) meme si la fin estimee tient encore
@@ -9371,7 +9400,7 @@
                         ) : null,
                         h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Fin estimee"),
-                          h("div", { style: { fontWeight: 700, fontSize: 13.5, color: healthColor } }, dateFinEst.toLocaleDateString("fr-FR"))
+                          h("div", { style: { fontWeight: 700, fontSize: 13.5, color: healthColor } }, projectionImpossible ? "—" : dateFinEst.toLocaleDateString("fr-FR"))
                         ),
                         h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "CA restant"),
