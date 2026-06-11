@@ -8187,6 +8187,82 @@
       );
     }
 
+    // ─ Animation meteo en fond (pluie / nuages / orage) ─
+    // Injecte les @keyframes CSS necessaires une seule fois
+    function injectMeteoAnimCSS() {
+      if (document.getElementById("meteo-anim-css")) return;
+      var st = document.createElement("style");
+      st.id = "meteo-anim-css";
+      st.textContent = "" +
+        "@keyframes meteoRainFall{0%{transform:translateY(-30px);opacity:0}10%{opacity:.55}90%{opacity:.55}100%{transform:translateY(110vh);opacity:0}}" +
+        "@keyframes meteoCloudDrift{from{transform:translateX(-340px)}to{transform:translateX(calc(100vw + 200px))}}" +
+        "@keyframes meteoLightning{0%,93%,100%{opacity:0}94%,96%{opacity:0}95%{opacity:.18}}" +
+        ".meteo-bg{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}" +
+        ".meteo-drop{position:absolute;top:-30px;width:2px;height:14px;background:linear-gradient(180deg,rgba(147,197,253,0) 0%,rgba(147,197,253,.6) 100%);animation:meteoRainFall linear infinite}" +
+        ".meteo-drop-heavy{width:2px;height:22px;background:linear-gradient(180deg,rgba(99,102,241,0) 0%,rgba(99,102,241,.7) 100%)}" +
+        ".meteo-cloud{position:absolute;width:280px;height:140px;background:radial-gradient(ellipse at center,rgba(255,255,255,.10) 0%,rgba(255,255,255,0) 65%);filter:blur(20px);animation:meteoCloudDrift linear infinite}" +
+        ".meteo-flash{position:absolute;inset:0;background:#fff;animation:meteoLightning 7s infinite}";
+      document.head.appendChild(st);
+    }
+    // Animation de fond meteo : pluie / nuages / orage selon la meteo du jour
+    function WeatherBackground({ meteo }) {
+      useEffect(injectMeteoAnimCSS, []);
+      if (!meteo) return null;
+      var code = meteo.code || 0;
+      var prec = meteo.prec || 0;
+      var isStorm = code >= 95;
+      var isHeavyRain = prec > 15 || code === 82;
+      var isRain = prec > 0.5 || code >= 51;
+      var isCloudy = code >= 2 || isRain;
+      // Nombre de gouttes proportionnel a l'intensite
+      var nbDrops = isStorm ? 60 : isHeavyRain ? 40 : isRain ? 22 : 0;
+      // Genere les gouttes (positions/durees/delais stables grace a i)
+      var drops = [];
+      for (var i = 0; i < nbDrops; i++) {
+        // Distribution pseudo-aleatoire mais deterministe
+        var left = (i * 137) % 100; // golden angle approx pour repartition
+        var delay = (i * 73) % 100 / 100 * (isStorm ? 0.8 : 1.4);
+        var duration = isStorm ? 0.5 + ((i * 13) % 30) / 100 : 0.9 + ((i * 17) % 50) / 100;
+        var opacity = 0.4 + ((i * 11) % 50) / 100;
+        drops.push(h("div", {
+          key: "d" + i,
+          className: "meteo-drop" + (isHeavyRain || isStorm ? " meteo-drop-heavy" : ""),
+          style: {
+            left: left + "%",
+            animationDelay: delay + "s",
+            animationDuration: duration + "s",
+            opacity: opacity
+          }
+        }));
+      }
+      // Nuages
+      var clouds = [];
+      if (isCloudy) {
+        var nbClouds = isStorm ? 5 : isHeavyRain ? 4 : isRain ? 3 : 2;
+        for (var c = 0; c < nbClouds; c++) {
+          var top = (c * 23) % 60;
+          var cDelay = c * 8;
+          var cDuration = 40 + (c * 7) % 30;
+          var scale = 0.7 + ((c * 19) % 40) / 100;
+          clouds.push(h("div", {
+            key: "c" + c,
+            className: "meteo-cloud",
+            style: {
+              top: top + "%",
+              animationDelay: -cDelay + "s",
+              animationDuration: cDuration + "s",
+              transform: "scale(" + scale + ")"
+            }
+          }));
+        }
+      }
+      return h("div", { className: "meteo-bg" },
+        clouds,
+        drops,
+        isStorm ? h("div", { className: "meteo-flash" }) : null
+      );
+    }
+
     // Mapping weather code -> emoji (utilise dans les tooltips uniquement)
     function meteoEmoji(code, prec) {
       var c = code || 0;
@@ -13496,6 +13572,16 @@
       var loading = _loading[0]; var setLoading = _loading[1];
       // ─ Cache meteo par chantier (pour previsions ajustees) ─
       var _mbs = useState({}); var meteoByChantierStat = _mbs[0]; var setMeteoByChantierStat = _mbs[1];
+      // Meteo du jour pour l'animation de fond (1er chantier actif avec GPS)
+      var meteoBgToday = (function() {
+        var chs = (ctx.dbChantiers || []).filter(function(c) { return c.statut !== "Termine" && c.latitude != null && c.longitude != null; });
+        if (chs.length === 0) return null;
+        var mMap = meteoByChantierStat[chs[0].id];
+        if (!mMap) return null;
+        var t = new Date();
+        var iso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+        return mMap[iso] || null;
+      })();
       useEffect(function() {
         var chs = ctx.dbChantiers || [];
         var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; });
@@ -14487,7 +14573,9 @@
       var lblStyle = { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginRight: 6 };
 
       // ── Rendu principal ──
-      return h("div", null,
+      return h("div", { style: { position: "relative" } },
+        // Animation meteo en fond (gouttes / nuages / orage selon meteo du jour)
+        h(WeatherBackground, { meteo: meteoBgToday }),
         h(PageHeader, {
           title: h(IconText, { icon: "bar-chart-3", size: 20 }, "Statistiques"),
           subtitle: "Vue d'ensemble des rapports de forage, activites et consommables",
