@@ -8201,6 +8201,27 @@
       if (c >= 1) return "🌤";
       return "☀";
     }
+    // Facteur de production : combien on garde de la vitesse normale en fonction
+    // de la meteo du jour. Plus la pluie est forte, moins on est productif.
+    // Retour entre 0 (perdu) et 1 (production normale).
+    function meteoMetrageFactor(m) {
+      if (!m) return 1;
+      var prec = m.prec || 0;
+      var wind = m.wind || 0;
+      var code = m.code || 0;
+      // Orage / tempete : journee perdue
+      if (code >= 95) return 0;
+      // Vent fort : journee perdue
+      if (wind > 60) return 0;
+      // Gradient pluie (mm/jour)
+      if (prec > 15) return 0;     // pluie diluvienne : journee perdue
+      if (prec > 10) return 0.40;  // pluie forte : -60%
+      if (prec > 5)  return 0.65;  // pluie moderee : -35%
+      if (prec > 2)  return 0.85;  // pluie legere : -15%
+      if (prec > 0.5) return 0.95; // bruine : -5%
+      return 1;                    // sec : 100%
+    }
+
     // Mapping weather code -> Lucide icon name + couleur (pour rendu visuel propre)
     // Plus pro que les emojis, coherent avec le reste de l'app qui utilise Lucide
     function meteoLucide(code, prec) {
@@ -9762,18 +9783,17 @@
                       if (fIsWE || pVitQuot <= 0) { forecastVals.push(null); continue; }
                       var fIso = fDate.getFullYear() + "-" + String(fDate.getMonth() + 1).padStart(2, "0") + "-" + String(fDate.getDate()).padStart(2, "0");
                       var fMeteo = meteoMapBC[fIso];
-                      var fVal = pVitQuot;
-                      var fIntemp = false;
-                      if (fMeteo) {
-                        fIntemp = (fMeteo.prec || 0) > 15 || (fMeteo.wind || 0) > 60 || (fMeteo.code || 0) >= 95;
-                        if (fIntemp) fVal = 0;
-                        else if ((fMeteo.prec || 0) > 5) fVal = pVitQuot * 0.6;
-                      }
+                      // Facteur meteo progressif (0 a 1) -> retire un % de metrage
+                      // selon l'intensite de la pluie / vent / orage
+                      var fFactor = meteoMetrageFactor(fMeteo);
+                      var fVal = pVitQuot * fFactor;
+                      var fIntemp = fFactor === 0; // perdu total
+                      var fReduced = fFactor > 0 && fFactor < 1; // production reduite
                       if (fVal > 0) {
-                        forecastVals.push({ idx: fd - 1, val: fVal, intemp: fIntemp, hasMeteo: !!fMeteo });
+                        forecastVals.push({ idx: fd - 1, val: fVal, intemp: fIntemp, reduced: fReduced, factor: fFactor, hasMeteo: !!fMeteo });
                         if (fVal > maxDayVal) maxDayVal = fVal;
                       } else {
-                        forecastVals.push({ idx: fd - 1, val: 0, intemp: fIntemp, hasMeteo: !!fMeteo });
+                        forecastVals.push({ idx: fd - 1, val: 0, intemp: fIntemp, reduced: false, factor: 0, hasMeteo: !!fMeteo });
                       }
                     }
                     var barW = Math.max(Math.floor(800 / daysInMonth) - 2, 8);
@@ -9848,12 +9868,18 @@
                             if (!fv || fv.val <= 0) return null;
                             var barH = maxDayVal > 0 ? (fv.val / maxDayVal) * (chartH2 - topPad) : 0;
                             var x = 20 + idx * (barW + 2);
-                            var baseColor = fv.intemp ? "#dc2626" : (fv.hasMeteo ? "#3b82f6" : "#7c3aed");
-                            var lightColor = fv.intemp ? "#fda4af" : (fv.hasMeteo ? "#93c5fd" : "#c4b5fd");
-                            return h("g", { key: "fbar" + idx, style: { opacity: 0.55 } },
-                              // Fond couleur ajustee meteo
+                            // Couleur graduee selon le facteur meteo
+                            // 1.0 (sec) -> violet sain
+                            // 0.85-0.95 (bruine/legere) -> violet clair
+                            // 0.4-0.65 (moderee/forte) -> bleu
+                            // 0 (perdu) -> rouge (mais filtre par fv.val > 0)
+                            var baseColor, lightColor;
+                            if (fv.factor >= 0.9) { baseColor = "#7c3aed"; lightColor = "#c4b5fd"; }
+                            else if (fv.factor >= 0.7) { baseColor = "#6366f1"; lightColor = "#a5b4fc"; }
+                            else if (fv.factor >= 0.5) { baseColor = "#3b82f6"; lightColor = "#93c5fd"; }
+                            else { baseColor = "#0ea5e9"; lightColor = "#7dd3fc"; }
+                            return h("g", { key: "fbar" + idx, style: { opacity: 0.6 } },
                               h("rect", { x: x, y: chartH2 - barH, width: barW, height: Math.max(barH, 0), rx: 2, fill: lightColor, stroke: baseColor, strokeWidth: 1, strokeDasharray: "2 2" }),
-                              // Surcouche hachuree pour distinguer du reel
                               h("rect", { x: x, y: chartH2 - barH, width: barW, height: Math.max(barH, 0), rx: 2, fill: "url(#fcStripe" + chantier.id + ")" }),
                               fv.val > 0 && barH > 14 ? h("text", { x: x + barW / 2, y: chartH2 - barH + 12, textAnchor: "middle", fontSize: 7, fill: "white", fontWeight: 700, opacity: 0.85, fontStyle: "italic" }, Math.round(fv.val)) : null
                             );
@@ -9861,12 +9887,14 @@
                           h("line", { x1: 18, x2: svgW2 - 2, y1: chartH2, y2: chartH2, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 })
                         )
                       ),
-                      // Legende barres reelles vs previsionnelles
-                      h("div", { style: { display: "flex", gap: 14, fontSize: 10, color: "#94a3b8", marginTop: 8, flexWrap: "wrap" } },
+                      // Legende barres reelles vs previsionnelles (gradient meteo)
+                      h("div", { style: { display: "flex", gap: 12, fontSize: 10, color: "#94a3b8", marginTop: 8, flexWrap: "wrap" } },
                         h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#7c3aed" } }), "Réalisé"),
-                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#c4b5fd", border: "1px dashed #7c3aed" } }), "Prévision météo OK"),
-                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#93c5fd", border: "1px dashed #3b82f6" } }), "Pluie modérée (×0,6)"),
-                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#fda4af", border: "1px dashed #dc2626" } }), "Intempéries (perdu)")
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#c4b5fd", border: "1px dashed #7c3aed" } }), "Sec (100 %)"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#a5b4fc", border: "1px dashed #6366f1" } }), "Pluie légère (×0,85-0,95)"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#93c5fd", border: "1px dashed #3b82f6" } }), "Pluie modérée (×0,65)"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#7dd3fc", border: "1px dashed #0ea5e9" } }), "Pluie forte (×0,40)"),
+                        h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "transparent", border: "1px dashed #dc2626" } }), "Intempéries (0 m)")
                       )
                     );
                   })(),
