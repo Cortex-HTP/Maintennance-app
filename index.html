@@ -14647,18 +14647,23 @@
                 var cumulData = chartData.map(function(d) { cumul += d.value; return cumul; });
 
                 // Pills "Sem" pour vue journaliere uniquement (regroupe par semaine lundi->dimanche)
+                // Inclut les forecasts (jours futurs) dans le total semaine et le CA
                 var weeks = [];
                 if (!isMonthlyView) {
                   var curW = null;
                   for (var wj = 0; wj < n; wj++) {
                     var dow = chartData[wj].jsDate.getDay();
+                    var dayVal = chartData[wj].value + (chartData[wj].forecast || 0);
+                    var dayCa = (chartData[wj].ca || 0) + (chartData[wj].forecastCA || 0);
+                    var dayHasFc = !!chartData[wj].hasForecast;
                     if (curW === null || dow === 1) {
                       if (curW) weeks.push(curW);
-                      curW = { startIdx: wj, endIdx: wj, total: chartData[wj].value, totalCa: chartData[wj].ca || 0 };
+                      curW = { startIdx: wj, endIdx: wj, total: dayVal, totalCa: dayCa, hasFc: dayHasFc };
                     } else {
                       curW.endIdx = wj;
-                      curW.total += chartData[wj].value;
-                      curW.totalCa += (chartData[wj].ca || 0);
+                      curW.total += dayVal;
+                      curW.totalCa += dayCa;
+                      if (dayHasFc) curW.hasFc = true;
                     }
                   }
                   if (curW) weeks.push(curW);
@@ -14679,6 +14684,7 @@
                     return h("rect", { key: "wbg" + wi, x: x1, y: topPad, width: x2 - x1, height: chartH - topPad, fill: wi % 2 === 0 ? "rgba(99,102,241,0.04)" : "rgba(99,102,241,0.10)" });
                   }) : null,
                   // Pills "Sem" en haut (jour uniquement) - affiche le CA en XPF
+                  // Si la semaine inclut des forecasts -> pill avec bordure pointillee
                   !isMonthlyView ? weeks.map(function(w, wi) {
                     if (w.total <= 0) return null;
                     var x1 = paddingLR + w.startIdx * (barW + gap);
@@ -14686,9 +14692,13 @@
                     var cx = (x1 + x2) / 2;
                     var pillW = Math.min(x2 - x1 - 2, 110);
                     if (pillW < 28) return null;
+                    var pillFill = w.hasFc ? "rgba(147,197,253,0.15)" : "rgba(167,139,250,0.15)";
+                    var pillStroke = w.hasFc ? "rgba(147,197,253,0.55)" : "rgba(167,139,250,0.45)";
+                    var pillTxt = w.hasFc ? "#bfdbfe" : "#c4b5fd";
+                    var label = "Sem : " + fmtCompactXPF(w.totalCa) + " XPF" + (w.hasFc ? " *" : "");
                     return h("g", { key: "wca" + wi },
-                      h("rect", { x: cx - pillW / 2, y: 2, width: pillW, height: 16, rx: 8, fill: "rgba(167,139,250,0.15)", stroke: "rgba(167,139,250,0.45)", strokeWidth: 1 }),
-                      h("text", { x: cx, y: 13, textAnchor: "middle", fontSize: 8, fill: "#c4b5fd", fontWeight: 700 }, "Sem : " + fmtCompactXPF(w.totalCa) + " XPF")
+                      h("rect", { x: cx - pillW / 2, y: 2, width: pillW, height: 16, rx: 8, fill: pillFill, stroke: pillStroke, strokeWidth: 1, strokeDasharray: w.hasFc ? "3 2" : "" }),
+                      h("text", { x: cx, y: 13, textAnchor: "middle", fontSize: 8, fill: pillTxt, fontWeight: 700 }, label)
                     );
                   }) : null,
                   // Pattern de hachures (defini une fois pour les forecasts)
