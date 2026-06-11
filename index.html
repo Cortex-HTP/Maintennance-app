@@ -9358,21 +9358,25 @@
                       else { cadenceColor = "#fda4af"; cadenceCommentaire = "Hors d'atteinte sans renfort"; }
                     }
 
-                    // ─ Nb de machines moyennes requises pour tenir la deadline ─
+                    // ─ Nb de machines requises pour tenir la deadline ─
                     // nbMachinesRequises = cadenceRequise / vitesseParMachine
-                    // (combien de machines il faut en moyenne pour finir a temps,
-                    //  au rythme par machine observe sur les 14 derniers jours)
+                    // Valeur theorique en decimal (ex: 1.03 = 3% au-dessus du seuil
+                    // de 1 machine). On l'arrondit AU SUPERIEUR pour donner le
+                    // nombre entier de sondeuses a maintenir : avec 1.03, 1 machine
+                    // ne suffira PAS, il en faut 2.
+                    var nbMachinesRequisesExact = null;
                     var nbMachinesRequises = null;
                     if (cadenceRequise !== null && vitesseParMachine > 0) {
-                      nbMachinesRequises = cadenceRequise / vitesseParMachine;
+                      nbMachinesRequisesExact = cadenceRequise / vitesseParMachine;
+                      nbMachinesRequises = Math.max(1, Math.ceil(nbMachinesRequisesExact));
                     }
                     var machinesColor = "#a5b4fc";
                     var machinesCommentaire = "";
                     if (nbMachinesRequises !== null) {
-                      // Comparaison avec moyenne machines actuelles (recentes)
-                      if (nbMachinesRequises <= moyMachinesRecent + 0.1) { machinesColor = "#86efac"; machinesCommentaire = "Suffisant avec les machines actuelles"; }
-                      else if (nbMachinesRequises <= moyMachinesRecent + 1.0) { machinesColor = "#fde68a"; machinesCommentaire = "+1 machine necessaire"; }
-                      else { machinesColor = "#fda4af"; machinesCommentaire = "+" + Math.ceil(nbMachinesRequises - moyMachinesRecent) + " machines necessaires"; }
+                      var moyMachinesActuelles = Math.ceil(moyMachinesRecent - 0.0001);
+                      if (nbMachinesRequises <= moyMachinesActuelles) { machinesColor = "#86efac"; machinesCommentaire = "Suffisant avec les machines actuelles"; }
+                      else if (nbMachinesRequises === moyMachinesActuelles + 1) { machinesColor = "#fde68a"; machinesCommentaire = "+1 machine necessaire"; }
+                      else { machinesColor = "#fda4af"; machinesCommentaire = "+" + (nbMachinesRequises - moyMachinesActuelles) + " machines necessaires"; }
                     }
 
                     var healthBg = healthClass === "good" ? "rgba(34,197,94,0.10)" : healthClass === "warn" ? "rgba(245,158,11,0.10)" : "rgba(244,63,94,0.10)";
@@ -9415,17 +9419,19 @@
                           h("div", { style: { fontWeight: 700, fontSize: 14, color: cadenceColor } }, fmtNum(Math.round(cadenceRequise)) + " m/jour"),
                           h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, cadenceParMachine !== null ? fmtNum(Math.round(cadenceParMachine)) + " m / machine" : "pour tenir le delai")
                         ) : null,
-                        // ── Nb de machines moyennes requises pour tenir la deadline ──
+                        // ── Nb de machines requises pour tenir la deadline ──
                         nbMachinesRequises !== null ? h("div", {
                           style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 },
-                          title: "Nombre moyen de machines necessaire d'ici a la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
-                            "Formule : cadence_requise / vitesse_par_machine\n" +
+                          title: "Nombre de sondeuses a maintenir d'ici la date contractuelle (" + (chantier.dateFin ? new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") : "?") + ").\n" +
+                            "Formule : ceil(cadence_requise / vitesse_par_machine)\n" +
                             "- Cadence requise : " + fmtNum(Math.round(cadenceRequise)) + " m/jour\n" +
-                            "- Vitesse par machine (14j) : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine"
+                            "- Vitesse par machine (14j) : " + fmtNum(Math.round(vitesseParMachine)) + " m/jour/machine\n" +
+                            "- Valeur exacte (decimale) : " + nbMachinesRequisesExact.toFixed(2) + "\n" +
+                            (machinesCommentaire ? "Statut : " + machinesCommentaire : "")
                         },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Machines requises"),
-                          h("div", { style: { fontWeight: 700, fontSize: 14, color: machinesColor } }, nbMachinesRequises.toFixed(1)),
-                          h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, "en moy. d'ici la fin")
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: machinesColor } }, nbMachinesRequises + (nbMachinesRequises > 1 ? " machines" : " machine")),
+                          h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 3 } }, "pour finir a temps")
                         ) : null,
                         h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                           h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Fin estimee"),
