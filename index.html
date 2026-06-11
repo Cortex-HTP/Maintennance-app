@@ -8883,6 +8883,115 @@
                       h("div", { style: { fontWeight: 700, fontSize: 14, color: caRealise >= (chantier.depensesPrevues || 0) ? "#059669" : "#dc2626" } }, fmtMoney(caRealise - (chantier.depensesPrevues || 0)))
                     )
                   ),
+                  // ── Bloc PREVISIONNEL CHANTIER ──
+                  // Base sur la vitesse moyenne des 14 derniers jours productifs.
+                  // Affiche : jours restants estimes, date fin estimee, CA restant, marge prevue + bandeau de sante.
+                  (function() {
+                    if (!chantier.metrage || chantier.statut === "A venir") return null;
+                    var metresRestants = Math.max(0, chantier.metrage - realise);
+                    if (metresRestants === 0) {
+                      return h("div", { style: { background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 10, padding: 12, marginBottom: 16, color: "#86efac", fontWeight: 600, fontSize: 13, textAlign: "center" } }, "Objectif atteint - chantier termine cote metrage.");
+                    }
+                    // Vitesse moyenne sur les 14 derniers jours ouvres (Lun-Jeu)
+                    var today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    var totalMet = 0, nbJoursActifs = 0;
+                    var cursor = new Date(today.getTime());
+                    var safe = 0;
+                    while (nbJoursActifs < 14 && safe < 80) {
+                      cursor.setDate(cursor.getDate() - 1);
+                      var dow = cursor.getDay();
+                      if (dow >= 1 && dow <= 4) {
+                        var dStr = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
+                        var v = getDailyMetrageChantier(chantier.id, dStr);
+                        if (v > 0) { totalMet += v; nbJoursActifs++; }
+                      }
+                      safe++;
+                    }
+                    var vitesse14j = nbJoursActifs > 0 ? totalMet / nbJoursActifs : 0;
+                    if (vitesse14j === 0) {
+                      return h("div", { style: { background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12.5, color: "#fde68a" } },
+                        h("strong", null, "Previsionnel indisponible : "), "aucun jour productif sur les 14 derniers Lun-Jeu pour ce chantier. Ajoute des saisies pour activer la projection."
+                      );
+                    }
+                    var joursRestants = Math.ceil(metresRestants / vitesse14j);
+                    // Date fin estimee : on ajoute jours_restants en sautant Ven/Sam/Dim
+                    var dateFinEst = new Date(today.getTime());
+                    var ajoutes = 0;
+                    var safe2 = 0;
+                    while (ajoutes < joursRestants && safe2 < 500) {
+                      dateFinEst.setDate(dateFinEst.getDate() + 1);
+                      var dow2 = dateFinEst.getDay();
+                      if (dow2 >= 1 && dow2 <= 4) ajoutes++;
+                      safe2++;
+                    }
+                    // Decalage vs date fin contractuelle
+                    var decalageJ = null;
+                    if (chantier.dateFin) {
+                      try {
+                        var dateFinContract = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
+                        decalageJ = Math.round((dateFinEst.getTime() - dateFinContract.getTime()) / 86400000);
+                      } catch (e) {}
+                    }
+                    // CA restant + marge prevue
+                    var prixMetre = chantier.prixMetre || 0;
+                    var caTotal = chantier.metrage * prixMetre;
+                    var caRestant = metresRestants * prixMetre;
+                    var coutTotalPrevu = chantier.depensesPrevues || 0;
+                    var margeEstimee = caTotal - coutTotalPrevu;
+                    var margePct = caTotal > 0 ? Math.round((margeEstimee / caTotal) * 100) : 0;
+
+                    // Sante
+                    var healthClass = "good", healthMsg = "Sur les rails", healthDetail = "Le chantier devrait tenir ses delais.";
+                    if (decalageJ !== null && decalageJ > 7) {
+                      healthClass = "warn";
+                      healthMsg = "En retard de " + decalageJ + " jours";
+                      healthDetail = "Fin estimee : " + dateFinEst.toLocaleDateString("fr-FR") + " au lieu de " + new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00").toLocaleDateString("fr-FR") + ". Considere renforcer l'equipe.";
+                    }
+                    if (margePct < 10) {
+                      healthClass = "bad";
+                      healthMsg = "Rentabilite a risque (" + margePct + "% de marge prevue)";
+                      healthDetail = "Marge prevue faible. Revoir les depenses ou negocier le prix metre.";
+                    }
+                    var healthBg = healthClass === "good" ? "rgba(34,197,94,0.10)" : healthClass === "warn" ? "rgba(245,158,11,0.10)" : "rgba(244,63,94,0.10)";
+                    var healthBorder = healthClass === "good" ? "rgba(34,197,94,0.30)" : healthClass === "warn" ? "rgba(245,158,11,0.30)" : "rgba(244,63,94,0.30)";
+                    var healthColor = healthClass === "good" ? "#86efac" : healthClass === "warn" ? "#fde68a" : "#fda4af";
+
+                    return h("div", { style: { background: "linear-gradient(135deg, rgba(99,102,241,0.08), rgba(192,132,252,0.04))", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 10, padding: 14, marginBottom: 16 } },
+                      h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 } },
+                        h(Icon, { name: "trending-up", size: 16, color: "#c4b5fd" }),
+                        h("span", { style: { fontSize: 13, fontWeight: 800, color: "#e0e7ff" } }, "Previsionnel chantier")
+                      ),
+                      // Bandeau sante
+                      h("div", { style: { background: healthBg, border: "1px solid " + healthBorder, color: healthColor, borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12.5 } },
+                        h("div", { style: { fontWeight: 700, marginBottom: 2 } }, healthMsg),
+                        h("div", { style: { fontSize: 11.5, opacity: 0.9 } }, healthDetail)
+                      ),
+                      // Grid KPIs previsionnels
+                      h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, fontSize: 12 } },
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Vitesse 14j"),
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: "#a5b4fc" } }, fmtNum(Math.round(vitesse14j)) + " m/jour")
+                        ),
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Jours restants"),
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: healthColor } }, joursRestants + " j ouvres")
+                        ),
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Fin estimee"),
+                          h("div", { style: { fontWeight: 700, fontSize: 13.5, color: healthColor } }, dateFinEst.toLocaleDateString("fr-FR"))
+                        ),
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "CA restant"),
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: "#86efac" } }, fmtMoney(caRestant))
+                        ),
+                        h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                          h("div", { style: { color: "#a1a1aa", marginBottom: 3, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Marge prevue"),
+                          h("div", { style: { fontWeight: 700, fontSize: 14, color: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af" } }, fmtMoney(margeEstimee) + " (" + margePct + "%)")
+                        )
+                      )
+                    );
+                  }()),
                   (function() {
                     // Bar chart: metrage par jour du mois (releves_journaliers prioritaire + cumul)
                     var dayVals = [];
