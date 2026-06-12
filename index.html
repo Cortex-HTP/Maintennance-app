@@ -1050,6 +1050,15 @@
     function GammeEditor({ items, onChange, readOnly, emptyHint }) {
       var ctx = useAppData();
       var pieces = ctx.pieces || [];
+      // Liste des categories uniques (pour le mode auto par categorie)
+      var categoriesUniques = (function() {
+        var seen = {};
+        pieces.forEach(function(p) {
+          var c = (p.Categorie || "").trim();
+          if (c) seen[c] = true;
+        });
+        return Object.keys(seen).sort();
+      }());
       var list = Array.isArray(items) ? items : [];
       function update(i, patch) {
         var copy = list.slice();
@@ -1071,8 +1080,9 @@
       return h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
         list.length === 0 ? h("div", { style: { fontSize: 12, color: "#71717a", fontStyle: "italic", padding: "8px 0" } }, emptyHint || "Aucune etape definie") : null,
         list.map(function(item, i) {
-          var hasPiece = !!(item.pieceType || item.pieceRef || item.pieceLabel);
+          var hasPiece = !!(item.pieceType || item.pieceRef || item.pieceLabel || item.pieceCategorie);
           var isExp = !!expanded[item.id || i] || hasPiece;
+          var isAuto = item.pieceType === "auto-categorie";
           return h("div", { key: item.id || i, style: { background: "rgba(255,255,255,0.02)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(255,255,255,0.05)" } },
             // Ligne principale : numero + label + bouton piece + bouton supprimer
             h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
@@ -1085,11 +1095,11 @@
                 style: { ...inputStyle, flex: 1, opacity: readOnly ? 0.6 : 1 }
               }),
               !readOnly ? h("button", { type: "button", onClick: function() { toggleExp(item.id || i); },
-                title: hasPiece ? "Modifier la piece liee" : "Lier une piece / consommable",
-                style: { background: hasPiece ? "rgba(34,197,94,0.15)" : "rgba(99,102,241,0.10)", border: "1px solid " + (hasPiece ? "rgba(34,197,94,0.30)" : "rgba(99,102,241,0.25)"), color: hasPiece ? "#86efac" : "#a5b4fc", padding: "5px 9px", borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600 } },
-                h(Icon, { name: hasPiece ? "package-check" : "package", size: 12, color: hasPiece ? "#86efac" : "#a5b4fc" }),
-                hasPiece ? fmtGammeQty(item.quantite, item.unite) + " " + (item.pieceLabel || item.pieceRef || "?") : "Pieces"
-              ) : (hasPiece ? h("span", { style: { fontSize: 11, color: "#86efac", padding: "3px 8px", background: "rgba(34,197,94,0.10)", borderRadius: 4 } }, fmtGammeQty(item.quantite, item.unite) + " " + (item.pieceLabel || item.pieceRef || "?")) : null),
+                title: hasPiece ? (isAuto ? "Categorie auto-resolue par equipement : " + (item.pieceCategorie || "?") : "Modifier la piece liee") : "Lier une piece / consommable",
+                style: { background: hasPiece ? (isAuto ? "rgba(99,102,241,0.18)" : "rgba(34,197,94,0.15)") : "rgba(99,102,241,0.10)", border: "1px solid " + (hasPiece ? (isAuto ? "rgba(99,102,241,0.40)" : "rgba(34,197,94,0.30)") : "rgba(99,102,241,0.25)"), color: hasPiece ? (isAuto ? "#c4b5fd" : "#86efac") : "#a5b4fc", padding: "5px 9px", borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600 } },
+                h(Icon, { name: hasPiece ? (isAuto ? "search" : "package-check") : "package", size: 12, color: hasPiece ? (isAuto ? "#c4b5fd" : "#86efac") : "#a5b4fc" }),
+                hasPiece ? fmtGammeQty(item.quantite, item.unite) + " " + (isAuto ? (item.pieceCategorie || "?") : (item.pieceLabel || item.pieceRef || "?")) : "Pieces"
+              ) : (hasPiece ? h("span", { style: { fontSize: 11, color: isAuto ? "#c4b5fd" : "#86efac", padding: "3px 8px", background: isAuto ? "rgba(99,102,241,0.10)" : "rgba(34,197,94,0.10)", borderRadius: 4 } }, (isAuto ? "🔍 " : "") + fmtGammeQty(item.quantite, item.unite) + " " + (isAuto ? (item.pieceCategorie || "?") : (item.pieceLabel || item.pieceRef || "?"))) : null),
               !readOnly ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })) : null
             ),
             // Section pieces (expanded)
@@ -1099,20 +1109,21 @@
                 h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Type"),
                 h("select", { value: item.pieceType || "", onChange: function(e) {
                   var nt = e.target.value;
-                  // Defaut intelligent : consommable -> L (liquides typiquement) ; sinon u
                   var defaultUnit = nt === "consommable" ? "L" : "u";
                   update(i, { pieceType: nt, pieceRef: "", pieceLabel: "", unite: item.unite || defaultUnit });
                 },
                   style: { ...selectStyle, fontSize: 12, padding: "6px 8px" } },
                   h("option", { value: "" }, "—"),
                   h("option", { value: "piece" }, "📦 Piece catalogue"),
+                  h("option", { value: "auto-categorie" }, "🔍 Auto par categorie"),
                   h("option", { value: "consommable" }, "🛢️ Consommable"),
                   h("option", { value: "autre" }, "📄 Autre achat")
                 )
               ),
-              // Reference (selector si piece catalogue, text libre sinon)
+              // Reference : selector piece catalogue / select categorie (auto) / texte libre
               h("div", null,
-                h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Reference / designation"),
+                h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } },
+                  item.pieceType === "auto-categorie" ? "Categorie a resoudre" : "Reference / designation"),
                 item.pieceType === "piece" ?
                   h("select", { value: item.pieceRef || "", onChange: function(e) {
                     var p = pieces.find(function(pp) { return String(pp.Id) === e.target.value; });
@@ -1120,6 +1131,13 @@
                   }, style: { ...selectStyle, fontSize: 12, padding: "6px 8px" } },
                     h("option", { value: "" }, "Selectionner..."),
                     pieces.map(function(p) { return h("option", { key: p.Id, value: p.Id }, (p.Reference ? "[" + p.Reference + "] " : "") + (p.Designation || "?")); })
+                  ) :
+                item.pieceType === "auto-categorie" ?
+                  h("select", { value: item.pieceCategorie || "", onChange: function(e) {
+                    update(i, { pieceCategorie: e.target.value, pieceLabel: e.target.value ? (e.target.value + " (auto)") : "", pieceRef: "" });
+                  }, style: { ...selectStyle, fontSize: 12, padding: "6px 8px" } },
+                    h("option", { value: "" }, "Selectionner categorie..."),
+                    categoriesUniques.map(function(c) { return h("option", { key: c, value: c }, c); })
                   ) :
                   h("input", { type: "text", value: item.pieceLabel || "", onChange: function(e) { update(i, { pieceLabel: e.target.value, pieceRef: e.target.value }); },
                     placeholder: item.pieceType === "consommable" ? "Ex: Huile moteur 15W40" : "Ex: Joint plat sur mesure",
@@ -18615,10 +18633,20 @@
     function computeAchatsPrevisionnelsPending(args) {
       var plans = args.plans || [];
       var pieces = args.pieces || [];
+      var equipements = args.equipements || [];
+      var piecesEqs = args.piecesEquipements || [];
       var horizonDays = args.horizonDays || 90;
       var today = args.today || new Date();
       var horizonDate = new Date(today.getTime() + horizonDays * 86400000);
       var map = {};
+      function resoudreCategoriePourEquip(categorie, equipCode) {
+        var eq = equipements.find(function(e) { return e.Title === equipCode; });
+        if (!eq) return null;
+        var pieceIds = piecesEqs.filter(function(l) { return String(l.equipement_id) === String(eq.Id); }).map(function(l) { return l.piece_id; });
+        return pieces.find(function(p) {
+          return pieceIds.indexOf(p.Id) >= 0 && (p.Categorie || "").toLowerCase() === categorie.toLowerCase();
+        }) || null;
+      }
       plans.forEach(function(plan) {
         if (plan.Statut !== "Actif" && plan.Statut !== "actif") return;
         var nextDate = plan.ProchainIntervention ? new Date(plan.ProchainIntervention) : null;
@@ -18626,10 +18654,23 @@
         var gamme = Array.isArray(plan.Gamme) ? plan.Gamme : [];
         if (gamme.length === 0) return;
         var equipCodes = (plan.Equipements || "").split(",").map(function(s) { return s.trim(); }).filter(Boolean);
-        var nbEquips = equipCodes.length || 1;
+        if (equipCodes.length === 0) equipCodes = [null];
         gamme.forEach(function(step) {
-          if (!step || (!step.pieceLabel && !step.pieceRef)) return;
-          var qty = (parseFloat(step.quantite) || 1) * nbEquips;
+          if (!step) return;
+          var qty = parseFloat(step.quantite) || 1;
+          if (step.pieceType === "auto-categorie" && step.pieceCategorie) {
+            equipCodes.forEach(function(eqCode) {
+              if (!eqCode) return;
+              var pieceCat = resoudreCategoriePourEquip(step.pieceCategorie, eqCode);
+              var refKey = pieceCat ? "piece:" + pieceCat.Id : "missing:" + step.pieceCategorie + ":" + eqCode;
+              if (!map[refKey]) map[refKey] = { qty: 0, pieceCatalogue: pieceCat, missing: !pieceCat };
+              map[refKey].qty += qty;
+            });
+            return;
+          }
+          if (!step.pieceLabel && !step.pieceRef) return;
+          var nbEquips = equipCodes.length || 1;
+          var qtyTotale = qty * nbEquips;
           var refKey = step.pieceType === "piece" && step.pieceRef
             ? "piece:" + step.pieceRef
             : "free:" + (step.pieceLabel || step.pieceRef || "?").toLowerCase().trim();
@@ -18637,20 +18678,19 @@
             var pieceCat = step.pieceType === "piece" ? pieces.find(function(p) { return String(p.Id) === String(step.pieceRef); }) : null;
             map[refKey] = { qty: 0, pieceCatalogue: pieceCat };
           }
-          map[refKey].qty += qty;
+          map[refKey].qty += qtyTotale;
         });
       });
-      // Compte ceux en deficit reel
       var deficitCount = 0;
       var refsCount = 0;
       Object.keys(map).forEach(function(k) {
         var b = map[k];
         refsCount++;
-        if (b.pieceCatalogue) {
+        if (b.missing) deficitCount++;
+        else if (b.pieceCatalogue) {
           var stock = parseFloat(b.pieceCatalogue.Stock) || 0;
           if (stock < b.qty) deficitCount++;
         } else {
-          // Consommable / autre sans suivi de stock = toujours considere a acheter
           deficitCount++;
         }
       });
@@ -18905,7 +18945,22 @@
       //   - Si elle tombe dans l'horizon, on cumule les pieces de chaque etape
       //   - On multiplie par le nombre d'equipements concernes par le plan
       var besoins = (function() {
-        var map = {}; // ref -> { ref, label, type, qtyTotal, planSources: [], pieceCatalogue (si match) }
+        var map = {}; // ref -> { ref, label, type, qtyTotal, planSources: [], pieceCatalogue }
+        var piecesEqs = ctx.piecesEquipements || [];
+
+        // Helper : resoudre une categorie pour un equipement -> retourne la piece liee + categorie
+        function resoudreCategoriePourEquip(categorie, equipCode) {
+          // 1. Trouver l'equipement par code (Title)
+          var eq = equipements.find(function(e) { return e.Title === equipCode; });
+          if (!eq) return null;
+          // 2. Chercher pieces liees a cet equipement avec cette categorie
+          var pieceIds = piecesEqs.filter(function(l) { return String(l.equipement_id) === String(eq.Id); }).map(function(l) { return l.piece_id; });
+          var candidate = pieces.find(function(p) {
+            return pieceIds.indexOf(p.Id) >= 0 && (p.Categorie || "").toLowerCase() === categorie.toLowerCase();
+          });
+          return candidate || null;
+        }
+
         plans.forEach(function(plan) {
           if (plan.Statut !== "Actif" && plan.Statut !== "actif") return;
           var nextDate = plan.ProchainIntervention ? new Date(plan.ProchainIntervention) : null;
@@ -18914,14 +18969,59 @@
           var gamme = Array.isArray(plan.Gamme) ? plan.Gamme : [];
           if (gamme.length === 0) return;
 
-          // Equipements concernes par ce plan
           var equipCodes = (plan.Equipements || "").split(",").map(function(s) { return s.trim(); }).filter(Boolean);
-          var nbEquips = equipCodes.length || 1;
+          if (equipCodes.length === 0) equipCodes = [null];
           if (equipFilter !== "all" && equipCodes.indexOf(equipFilter) < 0) return;
 
           gamme.forEach(function(step) {
-            if (!step || !step.pieceLabel && !step.pieceRef) return;
-            var qty = (parseFloat(step.quantite) || 1) * nbEquips;
+            if (!step) return;
+            var qty = parseFloat(step.quantite) || 1;
+
+            // MODE AUTO PAR CATEGORIE : resolution par equipement
+            if (step.pieceType === "auto-categorie" && step.pieceCategorie) {
+              equipCodes.forEach(function(eqCode) {
+                if (!eqCode) return;
+                var pieceCat = resoudreCategoriePourEquip(step.pieceCategorie, eqCode);
+                var refKey, label, type;
+                if (pieceCat) {
+                  refKey = "piece:" + pieceCat.Id;
+                  label = pieceCat.Designation || pieceCat.Reference;
+                  type = "piece";
+                } else {
+                  // Pas de piece resolue pour cet equipement -> a creer / a renseigner
+                  refKey = "missing:" + step.pieceCategorie + ":" + eqCode;
+                  label = step.pieceCategorie + " (manque pour " + eqCode + ")";
+                  type = "auto-missing";
+                }
+                if (!map[refKey]) {
+                  map[refKey] = {
+                    ref: pieceCat ? pieceCat.Reference : "?",
+                    label: label,
+                    type: type,
+                    qtyTotal: 0,
+                    planSources: [],
+                    pieceCatalogue: pieceCat,
+                    autoCategorie: step.pieceCategorie
+                  };
+                }
+                map[refKey].qtyTotal += qty;
+                if (step.unite) map[refKey].unite = step.unite;
+                else if (!map[refKey].unite) map[refKey].unite = "u";
+                map[refKey].planSources.push({
+                  planNom: plan.Title || plan.Description,
+                  equipCodes: [eqCode],
+                  prochaineDate: nextDate,
+                  stepLabel: step.label + " (auto: " + step.pieceCategorie + ")",
+                  qtyPerEquip: qty
+                });
+              });
+              return;
+            }
+
+            // MODES CLASSIQUES (piece / consommable / autre)
+            if (!step.pieceLabel && !step.pieceRef) return;
+            var nbEquips = equipCodes.length || 1;
+            var qtyTotale = qty * nbEquips;
             var refKey = step.pieceType === "piece" && step.pieceRef
               ? "piece:" + step.pieceRef
               : "free:" + (step.pieceLabel || step.pieceRef || "?").toLowerCase().trim();
@@ -18936,8 +19036,7 @@
                 pieceCatalogue: pieceCat
               };
             }
-            map[refKey].qtyTotal += qty;
-            // Conserve l'unite (ecrasee a chaque rencontre, devrait etre coherente)
+            map[refKey].qtyTotal += qtyTotale;
             if (step.unite) map[refKey].unite = step.unite;
             else if (!map[refKey].unite) map[refKey].unite = step.pieceType === "consommable" ? "L" : "u";
             map[refKey].planSources.push({
@@ -18945,12 +19044,14 @@
               equipCodes: equipCodes,
               prochaineDate: nextDate,
               stepLabel: step.label,
-              qtyPerEquip: parseFloat(step.quantite) || 1
+              qtyPerEquip: qty
             });
           });
         });
         return Object.values(map).sort(function(a, b) {
-          // Tri : pieces catalogue en deficit d'abord, puis autres
+          // Tri : missing en premier, puis pieces en deficit, puis le reste
+          if (a.type === "auto-missing" && b.type !== "auto-missing") return -1;
+          if (b.type === "auto-missing" && a.type !== "auto-missing") return 1;
           var aDef = a.pieceCatalogue ? Math.max(0, a.qtyTotal - (parseFloat(a.pieceCatalogue.Stock) || 0)) : a.qtyTotal;
           var bDef = b.pieceCatalogue ? Math.max(0, b.qtyTotal - (parseFloat(b.pieceCatalogue.Stock) || 0)) : b.qtyTotal;
           return bDef - aDef;
@@ -19039,9 +19140,9 @@
                   return h("tr", { key: i, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
                     h("td", { style: { padding: "9px 12px" } },
                       h("span", { style: { fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 4,
-                        background: b.type === "piece" ? "rgba(168,139,250,0.18)" : b.type === "consommable" ? "rgba(34,211,238,0.18)" : "rgba(148,163,184,0.18)",
-                        color: b.type === "piece" ? "#c4b5fd" : b.type === "consommable" ? "#67e8f9" : "#94a3b8" } },
-                        b.type === "piece" ? "📦 Piece" : b.type === "consommable" ? "🛢️ Consommable" : "📄 Autre")
+                        background: b.type === "piece" ? "rgba(168,139,250,0.18)" : b.type === "consommable" ? "rgba(34,211,238,0.18)" : b.type === "auto-missing" ? "rgba(244,63,94,0.18)" : "rgba(148,163,184,0.18)",
+                        color: b.type === "piece" ? "#c4b5fd" : b.type === "consommable" ? "#67e8f9" : b.type === "auto-missing" ? "#fda4af" : "#94a3b8" } },
+                        b.type === "piece" ? (b.autoCategorie ? "🔍 " + b.autoCategorie : "📦 Piece") : b.type === "consommable" ? "🛢️ Consommable" : b.type === "auto-missing" ? "⚠ A renseigner" : "📄 Autre")
                     ),
                     h("td", { style: { padding: "9px 12px", color: "#fafafa", fontWeight: 600 } },
                       b.label,
@@ -20717,11 +20818,13 @@
           return computeAchatsPrevisionnelsPending({
             plans: plans || [],
             pieces: pieces || [],
+            equipements: equipements || [],
+            piecesEquipements: piecesEquipements || [],
             today: new Date(),
             horizonDays: 90
           }).count;
         } catch (e) { return 0; }
-      }, [plans, pieces]);
+      }, [plans, pieces, equipements, piecesEquipements]);
 
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
