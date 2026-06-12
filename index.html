@@ -1103,7 +1103,8 @@
               !readOnly ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })) : null
             ),
             // Section pieces (expanded)
-            isExp && !readOnly ? h("div", { style: { marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.06)", display: "grid", gridTemplateColumns: "1fr 1fr 65px 70px", gap: 6, alignItems: "end" } },
+            isExp && !readOnly ? h("div", { style: { marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.06)" } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 65px 70px", gap: 6, alignItems: "end" } },
               // Type
               h("div", null,
                 h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Type"),
@@ -1169,6 +1170,12 @@
                   h("option", { value: "lot" }, "lot")
                 )
               )
+              ),
+              // Optionnel : si coche, machines sans piece de cette categorie skippees
+              item.pieceType === "auto-categorie" ? h("label", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 11, color: "#cbd5e1", cursor: "pointer" } },
+                h("input", { type: "checkbox", checked: !!item.optionnel, onChange: function(e) { update(i, { optionnel: e.target.checked }); }, style: { accentColor: "#818cf8" } }),
+                "Optionnel : si une machine n'a pas cette categorie liee, ne pas la signaler comme manquante"
+              ) : null
             ) : null
           );
         }),
@@ -18662,6 +18669,7 @@
             equipCodes.forEach(function(eqCode) {
               if (!eqCode) return;
               var pieceCat = resoudreCategoriePourEquip(step.pieceCategorie, eqCode);
+              if (!pieceCat && step.optionnel) return; // skip si optionnel et pas de match
               var refKey = pieceCat ? "piece:" + pieceCat.Id : "missing:" + step.pieceCategorie + ":" + eqCode;
               if (!map[refKey]) map[refKey] = { qty: 0, pieceCatalogue: pieceCat, missing: !pieceCat };
               map[refKey].qty += qty;
@@ -18988,7 +18996,8 @@
                   label = pieceCat.Designation || pieceCat.Reference;
                   type = "piece";
                 } else {
-                  // Pas de piece resolue pour cet equipement -> a creer / a renseigner
+                  // Etape optionnelle : on skip silencieusement si aucune piece pour cet eq
+                  if (step.optionnel) return;
                   refKey = "missing:" + step.pieceCategorie + ":" + eqCode;
                   label = step.pieceCategorie + " (manque pour " + eqCode + ")";
                   type = "auto-missing";
