@@ -1862,7 +1862,7 @@
 
     // ─── Formulaire Intervention (utilise dans un modal) ────────────────
     function InterventionForm({ editItem, onDone }) {
-      const { equipements, plans, addIntervention, updateIntervention, addReleve } = useAppData();
+      const { equipements, plans, pieces, piecesEquipements, addIntervention, updateIntervention, addReleve } = useAppData();
       const techniciens = useParams("technicien");
       const [f, setF] = useState(editItem || { Title: "", Equipement: "", Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "", Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "", Plan: "", Horametre: "", KM: "", Type: "Preventive", Gamme: [] });
       const [saving, setSaving] = useState(false);
@@ -1870,19 +1870,76 @@
       // Detection : intervention auto liee a un plan
       const isAutoFromPlan = !!(f.Title && f.Title.toLowerCase().indexOf("[auto]") === 0 && f.Plan);
       // Pre-remplissage de la gamme depuis le plan si pas encore d'items "fromPlan"
-      // (utile a la creation d'une intervention auto, ou apres avoir change le plan dans le form)
+      // - Resoud les pieces auto-categorie selon la machine selectionnee
+      // - Filtre les etapes optionnelles dont aucune piece n'est liee a la machine
+      // - Preserve les infos pieces (categorie, qty, unite, ...) pour affichage
       React.useEffect(function() {
         if (!f.Plan) return;
         var plan = plans.find(function(p) { return (p.Title || "").toLowerCase() === (f.Plan || "").toLowerCase(); });
         if (!plan || !Array.isArray(plan.Gamme) || plan.Gamme.length === 0) return;
         var current = Array.isArray(f.Gamme) ? f.Gamme : [];
         var hasFromPlan = current.some(function(g) { return g && g.fromPlan; });
-        if (hasFromPlan) return; // deja initialise
-        // Injecter les etapes du plan en tete, en gardant les eventuelles etapes custom existantes
-        var planItems = plan.Gamme.map(function(g) { return { id: g.id || newGammeId(), label: g.label || "", done: false, fromPlan: true }; });
+        if (hasFromPlan) return;
+        // Trouve l'equipement courant pour resoudre les auto-categories
+        var eq = (equipements || []).find(function(e) { return e.Title === f.Equipement; });
+        function resoudreCategoriePourEq(cat) {
+          if (!eq) return null;
+          var pieceIds = (piecesEquipements || []).filter(function(l) { return String(l.equipement_id) === String(eq.Id); }).map(function(l) { return l.piece_id; });
+          return (pieces || []).find(function(p) {
+            return pieceIds.indexOf(p.Id) >= 0 && (p.Categorie || "").toLowerCase() === (cat || "").toLowerCase();
+          }) || null;
+        }
+        var planItems = [];
+        plan.Gamme.forEach(function(g) {
+          // Etape auto-categorie : on resout pour cet equipement
+          if (g.pieceType === "auto-categorie" && g.pieceCategorie) {
+            var resolved = resoudreCategoriePourEq(g.pieceCategorie);
+            if (!resolved && g.optionnel) return; // skip si pas applicable
+            // Si resolu : on remplace la categorie par la piece specifique
+            // Si non resolu (et non optionnel) : on garde l'auto-categorie pour signaler le manque
+            if (resolved) {
+              planItems.push({
+                id: g.id || newGammeId(),
+                label: g.label || "",
+                done: false,
+                fromPlan: true,
+                pieceType: "piece",
+                pieceRef: resolved.Id,
+                pieceLabel: resolved.Designation || resolved.Reference || "?",
+                quantite: g.quantite,
+                unite: g.unite
+              });
+            } else {
+              planItems.push({
+                id: g.id || newGammeId(),
+                label: g.label + " (categorie " + g.pieceCategorie + " manquante pour " + (eq ? eq.Title : "?") + ")",
+                done: false,
+                fromPlan: true,
+                pieceType: "auto-categorie",
+                pieceCategorie: g.pieceCategorie,
+                pieceLabel: g.pieceCategorie + " (a definir)",
+                quantite: g.quantite,
+                unite: g.unite
+              });
+            }
+            return;
+          }
+          // Mode classique : on copie tel quel avec preservation des infos pieces
+          planItems.push({
+            id: g.id || newGammeId(),
+            label: g.label || "",
+            done: false,
+            fromPlan: true,
+            pieceType: g.pieceType,
+            pieceRef: g.pieceRef,
+            pieceLabel: g.pieceLabel,
+            quantite: g.quantite,
+            unite: g.unite
+          });
+        });
         var custom = current.filter(function(g) { return !g.fromPlan; });
         setF(function(prev) { return Object.assign({}, prev, { Gamme: planItems.concat(custom) }); });
-      }, [f.Plan, plans]);
+      }, [f.Plan, f.Equipement, plans, equipements, pieces, piecesEquipements]);
       // Statut effectif calcule a la volee depuis la gamme
       const effectiveStatus = computeIntervStatus(f);
       const progress = gammeProgress(f.Gamme);
