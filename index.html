@@ -14132,6 +14132,20 @@
         caByDate[keyMonth] = (caByDate[keyMonth] || 0) + ca;
       });
 
+      // ── CA YTD (1er janvier -> aujourd'hui) + CA annuel projete ──
+      // Independant des filtres : se base sur TOUS les rapports de l'annee en cours.
+      var yearStart = new Date(now.getFullYear(), 0, 1);
+      var caYTD = 0;
+      (rapports || []).forEach(function(r) {
+        if (!r.date_rapport) return;
+        var d = new Date(r.date_rapport);
+        if (d < yearStart || d > now) return;
+        var prix = lookupPrixMetre(r);
+        caYTD += (parseFloat(r.total_metres) || 0) * prix;
+      });
+      var daysElapsed = Math.max(1, Math.floor((now - yearStart) / 86400000) + 1);
+      var caAnnuelProj = (caYTD / daysElapsed) * 365;
+
       if (isMonthlyView) {
         // Agregation par mois
         var monthMap = {};
@@ -14862,7 +14876,8 @@
           // KPIs
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 14 } },
             kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total"),
-            kpiCard("green", "clock", (function(){ var hh = Math.floor(totalMinutes / 60); var mm = Math.round(totalMinutes - hh * 60); if (mm === 60) { hh += 1; mm = 0; } return hh.toLocaleString("fr-FR") + "H" + (mm < 10 ? "0" : "") + mm; }()), "Heures totales"),
+            kpiCard("green", "coins", (function() { return caYTD > 1000000 ? (caYTD / 1000000).toFixed(2) + " MF" : Math.round(caYTD / 1000).toLocaleString("fr-FR") + " k"; }()) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)"),
+            kpiCard("red", "trending-up", (function() { return caAnnuelProj > 1000000 ? (caAnnuelProj / 1000000).toFixed(2) + " MF" : Math.round(caAnnuelProj / 1000).toLocaleString("fr-FR") + " k"; }()) + " XPF", "CA annuel projete"),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration")
           ),
