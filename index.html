@@ -2773,7 +2773,7 @@
 
     // ─── Ecran Pieces ───────────────────────────────────────────────────
     function EcranPieces() {
-      const { pieces, addPiece, updatePiece, deletePiece, equipements, showToast } = useAppData();
+      const { pieces, addPiece, updatePiece, deletePiece, equipements, piecesEquipements, showToast } = useAppData();
       // ── Detection des doublons (nom/reference normalises) ──
       function normalizePieceKeyPa(p) {
         function n(s) {
@@ -2982,16 +2982,32 @@
                   h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, fmtMoney(p.PrixUnitaire)),
                   h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa" } }, p.Emplacement),
                   h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa", minWidth: 180 } }, (function() {
-                    if (!p.Compatible) return "-";
-                    var matched = resolveCompatibleCodes(p.Compatible, allEquipCodes);
+                    // Sources : 1) champ Compatible (legacy texte) + 2) table piecesEquipements (nouvelle)
+                    var matchedLegacy = p.Compatible ? resolveCompatibleCodes(p.Compatible, allEquipCodes) : [];
+                    var fromLiaisons = (piecesEquipements || [])
+                      .filter(function(l) { return String(l.piece_id) === String(p.Id); })
+                      .map(function(l) {
+                        var eq = (equipements || []).find(function(e) { return String(e.Id) === String(l.equipement_id); });
+                        return eq ? eq.Title : null;
+                      })
+                      .filter(Boolean);
+                    // Fusionne sans doublons
+                    var allCodes = matchedLegacy.slice();
+                    fromLiaisons.forEach(function(c) { if (allCodes.indexOf(c) < 0) allCodes.push(c); });
+                    if (allCodes.length === 0 && !p.Compatible) return h("span", { style: { color: "#71717a" } }, "-");
                     return h("div", null,
-                      h("div", { style: { fontFamily: "monospace", fontSize: 11, color: "#71717a", marginBottom: 4 } }, p.Compatible),
-                      matched.length === 0 ? h("span", { style: { fontSize: 10, color: "#fda4af", fontStyle: "italic" } }, "Aucun engin matche") :
+                      p.Compatible ? h("div", { style: { fontFamily: "monospace", fontSize: 11, color: "#71717a", marginBottom: 4 } }, p.Compatible) : null,
+                      allCodes.length === 0 ? h("span", { style: { fontSize: 10, color: "#fda4af", fontStyle: "italic" } }, "Aucun engin lie") :
                       h("div", { style: { display: "flex", flexWrap: "wrap", gap: 3 } },
-                        matched.slice(0, 8).map(function(c) {
-                          return h("span", { key: c, style: { fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "rgba(167,139,250,0.12)", color: "#c4b5fd", border: "1px solid rgba(167,139,250,0.25)" } }, c);
+                        allCodes.slice(0, 10).map(function(c) {
+                          var isLinked = fromLiaisons.indexOf(c) >= 0;
+                          return h("span", { key: c, title: isLinked ? "Lie via la table de compatibilite" : "Match du champ Compatible (legacy)",
+                            style: { fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                              background: isLinked ? "rgba(34,197,94,0.15)" : "rgba(167,139,250,0.12)",
+                              color: isLinked ? "#86efac" : "#c4b5fd",
+                              border: "1px solid " + (isLinked ? "rgba(34,197,94,0.30)" : "rgba(167,139,250,0.25)") } }, c);
                         }),
-                        matched.length > 8 ? h("span", { style: { fontSize: 10, color: "#71717a", padding: "1px 4px" } }, "+ " + (matched.length - 8)) : null
+                        allCodes.length > 10 ? h("span", { style: { fontSize: 10, color: "#71717a", padding: "1px 4px" } }, "+ " + (allCodes.length - 10)) : null
                       )
                     );
                   }())),
@@ -19000,6 +19016,7 @@
       // Filtres
       var _horizon = useState("90"); var horizon = _horizon[0]; var setHorizon = _horizon[1];
       var _equipFilter = useState("all"); var equipFilter = _equipFilter[0]; var setEquipFilter = _equipFilter[1];
+      var _vue = useState("par-piece"); var vue = _vue[0]; var setVue = _vue[1]; // "par-piece" | "par-machine"
 
       var today = new Date();
       var horizonDate = new Date(today.getTime() + parseInt(horizon, 10) * 86400000);
@@ -19147,6 +19164,95 @@
         });
       });
 
+      // ─ Agregation PAR MACHINE : utile pour preparer la commande filtration par engin ─
+      // Structure : [{ eqCode, eqLabel, pieces: [{ ref, label, qty, stock, deficit, cost, ... }], totalDeficit, totalCost }, ...]
+      var besoinsParMachine = (function() {
+        var parM = {};
+        besoins.forEach(function(b) {
+          b.planSources.forEach(function(ps) {
+            (ps.equipCodes || []).forEach(function(eqCode) {
+              if (!eqCode) return;
+              if (!parM[eqCode]) {
+                var eq = (equipements || []).find(function(e) { return e.Title === eqCode; });
+                parM[eqCode] = {
+                  eqCode: eqCode,
+                  eqLabel: eq && eq.Nom ? eq.Nom : eqCode,
+                  eqType: eq && eq.Type ? eq.Type : null,
+                  pieces: {}
+                };
+              }
+              var refKey = b.pieceCatalogue ? "p:" + b.pieceCatalogue.Id : (b.type === "auto-missing" ? "m:" + (b.autoCategorie || "?") : "f:" + (b.label || "?").toLowerCase().trim());
+              if (!parM[eqCode].pieces[refKey]) {
+                parM[eqCode].pieces[refKey] = {
+                  ref: b.pieceCatalogue ? b.pieceCatalogue.Reference : b.ref,
+                  label: b.label,
+                  type: b.type,
+                  autoCategorie: b.autoCategorie,
+                  unite: b.unite || "u",
+                  pieceCatalogue: b.pieceCatalogue,
+                  qty: 0,
+                  plans: []
+                };
+              }
+              parM[eqCode].pieces[refKey].qty += (ps.qtyPerEquip || 0);
+              parM[eqCode].pieces[refKey].plans.push({
+                nom: ps.planNom,
+                date: ps.prochaineDate,
+                stepLabel: ps.stepLabel
+              });
+            });
+          });
+        });
+        // Transforme en tableaux + totaux
+        return Object.keys(parM).map(function(k) {
+          var m = parM[k];
+          var piecesArr = Object.keys(m.pieces).map(function(rk) { return m.pieces[rk]; });
+          var totalDeficit = 0, totalCost = 0;
+          piecesArr.forEach(function(p) {
+            var stock = p.pieceCatalogue ? (parseFloat(p.pieceCatalogue.Stock) || 0) : 0;
+            var deficit = Math.max(0, p.qty - stock);
+            var pu = p.pieceCatalogue ? (parseFloat(p.pieceCatalogue.PrixUnitaire) || 0) : 0;
+            p.stock = stock;
+            p.deficit = deficit;
+            p.cost = deficit * pu;
+            totalDeficit += deficit;
+            totalCost += p.cost;
+          });
+          piecesArr.sort(function(a, b) { return b.deficit - a.deficit; });
+          return {
+            eqCode: m.eqCode,
+            eqLabel: m.eqLabel,
+            eqType: m.eqType,
+            pieces: piecesArr,
+            totalDeficit: totalDeficit,
+            totalCost: totalCost,
+            nbPieces: piecesArr.length
+          };
+        }).sort(function(a, b) {
+          // Tri : machines avec deficit en premier, puis par cout decroissant
+          if ((a.totalDeficit > 0) !== (b.totalDeficit > 0)) return a.totalDeficit > 0 ? -1 : 1;
+          return b.totalCost - a.totalCost;
+        });
+      }());
+
+      // Onglets de vue
+      function vueTabBtn(key, label, icon, count) {
+        var active = vue === key;
+        return h("button", { onClick: function() { setVue(key); },
+          style: { display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px",
+            background: active ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)",
+            color: active ? "#ffffff" : "#a78bfa",
+            border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.08)"),
+            borderRadius: 10, fontWeight: 600, fontSize: 14, cursor: "pointer",
+            boxShadow: active ? "0 8px 20px rgba(99,102,241,0.3)" : "none",
+            fontFamily: "inherit"
+          } },
+          h(Icon, { name: icon, size: 14, color: active ? "#ffffff" : "#a78bfa" }),
+          label,
+          h("span", { style: { background: active ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.05)", padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800 } }, count)
+        );
+      }
+
       var sectionStyle = { background: "rgba(36, 40, 60, 0.55)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" };
 
       return h("div", null,
@@ -19179,7 +19285,76 @@
           h("span", { style: { marginLeft: "auto", fontSize: 12, color: "#94a3b8" } }, besoins.length + " reference" + (besoins.length > 1 ? "s" : "") + " agregee" + (besoins.length > 1 ? "s" : ""))
         ),
 
-        // Tableau
+        // Onglets de vue (Par piece / Par machine)
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" } },
+          vueTabBtn("par-piece", "Par piece", "package", besoins.length),
+          vueTabBtn("par-machine", "Par machine", "truck", besoinsParMachine.length)
+        ),
+
+        // ─ VUE PAR MACHINE ─
+        vue === "par-machine" ? (
+          besoinsParMachine.length === 0 ?
+            h("div", { style: Object.assign({}, sectionStyle, { padding: 60, textAlign: "center", color: "#71717a" }) },
+              h(Icon, { name: "truck", size: 48, color: "rgba(255,255,255,0.18)" }),
+              h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucune machine avec besoins"),
+              h("div", { style: { marginTop: 4, fontSize: 12 } }, "Ajuste l'horizon ou verifie les plans actifs et leurs equipements.")
+            ) :
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+              besoinsParMachine.map(function(m, mi) {
+                return h("div", { key: mi, style: Object.assign({}, sectionStyle, { padding: 0, overflow: "hidden" }) },
+                  // Bandeau machine
+                  h("div", { style: { padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, background: "linear-gradient(135deg, rgba(99,102,241,0.10), rgba(139,92,246,0.05))", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
+                    h("div", { style: { width: 44, height: 44, borderRadius: 10, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                      h(Icon, { name: "truck", size: 20, color: "#ffffff" })
+                    ),
+                    h("div", { style: { flex: 1, minWidth: 0 } },
+                      h("div", { style: { fontSize: 15, fontWeight: 700, color: "#fafafa" } }, m.eqCode + (m.eqLabel !== m.eqCode ? " — " + m.eqLabel : "")),
+                      h("div", { style: { fontSize: 12, color: "#a1a1aa", marginTop: 2 } }, m.nbPieces + " reference" + (m.nbPieces > 1 ? "s" : "") + " a prevoir" + (m.eqType ? " - " + m.eqType : ""))
+                    ),
+                    h("div", { style: { textAlign: "right" } },
+                      h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4 } }, "Cout estime"),
+                      h("div", { style: { fontSize: 17, fontWeight: 800, color: m.totalCost > 0 ? "#fde68a" : "#86efac", fontFamily: "'SF Mono', Consolas, monospace" } }, m.totalCost > 0 ? (m.totalCost > 1000000 ? (m.totalCost / 1000000).toFixed(2) + " MF" : Math.round(m.totalCost / 1000) + " k") + " XPF" : "—")
+                    )
+                  ),
+                  // Tableau des pieces de cette machine
+                  h("div", { style: { overflowX: "auto" } },
+                    h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                      h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.02)" } },
+                        h("th", { style: { padding: "10px 14px", textAlign: "left", fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Reference"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "left", fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Designation"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "right", fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Besoin"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "right", fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Stock"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "right", fontSize: 10.5, fontWeight: 700, color: "#fda4af", textTransform: "uppercase", letterSpacing: 0.4 } }, "A acheter"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "right", fontSize: 10.5, fontWeight: 700, color: "#fde68a", textTransform: "uppercase", letterSpacing: 0.4 } }, "Cout"),
+                        h("th", { style: { padding: "10px 14px", textAlign: "left", fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4 } }, "Plan / categorie")
+                      )),
+                      h("tbody", null, m.pieces.map(function(p, pi) {
+                        return h("tr", { key: pi, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                          h("td", { style: { padding: "9px 14px", color: "#a78bfa", fontWeight: 700, fontSize: 12.5, fontFamily: "'SF Mono', Consolas, monospace" } }, p.ref || "—"),
+                          h("td", { style: { padding: "9px 14px", color: "#fafafa", fontWeight: 600 } },
+                            p.label,
+                            p.autoCategorie ? h("div", { style: { fontSize: 10.5, color: "#67e8f9", marginTop: 2 } }, "Auto: " + p.autoCategorie) : null
+                          ),
+                          h("td", { style: { padding: "9px 14px", textAlign: "right", color: "#fafafa", fontFamily: "'SF Mono', Consolas, monospace" } }, fmtGammeQty(Math.round(p.qty * 100) / 100, p.unite)),
+                          h("td", { style: { padding: "9px 14px", textAlign: "right", color: p.pieceCatalogue ? (p.stock >= p.qty ? "#86efac" : "#fda4af") : "#71717a", fontFamily: "'SF Mono', Consolas, monospace" } }, p.pieceCatalogue ? fmtGammeQty(p.stock, p.unite) : "—"),
+                          h("td", { style: { padding: "9px 14px", textAlign: "right", fontWeight: 700, color: p.deficit > 0 ? "#fda4af" : "#86efac", fontFamily: "'SF Mono', Consolas, monospace" } }, p.deficit > 0 ? "+" + fmtGammeQty(Math.round(p.deficit * 100) / 100, p.unite) : "OK"),
+                          h("td", { style: { padding: "9px 14px", textAlign: "right", color: p.cost > 0 ? "#fde68a" : "#71717a", fontFamily: "'SF Mono', Consolas, monospace" } }, p.cost > 0 ? fmtNum(Math.round(p.cost)) + " XPF" : "—"),
+                          h("td", { style: { padding: "9px 14px", fontSize: 11, color: "#a1a1aa" } },
+                            (function() {
+                              var planNoms = {};
+                              p.plans.forEach(function(pl) { planNoms[pl.nom] = true; });
+                              return Object.keys(planNoms).slice(0, 3).join(", ") + (Object.keys(planNoms).length > 3 ? " +" + (Object.keys(planNoms).length - 3) : "");
+                            }())
+                          )
+                        );
+                      }))
+                    )
+                  )
+                );
+              })
+            )
+        ) :
+        // ─ VUE PAR PIECE (existante) ─
         besoins.length === 0 ?
           h("div", { style: Object.assign({}, sectionStyle, { padding: 60, textAlign: "center", color: "#71717a" }) },
             h(Icon, { name: "shopping-cart", size: 48, color: "rgba(255,255,255,0.18)" }),
