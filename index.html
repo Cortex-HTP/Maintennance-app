@@ -14146,6 +14146,36 @@
       var daysElapsed = Math.max(1, Math.floor((now - yearStart) / 86400000) + 1);
       var caAnnuelProj = (caYTD / daysElapsed) * 365;
 
+      // ── CA de la periode filtree + projection sur la periode ──
+      // Tient compte des filtres (chantier / sondeuse / sondeur / periode)
+      var caPeriode = 0;
+      filtered.forEach(function(r) {
+        if (!r.date_rapport) return;
+        var prix = lookupPrixMetre(r);
+        caPeriode += (parseFloat(r.total_metres) || 0) * prix;
+      });
+      // Projection sur la periode : utile seulement si la periode contient le futur (mois en cours)
+      var caProjPeriode = caPeriode;
+      var periodLabelShort = "";
+      if (period === "mois") {
+        var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        var totalDaysMonth = monthEnd.getDate();
+        var elapsedDaysMonth = Math.max(1, Math.floor((now - monthStart) / 86400000) + 1);
+        caProjPeriode = (caPeriode / elapsedDaysMonth) * totalDaysMonth;
+        periodLabelShort = "mois en cours";
+      } else if (period === "moisdernier") periodLabelShort = "mois dernier";
+      else if (period === "3mois") periodLabelShort = "3 mois";
+      else if (period === "6mois") periodLabelShort = "6 mois";
+      else if (period === "1an") periodLabelShort = "1 an";
+      else if (period === "all") periodLabelShort = "tout l'historique";
+
+      // Helper formatage XPF compact
+      function fmtCaCompact(v) {
+        if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+        return Math.round(v / 1000).toLocaleString("fr-FR") + " k";
+      }
+
       if (isMonthlyView) {
         // Agregation par mois
         var monthMap = {};
@@ -14810,7 +14840,7 @@
       var tdRightStyle = Object.assign({}, tdStyle, { textAlign: "right", fontFamily: "monospace", fontWeight: 700 });
 
       // ── KPI card factory ──
-      var kpiCard = function(color, icon, value, label) {
+      var kpiCard = function(color, icon, value, label, hint) {
         var colors = {
           indigo: { bg: "rgba(129,140,248,0.15)", border: "rgba(129,140,248,0.35)", icon: "#818cf8", bar: "linear-gradient(90deg, #818cf8, #a78bfa)" },
           green:  { bg: "rgba(34,197,94,0.15)",  border: "rgba(34,197,94,0.35)",  icon: "#86efac", bar: "linear-gradient(90deg, #22c55e, #10b981)" },
@@ -14824,7 +14854,8 @@
           h("div", { style: { width: 42, height: 42, borderRadius: 11, background: c.bg, border: "1px solid " + c.border, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 } },
             h(Icon, { name: icon, size: 22, color: c.icon })),
           h("div", { style: { fontSize: 26, fontWeight: 900, lineHeight: 1, marginBottom: 4 } }, value),
-          h("div", { style: { fontSize: 12, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, label)
+          h("div", { style: { fontSize: 12, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, label),
+          hint ? h("div", { style: { fontSize: 11, color: c.icon, fontWeight: 600, marginTop: 6, paddingTop: 6, borderTop: "1px dashed rgba(255,255,255,0.08)" } }, hint) : null
         );
       };
 
@@ -14876,8 +14907,8 @@
           // KPIs
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 14 } },
             kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total"),
-            kpiCard("green", "coins", (function() { return caYTD > 1000000 ? (caYTD / 1000000).toFixed(2) + " MF" : Math.round(caYTD / 1000).toLocaleString("fr-FR") + " k"; }()) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)"),
-            kpiCard("red", "trending-up", (function() { return caAnnuelProj > 1000000 ? (caAnnuelProj / 1000000).toFixed(2) + " MF" : Math.round(caAnnuelProj / 1000).toLocaleString("fr-FR") + " k"; }()) + " XPF", "CA annuel projete"),
+            kpiCard("green", "coins", fmtCaCompact(caYTD) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)", "Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
+            kpiCard("red", "trending-up", fmtCaCompact(caAnnuelProj) + " XPF", "CA annuel projete", period === "mois" ? "Projete sur le mois : " + fmtCaCompact(caProjPeriode) + " XPF" : "Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration")
           ),
