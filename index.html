@@ -14165,29 +14165,74 @@
       });
 
       // ── Agregats YTD (1er janvier -> aujourd'hui) + projections annuelles ──
-      // Independant des filtres : se base sur TOUS les rapports de l'annee en cours.
-      // CA = metrage FACTURABLE (= total - sondages "NON FACTURABLE") * prixMetre du chantier
-      var COMM_TOG = ["REFORATION", "ARRET TECHNIQUE"];
-      function statEstNonFact(c) {
-        var u = String(c || "").toUpperCase().trim();
-        if (u.indexOf("NON FACTURABLE") < 0) return false;
-        for (var ix = 0; ix < COMM_TOG.length; ix++) {
-          if (u === COMM_TOG[ix] + " NON FACTURABLE") return true;
-        }
-        return false;
-      }
-      function metresNonFactRapport(r) {
-        var m = 0;
-        (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
-          if (!statEstNonFact(s.commentaire)) return;
-          var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
-          var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
-          m += Math.max(0, a - de);
-        });
-        return m;
-      }
+      // CA : utilise la MEME source qu'Avancement = dbRelevesJourn (releves + rapports fusionnes)
+      //      + dbSaisies (saisies manuelles) en fallback. C'est la source UNIFIEE.
+      // Les autres KPIs (metrage / cout / productivite) restent bases sur rapports.
       var yearStart = new Date(now.getFullYear(), 0, 1);
+
+      // Construire l'index (chantier, date) -> metrage journalier (sum machines) - copie de la logique Avancement
+      var dbRelevesJournStat = ctx.dbRelevesJourn || [];
+      var dbSaisiesStat = ctx.dbSaisies || {};
+      var statIdx = {}; // ck -> dk -> mk -> max metrage
+      (dbRelevesJournStat || []).forEach(function(r) {
+        if (!r || !r.chantierId || !r.dateReleve) return;
+        var ck = String(r.chantierId);
+        var dk = String(r.dateReleve).substring(0, 10);
+        var mk = String(r.sondeuseCode || r.equipementId || "_no").toUpperCase().trim();
+        var v = parseFloat(r.metrage) || 0;
+        if (!statIdx[ck]) statIdx[ck] = {};
+        if (!statIdx[ck][dk]) statIdx[ck][dk] = {};
+        if (v > (statIdx[ck][dk][mk] || 0)) statIdx[ck][dk][mk] = v;
+      });
+      // (chantier, date) -> metrage du jour (somme machines)
+      var statByChDate = {};
+      Object.keys(statIdx).forEach(function(ck) {
+        statByChDate[ck] = {};
+        Object.keys(statIdx[ck]).forEach(function(dk) {
+          var s = 0;
+          Object.keys(statIdx[ck][dk]).forEach(function(mk) { s += statIdx[ck][dk][mk]; });
+          statByChDate[ck][dk] = s;
+        });
+      });
+      // Fallback saisies si pas de releve pour ce (chantier, date)
+      Object.keys(dbSaisiesStat || {}).forEach(function(ck) {
+        Object.keys(dbSaisiesStat[ck] || {}).forEach(function(dk) {
+          if (!statByChDate[ck]) statByChDate[ck] = {};
+          if (statByChDate[ck][dk] != null) return; // priorite au releve
+          var sv = dbSaisiesStat[ck][dk];
+          var v = typeof sv === "object" ? (parseFloat(sv.valeur) || 0) : (parseFloat(sv) || 0);
+          if (v > 0) statByChDate[ck][dk] = v;
+        });
+      });
+      // Index prix par chantier
+      var statPrixByCh = {};
+      (dbChantiers || []).forEach(function(c) {
+        statPrixByCh[String(c.id)] = parseFloat(c.prixMetre) || 0;
+      });
+      // Somme CA YTD + CA periode (avec filtre chantier si != all)
       var caYTD = 0;
+      var caPeriode = 0;
+      Object.keys(statByChDate).forEach(function(ck) {
+        var prix = statPrixByCh[ck] || 0;
+        if (prix === 0) return;
+        // Determine si ce chantier passe le filtre 'chantierF'
+        // chantierF stocke un id, donc compare String(id)
+        var passChFilter = (chantierF === "all" || String(chantierF) === ck);
+        Object.keys(statByChDate[ck]).forEach(function(dk) {
+          var d = new Date(dk);
+          if (isNaN(d.getTime())) return;
+          var met = statByChDate[ck][dk] || 0;
+          // CA YTD : depuis 1er janv (ignore filtre chantier pour avoir la vue annuelle complete)
+          if (d >= yearStart && d <= now) caYTD += met * prix;
+          // CA periode : applique aussi le filtre chantier
+          if (passChFilter && periodStart && d < periodStart) return;
+          if (passChFilter && periodEnd && d > periodEnd) return;
+          if (passChFilter && !periodStart) { caPeriode += met * prix; return; }
+          if (passChFilter) caPeriode += met * prix;
+        });
+      });
+
+      // Autres KPIs YTD (metrage, cout conso, foration) - restent bases sur rapports_forage
       var metragesYTD = 0;
       var coutConsoYTD = 0;
       var minutesForationYTD = 0;
@@ -14195,10 +14240,7 @@
         if (!r.date_rapport) return;
         var d = new Date(r.date_rapport);
         if (d < yearStart || d > now) return;
-        var prix = lookupPrixMetre(r);
         var metres = parseFloat(r.total_metres) || 0;
-        var metresFact = Math.max(0, metres - metresNonFactRapport(r));
-        caYTD += metresFact * prix;
         metragesYTD += metres;
         // Cout consommables YTD (perdus dans le rapport)
         var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
@@ -14231,18 +14273,8 @@
       var coutConsoAnnuelProj = (coutConsoYTD / daysElapsed) * 365;
       var productiviteYTD = minutesForationYTD > 0 ? metragesYTD / (minutesForationYTD / 60) : 0;
 
-      // ── CA de la periode filtree + projection sur la periode ──
-      // Tient compte des filtres (chantier / sondeuse / sondeur / periode)
-      // CA = metrage FACTURABLE * prixMetre (cf. helpers statEstNonFact / metresNonFactRapport)
-      var caPeriode = 0;
-      filtered.forEach(function(r) {
-        if (!r.date_rapport) return;
-        var prix = lookupPrixMetre(r);
-        var metres = parseFloat(r.total_metres) || 0;
-        var metresFact = Math.max(0, metres - metresNonFactRapport(r));
-        caPeriode += metresFact * prix;
-      });
-      // Projection sur la periode : utile seulement si la periode contient le futur (mois en cours)
+      // ── Projection CA sur la periode (caPeriode deja calcule plus haut via dbRelevesJourn) ──
+      // Projection : utile seulement si la periode contient le futur (mois en cours)
       var caProjPeriode = caPeriode;
       var periodLabelShort = "";
       if (period === "mois") {
