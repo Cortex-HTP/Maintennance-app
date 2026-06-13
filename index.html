@@ -8391,6 +8391,38 @@
       );
     }
 
+    // ─ Cache historique meteo (localStorage) ─
+    // Garde les previsions passees pour retrouver le contexte meteo des chantiers
+    // apres que la date soit passee. Sans ca, Open-Meteo ne renvoie que le futur
+    // et on perd la trace de ce qui etait prevu il y a 1 mois.
+    // Cle : "meteoHist_<chantierId>" -> { "YYYY-MM-DD": {code, prec, wind, tMax}, ... }
+    function loadMeteoHistFromLS(chantierId) {
+      try {
+        var raw = localStorage.getItem("meteoHist_" + chantierId);
+        if (!raw) return {};
+        var data = JSON.parse(raw);
+        return data && typeof data === "object" ? data : {};
+      } catch (e) { return {}; }
+    }
+    function mergeAndSaveMeteoLS(chantierId, newDateMap) {
+      try {
+        var existing = loadMeteoHistFromLS(chantierId);
+        var merged = {};
+        Object.keys(existing).forEach(function(d) { merged[d] = existing[d]; });
+        // Les nouvelles entrees ecrasent celles deja la (forecast plus recent)
+        Object.keys(newDateMap || {}).forEach(function(d) { merged[d] = newDateMap[d]; });
+        // Cap : on garde 730 jours max pour eviter de saturer localStorage
+        var keys = Object.keys(merged).sort();
+        if (keys.length > 730) {
+          var trimmed = {};
+          keys.slice(keys.length - 730).forEach(function(k) { trimmed[k] = merged[k]; });
+          merged = trimmed;
+        }
+        localStorage.setItem("meteoHist_" + chantierId, JSON.stringify(merged));
+        return merged;
+      } catch (e) { return newDateMap || {}; }
+    }
+
     // ─ Animation meteo en fond - intensite intermediaire ─
     function injectMeteoAnimCSS() {
       if (document.getElementById("meteo-anim-css")) return;
@@ -8578,9 +8610,20 @@
       // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
       var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
       // Helper de fetch meteo pour 1 chantier (idempotent : skip si deja en cache)
+      // Hydrate aussi depuis localStorage pour conserver les previsions passees.
       function fetchMeteoForChantier(c) {
         if (!c || c.latitude == null || c.longitude == null) return;
         if (meteoByChantier[c.id]) return;
+        // 1) Hydrate depuis localStorage immediatement (previsions passees deja vues)
+        var hist = loadMeteoHistFromLS(c.id);
+        if (Object.keys(hist).length > 0) {
+          setMeteoByChantier(function(prev) {
+            var nm = {}; Object.keys(prev).forEach(function(k) { nm[k] = prev[k]; });
+            nm[c.id] = hist;
+            return nm;
+          });
+        }
+        // 2) Fetch fresh forecast et MERGE avec l'historique (pas d'ecrasement des dates passees)
         var url = "https://employes-psi.vercel.app/api/meteo?lat=" + c.latitude + "&lon=" + c.longitude;
         fetch(url).then(function(r) { return r.json(); }).then(function(data) {
           if (!data || !data.daily || !data.daily.time) return;
@@ -8594,11 +8637,11 @@
               tMax: data.daily.temperature_2m_max ? data.daily.temperature_2m_max[i] : null
             };
           }
+          // Persiste + merge avec l'historique localStorage
+          var merged = mergeAndSaveMeteoLS(c.id, dateMap);
           setMeteoByChantier(function(prev) {
-            var nm = {};
-            var pk = Object.keys(prev);
-            for (var k = 0; k < pk.length; k++) nm[pk[k]] = prev[pk[k]];
-            nm[c.id] = dateMap;
+            var nm = {}; Object.keys(prev).forEach(function(k) { nm[k] = prev[k]; });
+            nm[c.id] = merged;
             return nm;
           });
         }).catch(function() {});
@@ -13832,6 +13875,16 @@
         var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; });
         actifs.slice(0, 8).forEach(function(c) {
           if (meteoByChantierStat[c.id]) return;
+          // 1) Hydrate depuis localStorage (historique conserve)
+          var hist = loadMeteoHistFromLS(c.id);
+          if (Object.keys(hist).length > 0) {
+            setMeteoByChantierStat(function(prev) {
+              var nm = {}; Object.keys(prev).forEach(function(k) { nm[k] = prev[k]; });
+              nm[c.id] = hist;
+              return nm;
+            });
+          }
+          // 2) Fetch fresh + merge avec historique
           var url = "https://employes-psi.vercel.app/api/meteo?lat=" + c.latitude + "&lon=" + c.longitude;
           fetch(url).then(function(r) { return r.json(); }).then(function(data) {
             if (!data || !data.daily || !data.daily.time) return;
@@ -13841,10 +13894,12 @@
               dateMap[t[i]] = {
                 code: data.daily.weather_code ? data.daily.weather_code[i] : (data.daily.weathercode ? data.daily.weathercode[i] : 0),
                 prec: data.daily.precipitation_sum ? data.daily.precipitation_sum[i] : 0,
-                wind: data.daily.wind_speed_10m_max ? data.daily.wind_speed_10m_max[i] : 0
+                wind: data.daily.wind_speed_10m_max ? data.daily.wind_speed_10m_max[i] : 0,
+                tMax: data.daily.temperature_2m_max ? data.daily.temperature_2m_max[i] : null
               };
             }
-            setMeteoByChantierStat(function(prev) { var nm = {}; var pk = Object.keys(prev); for (var k = 0; k < pk.length; k++) nm[pk[k]] = prev[pk[k]]; nm[c.id] = dateMap; return nm; });
+            var merged = mergeAndSaveMeteoLS(c.id, dateMap);
+            setMeteoByChantierStat(function(prev) { var nm = {}; Object.keys(prev).forEach(function(k) { nm[k] = prev[k]; }); nm[c.id] = merged; return nm; });
           }).catch(function() {});
         });
       }, [ctx.dbChantiers]);
