@@ -13853,20 +13853,52 @@
 
       // ── Fetch des rapports (light : sans signatures base64 pour rester sous le quota egress) ──
       // Note : on n'affiche pas les signatures dans Stats, donc inutile de les ramener.
+      // IMPORTANT : pagination forcee (Supabase coupe a 1000 lignes par defaut)
+      //             -> CA YTD etait sous-evalue car les rapports les plus anciens etaient tronques.
       var STATS_COLS = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at";
       useEffect(function() {
         var cancelled = false;
         if (refreshFlag === 0) setLoading(true);
-        // Fetch parallele : rapports + consommations_carburant (source unique pour le mazout)
-        supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").then(function(res) {
+        // Pagination : recupere tous les rapports par paquets de 1000
+        async function fetchAllRapports() {
+          var all = [];
+          var batchSize = 1000;
+          var start = 0;
+          while (!cancelled) {
+            var res = await supabase.from("rapports_forage")
+              .select(STATS_COLS)
+              .order("date_rapport", { ascending: false })
+              .range(start, start + batchSize - 1);
+            if (res.error) { console.warn("[stats] fetch rapports:", res.error.message); break; }
+            if (!res.data || res.data.length === 0) break;
+            all = all.concat(res.data);
+            if (res.data.length < batchSize) break;
+            start += batchSize;
+            if (start > 50000) break; // garde-fou
+          }
+          return all;
+        }
+        async function fetchAllCarburants() {
+          var all = [];
+          var batchSize = 1000;
+          var start = 0;
+          while (!cancelled) {
+            var res = await supabase.from("consommations_carburant")
+              .select("id,sondeuse_code,date_consommation,quantite_l,rapport_id")
+              .range(start, start + batchSize - 1);
+            if (res.error) { console.warn("[stats] fetch carburant:", res.error.message); break; }
+            if (!res.data || res.data.length === 0) break;
+            all = all.concat(res.data);
+            if (res.data.length < batchSize) break;
+            start += batchSize;
+            if (start > 50000) break;
+          }
+          return all;
+        }
+        Promise.all([fetchAllRapports(), fetchAllCarburants()]).then(function(arr) {
           if (cancelled) return;
-          if (res.error) console.warn("[stats] fetch carburant:", res.error.message);
-          setCarburants(res.data || []);
-        });
-        supabase.from("rapports_forage").select(STATS_COLS).order("date_rapport", { ascending: false }).then(function(res) {
-          if (cancelled) return;
-          if (res.error) console.warn("[stats] fetch rapports:", res.error.message);
-          setRapports(res.data || []);
+          setRapports(arr[0]);
+          setCarburants(arr[1]);
           setLoading(false);
         });
         return function() { cancelled = true; };
