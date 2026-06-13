@@ -8403,9 +8403,9 @@
         "@keyframes meteoSunPulse{0%,100%{opacity:.7;transform:scale(1)}50%{opacity:.9;transform:scale(1.06)}}",
         ".meteo-bg{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;mask-image:linear-gradient(180deg,#000 0%,#000 75%,transparent 100%);-webkit-mask-image:linear-gradient(180deg,#000 0%,#000 75%,transparent 100%)}",
         ".meteo-sky{position:absolute;inset:0;transition:background 2s ease}",
-        ".meteo-drop{position:absolute;top:-12vh;width:1.5px;height:55px;background:linear-gradient(180deg,transparent 0%,rgba(186,230,253,.7) 60%,rgba(224,242,254,.95) 100%);box-shadow:0 0 3px rgba(147,197,253,.4);animation:meteoRainStreak linear infinite;will-change:transform,opacity}",
-        ".meteo-drop-heavy{width:2px;height:75px;background:linear-gradient(180deg,transparent 0%,rgba(165,180,252,.75) 55%,rgba(199,210,254,1) 100%);box-shadow:0 0 5px rgba(129,140,248,.55)}",
-        ".meteo-drop-back{opacity:.45;height:30px;animation-duration:2s !important;filter:blur(.6px)}",
+        ".meteo-drop{position:absolute;top:-12vh;width:1px;height:50px;background:linear-gradient(180deg,transparent 0%,rgba(186,230,253,.65) 60%,rgba(224,242,254,.9) 100%);box-shadow:0 0 2px rgba(147,197,253,.35);animation:meteoRainStreak linear infinite;will-change:transform,opacity}",
+        ".meteo-drop-heavy{width:1.4px;height:68px;background:linear-gradient(180deg,transparent 0%,rgba(165,180,252,.7) 55%,rgba(199,210,254,.95) 100%);box-shadow:0 0 3.5px rgba(129,140,248,.45)}",
+        ".meteo-drop-back{opacity:.40;height:26px;width:.8px;animation-duration:2s !important;filter:blur(.5px)}",
         ".meteo-cloud{position:absolute;pointer-events:none;border-radius:50%;animation:meteoCloudDrift linear infinite;will-change:transform;filter:blur(28px)}",
         ".meteo-flash{position:absolute;inset:0;background:#fff;animation:meteoLightning 8s infinite;mix-blend-mode:screen;opacity:0}",
         ".meteo-sun-glow{position:absolute;top:8%;right:13%;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,rgba(251,191,36,.22) 0%,rgba(252,211,77,.10) 35%,transparent 70%);animation:meteoSunPulse 7s ease-in-out infinite;filter:blur(6px)}",
@@ -14134,6 +14134,26 @@
 
       // ── Agregats YTD (1er janvier -> aujourd'hui) + projections annuelles ──
       // Independant des filtres : se base sur TOUS les rapports de l'annee en cours.
+      // CA = metrage FACTURABLE (= total - sondages "NON FACTURABLE") * prixMetre du chantier
+      var COMM_TOG = ["REFORATION", "ARRET TECHNIQUE"];
+      function statEstNonFact(c) {
+        var u = String(c || "").toUpperCase().trim();
+        if (u.indexOf("NON FACTURABLE") < 0) return false;
+        for (var ix = 0; ix < COMM_TOG.length; ix++) {
+          if (u === COMM_TOG[ix] + " NON FACTURABLE") return true;
+        }
+        return false;
+      }
+      function metresNonFactRapport(r) {
+        var m = 0;
+        (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+          if (!statEstNonFact(s.commentaire)) return;
+          var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+          var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+          m += Math.max(0, a - de);
+        });
+        return m;
+      }
       var yearStart = new Date(now.getFullYear(), 0, 1);
       var caYTD = 0;
       var metragesYTD = 0;
@@ -14145,7 +14165,8 @@
         if (d < yearStart || d > now) return;
         var prix = lookupPrixMetre(r);
         var metres = parseFloat(r.total_metres) || 0;
-        caYTD += metres * prix;
+        var metresFact = Math.max(0, metres - metresNonFactRapport(r));
+        caYTD += metresFact * prix;
         metragesYTD += metres;
         // Cout consommables YTD (perdus dans le rapport)
         var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
@@ -14180,11 +14201,14 @@
 
       // ── CA de la periode filtree + projection sur la periode ──
       // Tient compte des filtres (chantier / sondeuse / sondeur / periode)
+      // CA = metrage FACTURABLE * prixMetre (cf. helpers statEstNonFact / metresNonFactRapport)
       var caPeriode = 0;
       filtered.forEach(function(r) {
         if (!r.date_rapport) return;
         var prix = lookupPrixMetre(r);
-        caPeriode += (parseFloat(r.total_metres) || 0) * prix;
+        var metres = parseFloat(r.total_metres) || 0;
+        var metresFact = Math.max(0, metres - metresNonFactRapport(r));
+        caPeriode += metresFact * prix;
       });
       // Projection sur la periode : utile seulement si la periode contient le futur (mois en cours)
       var caProjPeriode = caPeriode;
