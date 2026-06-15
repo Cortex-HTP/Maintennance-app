@@ -8643,7 +8643,11 @@
       return nb > 0 ? tot / nb : 0;
     }
 
-    // Trouve la machine PRECEDENTE sur un chantier (juste avant l'arrivee de currentCe)
+    // Trouve la machine REMPLACEE par currentCe sur un chantier.
+    // Critere strict : la machine precedente doit avoir une dateFin renseignee
+    // ET cette dateFin doit etre <= dateDebut de currentCe (depart propre / sortie effective).
+    // Une machine TOUJOURS active (dateFin null ou future) n'est PAS "remplacee" - elle
+    // tourne en parallele. Retourne null si rien ne correspond -> pas de regle d'adaptation.
     function findPrevMachineOnChantier(chantierEquips, chantierId, currentCe, titleById) {
       var currentStart = currentCe && currentCe.dateDebut ? new Date(String(currentCe.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
       if (!currentStart) return null;
@@ -8652,14 +8656,18 @@
         if (!ce) return;
         if (String(ce.chantierId) !== String(chantierId)) return;
         if (ce === currentCe || (ce.id != null && currentCe.id != null && ce.id === currentCe.id)) return;
-        var debOther = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
-        if (debOther === null || debOther >= currentStart) return;
-        candidates.push({ ce: ce, deb: debOther });
+        var deb = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
+        var fin = ce.dateFin ? new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00").getTime() : null;
+        if (deb === null || deb >= currentStart) return;
+        // Doit avoir une dateFin renseignee ET dateFin <= dateDebut de la nouvelle (sortie effective)
+        if (fin === null) return;            // machine encore active -> tourne en parallele
+        if (fin > currentStart) return;      // overlap -> pas un remplacement net
+        candidates.push({ ce: ce, fin: fin });
       });
       if (candidates.length === 0) return null;
-      candidates.sort(function(a, b) { return b.deb - a.deb; });
-      var prev = candidates[0].ce;
-      return titleById[String(prev.equipementId)] || null;
+      // La plus recemment partie est la "remplacee"
+      candidates.sort(function(a, b) { return b.fin - a.fin; });
+      return titleById[String(candidates[0].ce.equipementId)] || null;
     }
 
     // Compte les jours OUVRES (lun-jeu) AVANT refDateTs ou la machine mk a eu du metrage
@@ -8724,21 +8732,29 @@
         var mk = titleById[String(ce.equipementId)];
         if (!mk) return;
         var debMs = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
-        // Determine si la machine est "fraichement arrivee" : dateDebut planning < 14 j calendaires.
-        // Les machines deja etablies sur le chantier (mois d'historique) sont directement
-        // sur leur propre moyenne, sans adaptation. Empêche un faux-positif d'adaptation
-        // sur les machines anciennes (cas ou metByMk serait mal indexe).
         var daysSinceArrival = debMs !== null ? Math.floor((d - debMs) / dayMs) : 999;
-        var isNewArrival = daysSinceArrival < 14;
+        // CRITERE D'APPLICATION : la machine doit REMPLACER une autre machine sur le chantier.
+        // Cela exclut :
+        //   - Les machines etablies (sans predecesseur clairement remplace)
+        //   - Les machines ajoutees en parallele d'une autre (l'autre encore active)
+        var prevMk = (debMs !== null) ? findPrevMachineOnChantier(dbChantierEquipements, chantierId, ce, titleById) : null;
+        var isReplacement = !!prevMk;
         var realDays = 0;
         var contribution = 0, phase = "own";
-        if (isNewArrival) {
+        if (!isReplacement) {
+          // Machine non-remplacante : moyenne propre directe, sans aucune penalite
+          var ownVitesse = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
+          if (ownVitesse === 0) ownVitesse = vitesseMachineGlobal(metByMk, mk, d, 30);
+          if (ownVitesse === 0) ownVitesse = vitesseFallbackChantier || 0;
+          contribution = ownVitesse;
+          anyOwn = true;
+          phase = "own";
+        } else {
+          // Machine remplacante : applique la regle metier
           realDays = countRealWorkDaysBefore(metByMk, mk, String(chantierId), d);
           if (realDays < 7) {
-            // Baseline ancienne machine sur ce chantier
-            var prevMk = findPrevMachineOnChantier(dbChantierEquipements, chantierId, ce, titleById);
-            var refForPrev = debMs || d;
-            var prevVitesse = prevMk ? vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), refForPrev, 14) : 0;
+            // Phase baseline = moyenne de la machine REMPLACEE sur ce chantier (14j avant son depart)
+            var prevVitesse = vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), debMs || d, 14);
             if (prevVitesse === 0) prevVitesse = vitesseFallbackChantier || 0;
             if (realDays < 3) {
               contribution = prevVitesse * 0.70;
@@ -8750,25 +8766,17 @@
             }
             anyOldBaseline = true;
           } else {
-            // 7+ jours reels accumules : passe sur la moyenne propre
-            var ownVitesseN = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
-            if (ownVitesseN === 0) ownVitesseN = vitesseMachineGlobal(metByMk, mk, d, 30);
-            if (ownVitesseN === 0) ownVitesseN = vitesseFallbackChantier || 0;
-            contribution = ownVitesseN;
+            // 7+ jours reels accumules : passe sur la moyenne propre de la nouvelle machine
+            var ownVitesseR = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
+            if (ownVitesseR === 0) ownVitesseR = vitesseMachineGlobal(metByMk, mk, d, 30);
+            if (ownVitesseR === 0) ownVitesseR = vitesseFallbackChantier || 0;
+            contribution = ownVitesseR;
             anyOwn = true;
             phase = "own";
           }
-        } else {
-          // Machine etablie : moyenne propre (sur ce chantier, fallback global, fallback chantier)
-          var ownVitesse = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
-          if (ownVitesse === 0) ownVitesse = vitesseMachineGlobal(metByMk, mk, d, 30);
-          if (ownVitesse === 0) ownVitesse = vitesseFallbackChantier || 0;
-          contribution = ownVitesse;
-          anyOwn = true;
-          phase = "own";
         }
         totalMet += contribution;
-        machines.push({ code: mk, realDays: realDays, daysSinceArrival: daysSinceArrival, phase: phase, contribution: contribution });
+        machines.push({ code: mk, isReplacement: isReplacement, replacedBy: prevMk || null, realDays: realDays, daysSinceArrival: daysSinceArrival, phase: phase, contribution: contribution });
       });
       return { metrage: totalMet, anyAdapt: anyAdapt, anyOldBaseline: anyOldBaseline, anyOwn: anyOwn, machines: machines };
     }
