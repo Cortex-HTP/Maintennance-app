@@ -18852,41 +18852,13 @@
     }
 
     // ─── EcranConnectes : presence Realtime - qui est en ligne maintenant ────
+    // Lit la liste depuis ctx.onlinePresences (alimentee par le track global App).
+    // Avant cette refonte, seul l'utilisateur qui ouvrait cette page etait tracke
+    // -> seul l'admin se voyait. Maintenant tous les utilisateurs sont annonces
+    // automatiquement des leur login, quelle que soit la page qu'ils consultent.
     function EcranConnectes() {
       const ctx = useAppData();
-      const [presences, setPresences] = useState([]);
-
-      useEffect(() => {
-        // On utilise un channel Realtime de presence partage
-        // Chaque client annonce son email + heure de connexion.
-        var channel = supabase.channel("wallis-presence", { config: { presence: { key: ctx.userEmail || "anon" } } });
-        channel.on("presence", { event: "sync" }, () => {
-          var state = channel.presenceState();
-          // state : { key: [{ email, connected_at, ... }] }
-          var list = [];
-          Object.keys(state).forEach(function(k) {
-            var entries = state[k];
-            if (entries && entries.length > 0) {
-              // Plus recent (derniere connexion)
-              entries.forEach(function(e) {
-                list.push({ email: e.email || k, connected_at: e.connected_at, page: e.page || null });
-              });
-            }
-          });
-          // Dedup par email (au cas ou plusieurs onglets)
-          var byEmail = {};
-          list.forEach(function(p) {
-            if (!byEmail[p.email] || (p.connected_at && p.connected_at > byEmail[p.email].connected_at)) byEmail[p.email] = p;
-          });
-          setPresences(Object.keys(byEmail).map(function(e) { return byEmail[e]; }).sort(function(a, b) { return (a.email || "").localeCompare(b.email || ""); }));
-        });
-        channel.subscribe(async function(status) {
-          if (status === "SUBSCRIBED") {
-            await channel.track({ email: ctx.userEmail || "anon", connected_at: new Date().toISOString() });
-          }
-        });
-        return function() { supabase.removeChannel(channel); };
-      }, []);
+      const presences = ctx.onlinePresences || [];
 
       function fmtAgo(iso) {
         if (!iso) return "?";
@@ -21581,6 +21553,7 @@
       const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
       const [piecesPendingCount, setPiecesPendingCount] = useState(0);
       const [rhSignaturesPending, setRhSignaturesPending] = useState(0);
+      const [onlinePresences, setOnlinePresences] = useState([]);
       // Donnees brutes pour la detection des saisies manquantes (fenetre [1er juin -> hier])
       const [recentRelHeures, setRecentRelHeures] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
@@ -21599,6 +21572,39 @@
         });
         return () => sub.subscription.unsubscribe();
       }, []);
+
+      // ─ Presence globale (qui est en ligne) ─
+      // Track des le login pour TOUS les utilisateurs (pas seulement les visiteurs de la page).
+      // Sans ca seul l'admin qui ouvre l'ecran "Qui est en ligne" etait visible.
+      useEffect(() => {
+        if (!session || !session.user || !session.user.email) return;
+        var email = session.user.email;
+        var channel = supabase.channel("wallis-presence", { config: { presence: { key: email } } });
+        channel.on("presence", { event: "sync" }, function() {
+          var state = channel.presenceState();
+          var byEmail = {};
+          Object.keys(state).forEach(function(k) {
+            var entries = state[k];
+            if (entries && entries.length > 0) {
+              entries.forEach(function(e) {
+                var em = e.email || k;
+                if (!byEmail[em] || (e.connected_at && e.connected_at > (byEmail[em].connected_at || ""))) {
+                  byEmail[em] = { email: em, connected_at: e.connected_at };
+                }
+              });
+            }
+          });
+          setOnlinePresences(Object.keys(byEmail).map(function(e) { return byEmail[e]; }).sort(function(a, b) { return (a.email || "").localeCompare(b.email || ""); }));
+        });
+        channel.subscribe(async function(status) {
+          if (status === "SUBSCRIBED") {
+            try { await channel.track({ email: email, connected_at: new Date().toISOString() }); } catch (e) {}
+          }
+        });
+        return function() {
+          try { channel.untrack(); supabase.removeChannel(channel); } catch (e) {}
+        };
+      }, [session]);
 
       // Chargement des donnees apres login
       const loadAll = useCallback(async () => {
@@ -22688,7 +22694,7 @@
         dbEmprunts, setDbEmprunts,
         dbChargesFixes, setDbChargesFixes,
         dbBugLogs, setDbBugLogs,
-        alertesSaisies, recentRelHeures, rhSignaturesPending,
+        alertesSaisies, recentRelHeures, rhSignaturesPending, onlinePresences,
         loadAll, showToast,
         addIntervention: wrappedAddIntervention, updateIntervention: wrappedUpdateIntervention, deleteIntervention,
         addEquipement: wrappedAddEquipement, updateEquipement: wrappedUpdateEquipement, deleteEquipement,
