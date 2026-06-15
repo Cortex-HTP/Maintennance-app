@@ -9244,50 +9244,61 @@
           var ds = year + "-" + (monthIdx + 1 < 10 ? "0" : "") + (monthIdx + 1) + "-" + (d < 10 ? "0" : "") + d;
           var dayMet = 0;
           var dayCA = 0;
-          var forecastMet = 0;     // metrage prevu pour ce jour (somme chantiers)
-          var forecastCA = 0;
-          var hasForecast = false; // au moins un chantier a une prevision
-          var anyIntemp = false;   // au moins un chantier en intemperies
-          var anyReduced = false;  // au moins un chantier en pluie reduite
+          var targetMet = 0;       // cible attendue ce jour (toujours calculee, jours ouvres)
+          var targetCA = 0;
+          var hasTarget = false;
+          var anyIntemp = false;
+          var anyReduced = false;
           var cellDate = new Date(year, monthIdx, d);
           var dow = cellDate.getDay();
           var isWE = dow === 0 || dow === 6;
-          // Inclut aujourd'hui dans le forecast si aucun metrage n'a encore ete saisi
           var isFuture = cellDate.getTime() >= bcToday.getTime();
+          var isPast = cellDate.getTime() < bcToday.getTime();
           var isWorkDay = dow >= 1 && dow <= 4;
           activeChantiers.forEach(function(c) {
+            // Reel saisi
             var val = getDailyMetrageChantier(c.id, ds);
             if (val > 0) {
               dayMet += val;
               dayCA += val * c.prixMetre;
-            } else if (isFuture && isWorkDay) {
-              // Prevision pour ce chantier ce jour
+            }
+            // Target : toujours calcule pour les jours ouvres - permet de visualiser
+            // le deficit (target > reel) sur les jours passes ainsi que la projection future.
+            if (isWorkDay) {
               var vQuot = vitesseParChantier[c.id] || 0;
               if (vQuot > 0) {
                 var mMap = meteoByChantier[c.id];
                 var mDay = mMap ? mMap[ds] : null;
                 var fact = meteoMetrageFactor(mDay);
-                // Facteur adaptation : machine fraichement arrivee (-30% sur 3 jours)
                 var adaptF = adaptationMachineFactor(c.id, ds, ctxAv.dbChantierEquipements);
-                var fcVal = vQuot * fact * adaptF;
-                if (fcVal > 0) {
-                  forecastMet += fcVal;
-                  forecastCA += fcVal * c.prixMetre;
-                  hasForecast = true;
+                var tVal = vQuot * fact * adaptF;
+                if (tVal > 0) {
+                  targetMet += tVal;
+                  targetCA += tVal * c.prixMetre;
+                  hasTarget = true;
                   if (fact === 0) anyIntemp = true;
                   else if (fact < 1 || adaptF < 1) anyReduced = true;
-                } else {
-                  // perdu : on considere quand meme qu'on a une prevision
-                  hasForecast = true;
+                } else if (isFuture) {
+                  hasTarget = true;
                   anyIntemp = true;
                 }
               }
             }
           });
+          // forecast = "deficit / restant a faire" = max(0, target - reel)
+          // - Si reel >= target : forecast = 0 (barre prev. invisible : cible atteinte)
+          // - Si reel < target : forecast = deficit (barre prev. apparait au-dessus du reel)
+          // - Si futur sans reel : forecast = target (barre prev. complete)
+          var forecastDelta = Math.max(0, targetMet - dayMet);
+          var forecastCAVal = Math.max(0, targetCA - dayCA);
           pts.push({
             day: d, metrage: dayMet, ca: dayCA, isWE: isWE,
-            forecast: forecastMet, forecastCA: forecastCA, hasForecast: hasForecast,
-            anyIntemp: anyIntemp, anyReduced: anyReduced, isFuture: isFuture
+            target: targetMet, targetCA: targetCA,
+            forecast: forecastDelta, forecastCA: forecastCAVal,
+            hasForecast: hasTarget && forecastDelta > 0,
+            anyIntemp: anyIntemp, anyReduced: anyReduced,
+            isFuture: isFuture, isPast: isPast,
+            isMiss: isPast && dayMet > 0 && targetMet > dayMet
           });
         }
         return pts;
@@ -9320,7 +9331,8 @@
 
         var maxMet = 0;
         for (var i = 0; i < n; i++) {
-          var v = Math.max(chartData[i].metrage, chartData[i].forecast);
+          // maxMet base sur le max entre reel et target (= reel + forecast deficit)
+          var v = Math.max(chartData[i].metrage, chartData[i].target || 0);
           if (v > maxMet) maxMet = v;
         }
         // Arrondir au palier superieur
@@ -9389,23 +9401,28 @@
         for (var i = 0; i < n; i++) {
           var x = padL + i * (barW + gap);
           var realH = maxMet > 0 ? (chartData[i].metrage / maxMet) * chartHt : 0;
-          var fcH = maxMet > 0 ? (chartData[i].forecast / maxMet) * chartHt : 0;
-          // Barre reelle (saisie) — couleur normale
+          var deficitH = maxMet > 0 ? (chartData[i].forecast / maxMet) * chartHt : 0; // forecast = max(0, target - reel)
+          // Barre reelle (saisie) — couleur normale, reste en bas
           var barColor = chartData[i].isWE ? "#c4b5fd" : "#7c3aed";
           bars.push(h("rect", { key: "b" + i, x: x, y: padT + chartHt - realH, width: barW, height: Math.max(realH, 0), rx: 2, fill: barColor, opacity: chartData[i].metrage > 0 ? 1 : 0.12 }));
           if (chartData[i].metrage > 0 && realH > 14) {
             bars.push(h("text", { key: "bv" + i, x: x + barW / 2, y: padT + chartHt - realH + 13, textAnchor: "middle", fontSize: 9, fill: "white", fontWeight: 700 }, chartData[i].metrage));
           }
-          // Barre previsionnelle (jours futurs) — couleur graduee selon meteo
-          if (chartData[i].hasForecast && chartData[i].forecast > 0) {
+          // Barre prevue (deficit / cible non atteinte) — affichee AU-DESSUS de la barre reelle
+          // - Futur sans reel : barre prev. complete (vide en dessous)
+          // - Passe/aujourd'hui avec reel < target : portion manquante visible au-dessus
+          // - reel >= target : pas de barre (cible atteinte)
+          if (chartData[i].hasForecast && deficitH > 0) {
             var fcBase, fcLight;
             if (chartData[i].anyIntemp) { fcBase = "#dc2626"; fcLight = "#fda4af"; }
             else if (chartData[i].anyReduced) { fcBase = "#3b82f6"; fcLight = "#93c5fd"; }
+            else if (chartData[i].isMiss) { fcBase = "#f59e0b"; fcLight = "#fde68a"; } // Manque deja consomme
             else { fcBase = "#7c3aed"; fcLight = "#c4b5fd"; }
-            bars.push(h("g", { key: "fc" + i, style: { opacity: 0.65 } },
-              h("rect", { x: x, y: padT + chartHt - fcH, width: barW, height: Math.max(fcH, 0), rx: 2, fill: fcLight, stroke: fcBase, strokeWidth: 1, strokeDasharray: "2 2" }),
-              h("rect", { x: x, y: padT + chartHt - fcH, width: barW, height: Math.max(fcH, 0), rx: 2, fill: "url(#" + stripeId + ")" }),
-              fcH > 14 ? h("text", { x: x + barW / 2, y: padT + chartHt - fcH + 13, textAnchor: "middle", fontSize: 9, fill: "white", fontWeight: 700, fontStyle: "italic", opacity: 0.85 }, Math.round(chartData[i].forecast)) : null
+            var topY = padT + chartHt - realH - deficitH;
+            bars.push(h("g", { key: "fc" + i, style: { opacity: chartData[i].isMiss ? 0.55 : 0.65 } },
+              h("rect", { x: x, y: topY, width: barW, height: Math.max(deficitH, 0), rx: 2, fill: fcLight, stroke: fcBase, strokeWidth: 1, strokeDasharray: "2 2" }),
+              h("rect", { x: x, y: topY, width: barW, height: Math.max(deficitH, 0), rx: 2, fill: "url(#" + stripeId + ")" }),
+              deficitH > 14 ? h("text", { x: x + barW / 2, y: topY + 13, textAnchor: "middle", fontSize: 9, fill: "white", fontWeight: 700, fontStyle: "italic", opacity: 0.85 }, Math.round(chartData[i].forecast)) : null
             ));
           }
           xLabels.push(h("text", { key: "xl" + i, x: x + barW / 2, y: H - 10, textAnchor: "middle", fontSize: 9, fill: chartData[i].isWE ? "#a78bfa" : "#a1a1aa", fontWeight: 600 }, String(chartData[i].day)));
