@@ -21879,6 +21879,195 @@
       );
     }
 
+    // ─── FAB Envoi rapide de facture (admin / gerant) ───────────────────
+    // Bouton flottant en bas a droite (au-dessus du bouton recherche).
+    // Ouvre un modal avec photo + champs basiques, envoie a /api/compta-receive
+    // via JWT (Authorization: Bearer ...).
+    var COMPTA_CATEGORIES_ADMIN = [
+      { value: "carburant", label: "Carburant" },
+      { value: "repas", label: "Repas / restauration" },
+      { value: "pieces", label: "Pieces detachees" },
+      { value: "fournitures", label: "Fournitures bureau" },
+      { value: "transport", label: "Transport / fret" },
+      { value: "entretien", label: "Entretien / reparation" },
+      { value: "telecom", label: "Telecom / internet" },
+      { value: "assurance", label: "Assurance" },
+      { value: "honoraires", label: "Honoraires" },
+      { value: "energie", label: "Eau / electricite / gaz" },
+      { value: "autre", label: "Autre" }
+    ];
+
+    function QuickEnvoiFactureFab() {
+      const [open, setOpen] = useState(false);
+      const [photo, setPhoto] = useState(null);
+      const [photoName, setPhotoName] = useState(null);
+      const [photoMime, setPhotoMime] = useState(null);
+      const [fournisseur, setFournisseur] = useState("");
+      const [ttc, setTtc] = useState("");
+      const [ht, setHt] = useState("");
+      const [dateFact, setDateFact] = useState(new Date().toISOString().substring(0, 10));
+      const [categorie, setCategorie] = useState("");
+      const [chantierId, setChantierId] = useState("");
+      const [notes, setNotes] = useState("");
+      const [chantiers, setChantiers] = useState([]);
+      const [submitting, setSubmitting] = useState(false);
+      const [feedback, setFeedback] = useState(null);
+      const fileInputRef = useRef(null);
+      const cameraInputRef = useRef(null);
+
+      // Charge les chantiers actifs quand le modal s'ouvre
+      useEffect(function() {
+        if (!open) return;
+        (async function() {
+          try {
+            const { data } = await supabase.from("chantiers").select("id, nom, code, statut").order("nom");
+            const list = (data || []).filter(function(c) { return c.statut !== "termine" && c.statut !== "annule"; });
+            setChantiers(list);
+          } catch (e) { setChantiers([]); }
+        })();
+      }, [open]);
+
+      const reset = function() {
+        setPhoto(null); setPhotoName(null); setPhotoMime(null);
+        setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
+        setCategorie(""); setChantierId(""); setNotes("");
+        setFeedback(null);
+      };
+
+      const handleFile = function(e) {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        if (f.size > 10 * 1024 * 1024) { setFeedback({ type: "err", msg: "Fichier > 10 Mo" }); return; }
+        const reader = new FileReader();
+        reader.onload = function() { setPhoto(reader.result); setPhotoName(f.name); setPhotoMime(f.type); };
+        reader.readAsDataURL(f);
+      };
+
+      const submit = async function() {
+        if (!photo) { setFeedback({ type: "err", msg: "Ajoutez une photo ou un fichier" }); return; }
+        if (!ttc || parseFloat(ttc) <= 0) { setFeedback({ type: "err", msg: "Montant TTC requis" }); return; }
+        setSubmitting(true); setFeedback(null);
+        try {
+          const { data: sess } = await supabase.auth.getSession();
+          const token = sess && sess.session && sess.session.access_token;
+          if (!token) { setFeedback({ type: "err", msg: "Session expiree, reconnectez-vous" }); setSubmitting(false); return; }
+          const resp = await fetch("https://employes-psi.vercel.app/api/compta-receive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+            body: JSON.stringify({
+              fileBase64: photo, fileName: photoName, fileMime: photoMime,
+              fournisseur: fournisseur || null, montantTtc: ttc, montantHt: ht || null,
+              dateFacture: dateFact, categorie: categorie || null,
+              chantierId: chantierId || null, notes: notes || null
+            })
+          });
+          const j = await resp.json();
+          if (!resp.ok) { setFeedback({ type: "err", msg: j.error || "Erreur envoi" }); setSubmitting(false); return; }
+          setFeedback({ type: "ok", msg: "Facture envoyee a la compta" });
+          reset();
+          setTimeout(function() { setOpen(false); setFeedback(null); }, 1500);
+        } catch (e) {
+          setFeedback({ type: "err", msg: e.message || "Erreur reseau" });
+        } finally { setSubmitting(false); }
+      };
+
+      const fabStyle = {
+        position: "fixed",
+        bottom: "calc(70px + env(safe-area-inset-bottom))",
+        right: "calc(16px + env(safe-area-inset-right))",
+        zIndex: 90, width: 44, height: 44, borderRadius: "50%",
+        background: "linear-gradient(135deg, #10b981, #059669)",
+        border: "1px solid rgba(16,185,129,0.5)", color: "#fff", cursor: "pointer",
+        boxShadow: "0 8px 24px rgba(16,185,129,0.4)",
+        display: "flex", alignItems: "center", justifyContent: "center"
+      };
+
+      const inputStyle = { width: "100%", padding: "10px 12px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 14, fontFamily: "inherit", boxSizing: "border-box" };
+      const lblStyle = { display: "block", fontSize: 12, color: "#a1a1aa", marginBottom: 4, fontWeight: 500 };
+      const rowStyle = { display: "flex", gap: 10 };
+
+      return h(React.Fragment, null,
+        h("button", { onClick: function() { setOpen(true); }, "aria-label": "Envoyer une facture", title: "Envoyer une facture rapidement", style: fabStyle },
+          h(Icon, { name: "receipt", size: 20, color: "#fff" })
+        ),
+        open ? h("div", {
+          onClick: function(e) { if (e.target === e.currentTarget) setOpen(false); },
+          style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }
+        },
+          h("div", { style: { width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto", background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 20, color: "#fafafa" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                h(Icon, { name: "receipt", size: 22, color: "#10b981" }),
+                h("h2", { style: { margin: 0, fontSize: 18, fontWeight: 600 } }, "Envoyer une facture")
+              ),
+              h("button", { onClick: function() { setOpen(false); }, style: { background: "transparent", border: "none", color: "#a1a1aa", cursor: "pointer", padding: 4 } }, h(Icon, { name: "x", size: 20 }))
+            ),
+            h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 14 } }, "Arrive directement dans 'Factures recues' de l'app Compta."),
+            // Photo
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Photo / fichier *"),
+              photo ? h("div", { style: { position: "relative", marginBottom: 8 } },
+                h("img", { src: photo, alt: "facture", style: { width: "100%", maxHeight: 200, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,0.3)" } }),
+                h("button", { onClick: function() { setPhoto(null); setPhotoName(null); }, style: { position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,0.7)", border: "none", borderRadius: 6, color: "#fff", padding: "4px 8px", cursor: "pointer", fontSize: 12 } }, "Retirer")
+              ) : h("div", { style: rowStyle },
+                h("button", { onClick: function() { cameraInputRef.current && cameraInputRef.current.click(); }, style: { flex: 1, padding: "12px", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.4)", borderRadius: 8, color: "#10b981", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit", fontSize: 13 } }, h(Icon, { name: "camera", size: 18 }), "Photo"),
+                h("button", { onClick: function() { fileInputRef.current && fileInputRef.current.click(); }, style: { flex: 1, padding: "12px", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.4)", borderRadius: 8, color: "#818cf8", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit", fontSize: 13 } }, h(Icon, { name: "upload", size: 18 }), "Fichier")
+              ),
+              h("input", { ref: cameraInputRef, type: "file", accept: "image/*", capture: "environment", onChange: handleFile, style: { display: "none" } }),
+              h("input", { ref: fileInputRef, type: "file", accept: "image/*,application/pdf", onChange: handleFile, style: { display: "none" } })
+            ),
+            // Fournisseur
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Fournisseur"),
+              h("input", { type: "text", value: fournisseur, onChange: function(e) { setFournisseur(e.target.value); }, placeholder: "Ex. Total NC, Carrefour...", style: inputStyle })
+            ),
+            // Montants
+            h("div", { style: Object.assign({}, rowStyle, { marginBottom: 12 }) },
+              h("div", { style: { flex: 1 } },
+                h("label", { style: lblStyle }, "Montant TTC * (XPF)"),
+                h("input", { type: "number", inputMode: "decimal", value: ttc, onChange: function(e) { setTtc(e.target.value); }, placeholder: "0", style: inputStyle })
+              ),
+              h("div", { style: { flex: 1 } },
+                h("label", { style: lblStyle }, "Montant HT (XPF)"),
+                h("input", { type: "number", inputMode: "decimal", value: ht, onChange: function(e) { setHt(e.target.value); }, placeholder: "0", style: inputStyle })
+              )
+            ),
+            // Date + Catégorie
+            h("div", { style: Object.assign({}, rowStyle, { marginBottom: 12 }) },
+              h("div", { style: { flex: 1 } },
+                h("label", { style: lblStyle }, "Date facture"),
+                h("input", { type: "date", value: dateFact, onChange: function(e) { setDateFact(e.target.value); }, style: inputStyle })
+              ),
+              h("div", { style: { flex: 1 } },
+                h("label", { style: lblStyle }, "Categorie"),
+                h("select", { value: categorie, onChange: function(e) { setCategorie(e.target.value); }, style: inputStyle },
+                  h("option", { value: "" }, "— Choisir —"),
+                  COMPTA_CATEGORIES_ADMIN.map(function(c) { return h("option", { key: c.value, value: c.value }, c.label); })
+                )
+              )
+            ),
+            // Chantier
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Chantier (optionnel)"),
+              h("select", { value: chantierId, onChange: function(e) { setChantierId(e.target.value); }, style: inputStyle },
+                h("option", { value: "" }, "— Aucun —"),
+                chantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, (c.code ? "[" + c.code + "] " : "") + c.nom); })
+              )
+            ),
+            // Notes
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Notes"),
+              h("textarea", { value: notes, onChange: function(e) { setNotes(e.target.value); }, rows: 2, placeholder: "Precisions...", style: Object.assign({}, inputStyle, { resize: "vertical" }) })
+            ),
+            // Feedback
+            feedback ? h("div", { style: { padding: "10px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: feedback.type === "ok" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)", color: feedback.type === "ok" ? "#34d399" : "#f87171", border: "1px solid " + (feedback.type === "ok" ? "rgba(16,185,129,0.4)" : "rgba(239,68,68,0.4)") } }, feedback.msg) : null,
+            // Submit
+            h("button", { onClick: submit, disabled: submitting, style: { width: "100%", padding: "12px", background: submitting ? "rgba(16,185,129,0.4)" : "linear-gradient(135deg, #10b981, #059669)", border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, cursor: submitting ? "wait" : "pointer", fontFamily: "inherit" } }, submitting ? "Envoi en cours..." : "Envoyer a la compta")
+          )
+        ) : null
+      );
+    }
+
     // ─── App principale ─────────────────────────────────────────────────
     function App() {
       const [session, setSession] = useState(null);
@@ -23140,6 +23329,8 @@
         h(WeatherBackground, { meteo: globalMeteoToday }),
         // Recherche globale Ctrl+K (modal + bouton flottant)
         h(RechercheGlobale, { onNavigate: navigate }),
+        // FAB envoi rapide facture vers compta (bouton flottant + modal)
+        h(QuickEnvoiFactureFab, null),
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
