@@ -11009,7 +11009,8 @@
       var setAffectations = ctx.setDbAffectations;
       var saisiesPe = ctx.dbSaisies || {};
       var parametres = ctx.parametres;
-      var personnel = loadPersonnelFromParametres(parametres);
+      // Filtre les ex-employes (dateFinContrat passee) - non utiles dans le planning
+      var personnel = loadPersonnelFromParametres(parametres).filter(function(p) { return isActiveEmploye(p); });
 
       var _cm = useState(new Date());
       var currentMonth = _cm[0]; var setCurrentMonth = _cm[1];
@@ -12638,7 +12639,17 @@
       var affectations = ctx.dbAffectations || [];
       var paliers = ctx.dbPaliers || [];
       var parametres = ctx.parametres;
-      var personnel = loadPersonnelFromParametres(parametres);
+      // Personnel : on garde les actifs + les ex partis dans les 6 derniers mois
+      // (pour calculer la prime d'un employe qui quitte au cours de la periode).
+      // Les anciens >6 mois sont exclus pour ne pas polluer la vue.
+      var personnelAll = loadPersonnelFromParametres(parametres);
+      var nowPrimes = new Date();
+      var cutoffOld = new Date(nowPrimes.getTime() - 6 * 30 * 86400000);
+      var personnel = personnelAll.filter(function(p) {
+        if (isActiveEmploye(p, nowPrimes)) return true;
+        if (!p.dateFinContrat) return true;
+        try { return new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00") >= cutoffOld; } catch (e) { return true; }
+      });
       var releves = ctx.dbRelevesJourn || [];
       var equipementsList = ctx.equipements || [];
 
@@ -20213,7 +20224,9 @@
       });
 
       // ─ State ─
-      var _sel = useState(isRH ? (personnelList[0] && personnelList[0].code) : (ownPersonnel && ownPersonnel.code));
+      // Par defaut : voir les actifs (les anciens employes restent accessibles via onglet)
+      var firstActif = personnelList.find(function(p) { return isActiveEmploye(p); });
+      var _sel = useState(isRH ? (firstActif && firstActif.code) : (ownPersonnel && ownPersonnel.code));
       var selectedCode = _sel[0]; var setSelectedCode = _sel[1];
       var _docs = useState([]); var docs = _docs[0]; var setDocs = _docs[1];
       var _loading = useState(true); var loading = _loading[0]; var setLoading = _loading[1];
@@ -20221,6 +20234,7 @@
       var _typeFilter = useState("all"); var typeFilter = _typeFilter[0]; var setTypeFilter = _typeFilter[1];
       var _showUpload = useState(false); var showUploadModal = _showUpload[0]; var setShowUploadModal = _showUpload[1];
       var _signDoc = useState(null); var signDoc = _signDoc[0]; var setSignDoc = _signDoc[1];
+      var _viewExHook = useState(false); var viewEx = _viewExHook[0]; var setViewEx = _viewExHook[1];
       var _toDelete = useState(null); var toDelete = _toDelete[0]; var setToDelete = _toDelete[1];
 
       // ─ Fetch docs ─
@@ -20249,8 +20263,12 @@
       var expired = docs.filter(function(d) { return d.date_expiration && new Date(d.date_expiration) < now; }).length;
       var pendingSignatures = docs.filter(function(d) { return d.status === "pending_signature"; }).length;
 
-      // ─ Liste employes filtree par search ─
+      // ─ Liste employes filtree par search + onglet actif/ex ─
+      var nowRH = new Date();
       var filteredPersonnel = personnelList.filter(function(p) {
+        var actif = isActiveEmploye(p, nowRH);
+        if (!viewEx && !actif) return false;
+        if (viewEx && actif) return false;
         if (!search) return true;
         var s = search.toLowerCase();
         var nom = ((p.prenom || "") + " " + (p.nom || "")).toLowerCase();
@@ -20275,12 +20293,17 @@
         h("div", { style: { display: "grid", gridTemplateColumns: isRH ? "320px 1fr" : "1fr", gap: 16 } },
           // Sidebar employes (RH seulement)
           isRH ? h("div", Object.assign({}, { style: Object.assign({}, sectionStyle, { padding: 14, maxHeight: 700, overflowY: "auto" }) }),
+            // Toggle Actifs / Anciens
+            h("div", { style: { display: "flex", gap: 4, marginBottom: 10, padding: 3, background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+              h("button", { onClick: function() { setViewEx(false); }, style: { flex: 1, padding: "6px 10px", border: "none", borderRadius: 6, background: !viewEx ? "linear-gradient(135deg, #6366f1, #818cf8)" : "transparent", color: !viewEx ? "#fff" : "#a1a1aa", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" } }, "Actifs (" + personnelList.filter(function(p) { return isActiveEmploye(p, nowRH); }).length + ")"),
+              h("button", { onClick: function() { setViewEx(true); }, style: { flex: 1, padding: "6px 10px", border: "none", borderRadius: 6, background: viewEx ? "linear-gradient(135deg, #f43f5e, #e11d48)" : "transparent", color: viewEx ? "#fff" : "#a1a1aa", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" } }, "Anciens (" + personnelList.filter(function(p) { return !isActiveEmploye(p, nowRH); }).length + ")")
+            ),
             h("input", {
               type: "text", placeholder: "Chercher un employe...",
               value: search, onChange: function(e) { setSearch(e.target.value); },
               style: { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, marginBottom: 12, fontSize: 13, fontFamily: "inherit", outline: "none" }
             }),
-            filteredPersonnel.length === 0 ? h("div", { style: { padding: 12, color: "#71717a", fontSize: 12 } }, "Aucun employe") :
+            filteredPersonnel.length === 0 ? h("div", { style: { padding: 12, color: "#71717a", fontSize: 12 } }, viewEx ? "Aucun ancien employe" : "Aucun employe actif") :
             filteredPersonnel.map(function(p) {
               var isActive = p.code === selectedCode;
               var pDocs = docs.filter(function(d) { return d.personnel_code === p.code; });
@@ -21420,6 +21443,7 @@
           });
         }
         // Personnel terrain (sondeurs) — visible si l'utilisateur a acces a personnel
+        // Les ex-employes sont marques avec un suffixe "(ancien)" + group separe pour tri en bas
         if (canAccessPage("personnel")) {
           var persParam = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
           if (persParam && persParam.valeur) {
@@ -21429,14 +21453,15 @@
                 if (!p) return;
                 var nom = ((p.prenom || "") + " " + (p.nom || "")).trim();
                 if (!nom) return;
+                var actif = isActiveEmploye(p);
                 var label = nom + " " + (p.code || "") + " " + (p.role || "");
                 out.push({
-                  group: "Personnel",
+                  group: actif ? "Personnel" : "Anciens employes",
                   iconKey: "pers",
-                  title: nom,
-                  sub: (p.role || "Sondeur") + (p.code ? " - code: " + p.code : ""),
+                  title: nom + (actif ? "" : " (ancien)"),
+                  sub: (p.role || "Sondeur") + (p.code ? " - code: " + p.code : "") + (!actif && p.dateFinContrat ? " - parti " + p.dateFinContrat.substring(0, 10).split("-").reverse().join("/") : ""),
                   label: label,
-                  shortcut: "Personnel",
+                  shortcut: actif ? "Personnel" : "Personnel (ancien)",
                   action: function() { onNavigate("personnel"); }
                 });
               });
