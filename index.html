@@ -8662,10 +8662,41 @@
       return titleById[String(prev.equipementId)] || null;
     }
 
+    // Compte les jours OUVRES (lun-jeu) AVANT refDateTs ou la machine mk a eu du metrage
+    // reel saisi sur le chantier ck (selon metByMk). Sert a basculer du baseline "ancienne
+    // machine" vers la moyenne propre de la nouvelle quand on a >= 7 jours de donnees reelles.
+    function countRealWorkDaysBefore(metByMk, mk, ck, refDateTs) {
+      if (!metByMk[mk] || !metByMk[mk][ck]) return 0;
+      var refDay = new Date(refDateTs); refDay.setHours(0, 0, 0, 0);
+      var refTs = refDay.getTime();
+      var count = 0;
+      Object.keys(metByMk[mk][ck]).forEach(function(dk) {
+        var v = metByMk[mk][ck][dk] || 0;
+        if (v <= 0) return;
+        var dd = new Date(dk + "T00:00:00");
+        if (isNaN(dd.getTime())) return;
+        if (dd.getTime() >= refTs) return; // jours strictement avant refDate
+        var dow = dd.getDay();
+        if (dow >= 1 && dow <= 4) count++; // jours ouvres standard NC (lun-jeu)
+      });
+      return count;
+    }
+
     // Construit le metrage previsionnel d'un chantier sur une date (avant facteur meteo)
     // en respectant la logique d'adaptation machine. Retourne aussi des flags pour l'UI.
+    //
+    // Logique metier (validee user) :
+    //   - Si la nouvelle machine a < 3 jours REELS de metrage sur le chantier :
+    //         baseline = moyenne ANCIENNE machine sur ce chantier * 0.70 (adaptation)
+    //   - Si 3 a 6 jours REELS :
+    //         baseline = moyenne ANCIENNE machine sur ce chantier (sans adaptation)
+    //   - A partir de 7 jours REELS :
+    //         baseline = moyenne PROPRE de la nouvelle machine (sur ce chantier, fallback global)
+    //
+    // Note : "jours reels" = jours ouvres avant la date courante ou la machine a produit
+    //        du metrage saisi. Si la nouvelle machine ne travaille pas (intemperies), le
+    //        compteur n'avance pas -> on reste sur le baseline ancienne machine plus longtemps.
     function previsionnelBaseChantierDay(chantierId, dateStr, dbChantierEquipements, equipementsList, metByMk, vitesseFallbackChantier) {
-      var dayMs = 86400000;
       var iso = String(dateStr).substring(0, 10);
       var d = new Date(iso + "T00:00:00").getTime();
       if (isNaN(d)) return { metrage: 0, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
@@ -8673,7 +8704,7 @@
       (equipementsList || []).forEach(function(e) {
         if (e && e.Id != null) titleById[String(e.Id)] = String(e.Title || "").toUpperCase().trim();
       });
-      // Machines actives ce jour
+      // Machines actives ce jour selon planning equipement
       var actives = (dbChantierEquipements || []).filter(function(ce) {
         if (!ce || String(ce.chantierId) !== String(chantierId)) return false;
         var deb = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
@@ -8683,7 +8714,6 @@
         return true;
       });
       if (actives.length === 0) {
-        // Pas de planning machines : fallback vitesse chantier
         return { metrage: vitesseFallbackChantier || 0, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
       }
       var totalMet = 0;
@@ -8692,28 +8722,36 @@
       actives.forEach(function(ce) {
         var mk = titleById[String(ce.equipementId)];
         if (!mk) return;
+        // Compte les jours REELS deja travailles par cette machine sur ce chantier
+        var realDays = countRealWorkDaysBefore(metByMk, mk, String(chantierId), d);
         var debMs = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
-        var daysSinceArrival = debMs !== null ? Math.floor((d - debMs) / dayMs) : 999;
         var contribution = 0, phase = "own";
-        if (daysSinceArrival < 7) {
-          // Baseline = moyenne de la machine precedente sur ce chantier
+        if (realDays < 7) {
+          // Baseline ancienne machine sur ce chantier
           var prevMk = findPrevMachineOnChantier(dbChantierEquipements, chantierId, ce, titleById);
-          var prevVitesse = prevMk ? vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), debMs, 14) : 0;
+          var refForPrev = debMs || d;
+          var prevVitesse = prevMk ? vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), refForPrev, 14) : 0;
           if (prevVitesse === 0) prevVitesse = vitesseFallbackChantier || 0;
-          contribution = prevVitesse * (daysSinceArrival < 3 ? 0.70 : 1.0);
+          if (realDays < 3) {
+            contribution = prevVitesse * 0.70;
+            anyAdapt = true;
+            phase = "adapt";
+          } else {
+            contribution = prevVitesse;
+            phase = "old-baseline";
+          }
           anyOldBaseline = true;
-          phase = daysSinceArrival < 3 ? "adapt" : "old-baseline";
-          if (daysSinceArrival < 3) anyAdapt = true;
         } else {
-          // Phase stable : moyenne propre de la machine
+          // 7+ jours reels : moyenne propre
           var ownVitesse = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
           if (ownVitesse === 0) ownVitesse = vitesseMachineGlobal(metByMk, mk, d, 30);
           if (ownVitesse === 0) ownVitesse = vitesseFallbackChantier || 0;
           contribution = ownVitesse;
           anyOwn = true;
+          phase = "own";
         }
         totalMet += contribution;
-        machines.push({ code: mk, daysSince: daysSinceArrival, phase: phase, contribution: contribution });
+        machines.push({ code: mk, realDays: realDays, phase: phase, contribution: contribution });
       });
       return { metrage: totalMet, anyAdapt: anyAdapt, anyOldBaseline: anyOldBaseline, anyOwn: anyOwn, machines: machines };
     }
