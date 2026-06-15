@@ -8728,34 +8728,35 @@
       var anyAdapt = false, anyOldBaseline = false, anyOwn = false;
       var machines = [];
       var dayMs = 86400000;
+      // Fair share : si une machine n'a pas de moyenne individuelle, on lui attribue
+      // une part equitable du metrage chantier total (= total chantier / nb machines actives).
+      // Empeche les fallbacks abusifs sur la moyenne chantier complete (sur-estimation).
+      var fairShare = (vitesseFallbackChantier || 0) / Math.max(1, actives.length);
       actives.forEach(function(ce) {
         var mk = titleById[String(ce.equipementId)];
         if (!mk) return;
         var debMs = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
         var daysSinceArrival = debMs !== null ? Math.floor((d - debMs) / dayMs) : 999;
-        // CRITERE D'APPLICATION : la machine doit REMPLACER une autre machine sur le chantier.
-        // Cela exclut :
-        //   - Les machines etablies (sans predecesseur clairement remplace)
-        //   - Les machines ajoutees en parallele d'une autre (l'autre encore active)
+        // Critere d'application : la machine doit REMPLACER une autre (dateFin renseignee <= dateDebut)
         var prevMk = (debMs !== null) ? findPrevMachineOnChantier(dbChantierEquipements, chantierId, ce, titleById) : null;
         var isReplacement = !!prevMk;
         var realDays = 0;
         var contribution = 0, phase = "own";
         if (!isReplacement) {
-          // Machine non-remplacante : moyenne propre directe, sans aucune penalite
+          // Machine non-remplacante : moyenne propre directe, fallback fair share (jamais la moyenne chantier complete)
           var ownVitesse = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
           if (ownVitesse === 0) ownVitesse = vitesseMachineGlobal(metByMk, mk, d, 30);
-          if (ownVitesse === 0) ownVitesse = vitesseFallbackChantier || 0;
+          if (ownVitesse === 0) ownVitesse = fairShare;
           contribution = ownVitesse;
           anyOwn = true;
           phase = "own";
         } else {
-          // Machine remplacante : applique la regle metier
           realDays = countRealWorkDaysBefore(metByMk, mk, String(chantierId), d);
           if (realDays < 7) {
             // Phase baseline = moyenne de la machine REMPLACEE sur ce chantier (14j avant son depart)
             var prevVitesse = vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), debMs || d, 14);
-            if (prevVitesse === 0) prevVitesse = vitesseFallbackChantier || 0;
+            if (prevVitesse === 0) prevVitesse = vitesseMachineGlobal(metByMk, prevMk, debMs || d, 30);
+            if (prevVitesse === 0) prevVitesse = fairShare;
             if (realDays < 3) {
               contribution = prevVitesse * 0.70;
               anyAdapt = true;
@@ -8766,10 +8767,14 @@
             }
             anyOldBaseline = true;
           } else {
-            // 7+ jours reels accumules : passe sur la moyenne propre de la nouvelle machine
+            // 7+ jours reels accumules : moyenne propre de la nouvelle machine
             var ownVitesseR = vitesseMachineOnChantier(metByMk, mk, String(chantierId), d, 14);
             if (ownVitesseR === 0) ownVitesseR = vitesseMachineGlobal(metByMk, mk, d, 30);
-            if (ownVitesseR === 0) ownVitesseR = vitesseFallbackChantier || 0;
+            // Pas de fallback chantier complet -> on reprend la moyenne de la machine remplacee
+            if (ownVitesseR === 0) {
+              ownVitesseR = vitesseMachineOnChantier(metByMk, prevMk, String(chantierId), debMs || d, 14);
+            }
+            if (ownVitesseR === 0) ownVitesseR = fairShare;
             contribution = ownVitesseR;
             anyOwn = true;
             phase = "own";
