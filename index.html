@@ -9252,7 +9252,8 @@
           var cellDate = new Date(year, monthIdx, d);
           var dow = cellDate.getDay();
           var isWE = dow === 0 || dow === 6;
-          var isFuture = cellDate.getTime() > bcToday.getTime();
+          // Inclut aujourd'hui dans le forecast si aucun metrage n'a encore ete saisi
+          var isFuture = cellDate.getTime() >= bcToday.getTime();
           var isWorkDay = dow >= 1 && dow <= 4;
           activeChantiers.forEach(function(c) {
             var val = getDailyMetrageChantier(c.id, ds);
@@ -10284,9 +10285,12 @@
                     var forecastVals = []; // { idx, val, isWE, intemp }
                     for (var fd = 1; fd <= daysInMonth; fd++) {
                       var fDate = new Date(year, monthIdx, fd);
-                      // Pas de prevision pour les jours passes ou aujourd'hui (deja sur dayVals)
-                      var isFuture = (fDate.getTime() > bcToday.getTime());
+                      // Prevision pour aujourd'hui (si pas encore de metrage) ou futur
+                      var isFuture = (fDate.getTime() >= bcToday.getTime());
                       if (!isFuture) { forecastVals.push(null); continue; }
+                      // Si du metrage existe deja pour aujourd'hui, on saute le forecast
+                      var fIsoCheck = fDate.getFullYear() + "-" + String(fDate.getMonth() + 1).padStart(2, "0") + "-" + String(fDate.getDate()).padStart(2, "0");
+                      if (fDate.getTime() === bcToday.getTime() && getDailyMetrageChantier(chantier.id, fIsoCheck) > 0) { forecastVals.push(null); continue; }
                       var fDow = fDate.getDay();
                       var fIsWE = fDow === 0 || fDow === 5 || fDow === 6;
                       if (fIsWE || pVitQuot <= 0) { forecastVals.push(null); continue; }
@@ -14510,8 +14514,8 @@
           var dow = cur.getDay();
           var isWE = (dow === 0 || dow === 6);
           var realVal = dayMap[dStr] || 0;
-          // Forecast uniquement pour les jours FUTURS Lun-Jeu sans donnees reelles
-          var isFuture = cur.getTime() > bcToday.getTime();
+          // Forecast pour les jours FUTURS ou aujourd'hui (Lun-Jeu) sans donnees reelles
+          var isFuture = cur.getTime() >= bcToday.getTime();
           var fcVal = 0, fcCA = 0, fcIntemp = false, fcReduced = false;
           if (isFuture && dow >= 1 && dow <= 4 && realVal === 0) {
             activeChForFc.forEach(function(c) {
