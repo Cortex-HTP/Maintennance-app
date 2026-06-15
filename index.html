@@ -8690,6 +8690,34 @@
       return count;
     }
 
+    // Compte les jours ouvres (lun-jeu) entre [startMs, endMs) - fin exclusive
+    function countWorkDaysBetween(startMs, endMs) {
+      if (startMs == null || endMs == null || startMs >= endMs) return 0;
+      var cursor = new Date(startMs); cursor.setHours(0, 0, 0, 0);
+      var endDate = new Date(endMs); endDate.setHours(0, 0, 0, 0);
+      var count = 0, safe = 0;
+      while (cursor.getTime() < endDate.getTime() && safe < 400) {
+        var dow = cursor.getDay();
+        if (dow >= 1 && dow <= 4) count++;
+        cursor.setDate(cursor.getDate() + 1);
+        safe++;
+      }
+      return count;
+    }
+
+    // Pour predire la phase d'adaptation au jour predictionDate :
+    //   - Si predictionDate est dans le passe : compte les jours reels deja saisis avant
+    //   - Si predictionDate est dans le futur : real_past + work_days(today -> predictionDate)
+    //     (extrapolation : on suppose que la machine travaille chaque jour ouvre futur)
+    function estimateRealDaysAt(metByMk, mk, ck, predictionDateMs, todayMs) {
+      if (predictionDateMs <= todayMs) {
+        return countRealWorkDaysBefore(metByMk, mk, ck, predictionDateMs);
+      }
+      var realPast = countRealWorkDaysBefore(metByMk, mk, ck, todayMs);
+      var futureWork = countWorkDaysBetween(todayMs, predictionDateMs);
+      return realPast + futureWork;
+    }
+
     // Construit le metrage previsionnel d'un chantier sur une date (avant facteur meteo)
     // en respectant la logique d'adaptation machine. Retourne aussi des flags pour l'UI.
     //
@@ -8704,10 +8732,13 @@
     // Note : "jours reels" = jours ouvres avant la date courante ou la machine a produit
     //        du metrage saisi. Si la nouvelle machine ne travaille pas (intemperies), le
     //        compteur n'avance pas -> on reste sur le baseline ancienne machine plus longtemps.
-    function previsionnelBaseChantierDay(chantierId, dateStr, dbChantierEquipements, equipementsList, metByMk, vitesseFallbackChantier) {
+    function previsionnelBaseChantierDay(chantierId, dateStr, dbChantierEquipements, equipementsList, metByMk, vitesseFallbackChantier, todayMs) {
       var iso = String(dateStr).substring(0, 10);
       var d = new Date(iso + "T00:00:00").getTime();
       if (isNaN(d)) return { metrage: 0, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
+      if (todayMs == null) {
+        var _t = new Date(); _t.setHours(0, 0, 0, 0); todayMs = _t.getTime();
+      }
       var titleById = {};
       (equipementsList || []).forEach(function(e) {
         if (e && e.Id != null) titleById[String(e.Id)] = String(e.Title || "").toUpperCase().trim();
@@ -8742,7 +8773,7 @@
         var daysSinceArrival = debMs !== null ? Math.floor((d - debMs) / dayMs) : 999;
         var prevMk = (debMs !== null) ? findPrevMachineOnChantier(dbChantierEquipements, chantierId, ce, titleById) : null;
         var isReplacement = !!prevMk;
-        var realDays = isReplacement ? countRealWorkDaysBefore(metByMk, mk, String(chantierId), d) : 999;
+        var realDays = isReplacement ? estimateRealDaysAt(metByMk, mk, String(chantierId), d, todayMs) : 999;
         var phase = "own";
         if (isReplacement && realDays < 3) {
           phase = "adapt";
@@ -9432,7 +9463,7 @@
             if (isWorkDay) {
               var vQuot = vitesseParChantier[c.id] || 0;
               // Previsionnel base sur logique machine (anciens 7j puis propre) :
-              var prev = previsionnelBaseChantierDay(c.id, ds, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkBC, vQuot);
+              var prev = previsionnelBaseChantierDay(c.id, ds, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkBC, vQuot, bcToday.getTime());
               var baseMet = prev.metrage || vQuot; // fallback chantier si aucune machine planifiee
               if (baseMet > 0) {
                 var mMap = meteoByChantier[c.id];
@@ -10485,7 +10516,7 @@
                       var fFactor = meteoMetrageFactor(fMeteo);
                       // Previsionnel base sur logique machine (anciens 7j puis propre)
                       var metByMkFC = buildMetByMachine(ctxAv.dbRelevesJourn, ctxAv.equipements);
-                      var fPrev = previsionnelBaseChantierDay(chantier.id, fIso, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkFC, pVitQuot);
+                      var fPrev = previsionnelBaseChantierDay(chantier.id, fIso, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkFC, pVitQuot, bcToday.getTime());
                       var fBase = fPrev.metrage || pVitQuot;
                       var fVal = fBase * fFactor;
                       var fIntemp = fFactor === 0; // perdu total
@@ -14713,7 +14744,7 @@
               var mDay = mMap ? mMap[dStr] : null;
               var fact = meteoMetrageFactor(mDay);
               // Previsionnel base sur logique machine (anciens 7j puis propre)
-              var prev = previsionnelBaseChantierDay(c.id, dStr, ctx.dbChantierEquipements, ctx.equipements, metByMkStat, vQuot);
+              var prev = previsionnelBaseChantierDay(c.id, dStr, ctx.dbChantierEquipements, ctx.equipements, metByMkStat, vQuot, bcToday.getTime());
               var baseMet = prev.metrage || vQuot;
               var val = baseMet * fact;
               if (val > 0) {
