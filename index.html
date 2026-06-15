@@ -5220,21 +5220,31 @@
       }
     }
 
-    function savePersonnel(parametres, newList, setSaving) {
+    function savePersonnel(parametres, newList, setSaving, onResult) {
       setSaving(true);
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
       var jsonVal = JSON.stringify(newList);
       if (row) {
         supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) {
           setSaving(false);
-          if (res.error) { console.error("Erreur sauvegarde personnel:", res.error.message); }
-          else { row.valeur = jsonVal; }
+          if (res.error) {
+            console.error("Erreur sauvegarde personnel:", res.error.message);
+            if (onResult) onResult({ ok: false, error: res.error.message });
+          } else {
+            row.valeur = jsonVal;
+            if (onResult) onResult({ ok: true });
+          }
         });
       } else {
         supabase.from("parametres").insert({ categorie: PERSONNEL_STORAGE_KEY, valeur: jsonVal, ordre: 0 }).select().single().then(function(res) {
           setSaving(false);
-          if (res.error) { console.error("Erreur creation personnel:", res.error.message); }
-          else { parametres.push(res.data); }
+          if (res.error) {
+            console.error("Erreur creation personnel:", res.error.message);
+            if (onResult) onResult({ ok: false, error: res.error.message });
+          } else {
+            parametres.push(res.data);
+            if (onResult) onResult({ ok: true });
+          }
         });
       }
     }
@@ -5460,20 +5470,20 @@
         if (fresh.length > 0 || personnel.length === 0) { setPersonnelRaw(fresh); }
       }, [parametres]);
 
-      var _pendingSave = React.useRef(null);
+      // Sauvegarde directe : appelle savePersonnel directement pour eviter les races useEffect.
+      // showToast remonte du contexte App pour feedback utilisateur (succes / erreur).
       function setPersonnel(updater) {
         setPersonnelRaw(function(prev) {
           var next = typeof updater === "function" ? updater(prev) : updater;
-          _pendingSave.current = next;
+          savePersonnel(parametres, next, setSaving, function(result) {
+            if (!result.ok) {
+              if (ctx.showToast) ctx.showToast("Erreur sauvegarde personnel : " + (result.error || "inconnue"), "error");
+              else alert("Erreur sauvegarde personnel : " + (result.error || "inconnue"));
+            }
+          });
           return next;
         });
       }
-      useEffect(function() {
-        if (_pendingSave.current !== null) {
-          savePersonnel(parametres, _pendingSave.current, setSaving);
-          _pendingSave.current = null;
-        }
-      });
 
       function handleSave(emp) {
         if (editing) {
