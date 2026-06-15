@@ -5221,10 +5221,18 @@
       }
     }
 
-    function savePersonnel(parametres, newList, setSaving, onResult) {
+    function savePersonnel(parametres, newList, setSaving, onResult, setParametres) {
       setSaving(true);
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
       var jsonVal = JSON.stringify(newList);
+      // Helper : force un re-render React de tous les composants consommant parametres.
+      // Sans ca, les autres ecrans (Planning, RH, Recherche, ...) ne se mettent pas a jour
+      // car la mutation row.valeur=... ne change pas la reference du tableau.
+      function bumpParametres() {
+        if (typeof setParametres === "function") {
+          setParametres(function(p) { return (p || []).slice(); });
+        }
+      }
       if (row) {
         supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) {
           setSaving(false);
@@ -5233,6 +5241,7 @@
             if (onResult) onResult({ ok: false, error: res.error.message });
           } else {
             row.valeur = jsonVal;
+            bumpParametres();
             if (onResult) onResult({ ok: true });
           }
         });
@@ -5244,6 +5253,7 @@
             if (onResult) onResult({ ok: false, error: res.error.message });
           } else {
             parametres.push(res.data);
+            bumpParametres();
             if (onResult) onResult({ ok: true });
           }
         });
@@ -5476,19 +5486,20 @@
         if (fresh.length > 0 || personnel.length === 0) { setPersonnelRaw(fresh); }
       }, [parametres]);
 
-      // Sauvegarde directe : appelle savePersonnel directement pour eviter les races useEffect.
-      // showToast remonte du contexte App pour feedback utilisateur (succes / erreur).
+      // Sauvegarde directe : pas dans l'updater (strict mode peut le call 2x).
+      // Calcule next, met a jour le state local, puis save Supabase + bump parametres
+      // pour rafraichir les autres ecrans (Planning, RH, Recherche, ...).
       function setPersonnel(updater) {
-        setPersonnelRaw(function(prev) {
-          var next = typeof updater === "function" ? updater(prev) : updater;
-          savePersonnel(parametres, next, setSaving, function(result) {
-            if (!result.ok) {
-              if (ctx.showToast) ctx.showToast("Erreur sauvegarde personnel : " + (result.error || "inconnue"), "error");
-              else alert("Erreur sauvegarde personnel : " + (result.error || "inconnue"));
-            }
-          });
-          return next;
-        });
+        var next = typeof updater === "function" ? updater(personnel) : updater;
+        setPersonnelRaw(next);
+        savePersonnel(parametres, next, setSaving, function(result) {
+          if (!result.ok) {
+            if (ctx.showToast) ctx.showToast("Erreur sauvegarde personnel : " + (result.error || "inconnue"), "error");
+            else alert("Erreur sauvegarde personnel : " + (result.error || "inconnue"));
+          } else {
+            if (ctx.showToast) ctx.showToast("Personnel mis a jour", "success");
+          }
+        }, ctx.setParametres);
       }
 
       function handleSave(emp) {
@@ -5505,17 +5516,34 @@
         setToDelete(null);
       }
 
-      // ─ Onglet (actifs / anciens / tous) ─
+      // ─ Onglet (actifs / anciens / tous) + filtre type contrat ─
       var _viewTab = useState("actifs");
       var viewTab = _viewTab[0], setViewTab = _viewTab[1];
+      var _typeFilter = useState("all");
+      var typeFilter = _typeFilter[0], setTypeFilter = _typeFilter[1];
       var nowTodayP = new Date();
-      var nbActifs = personnel.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); }).length;
-      var nbAnciens = personnel.filter(function(emp) { return !isActiveEmploye(emp, nowTodayP); }).length;
+      var actifsList = personnel.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); });
+      var nbActifs = actifsList.length;
+      var nbAnciens = personnel.length - nbActifs;
+      var nbCDI = actifsList.filter(function(e) { return (e.typeContrat || "CDI") === "CDI"; }).length;
+      var nbCDD = actifsList.filter(function(e) { return e.typeContrat === "CDD"; }).length;
+      var nbAutreContrat = nbActifs - nbCDI - nbCDD;
+      // Alerte fin CDD imminente : CDD actifs dont dateFinContrat est dans les 30 prochains jours
+      var alerteFinMs = 30 * 86400000;
+      var cddImminent = actifsList.filter(function(e) {
+        if (e.typeContrat !== "CDD") return false;
+        if (!e.dateFinContrat) return false;
+        try {
+          var d = new Date(String(e.dateFinContrat).substring(0, 10) + "T00:00:00").getTime();
+          return d - nowTodayP.getTime() < alerteFinMs && d - nowTodayP.getTime() >= 0;
+        } catch (er) { return false; }
+      });
 
       var filtered = personnel.filter(function(emp) {
         var actif = isActiveEmploye(emp, nowTodayP);
         if (viewTab === "actifs" && !actif) return false;
         if (viewTab === "anciens" && actif) return false;
+        if (typeFilter !== "all" && (emp.typeContrat || "CDI") !== typeFilter) return false;
         if (!search) return true;
         var s = search.toLowerCase();
         return (emp.nom + " " + emp.prenom).toLowerCase().indexOf(s) !== -1 || (emp.lieuContrat || "").toLowerCase().indexOf(s) !== -1;
@@ -5901,16 +5929,38 @@
 
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "user-round", size: 20 }, "Personnel"), subtitle: saving ? "Sauvegarde en cours..." : nbActifs + " employe" + (nbActifs > 1 ? "s" : "") + " actif" + (nbActifs > 1 ? "s" : "") + (nbAnciens > 0 ? " + " + nbAnciens + " ancien" + (nbAnciens > 1 ? "s" : "") : ""), action: h(Button, { onClick: function() { setEditing(null); setShowModal(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvel employe")) }),
+        // Bandeau alerte CDD imminents
+        cddImminent.length > 0 ? h("div", { onClick: function() { setViewTab("actifs"); setTypeFilter("CDD"); }, style: { cursor: "pointer", marginBottom: 16, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(251,191,36,0.15), rgba(251,191,36,0.05))", border: "1px solid rgba(251,191,36,0.35)", display: "flex", alignItems: "center", gap: 12 } },
+          h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(251,191,36,0.25)", display: "flex", alignItems: "center", justifyContent: "center" } }, h(Icon, { name: "alert-circle", size: 18, color: "#fde68a" })),
+          h("div", { style: { flex: 1, minWidth: 0 } },
+            h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa" } }, cddImminent.length + " CDD se termine" + (cddImminent.length > 1 ? "nt" : "") + " dans les 30 jours"),
+            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, cddImminent.slice(0, 3).map(function(e) { return e.prenom + " " + e.nom + " (" + formatDate(e.dateFinContrat) + ")"; }).join(", ") + (cddImminent.length > 3 ? " + " + (cddImminent.length - 3) + " autre(s)" : ""))
+          ),
+          h("div", { style: { fontSize: 12, fontWeight: 700, color: "#fde68a" } }, "Filtrer >")
+        ) : null,
+        // KPIs : Effectif, CDI, CDD, Anciens, Lieux
         h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
           h(KPICard, { icon: h(Icon, { name: "user-round", size: 32, color: "#a78bfa" }), label: "Effectif actif", value: String(nbActifs), color: "#a78bfa" }),
-          h(KPICard, { icon: h(Icon, { name: "user-x", size: 32, color: "#fb7185" }), label: "Anciens employes", value: String(nbAnciens), color: "#f43f5e" }),
-          h(KPICard, { icon: h(Icon, { name: "map-pin", size: 32, color: "#059669" }), label: "Lieux de contrat", value: String(Array.from(new Set(personnel.filter(function(e) { return isActiveEmploye(e, nowTodayP); }).map(function(e) { return e.lieuContrat; }).filter(Boolean))).length), color: "#059669" })
+          h(KPICard, { icon: h(Icon, { name: "shield-check", size: 32, color: "#86efac" }), label: "CDI", value: String(nbCDI), color: "#22c55e" }),
+          h(KPICard, { icon: h(Icon, { name: "clock", size: 32, color: "#fde68a" }), label: "CDD", value: String(nbCDD), color: "#fbbf24" }),
+          nbAutreContrat > 0 ? h(KPICard, { icon: h(Icon, { name: "file-text", size: 32, color: "#c4b5fd" }), label: "Autres", value: String(nbAutreContrat), color: "#a78bfa" }) : null,
+          h(KPICard, { icon: h(Icon, { name: "user-x", size: 32, color: "#fb7185" }), label: "Anciens", value: String(nbAnciens), color: "#f43f5e" }),
+          h(KPICard, { icon: h(Icon, { name: "map-pin", size: 32, color: "#059669" }), label: "Lieux contrat", value: String(Array.from(new Set(actifsList.map(function(e) { return e.lieuContrat; }).filter(Boolean))).length), color: "#059669" })
         ),
         // Onglets vue
-        h("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" } },
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
           tabBtnView("actifs", "Actifs", nbActifs, "#22c55e"),
           tabBtnView("anciens", "Anciens employes", nbAnciens, "#f43f5e"),
           tabBtnView("tous", "Tous", personnel.length, "#a78bfa")
+        ),
+        // Filtre type contrat
+        h("div", { style: { display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center" } },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, marginRight: 6 } }, "Type contrat :"),
+          ["all", "CDI", "CDD", "Stage", "Apprentissage", "Alternance", "Interim", "Saisonnier", "Mission / Prestation", "Auto-entrepreneur", "Essai"].map(function(t) {
+            var active = typeFilter === t;
+            var label = t === "all" ? "Tous" : t;
+            return h("button", { key: t, onClick: function() { setTypeFilter(t); }, style: { padding: "5px 11px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, border: "1px solid " + (active ? "rgba(99,102,241,0.45)" : "rgba(255,255,255,0.08)"), background: active ? "rgba(99,102,241,0.20)" : "rgba(255,255,255,0.04)", color: active ? "#c4b5fd" : "#a1a1aa", cursor: "pointer", fontFamily: "inherit" } }, label);
+          })
         ),
         h("div", { style: { marginBottom: 16 } }, h(SearchInput, { placeholder: "Rechercher un employe...", value: search, onChange: setSearch })),
         h(Card, { style: { padding: 0, overflow: "hidden" } },
