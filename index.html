@@ -34,6 +34,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <style>
     :root {
@@ -20085,47 +20086,78 @@
     }
 
     // ─── RhDocUploadModal : upload d'un document RH ───────────────────────
-    // Combine plusieurs images en un seul PDF via jsPDF (chaque image = 1 page).
-    // Format : A4 portrait, image centree, conserve l'aspect ratio.
-    async function combineImagesIntoPdf(files, outputName) {
-      if (!window.jspdf || !window.jspdf.jsPDF) throw new Error("jsPDF non charge");
-      var jsPDF = window.jspdf.jsPDF;
-      var pdf = new jsPDF({ unit: "mm", format: "a4" });
-      var pageW = pdf.internal.pageSize.getWidth();
-      var pageH = pdf.internal.pageSize.getHeight();
+    // Detecte si un fichier est une image (via MIME + fallback extension)
+    function isImageFile(f) {
+      if (f.type && f.type.indexOf("image/") === 0) return true;
+      var name = (f.name || "").toLowerCase();
+      return /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/.test(name);
+    }
+    function isPdfFile(f) {
+      if (f.type === "application/pdf") return true;
+      var name = (f.name || "").toLowerCase();
+      return /\.pdf$/.test(name);
+    }
+
+    // Combine plusieurs fichiers (images ET/OU PDF) en un seul PDF via pdf-lib.
+    // Chaque image -> 1 page A4 centree. Chaque PDF -> ses pages embarquees.
+    async function combineFilesIntoPdf(files, outputName) {
+      if (!window.PDFLib) throw new Error("pdf-lib non charge");
+      var PDFDocument = window.PDFLib.PDFDocument;
+      var newPdf = await PDFDocument.create();
+      var pageWidth = 595.28;  // A4 width in pt
+      var pageHeight = 841.89; // A4 height in pt
       for (var i = 0; i < files.length; i++) {
         var file = files[i];
-        // Lire l'image en dataURL
-        var dataUrl = await new Promise(function(resolve, reject) {
-          var reader = new FileReader();
-          reader.onload = function(e) { resolve(e.target.result); };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-        // Charger l'image pour avoir ses dimensions
-        var img = await new Promise(function(resolve, reject) {
-          var im = new Image();
-          im.onload = function() { resolve(im); };
-          im.onerror = reject;
-          im.src = dataUrl;
-        });
-        // Calcul taille adaptee a la page (avec marge 10mm)
-        var marginMm = 10;
-        var maxW = pageW - 2 * marginMm;
-        var maxH = pageH - 2 * marginMm;
-        var ratio = Math.min(maxW / img.width, maxH / img.height);
-        var imgW = img.width * ratio;
-        var imgH = img.height * ratio;
-        var x = (pageW - imgW) / 2;
-        var y = (pageH - imgH) / 2;
-        if (i > 0) pdf.addPage();
-        var fmt = file.type === "image/png" ? "PNG" : "JPEG";
-        pdf.addImage(dataUrl, fmt, x, y, imgW, imgH);
+        var arrayBuffer = await file.arrayBuffer();
+        if (isPdfFile(file)) {
+          // Charger le PDF source et copier ses pages
+          var srcPdf = await PDFDocument.load(arrayBuffer);
+          var pageIndices = srcPdf.getPageIndices();
+          var copiedPages = await newPdf.copyPages(srcPdf, pageIndices);
+          copiedPages.forEach(function(p) { newPdf.addPage(p); });
+        } else if (isImageFile(file)) {
+          // Embed l'image (JPEG ou PNG) et ajouter une page A4
+          var img;
+          var nameLow = (file.name || "").toLowerCase();
+          if (nameLow.indexOf(".png") >= 0 || file.type === "image/png") {
+            img = await newPdf.embedPng(arrayBuffer);
+          } else {
+            try {
+              img = await newPdf.embedJpg(arrayBuffer);
+            } catch (e) {
+              // Fallback : converti l'image via canvas -> PNG
+              var pngBytes = await convertImageToPng(file);
+              img = await newPdf.embedPng(pngBytes);
+            }
+          }
+          var page = newPdf.addPage([pageWidth, pageHeight]);
+          var margin = 20;
+          var maxW = pageWidth - 2 * margin;
+          var maxH = pageHeight - 2 * margin;
+          var ratio = Math.min(maxW / img.width, maxH / img.height);
+          var imgW = img.width * ratio;
+          var imgH = img.height * ratio;
+          page.drawImage(img, { x: (pageWidth - imgW) / 2, y: (pageHeight - imgH) / 2, width: imgW, height: imgH });
+        }
       }
-      // Genere un Blob PDF
-      var blob = pdf.output("blob");
-      // File construit a partir du Blob pour le renvoi
+      var pdfBytes = await newPdf.save();
+      var blob = new Blob([pdfBytes], { type: "application/pdf" });
       return new File([blob], outputName || "document.pdf", { type: "application/pdf" });
+    }
+
+    // Convertit une image (HEIC, GIF, WebP, ...) en PNG via canvas
+    async function convertImageToPng(file) {
+      var dataUrl = await new Promise(function(resolve, reject) {
+        var r = new FileReader(); r.onload = function(e) { resolve(e.target.result); }; r.onerror = reject; r.readAsDataURL(file);
+      });
+      var img = await new Promise(function(resolve, reject) {
+        var im = new Image(); im.onload = function() { resolve(im); }; im.onerror = reject; im.src = dataUrl;
+      });
+      var canvas = document.createElement("canvas");
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      var blob = await new Promise(function(resolve) { canvas.toBlob(resolve, "image/png"); });
+      return await blob.arrayBuffer();
     }
 
     function RhDocUploadModal({ personnelCode, personnelNom, uploaderEmail, onClose, onUploaded }) {
@@ -20155,23 +20187,20 @@
         setFiles(newFiles);
       }
 
-      // Detecte si le set est uniquement des images (combinables en 1 PDF)
-      var allImages = files.length > 1 && files.every(function(f) { return f.type && f.type.indexOf("image/") === 0; });
-      var singleFile = files.length === 1;
-      var multiPdfNotSupported = files.length > 1 && !allImages;
+      // Multi-fichiers : on combine TOUT (images + PDF) en un seul PDF via pdf-lib.
+      // Single fichier : on l'upload tel quel (pas de transformation).
+      var multipleFiles = files.length > 1;
 
       async function handleUpload() {
         if (files.length === 0) { setErr("Choisis au moins un fichier"); return; }
         if (!personnelCode) { setErr("Code employe manquant"); return; }
-        if (multiPdfNotSupported) { setErr("Pour combiner plusieurs PDF, utilise un outil externe ou uploade-les separement. Multi-fichiers OK uniquement pour les images."); return; }
         setSaving(true); setErr(null);
         try {
           var fileToUpload;
-          if (allImages) {
+          if (multipleFiles) {
             setCombining(true);
-            // Combine en 1 PDF (1 image par page)
             var basename = "doc_" + typeDoc + "_" + personnelCode + ".pdf";
-            fileToUpload = await combineImagesIntoPdf(files, basename);
+            fileToUpload = await combineFilesIntoPdf(files, basename);
             setCombining(false);
           } else {
             fileToUpload = files[0];
@@ -20226,25 +20255,25 @@
           // Apercu des fichiers selectionnes + reorganisation
           files.length > 0 ? h("div", { style: { padding: 10, borderRadius: 8, background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.20)" } },
             h("div", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 } },
-              files.length + " fichier(s) selectionne(s)" + (allImages ? " - seront combines en 1 PDF" : (multiPdfNotSupported ? " - multi-PDF non supporte" : ""))
+              files.length + " fichier(s) selectionne(s)" + (multipleFiles ? " - seront combines en 1 PDF" : "")
             ),
             files.map(function(f, i) {
               return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", marginBottom: 4, borderRadius: 6, background: "rgba(255,255,255,0.04)" } },
                 h("span", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", minWidth: 20 } }, (i + 1) + "."),
-                h(Icon, { name: f.type && f.type.indexOf("image/") === 0 ? "image" : "file-text", size: 14, color: "#cbd5e1" }),
+                h(Icon, { name: isImageFile(f) ? "image" : "file-text", size: 14, color: "#cbd5e1" }),
                 h("div", { style: { flex: 1, fontSize: 12, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
                   f.name,
                   h("span", { style: { color: "#94a3b8", fontSize: 11, marginLeft: 6 } }, "(" + (f.size / 1024).toFixed(0) + " ko)")
                 ),
-                allImages ? h(React.Fragment, null,
+                multipleFiles ? h(React.Fragment, null,
                   h("button", { onClick: function() { moveFile(i, -1); }, disabled: i === 0, title: "Monter", style: { background: "transparent", border: "none", padding: 4, cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.3 : 1 } }, h(Icon, { name: "arrow-up", size: 13, color: "#94a3b8" })),
                   h("button", { onClick: function() { moveFile(i, 1); }, disabled: i === files.length - 1, title: "Descendre", style: { background: "transparent", border: "none", padding: 4, cursor: i === files.length - 1 ? "default" : "pointer", opacity: i === files.length - 1 ? 0.3 : 1 } }, h(Icon, { name: "arrow-down", size: 13, color: "#94a3b8" }))
                 ) : null,
                 h("button", { onClick: function() { removeFileAt(i); }, title: "Retirer", style: { background: "transparent", border: "none", padding: 4, cursor: "pointer", color: "#fda4af" } }, h(Icon, { name: "x", size: 13, color: "#fda4af" }))
               );
             }),
-            allImages ? h("div", { style: { fontSize: 11, color: "#a5b4fc", marginTop: 6, fontStyle: "italic" } },
-              h(Icon, { name: "info", size: 11, color: "#a5b4fc" }), " Reorganise les pages avec les fleches haut/bas si besoin"
+            multipleFiles ? h("div", { style: { fontSize: 11, color: "#a5b4fc", marginTop: 6, fontStyle: "italic" } },
+              h(Icon, { name: "info", size: 11, color: "#a5b4fc" }), " Reorganise l'ordre des pages avec les fleches. Images + PDF combinables en 1 seul PDF."
             ) : null
           ) : null,
           h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
@@ -20268,8 +20297,8 @@
           ),
           h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 } },
             h(Button, { variant: "secondary", onClick: onClose, disabled: saving }, "Annuler"),
-            h(Button, { onClick: handleUpload, disabled: saving || files.length === 0 || multiPdfNotSupported },
-              combining ? "Combinaison PDF..." : (saving ? "Upload..." : h(IconText, { icon: "upload-cloud", size: 14 }, files.length > 1 ? "Combiner et telecharger" : "Telecharger"))
+            h(Button, { onClick: handleUpload, disabled: saving || files.length === 0 },
+              combining ? "Combinaison PDF..." : (saving ? "Upload..." : h(IconText, { icon: "upload-cloud", size: 14 }, multipleFiles ? "Combiner et telecharger" : "Telecharger"))
             )
           )
         )
