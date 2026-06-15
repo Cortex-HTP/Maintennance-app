@@ -20074,11 +20074,20 @@
     }
 
     // ─── Helper : generer URL signee pour preview/download ─────────────────
+    // Passe par /api/rh-signed-url (service_role) pour bypasser les RLS storage.
     async function getRhDocSignedUrl(storagePath) {
       try {
-        var res = await supabase.storage.from("rh-documents").createSignedUrl(storagePath, 300);
-        if (res.error) throw new Error(res.error.message);
-        return res.data && res.data.signedUrl ? res.data.signedUrl : null;
+        var sessionRes = await supabase.auth.getSession();
+        var token = sessionRes && sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+        if (!token) return null;
+        var r = await fetch("https://employes-psi.vercel.app/api/rh-signed-url", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ bucket: "rh-documents", path: storagePath, expiresIn: 300 })
+        });
+        if (!r.ok) { console.warn("[rh-signed-url] HTTP", r.status); return null; }
+        var data = await r.json();
+        return data.signedUrl || null;
       } catch (e) {
         console.warn("[rh-signed-url]", e.message);
         return null;
