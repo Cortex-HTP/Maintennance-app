@@ -5379,7 +5379,10 @@
             h(FormField, { label: "PIN (6 chiffres)" }, h("input", { type: "text", inputMode: "numeric", maxLength: 6, pattern: "\\d{6}", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 16, letterSpacing: 4, textAlign: "center" }), value: _pin[0], onChange: function(e) { _pin[1](e.target.value.replace(/\D/g, '').slice(0, 6)); }, placeholder: "------" })),
             h(Button, { onClick: generatePin, variant: "secondary" }, h(IconText, { icon: "dice-6", size: 14 }, "Generer"))
           ) : null,
-          _acces[0] ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } }, "Ce PIN sera necessaire pour que l'employe se connecte sur la tablette terrain. Il sera visible dans la liste du personnel.") : null
+          _acces[0] ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } }, "Ce PIN sera necessaire pour que l'employe se connecte sur la tablette terrain. Il sera visible dans la liste du personnel.") : h("div", { style: { fontSize: 11.5, color: "#fde68a", marginTop: 8, padding: 8, background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 6, display: "flex", alignItems: "flex-start", gap: 8 } },
+            h(Icon, { name: "alert-triangle", size: 13, color: "#fde68a", style: { marginTop: 2 } }),
+            h("span", null, h("strong", null, "Important : "), "Sans cette case cochee, l'employe n'apparaitra PAS dans l'app Employes (saisie rapports / heures). Coche uniquement pour les sondeurs et chauffeurs terrain.")
+          )
         ),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
           h(Button, { variant: "secondary", onClick: onCancel }, "Annuler"),
@@ -16156,18 +16159,31 @@
       ];
 
       // Liste de personnel deduplique (nom complet -> role) pour datalist + auto-fill
+      // Filtre les ex-employes (dateFinContrat passee).
+      // Pour les entrees avec prenom + nom separes (form Personnel), on combine en
+      // "Prenom Nom". Pour les entrees legacy (EMPLOYE_LIST) qui ont juste 'nom' = "Prenom NOM",
+      // on garde tel quel.
       var personnelOptions = (function() {
         var seen = {};
         var out = [];
         Object.keys(personnelMap || {}).forEach(function(k) {
           var p = personnelMap[k];
           if (!p) return;
-          var nom = (p.nom || ((p.prenom || "") + " " + (p.nom || "")).trim() || "").trim();
-          if (!nom) return;
-          var key = nom.toLowerCase();
+          if (!isActiveEmploye(p)) return;
+          var nomComplet;
+          if (p.prenom && p.nom) {
+            nomComplet = (p.prenom + " " + p.nom).trim();
+          } else if (p.nom) {
+            nomComplet = p.nom.trim();
+          } else if (p.prenom) {
+            nomComplet = p.prenom.trim();
+          } else {
+            return;
+          }
+          var key = nomComplet.toLowerCase();
           if (seen[key]) return;
           seen[key] = true;
-          out.push({ nom: nom, role: p.role || "" });
+          out.push({ nom: nomComplet, role: p.role || "" });
         });
         out.sort(function(a, b) { return a.nom.localeCompare(b.nom); });
         return out;
