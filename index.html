@@ -5127,6 +5127,23 @@
 
     var PERSONNEL_STORAGE_KEY = "personnel_data";
 
+    // Retourne true si l'employe est ACTIF a la date refDate (par defaut aujourd'hui).
+    // Un employe est actif si :
+    //   - aucune dateFinContrat renseignee, OU
+    //   - dateFinContrat est strictement dans le futur par rapport a refDate
+    // (le dernier jour travaille = dateFinContrat, donc le lendemain il est ex-employe)
+    function isActiveEmploye(p, refDate) {
+      if (!p) return false;
+      if (!p.dateFinContrat) return true;
+      var ref = refDate || new Date();
+      try {
+        var d = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime())) return true; // date invalide -> traite comme actif
+        var refDay = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+        return d.getTime() >= refDay.getTime();
+      } catch (e) { return true; }
+    }
+
     function loadPersonnelFromParametres(parametres) {
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
       if (row && row.valeur) {
@@ -5472,11 +5489,31 @@
         setToDelete(null);
       }
 
+      // ─ Onglet (actifs / anciens / tous) ─
+      var _viewTab = useState("actifs");
+      var viewTab = _viewTab[0], setViewTab = _viewTab[1];
+      var nowTodayP = new Date();
+      var nbActifs = personnel.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); }).length;
+      var nbAnciens = personnel.filter(function(emp) { return !isActiveEmploye(emp, nowTodayP); }).length;
+
       var filtered = personnel.filter(function(emp) {
+        var actif = isActiveEmploye(emp, nowTodayP);
+        if (viewTab === "actifs" && !actif) return false;
+        if (viewTab === "anciens" && actif) return false;
         if (!search) return true;
         var s = search.toLowerCase();
         return (emp.nom + " " + emp.prenom).toLowerCase().indexOf(s) !== -1 || (emp.lieuContrat || "").toLowerCase().indexOf(s) !== -1;
       });
+
+      // Re-embauche : clear dateFinContrat + motifFin pour reactiver
+      function handleReembauche(emp) {
+        setPersonnel(function(p) {
+          return p.map(function(x) {
+            if (x.id !== emp.id) return x;
+            return Object.assign({}, x, { dateFinContrat: "", motifFin: "", dateReembauche: new Date().toISOString().substring(0, 10) });
+          });
+        });
+      }
 
       function formatDate(d) { if (!d) return "-"; var parts = d.split("-"); return parts.length === 3 ? parts[2] + "/" + parts[1] + "/" + parts[0] : d; }
       function getInitials(emp) { return (emp.prenom ? emp.prenom.charAt(0) : "") + (emp.nom ? emp.nom.charAt(0) : ""); }
@@ -5835,31 +5872,49 @@
         );
       }
 
+      // Onglets tab Actifs / Anciens
+      function tabBtnView(key, label, count, accent) {
+        var active = viewTab === key;
+        return h("button", { key: key, onClick: function() { setViewTab(key); },
+          style: { display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "none", borderRadius: 9, cursor: "pointer", fontSize: 13.5, fontWeight: 700, background: active ? "linear-gradient(135deg, " + accent + "33, " + accent + "11)" : "rgba(255,255,255,0.04)", color: active ? accent : "#a1a1aa", boxShadow: active ? "inset 0 0 0 1px " + accent + "55" : "none", fontFamily: "inherit" } },
+          label,
+          h("span", { style: { background: active ? accent + "33" : "rgba(255,255,255,0.06)", color: active ? accent : "#71717a", padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800 } }, count)
+        );
+      }
+
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "user-round", size: 20 }, "Personnel"), subtitle: saving ? "Sauvegarde en cours..." : personnel.length + " employe" + (personnel.length > 1 ? "s" : "") + " enregistre" + (personnel.length > 1 ? "s" : ""), action: h(Button, { onClick: function() { setEditing(null); setShowModal(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvel employe")) }),
+        h(PageHeader, { title: h(IconText, { icon: "user-round", size: 20 }, "Personnel"), subtitle: saving ? "Sauvegarde en cours..." : nbActifs + " employe" + (nbActifs > 1 ? "s" : "") + " actif" + (nbActifs > 1 ? "s" : "") + (nbAnciens > 0 ? " + " + nbAnciens + " ancien" + (nbAnciens > 1 ? "s" : "") : ""), action: h(Button, { onClick: function() { setEditing(null); setShowModal(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvel employe")) }),
         h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
-          h(KPICard, { icon: h(Icon, { name: "user-round", size: 32, color: "#a78bfa" }), label: "Effectif total", value: String(personnel.length), color: "#a78bfa" }),
-          h(KPICard, { icon: h(Icon, { name: "map-pin", size: 32, color: "#059669" }), label: "Lieux de contrat", value: String(Array.from(new Set(personnel.map(function(e) { return e.lieuContrat; }).filter(Boolean))).length), color: "#059669" })
+          h(KPICard, { icon: h(Icon, { name: "user-round", size: 32, color: "#a78bfa" }), label: "Effectif actif", value: String(nbActifs), color: "#a78bfa" }),
+          h(KPICard, { icon: h(Icon, { name: "user-x", size: 32, color: "#fb7185" }), label: "Anciens employes", value: String(nbAnciens), color: "#f43f5e" }),
+          h(KPICard, { icon: h(Icon, { name: "map-pin", size: 32, color: "#059669" }), label: "Lieux de contrat", value: String(Array.from(new Set(personnel.filter(function(e) { return isActiveEmploye(e, nowTodayP); }).map(function(e) { return e.lieuContrat; }).filter(Boolean))).length), color: "#059669" })
+        ),
+        // Onglets vue
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" } },
+          tabBtnView("actifs", "Actifs", nbActifs, "#22c55e"),
+          tabBtnView("anciens", "Anciens employes", nbAnciens, "#f43f5e"),
+          tabBtnView("tous", "Tous", personnel.length, "#a78bfa")
         ),
         h("div", { style: { marginBottom: 16 } }, h(SearchInput, { placeholder: "Rechercher un employe...", value: search, onChange: setSearch })),
         h(Card, { style: { padding: 0, overflow: "hidden" } },
           h("div", { style: { overflowX: "auto" } },
             h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
               h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
-                ["", "Nom", "Prenom", "Role", "Lieu de contrat", "Anciennete", "Salaire", "Acces app", "PIN", ""].map(function(x, i) {
+                ["", "Nom", "Prenom", "Role", "Lieu de contrat", "Anciennete", "Salaire", "Statut", "Acces app", "PIN", ""].map(function(x, i) {
                   return h("th", { key: i, style: { padding: "12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.07)" } }, x);
                 })
               )),
               h("tbody", null, filtered.length === 0 ?
-                h("tr", null, h("td", { colSpan: 10, style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun employe enregistre")) :
+                h("tr", null, h("td", { colSpan: 11, style: { padding: 40, textAlign: "center", color: "#71717a" } }, viewTab === "anciens" ? "Aucun ancien employe" : "Aucun employe enregistre")) :
                 sortByField(filtered, "nom").map(function(emp) {
                   var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
-                  return h("tr", { key: emp.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer" }, onClick: function() { setViewFiche(emp); } },
+                  var actif = isActiveEmploye(emp, nowTodayP);
+                  return h("tr", { key: emp.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", opacity: actif ? 1 : 0.65 }, onClick: function() { setViewFiche(emp); } },
                     h("td", { style: { padding: "10px 12px" } },
-                      h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: avatarColor, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 } }, getInitials(emp))
+                      h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: actif ? avatarColor : "rgba(255,255,255,0.10)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, filter: actif ? "" : "grayscale(0.5)" } }, getInitials(emp))
                     ),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 700 } }, emp.nom),
-                    h("td", { style: { padding: "10px 12px" } }, emp.prenom),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: actif ? "none" : "line-through" } }, emp.nom),
+                    h("td", { style: { padding: "10px 12px", textDecoration: actif ? "none" : "line-through" } }, emp.prenom),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } },
                       emp.role
                         ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: emp.role === "Sondeur" ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.10)", color: emp.role === "Sondeur" ? "#fcd34d" : "#c7d2fe", border: "1px solid " + (emp.role === "Sondeur" ? "rgba(245,158,11,0.35)" : "rgba(99,102,241,0.25)") } }, emp.role)
@@ -5867,18 +5922,27 @@
                     ),
                     h("td", { style: { padding: "10px 12px" } }, emp.lieuContrat || "-"),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } }, getAnciennete(emp.dateEmbauche)),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: "#059669" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: actif ? "#059669" : "#71717a" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
+                    h("td", { style: { padding: "10px 12px" } },
+                      actif
+                        ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.30)" } }, "Actif")
+                        : h("div", null,
+                            h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(244,63,94,0.15)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.30)" } }, "Parti " + formatDate(emp.dateFinContrat)),
+                            emp.motifFin ? h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 3 } }, emp.motifFin) : null
+                          )
+                    ),
                     h("td", { style: { padding: "10px 12px", textAlign: "center" } },
-                      emp.accesAppEmploye
+                      actif && emp.accesAppEmploye
                         ? h(Icon, { name: "check-circle", size: 16, color: "#86efac" })
                         : h(Icon, { name: "x-circle", size: 16, color: "#71717a" })
                     ),
-                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: emp.accesAppEmploye && emp.pin ? "#c4b5fd" : "#71717a", letterSpacing: 1 } },
-                      emp.accesAppEmploye && emp.pin ? emp.pin : "-"
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: actif && emp.accesAppEmploye && emp.pin ? "#c4b5fd" : "#71717a", letterSpacing: 1 } },
+                      actif && emp.accesAppEmploye && emp.pin ? emp.pin : "-"
                     ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
+                      !actif ? h("button", { onClick: function() { if (confirm("Reembaucher " + emp.prenom + " " + emp.nom + " ? Cela efface la date de fin de contrat.")) handleReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
-                      h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
+                      h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer definitivement" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
                     )
                   );
                 })
@@ -15114,7 +15178,8 @@
           personnelDataAll = (typeof pdRow.valeur === "string") ? JSON.parse(pdRow.valeur) : pdRow.valeur;
         }
       } catch(e) { personnelDataAll = []; }
-      var masseSalarialeMensuelle = (personnelDataAll || []).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
+      // Filtre : exclure les ex-employes (dateFinContrat passee)
+      var masseSalarialeMensuelle = (personnelDataAll || []).filter(function(p) { return isActiveEmploye(p, periodEnd || new Date()); }).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
       // Nombre de mois dans la periode (approx : 30 jours = 1 mois)
       var nbMoisPeriode = (function() {
         if (!periodStart || !periodEnd) return 1;
