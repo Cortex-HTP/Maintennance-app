@@ -22272,6 +22272,8 @@
       const [categorie, setCategorie] = useState("");
       const [chantierId, setChantierId] = useState("");
       const [notes, setNotes] = useState("");
+      const [typeFacture, setTypeFacture] = useState(""); // note_frais | payee | a_payer_virement
+      const [echeance, setEcheance] = useState("");
       const [modePaiement, setModePaiement] = useState("");
       const [refPaiement, setRefPaiement] = useState("");
       const [ocrText, setOcrText] = useState("");
@@ -22302,6 +22304,7 @@
         setPhoto(null); setPhotoName(null); setPhotoMime(null);
         setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
         setCategorie(""); setChantierId(""); setNotes("");
+        setTypeFacture(""); setEcheance("");
         setModePaiement(""); setRefPaiement(""); setOcrText(""); setOcrStatus(null);
         setOcrError(null); setOcrCount(0); setOcrDetected({}); setOcrTextOpen(false);
         setFeedback(null);
@@ -22353,7 +22356,9 @@
 
       const submit = async function() {
         if (!photo) { setFeedback({ type: "err", msg: "Ajoutez une photo ou un fichier" }); return; }
+        if (!typeFacture) { setFeedback({ type: "err", msg: "Choisis un type : Note de frais / Deja payee / A payer" }); return; }
         if (!ttc || parseFloat(ttc) <= 0) { setFeedback({ type: "err", msg: "Montant TTC requis" }); return; }
+        if (typeFacture === "payee" && !modePaiement) { setFeedback({ type: "err", msg: "Choisis le mode de paiement (CB / cheque / espece / virement)" }); return; }
         setSubmitting(true); setFeedback({ type: "info", msg: "Compression de la photo..." });
         try {
           // Compresse l'image (Vercel limite ~4.5 MB par requete)
@@ -22385,6 +22390,8 @@
               chantierId: chantierId || null, notes: notes || null,
               modePaiement: modePaiement || null,
               referencePaiement: refPaiement || null,
+              typeFacture: typeFacture || null,
+              echeance: echeance || null,
               ocrText: ocrText ? ocrText.substring(0, 4000) : null
             })
           });
@@ -22433,6 +22440,36 @@
               h("button", { onClick: function() { setOpen(false); }, style: { background: "transparent", border: "none", color: "#a1a1aa", cursor: "pointer", padding: 4 } }, h(Icon, { name: "x", size: 20 }))
             ),
             h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 14 } }, "Arrive directement dans 'Factures recues' de l'app Compta."),
+            // ─── Type de facture (3 boutons obligatoires) ────────────────
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblStyle }, "Type *"),
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 } },
+                [
+                  { value: "note_frais", label: "Note de frais", icon: "wallet", color: "#a78bfa", desc: "A me rembourser" },
+                  { value: "payee", label: "Deja payee", icon: "check-circle-2", color: "#34d399", desc: "Par CB / cheque / esp." },
+                  { value: "a_payer_virement", label: "A payer", icon: "clock", color: "#fbbf24", desc: "Par virement" }
+                ].map(function(tf) {
+                  var active = typeFacture === tf.value;
+                  return h("button", { key: tf.value, type: "button", onClick: function() {
+                    setTypeFacture(active ? "" : tf.value);
+                    // Auto-config selon type
+                    if (tf.value === "a_payer_virement") {
+                      setModePaiement(""); // pas encore paye
+                    } else if (tf.value === "note_frais") {
+                      setModePaiement(""); // peu importe le mode
+                      setEcheance("");
+                    } else if (tf.value === "payee") {
+                      setEcheance("");
+                    }
+                  },
+                    style: { padding: "10px 6px", background: active ? tf.color + "20" : "rgba(0,0,0,0.25)", border: "2px solid " + (active ? tf.color : "rgba(255,255,255,0.1)"), borderRadius: 10, color: active ? tf.color : "#cbd5e1", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "inherit", fontSize: 11.5, fontWeight: 700 } },
+                    h(Icon, { name: tf.icon, size: 20, color: active ? tf.color : "#a1a1aa" }),
+                    h("div", null, tf.label),
+                    h("div", { style: { fontSize: 9.5, opacity: 0.85, fontWeight: 500 } }, tf.desc)
+                  );
+                })
+              )
+            ),
             // Photo
             h("div", { style: { marginBottom: 12 } },
               h("label", { style: lblStyle }, "Photo / fichier *"),
@@ -22524,11 +22561,11 @@
                 chantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, (c.code ? "[" + c.code + "] " : "") + c.nom); })
               )
             ),
-            // Mode de paiement (boutons)
-            h("div", { style: { marginBottom: 12 } },
+            // Mode de paiement : visible uniquement si type = "payee"
+            typeFacture === "payee" ? h("div", { style: { marginBottom: 12 } },
               h("label", { style: lblStyle }, "Mode de paiement *"),
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 } },
-                MODES_PAIEMENT.map(function(m) {
+                MODES_PAIEMENT.filter(function(m) { return m.value !== "a_payer"; }).map(function(m) {
                   var active = modePaiement === m.value;
                   return h("button", { key: m.value, type: "button", onClick: function() { setModePaiement(active ? "" : m.value); },
                     style: { padding: "8px 6px", background: active ? m.color + "30" : "rgba(0,0,0,0.25)", border: "1px solid " + (active ? m.color : "rgba(255,255,255,0.1)"), borderRadius: 8, color: active ? m.color : "#cbd5e1", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "inherit", fontSize: 11, fontWeight: 600 } },
@@ -22537,7 +22574,12 @@
                   );
                 })
               )
-            ),
+            ) : null,
+            // Echeance : visible uniquement si type = "a_payer_virement"
+            typeFacture === "a_payer_virement" ? h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Echeance paiement (optionnel)"),
+              h("input", { type: "date", value: echeance, onChange: function(e) { setEcheance(e.target.value); }, style: inputStyle })
+            ) : null,
             // Reference paiement avec OCR auto
             h("div", { style: { marginBottom: 12 } },
               h("label", { style: Object.assign({}, lblStyle, { display: "flex", justifyContent: "space-between", alignItems: "center" }) },
