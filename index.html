@@ -22301,6 +22301,8 @@
       const [typeFacture, setTypeFacture] = useState(""); // note_frais | payee | a_payer_virement
       const [echeance, setEcheance] = useState("");
       const [tgcTaux, setTgcTaux] = useState(0); // 0% par defaut (cas le plus courant : pas de TGC)
+      const [multiTaux, setMultiTaux] = useState(false); // mode multi-taux (rare mais possible)
+      const [tgcRep, setTgcRep] = useState({ 0: "", 3: "", 6: "", 11: "", 22: "" }); // ttc par taux
       const [modePaiement, setModePaiement] = useState("");
       const [refPaiement, setRefPaiement] = useState("");
       const [ocrText, setOcrText] = useState("");
@@ -22331,7 +22333,7 @@
         setPhoto(null); setPhotoName(null); setPhotoMime(null);
         setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
         setCategorie(""); setChantierId(""); setNotes("");
-        setTypeFacture(""); setEcheance(""); setTgcTaux(0);
+        setTypeFacture(""); setEcheance(""); setTgcTaux(0); setMultiTaux(false); setTgcRep({ 0: "", 3: "", 6: "", 11: "", 22: "" });
         setModePaiement(""); setRefPaiement(""); setOcrText(""); setOcrStatus(null);
         setOcrError(null); setOcrCount(0); setOcrDetected({}); setOcrTextOpen(false);
         setFeedback(null);
@@ -22385,7 +22387,9 @@
       const submit = async function() {
         if (!photo) { setFeedback({ type: "err", msg: "Ajoutez une photo ou un fichier" }); return; }
         if (!typeFacture) { setFeedback({ type: "err", msg: "Choisis un type : Note de frais / Deja payee / A payer" }); return; }
-        if (!ttc || parseFloat(ttc) <= 0) { setFeedback({ type: "err", msg: "Montant TTC requis" }); return; }
+        var multiTotalCheck = multiTaux ? [0, 3, 6, 11, 22].reduce(function(s, t) { return s + (parseFloat(tgcRep[t]) || 0); }, 0) : 0;
+        if (!multiTaux && (!ttc || parseFloat(ttc) <= 0)) { setFeedback({ type: "err", msg: "Montant TTC requis" }); return; }
+        if (multiTaux && multiTotalCheck <= 0) { setFeedback({ type: "err", msg: "Saisis au moins un montant TTC par taux" }); return; }
         if (typeFacture === "payee" && !modePaiement) { setFeedback({ type: "err", msg: "Choisis le mode de paiement (CB / cheque / espece / virement)" }); return; }
         setSubmitting(true); setFeedback({ type: "info", msg: "Compression de la photo..." });
         try {
@@ -22420,7 +22424,8 @@
               referencePaiement: refPaiement || null,
               typeFacture: typeFacture || null,
               echeance: echeance || null,
-              tgcTaux: tgcTaux,
+              tgcTaux: multiTaux ? null : tgcTaux,
+              tgcRepartition: multiTaux ? [0, 3, 6, 11, 22].map(function(t) { return { taux: t, ttc: parseFloat(tgcRep[t]) || 0 }; }).filter(function(l) { return l.ttc > 0; }) : null,
               ocrText: ocrText ? ocrText.substring(0, 4000) : null
             })
           });
@@ -22557,23 +22562,73 @@
               h("label", { style: lblStyle }, "Fournisseur"),
               h("input", { type: "text", value: fournisseur, onChange: function(e) { setFournisseur(e.target.value); }, placeholder: "Ex. Total NC, Carrefour...", style: inputStyle })
             ),
-            // Montants TTC + taux TGC
-            h("div", { style: { marginBottom: 12 } },
-              h("label", { style: lblStyle }, "Montant TTC * (XPF)"),
-              h("input", { type: "number", inputMode: "decimal", value: ttc, onChange: function(e) { setTtc(e.target.value); }, placeholder: "0", style: inputStyle })
-            ),
-            // Selecteur taux TGC (0% par defaut = pas de TGC sur la facture)
-            h("div", { style: { marginBottom: 12 } },
-              h("label", { style: lblStyle }, "Taux TGC (Nouvelle-Caledonie)"),
-              h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
-                [0, 3, 6, 11, 22].map(function(taux) {
-                  var active = tgcTaux === taux;
-                  return h("button", { key: taux, type: "button", onClick: function() { setTgcTaux(taux); },
-                    style: { flex: "1 1 auto", padding: "8px 8px", background: active ? "#a78bfa30" : "rgba(0,0,0,0.25)", border: "1px solid " + (active ? "#a78bfa" : "rgba(255,255,255,0.1)"), borderRadius: 8, color: active ? "#c4b5fd" : "#cbd5e1", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }, taux + "%");
-                })
-              ),
-              h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, tgcTaux === 0 ? "Pas de TGC sur cette facture (HT = TTC)" : "HT = " + (ttc ? Math.round(parseFloat(ttc) / (1 + tgcTaux / 100)).toLocaleString("fr-FR") : "0") + " XPF, TGC = " + (ttc ? (parseFloat(ttc) - Math.round(parseFloat(ttc) / (1 + tgcTaux / 100))).toLocaleString("fr-FR") : "0") + " XPF")
-            ),
+            // ── Montant TTC + TGC : 2 modes (simple/detaille) ──
+            (function() {
+              // Calcul total mode multi-taux
+              var multiTotal = [0, 3, 6, 11, 22].reduce(function(s, t) { return s + (parseFloat(tgcRep[t]) || 0); }, 0);
+              var multiHt = [0, 3, 6, 11, 22].reduce(function(s, t) {
+                var ttcT = parseFloat(tgcRep[t]) || 0;
+                return s + (t > 0 ? Math.round(ttcT / (1 + t / 100)) : ttcT);
+              }, 0);
+              var multiTgc = multiTotal - multiHt;
+              return h(React.Fragment, null,
+                // Montant TTC (cache si mode multi)
+                !multiTaux ? h("div", { style: { marginBottom: 12 } },
+                  h("label", { style: lblStyle }, "Montant TTC * (XPF)"),
+                  h("input", { type: "number", inputMode: "decimal", value: ttc, onChange: function(e) { setTtc(e.target.value); }, placeholder: "0", style: inputStyle })
+                ) : null,
+                // En-tete TGC + bouton bascule mode
+                h("div", { style: { marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" } },
+                  h("label", { style: Object.assign({}, lblStyle, { marginBottom: 0 }) }, "Taux TGC (Nouvelle-Caledonie)"),
+                  h("button", { type: "button", onClick: function() {
+                    var newMulti = !multiTaux;
+                    setMultiTaux(newMulti);
+                    if (newMulti && ttc) {
+                      // Pre-remplit la ligne du taux courant avec le TTC saisi
+                      setTgcRep(Object.assign({}, { 0: "", 3: "", 6: "", 11: "", 22: "" }, { [tgcTaux]: ttc }));
+                    } else if (!newMulti) {
+                      // Retour mode simple : utilise le total multi comme TTC
+                      if (multiTotal > 0) setTtc(String(Math.round(multiTotal)));
+                      setTgcRep({ 0: "", 3: "", 6: "", 11: "", 22: "" });
+                    }
+                  }, style: { background: multiTaux ? "rgba(167,139,250,0.20)" : "transparent", border: "1px solid " + (multiTaux ? "#a78bfa" : "rgba(255,255,255,0.15)"), borderRadius: 6, padding: "3px 10px", fontSize: 10.5, color: multiTaux ? "#c4b5fd" : "#94a3b8", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 } },
+                    multiTaux ? "← Taux unique" : "Plusieurs taux ?"
+                  )
+                ),
+                // Mode SIMPLE : 5 boutons + aperçu
+                !multiTaux ? h("div", { style: { marginBottom: 12 } },
+                  h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
+                    [0, 3, 6, 11, 22].map(function(taux) {
+                      var active = tgcTaux === taux;
+                      return h("button", { key: taux, type: "button", onClick: function() { setTgcTaux(taux); },
+                        style: { flex: "1 1 auto", padding: "8px 8px", background: active ? "#a78bfa30" : "rgba(0,0,0,0.25)", border: "1px solid " + (active ? "#a78bfa" : "rgba(255,255,255,0.1)"), borderRadius: 8, color: active ? "#c4b5fd" : "#cbd5e1", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }, taux + "%");
+                    })
+                  ),
+                  h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, tgcTaux === 0 ? "Pas de TGC sur cette facture (HT = TTC)" : "HT = " + (ttc ? Math.round(parseFloat(ttc) / (1 + tgcTaux / 100)).toLocaleString("fr-FR") : "0") + " XPF, TGC = " + (ttc ? (parseFloat(ttc) - Math.round(parseFloat(ttc) / (1 + tgcTaux / 100))).toLocaleString("fr-FR") : "0") + " XPF")
+                ) :
+                // Mode DETAILLE : table 5 lignes par taux
+                h("div", { style: { marginBottom: 12, padding: 10, background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.20)", borderRadius: 8 } },
+                  h("div", { style: { fontSize: 11, color: "#a78bfa", marginBottom: 8, fontWeight: 600 } }, "Saisis le TTC pour chaque taux present sur la facture :"),
+                  [0, 3, 6, 11, 22].map(function(taux) {
+                    var ttcT = parseFloat(tgcRep[taux]) || 0;
+                    var htT = taux > 0 ? Math.round(ttcT / (1 + taux / 100)) : ttcT;
+                    var tgcT = ttcT - htT;
+                    return h("div", { key: taux, style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
+                      h("div", { style: { width: 48, fontSize: 13, fontWeight: 700, color: ttcT > 0 ? "#c4b5fd" : "#71717a", fontFamily: "monospace" } }, taux + "%"),
+                      h("input", { type: "number", inputMode: "decimal", value: tgcRep[taux], onChange: function(e) { setTgcRep(Object.assign({}, tgcRep, { [taux]: e.target.value })); }, placeholder: "0", style: Object.assign({}, inputStyle, { flex: 1 }) }),
+                      h("div", { style: { fontSize: 10, color: "#71717a", minWidth: 110, textAlign: "right", fontFamily: "monospace" } }, ttcT > 0 ? "HT " + htT.toLocaleString("fr-FR") + " · TGC " + tgcT.toLocaleString("fr-FR") : "")
+                    );
+                  }),
+                  h("div", { style: { display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 6, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, fontWeight: 700 } },
+                    h("span", { style: { color: "#c4b5fd" } }, "Total TTC"),
+                    h("span", { style: { fontFamily: "monospace", color: multiTotal > 0 ? "#fafafa" : "#71717a" } }, multiTotal.toLocaleString("fr-FR") + " XPF")
+                  ),
+                  multiTgc > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "#71717a", marginTop: 2 } },
+                    h("span", null, "HT " + multiHt.toLocaleString("fr-FR") + " · TGC " + multiTgc.toLocaleString("fr-FR"))
+                  ) : null
+                )
+              );
+            }()),
             // Date + Catégorie
             h("div", { style: Object.assign({}, rowStyle, { marginBottom: 12 }) },
               h("div", { style: { flex: 1 } },
