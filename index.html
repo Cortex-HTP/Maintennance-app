@@ -22034,30 +22034,51 @@
           if (val && val > 0 && val < 99999999) return val;
         }
       }
-      // Fallback : majoritaire uniquement (le TTC apparait souvent 2-3 fois sur un ticket)
-      // Ne PAS prendre le plus grand : risque N° session, telephone, matricule mal lus
-      var nums = [];
-      // Lignes contenant les mots-cles montant uniquement
+      // Fallback intelligent par score : evalue chaque nombre et selectionne le plus probable
+      // Sur facture multi-colonnes, le TTC peut etre sur une ligne separee du label
       var lignes = t.split("\n");
-      lignes.forEach(function(ln) {
-        if (!/TTC|TOTAL|PAYER|XPF|MASTER|VISA|CB|MONTANT|RECU|PAYE/i.test(ln)) return;
+      var candidats = [];
+      lignes.forEach(function(ln, idx) {
         var rx = /(\d[\d.,\s]{1,10}\d)/g, mm;
         while ((mm = rx.exec(ln)) !== null) {
           var v = parseMontantNc(mm[1]);
-          if (v && v >= 50 && v < 9999999) nums.push(v);
+          if (!v || v < 50 || v > 99999999) continue;
+          var score = 0;
+          var lower = ln.toLowerCase();
+          // Bonus selon contexte de la ligne
+          if (/ttc/i.test(lower)) score += 15;
+          if (/net\s*a?\s*payer|net.*payer/i.test(lower)) score += 20;
+          if (/montant/i.test(lower)) score += 12;
+          if (/total/i.test(lower) && !/total\s*ht/i.test(lower)) score += 8;
+          if (/master|visa|\bcb\b/i.test(lower)) score += 6;
+          // Bonus si une ligne adjacente contient un mot-cle (multi-colonne)
+          if (idx > 0) {
+            var prev = (lignes[idx - 1] || "").toLowerCase();
+            if (/net\s*a?\s*payer|ttc|montant\s*:?\s*$/i.test(prev)) score += 18;
+          }
+          // Malus pour les "faux" candidats
+          if (/rcs|ridet|tel|bp\s*\d|bci|bnp|capital|code|ref\.client/i.test(lower)) score -= 25;
+          if (/^(ht|tva|tgc|taxe)\b/i.test(lower)) score -= 8; // colonne HT/TGC seule
+          // Malus si dans le haut de la facture (entete avec n° de telephone, etc.)
+          if (idx < lignes.length * 0.20) score -= 3;
+          // Bonus pour les nombres "ronds" (typiques de tickets)
+          if (v % 100 === 0 || (v + "").replace(/\D/g, "").length >= 4) score += 2;
+          candidats.push({ val: v, score: score, ligne: idx });
         }
       });
-      if (nums.length > 0) {
-        var counts = {};
-        nums.forEach(function(n) { counts[n] = (counts[n] || 0) + 1; });
-        var best = null, bestCount = 0;
-        Object.keys(counts).forEach(function(k) {
-          if (counts[k] > bestCount) { best = parseFloat(k); bestCount = counts[k]; }
-        });
-        if (best && bestCount >= 2) return best;
-        // Si une seule occurrence sur une ligne TTC/Total, c'est probablement le bon
-        if (nums.length === 1) return nums[0];
-      }
+      if (candidats.length === 0) return null;
+      // Tri par score decroissant
+      candidats.sort(function(a, b) { return b.score - a.score; });
+      // Si le top score est positif et nettement au-dessus, on prend
+      if (candidats[0].score > 5) return candidats[0].val;
+      // Sinon : majoritaire (le TTC apparait souvent 2-3 fois)
+      var counts = {};
+      candidats.forEach(function(c) { counts[c.val] = (counts[c.val] || 0) + 1; });
+      var best = null, bestCount = 0;
+      Object.keys(counts).forEach(function(k) {
+        if (counts[k] > bestCount) { best = parseFloat(k); bestCount = counts[k]; }
+      });
+      if (best && bestCount >= 2) return best;
       return null;
     }
 
@@ -22196,12 +22217,20 @@
       // 5. "TOTAL TAXE 22.00 %" (tableau facture)
       m = t.match(/TOTAL\s*TAXE\s*(\d+(?:[.,]\d+)?)\s*%/);
       if (m) { var v5 = roundToTgc(m[1].replace(",", ".")); if (v5 != null) return v5; }
-      // 6. Colonne "TAXE" dans un tableau (en derniere position : "...22,00 6175,73")
-      // Cherche une ligne avec "22,00" ou "22.00" qui semble etre un pourcentage de taxe
-      var lignesAvecTaux = t.split("\n").filter(function(l) { return /TAXE|TVA|TGC/i.test(l); });
+      // 6. Variantes OCR de "TAXE" (OCR peut lire "TAKE", "TAXE.", "TAXE,", etc.)
+      m = t.match(/\b(?:TAKE|TAXC|7AXE)\s*[:.]?\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v6 = roundToTgc(m[1].replace(",", ".")); if (v6 != null) return v6; }
+      // 7. Colonne "TAXE" dans un tableau (en derniere position : "...22,00 6175,73")
+      var lignesAvecTaux = t.split("\n").filter(function(l) { return /TAXE|TVA|TGC|TAKE/i.test(l); });
       for (var li = 0; li < lignesAvecTaux.length; li++) {
         var lm = lignesAvecTaux[li].match(/\b(\d+(?:[.,]\d+)?)\s*%/);
         if (lm) { var vL = roundToTgc(lm[1].replace(",", ".")); if (vL != null) return vL; }
+      }
+      // 8. Cherche un pourcentage dans n'importe quelle ligne contenant un nombre puis "%" puis un autre nombre (ligne de taxe)
+      var lignesGen = t.split("\n");
+      for (var lk = 0; lk < lignesGen.length; lk++) {
+        var lpm = lignesGen[lk].match(/(\d{1,2}(?:[.,]\d{1,2})?)\s*%\s+\d/);
+        if (lpm) { var vPC = roundToTgc(lpm[1].replace(",", ".")); if (vPC != null) return vPC; }
       }
       return null;
     }
