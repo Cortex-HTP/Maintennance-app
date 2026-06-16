@@ -22219,6 +22219,33 @@
       });
     }
 
+    // Compresse une image pour upload : resize 1500x2000 max + JPEG quality 0.82
+    // Garde la qualite suffisante pour archivage mais respect la limite Vercel (~4.5 MB)
+    function compressImageForUpload(dataUrl) {
+      return new Promise(function(resolve) {
+        if (!dataUrl || dataUrl.indexOf("data:image/") !== 0) { resolve(dataUrl); return; }
+        var img = new Image();
+        img.onload = function() {
+          try {
+            var canvas = document.createElement("canvas");
+            var MAX_W = 1500, MAX_H = 2000;
+            var w = img.width, hh = img.height;
+            var scale = Math.min(MAX_W / w, MAX_H / hh, 1);
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(hh * scale);
+            var ctx = canvas.getContext("2d");
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // JPEG quality 0.82 = bon compromis taille/lisibilite
+            resolve(canvas.toDataURL("image/jpeg", 0.82));
+          } catch (e) { resolve(dataUrl); }
+        };
+        img.onerror = function() { resolve(dataUrl); };
+        img.src = dataUrl;
+      });
+    }
+
     async function runOcrOnImage(dataUrl) {
       var Tess = await ensureTesseract();
       // Pretraitement : amelior. drastique du resultat (resize + grayscale + contraste)
@@ -22327,8 +22354,24 @@
       const submit = async function() {
         if (!photo) { setFeedback({ type: "err", msg: "Ajoutez une photo ou un fichier" }); return; }
         if (!ttc || parseFloat(ttc) <= 0) { setFeedback({ type: "err", msg: "Montant TTC requis" }); return; }
-        setSubmitting(true); setFeedback(null);
+        setSubmitting(true); setFeedback({ type: "info", msg: "Compression de la photo..." });
         try {
+          // Compresse l'image (Vercel limite ~4.5 MB par requete)
+          var photoToSend = photo;
+          var photoMimeToSend = photoMime;
+          var photoNameToSend = photoName;
+          if (photoMime && photoMime.indexOf("image/") === 0) {
+            photoToSend = await compressImageForUpload(photo);
+            photoMimeToSend = "image/jpeg";
+            photoNameToSend = (photoName || "facture").replace(/\.(png|jpg|jpeg|webp|gif)$/i, "") + ".jpg";
+          }
+          // Verifie taille apres compression
+          var approxSize = Math.round((photoToSend.length * 3) / 4);
+          if (approxSize > 4 * 1024 * 1024) {
+            setFeedback({ type: "err", msg: "Photo trop volumineuse meme apres compression (" + Math.round(approxSize / 1024 / 1024) + " Mo). Reprends une photo plus simple." });
+            setSubmitting(false); return;
+          }
+          setFeedback({ type: "info", msg: "Envoi en cours (" + Math.round(approxSize / 1024) + " Ko)..." });
           const { data: sess } = await supabase.auth.getSession();
           const token = sess && sess.session && sess.session.access_token;
           if (!token) { setFeedback({ type: "err", msg: "Session expiree, reconnectez-vous" }); setSubmitting(false); return; }
@@ -22336,22 +22379,25 @@
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
             body: JSON.stringify({
-              fileBase64: photo, fileName: photoName, fileMime: photoMime,
+              fileBase64: photoToSend, fileName: photoNameToSend, fileMime: photoMimeToSend,
               fournisseur: fournisseur || null, montantTtc: ttc, montantHt: ht || null,
               dateFacture: dateFact, categorie: categorie || null,
               chantierId: chantierId || null, notes: notes || null,
               modePaiement: modePaiement || null,
               referencePaiement: refPaiement || null,
-              ocrText: ocrText || null
+              ocrText: ocrText ? ocrText.substring(0, 4000) : null
             })
           });
-          const j = await resp.json();
-          if (!resp.ok) { setFeedback({ type: "err", msg: j.error || "Erreur envoi" }); setSubmitting(false); return; }
+          var j;
+          try { j = await resp.json(); } catch (parseErr) { j = { error: "Reponse serveur invalide (HTTP " + resp.status + ")" }; }
+          if (!resp.ok) { setFeedback({ type: "err", msg: (j && j.error) || ("Erreur serveur HTTP " + resp.status) }); setSubmitting(false); return; }
           setFeedback({ type: "ok", msg: "Facture envoyee a la compta" });
           reset();
           setTimeout(function() { setOpen(false); setFeedback(null); }, 1500);
         } catch (e) {
-          setFeedback({ type: "err", msg: e.message || "Erreur reseau" });
+          var errMsg = e && e.message ? e.message : "Erreur reseau";
+          if (errMsg === "Failed to fetch") errMsg = "Connexion impossible (photo trop lourde ou reseau). Reprends une photo plus simple ou verifie ta connexion.";
+          setFeedback({ type: "err", msg: errMsg });
         } finally { setSubmitting(false); }
       };
 
@@ -22508,8 +22554,8 @@
               h("label", { style: lblStyle }, "Notes"),
               h("textarea", { value: notes, onChange: function(e) { setNotes(e.target.value); }, rows: 2, placeholder: "Precisions...", style: Object.assign({}, inputStyle, { resize: "vertical" }) })
             ),
-            // Feedback
-            feedback ? h("div", { style: { padding: "10px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: feedback.type === "ok" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)", color: feedback.type === "ok" ? "#34d399" : "#f87171", border: "1px solid " + (feedback.type === "ok" ? "rgba(16,185,129,0.4)" : "rgba(239,68,68,0.4)") } }, feedback.msg) : null,
+            // Feedback (ok = vert, err = rouge, info = cyan)
+            feedback ? h("div", { style: { padding: "10px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: feedback.type === "ok" ? "rgba(16,185,129,0.15)" : feedback.type === "info" ? "rgba(103,232,249,0.10)" : "rgba(239,68,68,0.15)", color: feedback.type === "ok" ? "#34d399" : feedback.type === "info" ? "#67e8f9" : "#f87171", border: "1px solid " + (feedback.type === "ok" ? "rgba(16,185,129,0.4)" : feedback.type === "info" ? "rgba(103,232,249,0.4)" : "rgba(239,68,68,0.4)") } }, feedback.msg) : null,
             // Submit
             h("button", { onClick: submit, disabled: submitting, style: { width: "100%", padding: "12px", background: submitting ? "rgba(16,185,129,0.4)" : "linear-gradient(135deg, #10b981, #059669)", border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, cursor: submitting ? "wait" : "pointer", fontFamily: "inherit" } }, submitting ? "Envoi en cours..." : "Envoyer a la compta")
           )
