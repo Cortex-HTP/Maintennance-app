@@ -22262,6 +22262,26 @@
         var lpm = lignesGen[lk].match(/(\d{1,2}(?:[.,]\d{1,2})?)\s*%\s+\d/);
         if (lpm) { var vPC = roundToTgc(lpm[1].replace(",", ".")); if (vPC != null) return vPC; }
       }
+      // 9. FALLBACK FORT : compte les occurrences de "X.00" ou "X,00" pour les taux NC (0/3/6/11/22)
+      // Sur une facture NC, le taux TGC apparait typiquement plusieurs fois dans la colonne TAXE
+      // Tesseract loupe souvent le "%" mais pas le "X.00"
+      var rxComptage = /\b(0|3|6|11|22)[.,]00\b/g, mc;
+      var counts = { 0: 0, 3: 0, 6: 0, 11: 0, 22: 0 };
+      while ((mc = rxComptage.exec(t)) !== null) {
+        counts[parseInt(mc[1])]++;
+      }
+      // Le taux qui apparait >= 2 fois est probablement le TGC
+      // Exclut 0% car peut etre un montant remise ou autre
+      var bestTaux = null, bestCount = 0;
+      [3, 6, 11, 22].forEach(function(tx) {
+        if (counts[tx] >= 2 && counts[tx] > bestCount) {
+          bestTaux = tx;
+          bestCount = counts[tx];
+        }
+      });
+      if (bestTaux != null) return bestTaux;
+      // Si 0% apparait beaucoup (>= 3 fois) et aucun autre taux, c'est probablement 0%
+      if (counts[0] >= 3 && bestCount === 0) return 0;
       return null;
     }
 
