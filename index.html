@@ -22053,13 +22053,11 @@
       return _tesseractPromise;
     }
     async function runOcrOnImage(dataUrl) {
-      try {
-        var Tess = await ensureTesseract();
-        var worker = await Tess.createWorker("fra", 1, { logger: function() {} });
-        var result = await worker.recognize(dataUrl);
-        await worker.terminate();
-        return result && result.data && result.data.text || "";
-      } catch (e) { console.warn("OCR failed:", e); return ""; }
+      var Tess = await ensureTesseract();
+      // API simple v5 : Tesseract.recognize gere worker auto
+      var result = await Tess.recognize(dataUrl, "fra", { logger: function() {} });
+      if (!result || !result.data) throw new Error("Resultat OCR vide");
+      return result.data.text || "";
     }
 
     function QuickEnvoiFactureFab() {
@@ -22078,6 +22076,9 @@
       const [refPaiement, setRefPaiement] = useState("");
       const [ocrText, setOcrText] = useState("");
       const [ocrStatus, setOcrStatus] = useState(null); // null | "running" | "done" | "fail"
+      const [ocrError, setOcrError] = useState(null);
+      const [ocrCount, setOcrCount] = useState(0);
+      const [ocrTextOpen, setOcrTextOpen] = useState(false);
       const [chantiers, setChantiers] = useState([]);
       const [submitting, setSubmitting] = useState(false);
       const [feedback, setFeedback] = useState(null);
@@ -22101,7 +22102,33 @@
         setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
         setCategorie(""); setChantierId(""); setNotes("");
         setModePaiement(""); setRefPaiement(""); setOcrText(""); setOcrStatus(null);
+        setOcrError(null); setOcrCount(0); setOcrTextOpen(false);
         setFeedback(null);
+      };
+
+      // Lance l'OCR + parse + remplit les champs vides
+      const runOcrAndFill = async function(dataUrl, opts) {
+        opts = opts || {};
+        setOcrStatus("running"); setOcrError(null); setOcrCount(0);
+        try {
+          const text = await runOcrOnImage(dataUrl);
+          setOcrText(text || "");
+          if (!text || text.trim().length < 4) {
+            setOcrStatus("fail"); setOcrError("Aucun texte detecte sur l'image (qualite / cadrage ?)"); return;
+          }
+          const data = extractInvoiceDataFromOcr(text);
+          let n = 0;
+          if (data.fournisseur && (opts.force || !fournisseur)) { setFournisseur(data.fournisseur); n++; }
+          if (data.dateFacture && (opts.force || true)) { setDateFact(data.dateFacture); n++; }
+          if (data.montantTtc && (opts.force || !ttc)) { setTtc(String(data.montantTtc)); n++; }
+          if (data.modePaiement && (opts.force || !modePaiement)) { setModePaiement(data.modePaiement); n++; }
+          if (data.reference && (opts.force || !refPaiement)) { setRefPaiement(data.reference); n++; }
+          setOcrCount(n);
+          setOcrStatus("done");
+        } catch (e) {
+          setOcrStatus("fail");
+          setOcrError(e && e.message ? e.message : "Erreur OCR inconnue");
+        }
       };
 
       const handleFile = function(e) {
@@ -22114,18 +22141,7 @@
           setPhoto(dataUrl); setPhotoName(f.name); setPhotoMime(f.type);
           // Lance OCR auto si c'est une image (pas PDF)
           if (f.type && f.type.indexOf("image/") === 0) {
-            setOcrStatus("running");
-            runOcrOnImage(dataUrl).then(function(text) {
-              setOcrText(text || "");
-              var data = extractInvoiceDataFromOcr(text);
-              // Pre-remplit chaque champ uniquement s'il est encore vide (laisse les saisies manuelles intactes)
-              if (data.fournisseur && !fournisseur) setFournisseur(data.fournisseur);
-              if (data.dateFacture) setDateFact(data.dateFacture);
-              if (data.montantTtc && !ttc) setTtc(String(data.montantTtc));
-              if (data.modePaiement && !modePaiement) setModePaiement(data.modePaiement);
-              if (data.reference && !refPaiement) setRefPaiement(data.reference);
-              setOcrStatus("done");
-            }).catch(function() { setOcrStatus("fail"); });
+            runOcrAndFill(dataUrl);
           }
         };
         reader.readAsDataURL(f);
@@ -22207,6 +22223,25 @@
               h("input", { ref: cameraInputRef, type: "file", accept: "image/*", capture: "environment", onChange: handleFile, style: { display: "none" } }),
               h("input", { ref: fileInputRef, type: "file", accept: "image/*,application/pdf", onChange: handleFile, style: { display: "none" } })
             ),
+            // Bandeau OCR (statut + nb champs + bouton reanalyser + texte brut)
+            photo && photoMime && photoMime.indexOf("image/") === 0 ? h("div", { style: { marginBottom: 12, padding: 10, borderRadius: 8, background: ocrStatus === "fail" ? "rgba(239,68,68,0.10)" : ocrStatus === "done" ? "rgba(16,185,129,0.10)" : "rgba(103,232,249,0.10)", border: "1px solid " + (ocrStatus === "fail" ? "rgba(239,68,68,0.40)" : ocrStatus === "done" ? "rgba(16,185,129,0.40)" : "rgba(103,232,249,0.40)") } },
+              h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 } },
+                  ocrStatus === "running" ? h("span", { className: "loader", style: { width: 14, height: 14, borderWidth: 2 } }) : h(Icon, { name: ocrStatus === "fail" ? "alert-triangle" : ocrStatus === "done" ? "check-circle-2" : "scan", size: 14, color: ocrStatus === "fail" ? "#fb7185" : ocrStatus === "done" ? "#34d399" : "#67e8f9" }),
+                  h("div", { style: { fontSize: 12, fontWeight: 600, color: ocrStatus === "fail" ? "#fb7185" : ocrStatus === "done" ? "#86efac" : "#67e8f9" } },
+                    ocrStatus === "running" ? "Analyse OCR en cours (~10-30s sur mobile)..." :
+                    ocrStatus === "done" ? ("OCR termine : " + ocrCount + " champ" + (ocrCount > 1 ? "s" : "") + " detecte" + (ocrCount > 1 ? "s" : "") + " sur 5") :
+                    ocrStatus === "fail" ? ("OCR echoue : " + (ocrError || "erreur inconnue")) :
+                    "Pret a analyser"
+                  )
+                ),
+                ocrStatus !== "running" && photo ? h("button", { type: "button", onClick: function() { runOcrAndFill(photo, { force: true }); }, style: { background: "transparent", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#cbd5e1", cursor: "pointer", fontFamily: "inherit" } }, "Re-analyser") : null
+              ),
+              ocrText ? h("div", { style: { marginTop: 8 } },
+                h("button", { type: "button", onClick: function() { setOcrTextOpen(!ocrTextOpen); }, style: { background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline", fontFamily: "inherit" } }, ocrTextOpen ? "Cacher texte OCR brut" : "Voir texte OCR brut (debug)"),
+                ocrTextOpen ? h("pre", { style: { marginTop: 6, padding: 8, background: "rgba(0,0,0,0.35)", borderRadius: 6, fontSize: 10.5, color: "#cbd5e1", whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto", fontFamily: "ui-monospace, monospace" } }, ocrText) : null
+              ) : null
+            ) : null,
             // Fournisseur
             h("div", { style: { marginBottom: 12 } },
               h("label", { style: lblStyle }, "Fournisseur"),
