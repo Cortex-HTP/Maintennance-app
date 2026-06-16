@@ -22038,8 +22038,11 @@
       // Sur facture multi-colonnes, le TTC peut etre sur une ligne separee du label
       var lignes = t.split("\n");
       var candidats = [];
+      // Pre-process : recolle les sequences "40 629" -> "40629" meme si Tesseract a mis des espaces multiples
+      // En cherchant aussi des nombres de 4-7 chiffres sans espace (typique XPF 4-7 digits)
       lignes.forEach(function(ln, idx) {
-        var rx = /(\d[\d.,\s]{1,10}\d)/g, mm;
+        // Pattern principal : capture nombres avec separateurs (espaces, points, virgules)
+        var rx = /(\d[\d.,\s]{1,15}\d)/g, mm;
         while ((mm = rx.exec(ln)) !== null) {
           var v = parseMontantNc(mm[1]);
           if (!v || v < 50 || v > 99999999) continue;
@@ -22051,11 +22054,15 @@
           if (/montant/i.test(lower)) score += 12;
           if (/total/i.test(lower) && !/total\s*ht/i.test(lower)) score += 8;
           if (/master|visa|\bcb\b/i.test(lower)) score += 6;
-          // Bonus si une ligne adjacente contient un mot-cle (multi-colonne)
-          if (idx > 0) {
-            var prev = (lignes[idx - 1] || "").toLowerCase();
-            if (/net\s*a?\s*payer|ttc|montant\s*:?\s*$/i.test(prev)) score += 18;
+          // Bonus si une ligne adjacente (avant ou apres, +/- 3 lignes) contient un mot-cle (cas multi-colonne)
+          for (var dx = -3; dx <= 3; dx++) {
+            if (dx === 0) continue;
+            var ctx = (lignes[idx + dx] || "").toLowerCase();
+            if (/net\s*a?\s*payer|montant\s*:?\s*$/i.test(ctx)) score += Math.max(0, 18 - Math.abs(dx) * 4);
+            if (/\bttc\b/i.test(ctx)) score += Math.max(0, 12 - Math.abs(dx) * 3);
           }
+          // Bonus tres fort si la ligne se finit juste par le nombre (typique "NET A PAYER TTC ........ 40 629")
+          if (ln.trim().match(/^\d[\d.,\s]*\d$/) && idx > 0 && /payer|ttc|montant/i.test(lignes[idx - 1] || "")) score += 15;
           // Malus pour les "faux" candidats
           if (/rcs|ridet|tel|bp\s*\d|bci|bnp|capital|code|ref\.client/i.test(lower)) score -= 25;
           if (/^(ht|tva|tgc|taxe)\b/i.test(lower)) score -= 8; // colonne HT/TGC seule
