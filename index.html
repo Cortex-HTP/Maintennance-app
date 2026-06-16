@@ -22285,17 +22285,81 @@
       return null;
     }
 
+    // Detecte la repartition multi-taux (Carrefour, factures multi-articles a taux differents)
+    // Retourne soit null (mono-taux) soit [{taux: 22, ttc: 1000}, {taux: 11, ttc: 500}, ...]
+    function detectTgcRepartition(text) {
+      if (!text) return null;
+      var t = text.toUpperCase();
+
+      // 1. Cherche les patterns "TAUX A=0%" / "TAUX B=11%" / "TAUX C=22%" (tickets type OPT/NC)
+      // Avec montant TTC ou HT a cote
+      var lignes = t.split("\n");
+      var trouvailles = {}; // { taux -> ttc | null }
+
+      // Pattern 1 : "TAUX X = Y%" suivi de montants
+      lignes.forEach(function(ln) {
+        var m = ln.match(/\bTAUX\s+([A-E])\s*[=:]\s*(\d{1,2})\s*%[.\s]*(\d[\d.,\s]*\d)?/i);
+        if (!m) m = ln.match(/\b([A-E])\s*[=:]\s*(\d{1,2})\s*%[.\s]*(\d[\d.,\s]*\d)?/i);
+        if (m) {
+          var tx = parseInt(m[2]);
+          if ([0, 3, 6, 11, 22].indexOf(tx) >= 0) {
+            var amt = m[3] ? parseMontantNc(m[3]) : null;
+            trouvailles[tx] = amt;
+          }
+        }
+      });
+
+      // Pattern 2 : Lignes "TVA / TGC / TAXE X% : montant"
+      lignes.forEach(function(ln) {
+        var m = ln.match(/\b(?:TVA|TGC|TAXE)\s*(\d{1,2})\s*%[:.\s]*(\d[\d.,\s]*\d)?/i);
+        if (m) {
+          var tx = parseInt(m[1]);
+          if ([0, 3, 6, 11, 22].indexOf(tx) >= 0) {
+            var amt = m[2] ? parseMontantNc(m[2]) : null;
+            if (trouvailles[tx] == null) trouvailles[tx] = amt;
+          }
+        }
+      });
+
+      // Pattern 3 : Compte les occurrences distinctes de "X.00" et "X%" pour identifier les taux presents
+      var counts = { 0: 0, 3: 0, 6: 0, 11: 0, 22: 0 };
+      var rx = /\b(0|3|6|11|22)(?:[.,]00\b|\s*%)/g, mm;
+      while ((mm = rx.exec(t)) !== null) counts[parseInt(mm[1])]++;
+
+      // Ajoute les taux qui apparaissent >= 2 fois et qui ne sont pas deja capturer
+      [3, 6, 11, 22, 0].forEach(function(tx) {
+        if (counts[tx] >= 2 && trouvailles[tx] == null) {
+          trouvailles[tx] = null; // taux detecte sans montant precis
+        }
+      });
+
+      // Filtre : on garde les taux distinct trouves
+      var tauxList = Object.keys(trouvailles).map(function(k) { return parseInt(k); });
+      // Pas de multi-taux si 0 ou 1 taux trouve
+      if (tauxList.length < 2) return null;
+      // Pas de multi-taux si on a juste "0%" et 1 autre (souvent les exoneres ne nous interessent pas si pas explicites)
+      var nonZero = tauxList.filter(function(t) { return t > 0; });
+      if (nonZero.length < 2) return null;
+
+      // Construit la repartition
+      return tauxList.sort(function(a, b) { return b - a; }).map(function(tx) {
+        return { taux: tx, ttc: trouvailles[tx] || 0 };
+      });
+    }
+
     // Parseur global : extrait tous les champs en une fois
     function extractInvoiceDataFromOcr(text) {
       if (!text) return {};
       var t = normalizeOcr(text);
       var ref = extractReferenceFromOcr(t);
+      var repartition = detectTgcRepartition(t);
       return {
         fournisseur: detectFournisseur(t),
         dateFacture: detectDateFacture(t),
         montantTtc: detectMontantTtc(t),
         modePaiement: detectModePaiement(t),
         tgcTaux: detectTgcTaux(t),
+        tgcRepartition: repartition,
         reference: ref ? ref.ref : null,
         referenceType: ref ? ref.type : null
       };
@@ -22475,7 +22539,19 @@
           if (data.dateFacture) { det.dateFacture = data.dateFacture; setDateFact(data.dateFacture); n++; }
           if (data.montantTtc) { det.montantTtc = data.montantTtc; setTtc(function(prev) { if (opts.force || !prev) { n++; return String(data.montantTtc); } return prev; }); }
           if (data.modePaiement) { det.modePaiement = data.modePaiement; setModePaiement(function(prev) { if (opts.force || !prev) { n++; return data.modePaiement; } return prev; }); }
-          if (data.tgcTaux != null) { det.tgcTaux = data.tgcTaux + "%"; setTgcTaux(data.tgcTaux); n++; }
+          // Multi-taux detecte : bascule auto + pre-remplit
+          if (Array.isArray(data.tgcRepartition) && data.tgcRepartition.length >= 2) {
+            det.tgcRepartition = data.tgcRepartition.map(function(l) { return l.taux + "%"; }).join(", ");
+            setMultiTaux(true);
+            var newRep = { 0: "", 3: "", 6: "", 11: "", 22: "" };
+            data.tgcRepartition.forEach(function(l) { newRep[l.taux] = l.ttc > 0 ? String(l.ttc) : ""; });
+            setTgcRep(newRep);
+            n++;
+          } else if (data.tgcTaux != null) {
+            det.tgcTaux = data.tgcTaux + "%";
+            setTgcTaux(data.tgcTaux);
+            n++;
+          }
           if (data.reference) { det.reference = data.reference; setRefPaiement(function(prev) { if (opts.force || !prev) { n++; return data.reference; } return prev; }); }
           setOcrDetected(det);
           setOcrCount(n);
@@ -22663,6 +22739,8 @@
                   { key: "dateFacture", label: "Date" },
                   { key: "montantTtc", label: "Montant TTC" },
                   { key: "modePaiement", label: "Mode paiement" },
+                  { key: "tgcTaux", label: "Taux TGC" },
+                  { key: "tgcRepartition", label: "Multi-taux" },
                   { key: "reference", label: "N° reference" }
                 ].map(function(f) {
                   var found = ocrDetected[f.key];
