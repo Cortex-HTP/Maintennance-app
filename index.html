@@ -22012,16 +22012,19 @@
       if (!text) return null;
       var t = text;
       var patterns = [
-        // Capture jusqu'a la fin de ligne
+        // Net a payer TTC : variante avec TTC apres PAYER
+        /NET\s*A\s*PAYER\s*TTC[:.\s]*([\d][\d.,\s]*\d)/i,
+        /NET\s*A\s*PAYER[:.\s]*([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
         /TOTAL\s*TTC\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
         /MONTANT\s*TTC[:.\s]*([\d][\d.,\s]*\d)/i,
+        // CB receipt format : "MONTANT: 40629 XPF" ou "MONTANT 1245 XPF"
+        /MONTANT\s*:?\s*([\d][\d.,\s]*\d)\s*(?:XPF|FCFP|F\s*CFP)/i,
         /TOTAL\s*A?\s*PAYER[:.\s]*([\d][\d.,\s]*\d)/i,
-        /NET\s*A\s*PAYER[:.\s]*([\d][\d.,\s]*\d)/i,
         /MASTER[\/\s]*VISA\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
         /CB\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
         /TOTAL[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
         /TTC[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
-        // Format "Totaux ... 1.245" en bas de ticket
+        // "Totaux ... 1.245" en bas de ticket
         /TOTAUX[:.\s]*\d*[:.\s]+([\d][\d.,\s]*\d)/i
       ];
       for (var i = 0; i < patterns.length; i++) {
@@ -22098,9 +22101,30 @@
       // 1d. OPT seul (sans AGENCE lisible)
       if (new RegExp("\\b" + optVar + "\\b").test(t)) return "OPT";
       // ─── 2. Autres fournisseurs NC connus ──────────────────────────────
-      var connus = ["CARREFOUR", "GEANT CASINO", "JOHNSTON", "TOTAL NC", "MOBIL", "PACIFIQUE PETROLEUM", "WHARF", "CHAMPION", "NUMERICABLE", "OPT-NC", "EEC", "ENERCAL", "BCI", "SOCREDO", "BNC", "SOCALMO", "ALMA", "LECLERC", "ENGIE", "AIRCAL", "AIRCALIN", "ATI"];
+      var connus = [
+        "CIMAC KONE", "CIMAC", "CARREFOUR", "GEANT CASINO", "JOHNSTON", "TOTAL NC",
+        "MOBIL", "PACIFIQUE PETROLEUM", "WHARF", "CHAMPION", "NUMERICABLE", "OPT-NC",
+        "EEC", "ENERCAL", "BCI", "SOCREDO", "BNC", "SOCALMO", "ALMA", "LECLERC",
+        "ENGIE", "AIRCAL", "AIRCALIN", "ATI", "SOCAVIE", "ARC ", "CAILLARD",
+        "AUTO-CALEDONIE", "BERNARD HAYOT", "GBH", "RENAULT", "PEUGEOT", "TOYOTA",
+        "QUINCAILLERIE PACIFIQUE", "QPN", "TRIDOME", "CASTORAMA", "MR.BRICOLAGE"
+      ];
       for (var i = 0; i < connus.length; i++) {
-        if (t.indexOf(connus[i]) >= 0) return connus[i];
+        if (t.indexOf(connus[i]) >= 0) return connus[i].trim();
+      }
+      // Fallback intelligent : detection par marqueurs juridiques NC
+      // Si on trouve "SA AU CAPITAL", "SARL", "EURL" : on prend la ligne au-dessus
+      var lines = t.split("\n").map(function(l) { return l.trim(); }).filter(Boolean);
+      for (var li = 0; li < lines.length; li++) {
+        if (/\b(SA AU CAPITAL|SARL AU CAPITAL|EURL|SAS\s)\b/.test(lines[li]) && li > 0) {
+          // Prend la ligne au-dessus si elle a l'air d'etre un nom
+          for (var lj = li - 1; lj >= 0; lj--) {
+            var cand = lines[lj];
+            if (cand.length >= 3 && cand.length <= 50 && /[A-Z]{2}/.test(cand) && !/^(BP|TEL|RCS|RIDET|BCI|BNP|FACTURE|DATE|REF)/i.test(cand)) {
+              return cand;
+            }
+          }
+        }
       }
       // ─── 3. Fallback : 1ere ligne 'utile' (plus permissif) ─────────────
       var lines = text.split("\n").map(function(l) { return l.trim(); }).filter(function(l) { return l.length >= 2; });
@@ -22123,17 +22147,17 @@
       var patterns = [
         // ID session OPT / paiement (ex. 540-983460-3-12142168-3)
         { rx: /ID\s*session\s*[:.]?\s*([0-9][0-9\-]{8,30})/i, label: "session" },
-        // N° de facture / Reference / Ref
-        { rx: /(?:facture|fact)[\s.:]*n?[°o]?\s*([A-Z0-9][A-Z0-9\-\/]{3,20})/i, label: "facture" },
-        { rx: /(?:reference|r[eé]f\.?)[\s.:]*([A-Z0-9][A-Z0-9\-\/]{3,20})/i, label: "ref" },
+        // N° de facture - gere "FACTURE N. 0802391" / "FACTURE No 0802391" / "Facture # 12345"
+        { rx: /(?:facture|fact)\s*(?:n[°o.]?|#)\s*[.:]*\s*([A-Z0-9][A-Z0-9\-\/]{3,20})/i, label: "facture" },
+        { rx: /(?:reference|r[eé]f\.?)\s*[.:]?\s*([A-Z0-9][A-Z0-9\-\/]{3,20})/i, label: "ref" },
         // N° de cheque (6-10 chiffres)
-        { rx: /(?:ch[eè]que|cheq)[\s.:]*n?[°o]?\s*([0-9]{6,10})/i, label: "cheque" },
-        // N° de transaction CB (souvent alphanumerique)
-        { rx: /(?:transaction|trx|auth(?:orisation)?|ticket\s*n)[\s.:]*n?[°o]?\s*([A-Z0-9]{6,16})/i, label: "trx" },
+        { rx: /(?:ch[eè]que|cheq)\s*(?:n[°o.]?)?\s*[.:]?\s*([0-9]{6,10})/i, label: "cheque" },
+        // N° de transaction CB
+        { rx: /(?:transaction|trx|auth(?:orisation)?|ticket\s*n)\s*(?:n[°o.]?)?\s*[.:]?\s*([A-Z0-9]{6,16})/i, label: "trx" },
         // Bon de commande
-        { rx: /(?:bon de commande|b\.?c\.?|bdc|cmd)[\s.:]*n?[°o]?\s*([A-Z0-9][A-Z0-9\-\/]{2,20})/i, label: "bc" },
-        // N° generique (en dernier recours)
-        { rx: /\bn[°o]\s*([A-Z0-9][A-Z0-9\-\/]{4,18})/i, label: "n°" }
+        { rx: /(?:bon de commande|b\.?c\.?|bdc|cmd)\s*(?:n[°o.]?)?\s*[.:]?\s*([A-Z0-9][A-Z0-9\-\/]{2,20})/i, label: "bc" },
+        // N° generique (en dernier recours) - gere "N. 12345" et "N° 12345"
+        { rx: /\bn[°o.]\s*([0-9][A-Z0-9\-\/]{4,18})/i, label: "n°" }
       ];
       for (var i = 0; i < patterns.length; i++) {
         var m = t.match(patterns[i].rx);
@@ -22146,23 +22170,38 @@
     function detectTgcTaux(text) {
       if (!text) return null;
       var t = text.toUpperCase();
-      // Pattern explicite "A=0%" ou "Taux A : 0%" (ticket NC)
-      var m = t.match(/\b(?:TAUX\s+)?[A-E]\s*[=:]\s*(\d{1,2})\s*%/);
-      if (m) {
-        var v = parseInt(m[1]);
-        if ([0, 3, 6, 11, 22].indexOf(v) >= 0) return v;
+      // Helper : arrondit au taux NC le plus proche (pour gerer 22.00 ou 11.00)
+      function roundToTgc(v) {
+        var n = parseFloat(v);
+        if (isNaN(n)) return null;
+        var allowed = [0, 3, 6, 11, 22];
+        // Arrondi tolerant : 22.00 -> 22, 11.00 -> 11, 5.5 -> 6
+        for (var i = 0; i < allowed.length; i++) {
+          if (Math.abs(n - allowed[i]) < 0.5) return allowed[i];
+        }
+        return null;
       }
-      // Pattern "TGC 11%" ou "TGC : 6%"
-      m = t.match(/TGC\s*[:.]?\s*(\d{1,2})\s*%/);
-      if (m) {
-        var v2 = parseInt(m[1]);
-        if ([0, 3, 6, 11, 22].indexOf(v2) >= 0) return v2;
-      }
-      // Pattern "TVA 11%" (au cas ou)
-      m = t.match(/TVA\s*[:.]?\s*(\d{1,2})\s*%/);
-      if (m) {
-        var v3 = parseInt(m[1]);
-        if ([0, 3, 6, 11, 22].indexOf(v3) >= 0) return v3;
+      // 1. "A=0%" ou "Taux A : 0%" (ticket NC)
+      var m = t.match(/\b(?:TAUX\s+)?[A-E]\s*[=:]\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v = roundToTgc(m[1].replace(",", ".")); if (v != null) return v; }
+      // 2. "TGC 11%" ou "TGC : 6.00 %"
+      m = t.match(/TGC\s*[:.]?\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v2 = roundToTgc(m[1].replace(",", ".")); if (v2 != null) return v2; }
+      // 3. "TVA 11%" (au cas ou)
+      m = t.match(/TVA\s*[:.]?\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v3 = roundToTgc(m[1].replace(",", ".")); if (v3 != null) return v3; }
+      // 4. "TAXE 22.00 %" / "TAXE 22 %" (facture CIMAC et autres factures classiques NC)
+      m = t.match(/\bTAXE\s*[:.]?\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v4 = roundToTgc(m[1].replace(",", ".")); if (v4 != null) return v4; }
+      // 5. "TOTAL TAXE 22.00 %" (tableau facture)
+      m = t.match(/TOTAL\s*TAXE\s*(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) { var v5 = roundToTgc(m[1].replace(",", ".")); if (v5 != null) return v5; }
+      // 6. Colonne "TAXE" dans un tableau (en derniere position : "...22,00 6175,73")
+      // Cherche une ligne avec "22,00" ou "22.00" qui semble etre un pourcentage de taxe
+      var lignesAvecTaux = t.split("\n").filter(function(l) { return /TAXE|TVA|TGC/i.test(l); });
+      for (var li = 0; li < lignesAvecTaux.length; li++) {
+        var lm = lignesAvecTaux[li].match(/\b(\d+(?:[.,]\d+)?)\s*%/);
+        if (lm) { var vL = roundToTgc(lm[1].replace(",", ".")); if (vL != null) return vL; }
       }
       return null;
     }
