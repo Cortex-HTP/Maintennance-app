@@ -22142,6 +22142,31 @@
       return null;
     }
 
+    // Detecte le taux TGC (0/3/6/11/22%) depuis le texte OCR
+    function detectTgcTaux(text) {
+      if (!text) return null;
+      var t = text.toUpperCase();
+      // Pattern explicite "A=0%" ou "Taux A : 0%" (ticket NC)
+      var m = t.match(/\b(?:TAUX\s+)?[A-E]\s*[=:]\s*(\d{1,2})\s*%/);
+      if (m) {
+        var v = parseInt(m[1]);
+        if ([0, 3, 6, 11, 22].indexOf(v) >= 0) return v;
+      }
+      // Pattern "TGC 11%" ou "TGC : 6%"
+      m = t.match(/TGC\s*[:.]?\s*(\d{1,2})\s*%/);
+      if (m) {
+        var v2 = parseInt(m[1]);
+        if ([0, 3, 6, 11, 22].indexOf(v2) >= 0) return v2;
+      }
+      // Pattern "TVA 11%" (au cas ou)
+      m = t.match(/TVA\s*[:.]?\s*(\d{1,2})\s*%/);
+      if (m) {
+        var v3 = parseInt(m[1]);
+        if ([0, 3, 6, 11, 22].indexOf(v3) >= 0) return v3;
+      }
+      return null;
+    }
+
     // Parseur global : extrait tous les champs en une fois
     function extractInvoiceDataFromOcr(text) {
       if (!text) return {};
@@ -22152,6 +22177,7 @@
         dateFacture: detectDateFacture(t),
         montantTtc: detectMontantTtc(t),
         modePaiement: detectModePaiement(t),
+        tgcTaux: detectTgcTaux(t),
         reference: ref ? ref.ref : null,
         referenceType: ref ? ref.type : null
       };
@@ -22274,6 +22300,7 @@
       const [notes, setNotes] = useState("");
       const [typeFacture, setTypeFacture] = useState(""); // note_frais | payee | a_payer_virement
       const [echeance, setEcheance] = useState("");
+      const [tgcTaux, setTgcTaux] = useState(0); // 0% par defaut (cas le plus courant : pas de TGC)
       const [modePaiement, setModePaiement] = useState("");
       const [refPaiement, setRefPaiement] = useState("");
       const [ocrText, setOcrText] = useState("");
@@ -22304,7 +22331,7 @@
         setPhoto(null); setPhotoName(null); setPhotoMime(null);
         setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
         setCategorie(""); setChantierId(""); setNotes("");
-        setTypeFacture(""); setEcheance("");
+        setTypeFacture(""); setEcheance(""); setTgcTaux(0);
         setModePaiement(""); setRefPaiement(""); setOcrText(""); setOcrStatus(null);
         setOcrError(null); setOcrCount(0); setOcrDetected({}); setOcrTextOpen(false);
         setFeedback(null);
@@ -22328,6 +22355,7 @@
           if (data.dateFacture) { det.dateFacture = data.dateFacture; setDateFact(data.dateFacture); n++; }
           if (data.montantTtc) { det.montantTtc = data.montantTtc; setTtc(function(prev) { if (opts.force || !prev) { n++; return String(data.montantTtc); } return prev; }); }
           if (data.modePaiement) { det.modePaiement = data.modePaiement; setModePaiement(function(prev) { if (opts.force || !prev) { n++; return data.modePaiement; } return prev; }); }
+          if (data.tgcTaux != null) { det.tgcTaux = data.tgcTaux + "%"; setTgcTaux(data.tgcTaux); n++; }
           if (data.reference) { det.reference = data.reference; setRefPaiement(function(prev) { if (opts.force || !prev) { n++; return data.reference; } return prev; }); }
           setOcrDetected(det);
           setOcrCount(n);
@@ -22392,6 +22420,7 @@
               referencePaiement: refPaiement || null,
               typeFacture: typeFacture || null,
               echeance: echeance || null,
+              tgcTaux: tgcTaux,
               ocrText: ocrText ? ocrText.substring(0, 4000) : null
             })
           });
@@ -22528,16 +22557,22 @@
               h("label", { style: lblStyle }, "Fournisseur"),
               h("input", { type: "text", value: fournisseur, onChange: function(e) { setFournisseur(e.target.value); }, placeholder: "Ex. Total NC, Carrefour...", style: inputStyle })
             ),
-            // Montants
-            h("div", { style: Object.assign({}, rowStyle, { marginBottom: 12 }) },
-              h("div", { style: { flex: 1 } },
-                h("label", { style: lblStyle }, "Montant TTC * (XPF)"),
-                h("input", { type: "number", inputMode: "decimal", value: ttc, onChange: function(e) { setTtc(e.target.value); }, placeholder: "0", style: inputStyle })
+            // Montants TTC + taux TGC
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Montant TTC * (XPF)"),
+              h("input", { type: "number", inputMode: "decimal", value: ttc, onChange: function(e) { setTtc(e.target.value); }, placeholder: "0", style: inputStyle })
+            ),
+            // Selecteur taux TGC (0% par defaut = pas de TGC sur la facture)
+            h("div", { style: { marginBottom: 12 } },
+              h("label", { style: lblStyle }, "Taux TGC (Nouvelle-Caledonie)"),
+              h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
+                [0, 3, 6, 11, 22].map(function(taux) {
+                  var active = tgcTaux === taux;
+                  return h("button", { key: taux, type: "button", onClick: function() { setTgcTaux(taux); },
+                    style: { flex: "1 1 auto", padding: "8px 8px", background: active ? "#a78bfa30" : "rgba(0,0,0,0.25)", border: "1px solid " + (active ? "#a78bfa" : "rgba(255,255,255,0.1)"), borderRadius: 8, color: active ? "#c4b5fd" : "#cbd5e1", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }, taux + "%");
+                })
               ),
-              h("div", { style: { flex: 1 } },
-                h("label", { style: lblStyle }, "Montant HT (XPF)"),
-                h("input", { type: "number", inputMode: "decimal", value: ht, onChange: function(e) { setHt(e.target.value); }, placeholder: "0", style: inputStyle })
-              )
+              h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, tgcTaux === 0 ? "Pas de TGC sur cette facture (HT = TTC)" : "HT = " + (ttc ? Math.round(parseFloat(ttc) / (1 + tgcTaux / 100)).toLocaleString("fr-FR") : "0") + " XPF, TGC = " + (ttc ? (parseFloat(ttc) - Math.round(parseFloat(ttc) / (1 + tgcTaux / 100))).toLocaleString("fr-FR") : "0") + " XPF")
             ),
             // Date + Catégorie
             h("div", { style: Object.assign({}, rowStyle, { marginBottom: 12 }) },
