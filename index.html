@@ -21904,17 +21904,25 @@
       { value: "virement", label: "Virement", icon: "arrow-right-left", color: "#67e8f9" },
       { value: "a_payer", label: "A payer (en attente)", icon: "clock", color: "#fb7185" }
     ];
-    // Nettoie le texte OCR : corrige fautes frequentes (0 ↔ O dans mots, l ↔ I, multiple espaces)
+    // Nettoie le texte OCR : corrige fautes frequentes
     function normalizeOcr(text) {
       if (!text) return "";
       var t = text;
-      // OCR confond souvent O et 0 dans les MOTS en majuscules (mais pas dans les chiffres)
-      // ex: "0PT" -> "OPT", "T0TAL" -> "TOTAL", "MASTERIVISA" -> "MASTER/VISA"
-      t = t.replace(/\b0PT\b/g, "OPT");
+      // OCR confond souvent O/0/Q et P/F/I et T/I/1 dans les MOTS
+      t = t.replace(/\b0PT\b/gi, "OPT");
+      t = t.replace(/\bQPT\b/gi, "OPT");
+      t = t.replace(/\bOPI\b/gi, "OPT"); // T mal lu en I
+      t = t.replace(/\bOFT\b/gi, "OPT"); // P mal lu en F
+      t = t.replace(/\bOP1\b/gi, "OPT");
       t = t.replace(/T0TAL/gi, "TOTAL");
-      t = t.replace(/TICKET/gi, "TICKET");
+      t = t.replace(/T07AL/gi, "TOTAL");
+      t = t.replace(/TOTA1/gi, "TOTAL");
+      t = t.replace(/T1C\b/gi, "TTC");
+      t = t.replace(/TIC\b/gi, "TTC");
       t = t.replace(/MASTERIVISA/gi, "MASTER/VISA");
-      // Espaces multiples -> un seul
+      t = t.replace(/MASTERVISA/gi, "MASTER/VISA");
+      // Confusion l<->1 dans mots
+      t = t.replace(/\blettre\b/gi, "lettre");
       return t;
     }
 
@@ -22001,13 +22009,19 @@
           if (val && val > 0 && val < 99999999) return val;
         }
       }
-      // Fallback 1 : majoritaire (le TTC apparait souvent 2-3 fois sur un ticket)
+      // Fallback : majoritaire uniquement (le TTC apparait souvent 2-3 fois sur un ticket)
+      // Ne PAS prendre le plus grand : risque N° session, telephone, matricule mal lus
       var nums = [];
-      var rx = /\b(\d[\d.,\s]{2,12}\d)\b/g, mm;
-      while ((mm = rx.exec(t)) !== null) {
-        var v = parseMontantNc(mm[1]);
-        if (v && v >= 50 && v < 9999999) nums.push(v);
-      }
+      // Lignes contenant les mots-cles montant uniquement
+      var lignes = t.split("\n");
+      lignes.forEach(function(ln) {
+        if (!/TTC|TOTAL|PAYER|XPF|MASTER|VISA|CB|MONTANT|RECU|PAYE/i.test(ln)) return;
+        var rx = /(\d[\d.,\s]{1,10}\d)/g, mm;
+        while ((mm = rx.exec(ln)) !== null) {
+          var v = parseMontantNc(mm[1]);
+          if (v && v >= 50 && v < 9999999) nums.push(v);
+        }
+      });
       if (nums.length > 0) {
         var counts = {};
         nums.forEach(function(n) { counts[n] = (counts[n] || 0) + 1; });
@@ -22016,38 +22030,38 @@
           if (counts[k] > bestCount) { best = parseFloat(k); bestCount = counts[k]; }
         });
         if (best && bestCount >= 2) return best;
-        // Fallback 2 : si pas de doublon, prendre le PLUS GRAND nombre (souvent le total)
-        return Math.max.apply(null, nums);
+        // Si une seule occurrence sur une ligne TTC/Total, c'est probablement le bon
+        if (nums.length === 1) return nums[0];
       }
       return null;
     }
 
-    // Detecte le nom du fournisseur : marqueurs OPT, ou 1ere ligne en MAJUSCULES non-bruit
+    // Detecte le nom du fournisseur : marqueurs connus, ou ligne juste avant "AGENCE"
     function detectFournisseur(text) {
       if (!text) return null;
       var t = text.toUpperCase();
-      // Connus NC
-      var connus = ["OPT", "CARREFOUR", "GEANT CASINO", "JOHNSTON", "TOTAL NC", "MOBIL", "PACIFIQUE PETROLEUM", "WHARF", "CHAMPION", "NUMERICABLE", "OPT-NC", "EEC", "ENERCAL", "BCI", "SOCREDO", "BNC", "SOCALMO", "ALMA", "LECLERC", "ENGIE", "AIRCAL", "AIRCALIN", "ATI"];
-      for (var i = 0; i < connus.length; i++) {
-        if (t.indexOf(connus[i]) >= 0) {
-          if (connus[i] === "OPT") {
-            var m = t.match(/OPT[\s\-]*AGENCE\s*[:.]?\s*([A-Z][A-Z\s]+?)(?:\n|MATRIC|CONTEN|$)/);
-            if (m) return "OPT " + m[1].trim();
-            return "OPT";
-          }
-          return connus[i];
-        }
+      // OPT : detection via marqueur "AGENCE" (typique des recepisses OPT)
+      // Ex: "OPT - Agence : NOUMEA SUD" ou "0PT - Agence: noumea sud"
+      var optAgence = t.match(/\b(?:OPT|0PT|QPT|OPI|OFT|OP1|OFFICE\s+DES\s+POSTES)\b[\s\-]*AGENCE\s*[:.]?\s*([A-Z][A-Z\s\-]{2,40}?)(?:\s*\n|\s*MATRIC|\s*CONTEN|$)/i);
+      if (optAgence) return "OPT " + optAgence[1].trim();
+      // Si "AGENCE : XXX" sans OPT explicite mais format OPT
+      if (/RECEPISSE/i.test(t) && /AGENCE/i.test(t)) {
+        var agOnly = t.match(/AGENCE\s*[:.]?\s*([A-Z][A-Z\s\-]{2,40}?)(?:\s*\n|\s*MATRIC|\s*CONTEN|$)/i);
+        if (agOnly) return "OPT " + agOnly[1].trim();
       }
-      // Fallback : prendre la 1ere ligne 'utile' (assez longue, pas du bruit)
+      // Connus NC
+      var connus = ["CARREFOUR", "GEANT CASINO", "JOHNSTON", "TOTAL NC", "MOBIL", "PACIFIQUE PETROLEUM", "WHARF", "CHAMPION", "NUMERICABLE", "OPT-NC", "EEC", "ENERCAL", "BCI", "SOCREDO", "BNC", "SOCALMO", "ALMA", "LECLERC", "ENGIE", "AIRCAL", "AIRCALIN", "ATI"];
+      for (var i = 0; i < connus.length; i++) {
+        if (t.indexOf(connus[i]) >= 0) return connus[i];
+      }
+      // Fallback : 1ere ligne 'utile' (assez longue, pas du bruit)
       var lines = text.split("\n").map(function(l) { return l.trim(); }).filter(function(l) { return l.length >= 3; });
       var noise = /^(RECEPISSE|RECU|RECEIPT|FACTURE|TICKET|INVOICE|DATE|CLIENT|VENDEUR|MERCI|ADRESSE|TEL|TELEPHONE|N[°O]?\s*\d)/i;
       for (var j = 0; j < Math.min(lines.length, 6); j++) {
         var l = lines[j];
-        // Ignore lignes courtes / lignes en bruit / lignes contenant juste des chiffres
         if (noise.test(l)) continue;
         if (/^[\d\s.,:\/\-]+$/.test(l)) continue;
         if (l.length > 60) continue;
-        // Doit contenir au moins une lettre
         if (!/[A-Za-zÀ-ÿ]/.test(l)) continue;
         return l;
       }
@@ -22176,11 +22190,12 @@
           const data = extractInvoiceDataFromOcr(text);
           let n = 0;
           const det = {};
-          if (data.fournisseur) { det.fournisseur = data.fournisseur; if (opts.force || !fournisseur) { setFournisseur(data.fournisseur); n++; } }
+          // setState fonctionnels : preserve saisie utilisateur en cours
+          if (data.fournisseur) { det.fournisseur = data.fournisseur; setFournisseur(function(prev) { if (opts.force || !prev) { n++; return data.fournisseur; } return prev; }); }
           if (data.dateFacture) { det.dateFacture = data.dateFacture; setDateFact(data.dateFacture); n++; }
-          if (data.montantTtc) { det.montantTtc = data.montantTtc; if (opts.force || !ttc) { setTtc(String(data.montantTtc)); n++; } }
-          if (data.modePaiement) { det.modePaiement = data.modePaiement; if (opts.force || !modePaiement) { setModePaiement(data.modePaiement); n++; } }
-          if (data.reference) { det.reference = data.reference; if (opts.force || !refPaiement) { setRefPaiement(data.reference); n++; } }
+          if (data.montantTtc) { det.montantTtc = data.montantTtc; setTtc(function(prev) { if (opts.force || !prev) { n++; return String(data.montantTtc); } return prev; }); }
+          if (data.modePaiement) { det.modePaiement = data.modePaiement; setModePaiement(function(prev) { if (opts.force || !prev) { n++; return data.modePaiement; } return prev; }); }
+          if (data.reference) { det.reference = data.reference; setRefPaiement(function(prev) { if (opts.force || !prev) { n++; return data.reference; } return prev; }); }
           setOcrDetected(det);
           setOcrCount(n);
           setOcrStatus("done");
@@ -22260,7 +22275,7 @@
           onClick: function(e) { if (e.target === e.currentTarget) setOpen(false); },
           style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }
         },
-          h("div", { style: { width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto", background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 20, color: "#fafafa" } },
+          h("div", { style: { width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "scroll", scrollbarGutter: "stable", background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 20, color: "#fafafa" } },
             h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
                 h(Icon, { name: "receipt", size: 22, color: "#10b981" }),
