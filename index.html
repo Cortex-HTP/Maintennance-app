@@ -12755,8 +12755,26 @@
       var _primesTab = useState("primes");
       var primesTab = _primesTab[0]; var setPrimesTab = _primesTab[1];
 
-      var sites = getAvailableSites(paliers);
+      // Union des sites : ceux configures dans paliers + ceux utilises par les chantiers
+      // (meme si pas encore de palier configure)
+      var sitesFromPaliers = getAvailableSites(paliers);
+      var sitesFromChantiers = [];
+      (chantiers || []).forEach(function(c) {
+        var s = c.site && String(c.site).trim();
+        if (s && sitesFromChantiers.indexOf(s) < 0 && sitesFromPaliers.indexOf(s) < 0) {
+          sitesFromChantiers.push(s);
+        }
+      });
+      var sites = sitesFromPaliers.concat(sitesFromChantiers);
       var activeChantiers = chantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; });
+
+      // Auto-creation des paliers manquants pour les sites de chantiers (1 fois)
+      useEffect(function() {
+        if (sitesFromChantiers.length === 0) return;
+        sitesFromChantiers.forEach(function(siteName) {
+          ensureSiteExists(siteName, paliers, ctx.setDbPaliers, null);
+        });
+      }, [sitesFromChantiers.join("|")]);
 
       // Group chantiers by site
       var chantiersBySite = {};
@@ -12920,6 +12938,17 @@
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
 
+          // ── Filtre par date d'embauche : prime calculee UNIQUEMENT a partir du jour d'embauche ──
+          // (et jusqu'a la fin de contrat si applicable)
+          var dateEmbStr = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null;
+          var dateFinStr = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null;
+          function dateEnvelopeEmploye(dateStr) {
+            // Verifie qu'une date est dans la fenetre d'emploi du salarie
+            if (dateEmbStr && dateStr < dateEmbStr) return false;
+            if (dateFinStr && dateStr > dateFinStr) return false;
+            return true;
+          }
+
           // Note : la strategie multi-sites avec ratio a ete supprimee.
           // Desormais, chaque site donne sa propre prime. Si un employe a travaille
           // sur 2 sites pendant la periode (ex: Tauatiti 13j Kopeto K + 1j Tiebaghi),
@@ -12931,6 +12960,8 @@
           var empAffOnSite = affectations.filter(function(a) {
             if (a.personnelId !== emp.id) return false;
             if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return false;
+            // Exclut les affectations avant embauche ou apres fin de contrat
+            if (!dateEnvelopeEmploye(a.dateAffectation)) return false;
             // chantier du site OU sans chantier (chomage/conge a rattacher au site si l'employe
             // travaillait sur ce site avant)
             if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
@@ -12950,10 +12981,11 @@
           if (empAffOnSite.length === 0) return; // pas d'affectation sur ce site = pas de prime
 
           // 2) Recupere les releves+rapports de l'employe (pour le metrage des jours travail)
-          //    Indexes par date pour lookup rapide.
+          //    Indexes par date pour lookup rapide. Filtre aussi par fenetre d'emploi.
           var empReleves = releves.filter(function(r) {
             if (!r.dateReleve) return false;
             if (!isDateInPeriod(r.dateReleve, period.start, period.end)) return false;
+            if (!dateEnvelopeEmploye(r.dateReleve)) return false;
             if (!r.chantierId || siteChIds.indexOf(r.chantierId) < 0) return false;
             if (r.personnelId === emp.id) return true;
             var rNom = (r.employeNom || "").toUpperCase().trim();
