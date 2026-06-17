@@ -11159,11 +11159,20 @@
             var nbMachinesReel = dureeTotal > 0 ? machineDaysTotal / dureeTotal : 0;
 
             // ── Calcul du nombre de MACHINES THEORIQUES pour tenir les delais ──
-            // Productivite moyenne d'une machine sur 90j (m / jour avec activite)
+            // SOURCE PRIORITAIRE : moyenne_jour des paliers de primes du site du chantier
+            // (configuree manuellement dans la page Primes pour chaque site)
+            var moyenneJourSite = 0;
+            if (chantier.site) {
+              moyenneJourSite = getMoyenneForSite(ctxAv.dbPaliers || [], chantier.site) || 0;
+            }
+            // Fallback 1 : moyenne historique 90j (m / jour avec activite par machine)
             var totalMachineJoursHist = Object.keys(metragesParMachineJour).length;
             var sumMetragesHist = 0;
             Object.keys(metragesParMachineJour).forEach(function(k) { sumMetragesHist += metragesParMachineJour[k]; });
-            var prodMoyMachineJour = totalMachineJoursHist > 0 ? sumMetragesHist / totalMachineJoursHist : 80; // 80m/j fallback NC
+            var prodHistorique = totalMachineJoursHist > 0 ? sumMetragesHist / totalMachineJoursHist : 0;
+            // Choix : Primes site > Historique > Defaut 80
+            var prodMoyMachineJour = moyenneJourSite > 0 ? moyenneJourSite : (prodHistorique > 0 ? prodHistorique : 80);
+            var prodSource = moyenneJourSite > 0 ? "Moyenne Primes" : (prodHistorique > 0 ? "Historique 90j" : "Defaut 80 m");
             // Effort reel = metrage total / ratio productif (compense les pertes pannes/intemperies)
             var effortReel = metragePrev / Math.max(0.4, Math.min(1, ratioProductif));
             // Capacite d'1 machine sur la duree du chantier (jours ouvres lun-jeu)
@@ -11226,7 +11235,7 @@
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Machines theoriques"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbMachinesTheoriques.toFixed(2) + " mach."),
                     h("div", { style: { fontSize: 10.5, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", marginTop: 3, fontWeight: 600 } }, ecartMachines >= -0.1 ? (ecartMachines > 0.1 ? "Surcapacite +" + ecartMachines.toFixed(2) : "Capacite OK") : "Manque " + Math.abs(ecartMachines).toFixed(2) + " mach."),
-                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Prod moy " + Math.round(prodMoyMachineJour) + " m/jour x " + joursOuvres + " j ouvres")
+                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Prod " + Math.round(prodMoyMachineJour) + " m/jour (" + prodSource + ") x " + joursOuvres + " j ouvres")
                   ) : null,
                   minTotalHist > 0 ? h("div", { style: { background: "rgba(244,114,182,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(244,114,182,0.18)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Pertes est."),
