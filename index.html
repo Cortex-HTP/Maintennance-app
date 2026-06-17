@@ -10118,10 +10118,22 @@
                 var endTotal = today < dFin ? today : dFin;
                 var joursMachineAnnuelPlanifies = countJoursMachinePlanifies(dDeb, dFin);
                 var passesRange = countWorkRange(dDeb, endTotal);
-                // metrage_theorique = (jours_machine_passes_reels x metrage_total) / jours_machine_annuel_planifies
-                var attenduTotal = joursMachineAnnuelPlanifies > 0
-                  ? (passesRange.joursMachineReels * metrageTotal) / joursMachineAnnuelPlanifies
-                  : 0;
+                // ATTENDU base sur les DATES du chantier (rythme contractuel par jour ouvre)
+                // INDEPENDANT du planning engin -> modifier le planning n'affecte plus l'avance
+                // Compte les jours ouvres Lun-Jeu sur la duree totale du chantier
+                var joursOuvresTotalChantier = 0;
+                (function() {
+                  var d = new Date(dDeb.getTime());
+                  var safe = 0;
+                  while (d <= dFin && safe < 4000) {
+                    var dw = d.getDay();
+                    if (dw >= 1 && dw <= 4) joursOuvresTotalChantier++;
+                    d.setDate(d.getDate() + 1);
+                    safe++;
+                  }
+                })();
+                var rythmeContractuelJour = joursOuvresTotalChantier > 0 ? metrageTotal / joursOuvresTotalChantier : 0;
+                var attenduTotal = rythmeContractuelJour * passesRange.joursTravailles;
                 // Detection nb machines distinctes sur tout le chantier (info)
                 var allMachines = {};
                 (ctxAv.dbRelevesJourn || []).forEach(function(r) {
@@ -10152,9 +10164,9 @@
                 var moisEnd = monthEnd > dFin ? dFin : monthEnd;
                 if (moisEnd > today) moisEnd = today;
                 var moisRange = (moisStart <= moisEnd) ? countWorkRange(moisStart, moisEnd) : { joursTravailles: 0, joursMachineReels: 0 };
-                var attenduMois = joursMachineAnnuelPlanifies > 0
-                  ? (moisRange.joursMachineReels * metrageTotal) / joursMachineAnnuelPlanifies
-                  : 0;
+                // ATTENDU mois : base sur le rythme contractuel par jour ouvre travaille (dates chantier)
+                // INDEPENDANT du planning engin
+                var attenduMois = rythmeContractuelJour * moisRange.joursTravailles;
                 var moisInfo = {
                   avance: monthMet - attenduMois,
                   attendu: attenduMois,
