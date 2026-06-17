@@ -11188,14 +11188,14 @@
             // Choix : Primes site > Historique > Defaut 80
             var prodMoyMachineJour = moyenneJourSite > 0 ? moyenneJourSite : (prodHistorique > 0 ? prodHistorique : 80);
             var prodSource = moyenneJourSite > 0 ? "Moyenne Primes" : (prodHistorique > 0 ? "Historique 90j" : "Defaut 80 m");
-            // PAS de division par ratioProductif : la moyenne Primes (prodMoyMachineJour)
-            // est DEJA une moyenne reelle observee (qui integre pannes/intemperies du terrain).
-            // Appliquer ratioProductif serait un DOUBLE COMPTAGE des pertes.
+            // Capacite effective d'1 machine sur le chantier = prod moy x jours ouvres x facteurCorrection
+            // (facteurCorrection integre les pertes pannes/intemperies attendues sur la duree)
             var capacite1MachineSurChantier = prodMoyMachineJour * joursOuvres;
-            var nbMachinesTheoriques = capacite1MachineSurChantier > 0 ? metragePrev / capacite1MachineSurChantier : 0;
+            var capaciteEffective1Machine = capacite1MachineSurChantier * facteurCorrection;
+            var nbMachinesTheoriques = capaciteEffective1Machine > 0 ? metragePrev / capaciteEffective1Machine : 0;
             // Metrage realisable a terme avec les machines actuellement affectees
-            // = machine-jours x prod moyenne reelle (deja nette des pertes terrain)
-            var metrageRealisable = Math.round(machineDaysTotal * prodMoyMachineJour);
+            // = machine-jours x prod moyenne x facteurCorrection (intempe/pannes attendus)
+            var metrageRealisable = Math.round(machineDaysTotal * prodMoyMachineJour * facteurCorrection);
             var deltaMetrage = metrageRealisable - metragePrev;
             var deltaMetragePct = metragePrev > 0 ? Math.round((deltaMetrage / metragePrev) * 100) : 0;
 
@@ -11215,9 +11215,10 @@
               : 0;
             // Risque rentabilite : metrage realisable < point mort => perte projetee
             var pointMortAtteignable = metrageRealisable >= pointMortMetres;
-            // Metrage journalier minimum pour atteindre le point mort sur la duree du chantier
-            var pointMortMetresParJour = (pointMortMetres > 0 && joursOuvres > 0)
-              ? pointMortMetres / joursOuvres
+            // Metrage journalier minimum pour atteindre le point mort
+            // = sur jour productif (corrige des pertes attendues sur la duree)
+            var pointMortMetresParJour = (pointMortMetres > 0 && joursOuvres > 0 && facteurCorrection > 0)
+              ? pointMortMetres / (joursOuvres * facteurCorrection)
               : 0;
             // La moyenne site Primes permet-elle d'atteindre le point mort journalier ?
             var pointMortAtteignableMoyenne = pointMortMetresParJour > 0 && moyenneJourSite > 0
@@ -11235,7 +11236,8 @@
                 retardJours = 0;
               } else {
                 var metrageManquant = metragePrev - metrageRealisable;
-                var joursOuvresSuppl = metrageManquant / (nbEnginsDistinct * prodMoyMachineJour);
+                // Jours supp NETS des pertes : on perdra aussi des jours en mode rallonge
+                var joursOuvresSuppl = metrageManquant / (nbEnginsDistinct * prodMoyMachineJour * facteurCorrection);
                 var joursCalSuppl = Math.ceil(joursOuvresSuppl * 7 / 4);
                 dFinTheorique = new Date(dFinPrev);
                 dFinTheorique.setDate(dFinTheorique.getDate() + joursCalSuppl);
@@ -11289,9 +11291,9 @@
                     ),
                     // Point mort journalier
                     pointMortMetresParJour > 0 ? h("div", null,
-                      h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Minimum / jour"),
+                      h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Minimum / jour productif"),
                       h("div", { style: { fontSize: 22, fontWeight: 900, color: "#fafafa", fontFamily: "monospace", lineHeight: 1 } }, Math.round(pointMortMetresParJour) + " m/j"),
-                      h("div", { style: { fontSize: 10.5, marginTop: 4, fontWeight: 700, color: pointMortAtteignableMoyenne === true ? "#86efac" : pointMortAtteignableMoyenne === false ? "#fda4af" : "#94a3b8" } }, pointMortAtteignableMoyenne === true ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (OK)" : pointMortAtteignableMoyenne === false ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (-" + Math.round(pointMortMetresParJour - moyenneJourSite) + ")" : "Sur " + joursOuvres + " j ouvres")
+                      h("div", { style: { fontSize: 10.5, marginTop: 4, fontWeight: 700, color: pointMortAtteignableMoyenne === true ? "#86efac" : pointMortAtteignableMoyenne === false ? "#fda4af" : "#94a3b8" } }, pointMortAtteignableMoyenne === true ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (OK)" : pointMortAtteignableMoyenne === false ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (-" + Math.round(pointMortMetresParJour - moyenneJourSite) + ")" : "Apres " + Math.round(ratioPertesSafe * 100) + "% pertes")
                     ) : null,
                     // Statut atteint au rythme actuel
                     h("div", null,
@@ -11335,7 +11337,7 @@
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Machines theoriques"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbMachinesTheoriques.toFixed(2) + " mach."),
                     h("div", { style: { fontSize: 10.5, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", marginTop: 3, fontWeight: 600 } }, ecartMachines >= -0.1 ? (ecartMachines > 0.1 ? "Surcapacite +" + ecartMachines.toFixed(2) : "Capacite OK") : "Manque " + Math.abs(ecartMachines).toFixed(2) + " mach."),
-                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Prod " + Math.round(prodMoyMachineJour) + " m/jour (" + prodSource + ") x " + joursOuvres + " j ouvres")
+                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Prod " + Math.round(prodMoyMachineJour) + " m/jour (" + prodSource + ") x " + joursOuvres + " j ouvres x " + Math.round(facteurCorrection * 100) + "% (apres " + Math.round(ratioPertesSafe * 100) + "% pertes)")
                   ) : null,
                   minTotalHist > 0 ? h("div", { style: { background: "rgba(244,114,182,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(244,114,182,0.18)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Pertes est."),
