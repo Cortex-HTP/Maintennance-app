@@ -11193,6 +11193,23 @@
             var deltaMetrage = metrageRealisable - metragePrev;
             var deltaMetragePct = metragePrev > 0 ? Math.round((deltaMetrage / metragePrev) * 100) : 0;
 
+            // ── Point mort estime du chantier (base sur cout/m 90j toutes depenses) ──
+            // coutMetreGlobalEstime integre : personnel x 1.40 + charges fixes + emprunts
+            //                                  + carburant + primes x 1.40 + consommables
+            // Point mort = nb metres minimum a faire au prix actuel pour couvrir les couts attribues
+            var coutTotalEstime = (typeof coutMetreGlobalEstime === "number" && coutMetreGlobalEstime > 0)
+              ? Math.round(coutMetreGlobalEstime * metragePrev)
+              : 0;
+            var pointMortMetres = (coutTotalEstime > 0 && prixPrev > 0)
+              ? Math.round(coutTotalEstime / prixPrev)
+              : 0;
+            var margePrev = pointMortMetres > 0 ? (metragePrev - pointMortMetres) : 0;
+            var margePrevPct = pointMortMetres > 0 && metragePrev > 0
+              ? Math.round((margePrev / metragePrev) * 100)
+              : 0;
+            // Risque rentabilite : metrage realisable < point mort => perte projetee
+            var pointMortAtteignable = metrageRealisable >= pointMortMetres;
+
             // ── Date de fin theorique = quand finira le chantier au rythme actuel ──
             // Si metrageRealisable >= metragePrev : pas de retard
             // Sinon : il faut joursOuvresSuppl pour faire le metrage manquant
@@ -11255,6 +11272,14 @@
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(caTotalPrev) + " XPF"),
                     h("div", { style: { fontSize: 10.5, color: "#94a3b8", marginTop: 3 } }, prixPrev > 0 ? fmtNum(prixPrev) + " XPF/m" : "Prix non defini")
                   ),
+                  // Point mort estime (cout/m global 90j toutes depenses)
+                  pointMortMetres > 0 ? h("div", { style: { background: margePrev >= 0 ? "rgba(99,102,241,0.08)" : "rgba(244,63,94,0.10)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (margePrev >= 0 ? "rgba(99,102,241,0.20)" : "rgba(244,63,94,0.25)") } },
+                    h("div", { style: { fontSize: 10, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Point mort"),
+                    h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(pointMortMetres) + " m"),
+                    h("div", { style: { fontSize: 10.5, color: margePrev >= 0 ? "#86efac" : "#fda4af", marginTop: 3, fontWeight: 700 } }, margePrev >= 0 ? "Marge " + fmtNum(margePrev) + " m (+" + margePrevPct + "%)" : "Deficit " + fmtNum(Math.abs(margePrev)) + " m"),
+                    h("div", { style: { fontSize: 9.5, color: pointMortAtteignable ? "#86efac" : "#fda4af", marginTop: 2 } }, pointMortAtteignable ? "Atteint au rythme actuel" : "Hors d'atteinte (realisable " + fmtNum(metrageRealisable) + " m)"),
+                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Cout estime " + fmtNum(coutTotalEstime) + " XPF (" + Math.round(coutMetreGlobalEstime) + " XPF/m sur 90j)")
+                  ) : null,
                   h("div", { style: { background: nbPersonnelAffectes > 0 ? "rgba(167,139,250,0.08)" : "rgba(244,63,94,0.06)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (nbPersonnelAffectes > 0 ? "rgba(167,139,250,0.18)" : "rgba(244,63,94,0.18)") } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: nbPersonnelAffectes > 0 ? "#c4b5fd" : "#fb7185", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Personnel"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbPersonnelAffectes + " pers."),
