@@ -14748,8 +14748,43 @@
         coutConsoYTD += qty * prixMazoutYTD;
       });
       var daysElapsed = Math.max(1, Math.floor((now - yearStart) / 86400000) + 1);
-      var caAnnuelProj = (caYTD / daysElapsed) * 365;
-      var metragesAnnuelProj = (metragesYTD / daysElapsed) * 365;
+
+      // ── CA annuel projete : prend en compte les chantiers planifies (en cours + a venir) ──
+      // Pour chaque chantier non termine/annule, on calcule la part de son CA total qui tombe
+      // dans la periode restante de l'annee en cours (proratisee sur sa duree totale).
+      // Si aucun planning -> fallback sur extrapolation lineaire (comportement historique).
+      var yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+      var caPrevChantiers = 0;
+      var metragesPrevChantiers = 0;
+      var nbChantiersPlanifies = 0;
+      (dbChantiers || []).forEach(function(c) {
+        if (c.statut === "Termine" || c.statut === "Annule") return;
+        var metrage = parseFloat(c.metrage) || 0;
+        var prix = parseFloat(c.prixMetre) || 0;
+        if (metrage <= 0 || prix <= 0) return;
+        var dDeb = c.dateDebut ? new Date(c.dateDebut) : null;
+        var dFin = c.dateFin ? new Date(c.dateFin) : null;
+        if (!dDeb || !dFin || isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return;
+        if (dFin < now) return; // chantier deja fini en pratique
+        if (dDeb > yearEnd) return; // chantier demarrant apres fin annee
+        var caTotal = metrage * prix;
+        var dureeChantier = Math.max(1, (dFin - dDeb) / 86400000);
+        // Periode restante du chantier dans l'annee : entre max(today, dateDebut) et min(dateFin, yearEnd)
+        var restantStart = dDeb > now ? dDeb : now;
+        var restantEnd = dFin > yearEnd ? yearEnd : dFin;
+        if (restantEnd <= restantStart) return;
+        var dureeRestante = (restantEnd - restantStart) / 86400000;
+        var ratio = dureeRestante / dureeChantier;
+        caPrevChantiers += caTotal * ratio;
+        metragesPrevChantiers += metrage * ratio;
+        nbChantiersPlanifies++;
+      });
+
+      var caExtrapole = (caYTD / daysElapsed) * 365;
+      var metragesExtrapole = (metragesYTD / daysElapsed) * 365;
+      // Choix de la methode : si on a au moins 1 chantier planifie -> caYTD + chantiers
+      var caAnnuelProj = nbChantiersPlanifies > 0 ? (caYTD + caPrevChantiers) : caExtrapole;
+      var metragesAnnuelProj = nbChantiersPlanifies > 0 ? (metragesYTD + metragesPrevChantiers) : metragesExtrapole;
       var coutConsoAnnuelProj = (coutConsoYTD / daysElapsed) * 365;
       var productiviteYTD = minutesForationYTD > 0 ? metragesYTD / (minutesForationYTD / 60) : 0;
 
@@ -15512,9 +15547,9 @@
         h(React.Fragment, null,
           // KPIs
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 14 } },
-            kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total", "Annuel projete : " + Math.round(metragesAnnuelProj).toLocaleString("fr-FR") + " m"),
+            kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total", "Annuel projete : " + Math.round(metragesAnnuelProj).toLocaleString("fr-FR") + " m" + (nbChantiersPlanifies > 0 ? " (planning)" : " (extrapolation)")),
             kpiCard("green", "coins", fmtCaCompact(caYTD) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)", "Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
-            kpiCard("red", "trending-up", fmtCaCompact(caAnnuelProj) + " XPF", "CA annuel projete", period === "mois" ? "Projete sur le mois : " + fmtCaCompact(caProjPeriode) + " XPF" : "Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
+            kpiCard("red", "trending-up", fmtCaCompact(caAnnuelProj) + " XPF", "CA annuel projete", (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? " - mois : " + fmtCaCompact(caProjPeriode) + " XPF" : " - " + periodLabelShort + " : " + fmtCaCompact(caPeriode) + " XPF")),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
