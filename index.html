@@ -11145,6 +11145,7 @@
             var enginsAffectes = {};
             affEngins.forEach(function(ce) { if (ce.equipementId) enginsAffectes[ce.equipementId] = true; });
             var nbEnginsDistinct = Object.keys(enginsAffectes).length;
+            // Compte uniquement les jours OUVRES (Lun-Jeu) d'affectation - meme base que joursOuvres
             var machineDaysTotal = 0;
             affEngins.forEach(function(ce) {
               if (!ce.dateDebut || !ce.dateFin || !dDebPrev || !dFinPrev) return;
@@ -11152,11 +11153,17 @@
               var aFin = new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00");
               var interStart = aDeb > dDebPrev ? aDeb : dDebPrev;
               var interEnd = aFin < dFinPrev ? aFin : dFinPrev;
-              if (interEnd >= interStart) {
-                machineDaysTotal += Math.round((interEnd - interStart) / 86400000) + 1;
+              if (interEnd < interStart) return;
+              // Compte day-by-day pour ne garder que les Lun-Jeu (1-4)
+              var iter = new Date(interStart);
+              while (iter <= interEnd) {
+                var dw = iter.getDay();
+                if (dw >= 1 && dw <= 4) machineDaysTotal++;
+                iter.setDate(iter.getDate() + 1);
               }
             });
-            var nbMachinesReel = dureeTotal > 0 ? machineDaysTotal / dureeTotal : 0;
+            // Ratio sur jours ouvres (meme base que Machines theoriques)
+            var nbMachinesReel = joursOuvres > 0 ? machineDaysTotal / joursOuvres : 0;
 
             // ── Calcul du nombre de MACHINES THEORIQUES pour tenir les delais ──
             // SOURCE PRIORITAIRE : moyenne_jour des paliers de primes du site du chantier
@@ -11228,7 +11235,7 @@
                   h("div", { style: { background: nbMachinesReel > 0 ? "rgba(251,191,36,0.08)" : "rgba(244,63,94,0.06)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (nbMachinesReel > 0 ? "rgba(251,191,36,0.18)" : "rgba(244,63,94,0.18)") } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: nbMachinesReel > 0 ? "#fde68a" : "#fb7185", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Engins reel"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbMachinesReel.toFixed(2) + " mach."),
-                    h("div", { style: { fontSize: 10.5, color: nbMachinesReel === 0 ? "#fb7185" : "#94a3b8", marginTop: 3 } }, nbMachinesReel === 0 ? "A definir Planning" : nbEnginsDistinct + " engin(s) / " + dureeTotal + "j")
+                    h("div", { style: { fontSize: 10.5, color: nbMachinesReel === 0 ? "#fb7185" : "#94a3b8", marginTop: 3 } }, nbMachinesReel === 0 ? "A definir Planning" : nbEnginsDistinct + " engin(s) / " + joursOuvres + " j ouvres")
                   ),
                   // Machines theoriques (selon meteo + pannes + arrets)
                   capacite1MachineSurChantier > 0 ? h("div", { style: { background: ecartMachines >= -0.1 ? "rgba(34,197,94,0.10)" : "rgba(244,63,94,0.10)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (ecartMachines >= -0.1 ? "rgba(34,197,94,0.25)" : "rgba(244,63,94,0.25)") } },
