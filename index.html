@@ -11127,12 +11127,16 @@
             var ratioProductif = minTotalHist > 0 ? minProductivesHist / minTotalHist : 0.7;
             var ratioPertes = minTotalHist > 0 ? minPerduesHist / minTotalHist : 0.30;
             // Cible CORRIGEE - modele temporel des pertes :
-            //   Premiere semaine (4 j Lun-Jeu) : taux haut (installation, calage equipement)
-            //   Reste du chantier : taux bas (intemperies courantes seulement)
-            // Pondere selon la duree -> chantier court = plus de poids 1ere semaine, chantier long = peu
-            var ratioPertesPremiereeSem = Math.min(0.5, Math.max(0, ratioPertes));  // 30% par defaut
-            var ratioPertesSteady = 0.10;  // intemperies courantes NC
-            var joursOuvresPremiereeSem = Math.min(4, joursOuvres);
+            //   3 premiers jours ouvres : 30% pertes (regle metier installation/calage)
+            //   Reste du chantier : pertes reelles historique 90j (si dispo)
+            //                       sinon defaut 10% + 2% bonus prudence chantier neuf
+            var hasHistorical90j = minTotalHist > 0;
+            var ratioPertesPremiereeSem = 0.30;  // regle metier fixe
+            var ratioPertesSteady = hasHistorical90j
+              ? (minPerduesHist / minTotalHist)  // pertes reellement observees sur 90j
+              : (0.10 + 0.02);                    // 10% intemperies courantes NC + 2% prudence sans historique
+            ratioPertesSteady = Math.min(0.5, Math.max(0, ratioPertesSteady));  // clamp 0-50%
+            var joursOuvresPremiereeSem = Math.min(3, joursOuvres);  // 3 premiers jours ouvres
             var joursOuvresSteady = Math.max(0, joursOuvres - joursOuvresPremiereeSem);
             var ratioPertesPondere = joursOuvres > 0
               ? (joursOuvresPremiereeSem * ratioPertesPremiereeSem + joursOuvresSteady * ratioPertesSteady) / joursOuvres
@@ -11324,7 +11328,7 @@
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(metragePrev) + " m"),
                     h("div", { style: { fontSize: 10.5, color: "#fde68a", marginTop: 3, fontWeight: 700 } }, joursOuvres > 0 ? "Cible " + fmtNum(Math.round(metragesParJourReel)) + " m/j  ·  " + prodRequiseReelle.toFixed(1) + " m/h" : "—"),
                     joursOuvres > 0 ? h("div", { style: { fontSize: 9.5, color: "#94a3b8", marginTop: 1 } }, "1 mach " + Math.round(metragesParJourReel) + " m/j  ·  2 mach " + Math.round(metragesParJourReel / 2) + " m/j") : null,
-                    joursOuvres > 0 ? h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 1 } }, "(theo " + Math.round(metragesParJour) + " m/j · pertes ponderees " + Math.round(ratioPertesSafe * 100) + "% : " + Math.round(ratioPertesPremiereeSem * 100) + "% sem 1, " + Math.round(ratioPertesSteady * 100) + "% reste)") : null,
+                    joursOuvres > 0 ? h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 1 } }, "(theo " + Math.round(metragesParJour) + " m/j · pertes ponderees " + Math.round(ratioPertesSafe * 100) + "% : 30% 3 jours, " + Math.round(ratioPertesSteady * 100) + "% reste " + (hasHistorical90j ? "hist 90j" : "defaut +2%") + ")") : null,
                     moyenneJourSite > 0 ? h("div", { style: { fontSize: 10.5, color: moyenneJourSite >= metragesParJour ? "#86efac" : "#fda4af", marginTop: 2, fontWeight: 700 } }, "Moy. site " + Math.round(moyenneJourSite) + " m/j" + (moyenneJourSite >= metragesParJour ? " (OK)" : " (-" + Math.round(metragesParJour - moyenneJourSite) + ")")) : null
                   ),
                   h("div", { style: { background: "rgba(52,211,153,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(52,211,153,0.18)" } },
