@@ -520,6 +520,8 @@
     }
 
     // Auto-creer un site dans paliers_primes si nouveau
+    // Si pas de config fournie : cree 4 paliers par defaut progressifs (template Wallis-Label)
+    // qu'on peut ajuster dans la page Primes.
     function ensureSiteExists(siteName, paliers, setPaliers, siteConfig) {
       if (!siteName) return;
       var existing = paliers.find(function(p) { return p.site === siteName; });
@@ -527,9 +529,10 @@
       var cfg = siteConfig || {};
       var rows = [];
       var paliersList = cfg.paliers || [];
-      var objectif = parseFloat(cfg.objectif) || 0;
-      var moyenne = parseFloat(cfg.moyenne) || 0;
+      var objectif = parseFloat(cfg.objectif) || 50; // defaut : 50 m/h
+      var moyenne = parseFloat(cfg.moyenne) || 400; // defaut : 400 m/jour
       if (paliersList.length > 0) {
+        // L'utilisateur a saisi des paliers explicites
         paliersList.forEach(function(pl) {
           if (pl.seuil || pl.coef) {
             rows.push({ site: siteName, seuil_mh: parseFloat(pl.seuil) || 0, coefficient: parseInt(pl.coef) || 0, objectif_mh: objectif, moyenne_jour: moyenne });
@@ -537,11 +540,29 @@
         });
       }
       if (rows.length === 0) {
-        rows.push({ site: siteName, seuil_mh: 0, coefficient: 0, objectif_mh: objectif, moyenne_jour: moyenne });
+        // Template par defaut : 4 paliers progressifs typiques (ajustables dans Primes)
+        // 0% en dessous de 60%, 50% a 60%, 100% a 80%, 150% a 100% de l'objectif
+        var seuilBase = moyenne;
+        rows = [
+          { site: siteName, seuil_mh: Math.round(seuilBase * 0.60), coefficient: 0,   objectif_mh: objectif, moyenne_jour: moyenne },
+          { site: siteName, seuil_mh: Math.round(seuilBase * 0.80), coefficient: 50,  objectif_mh: objectif, moyenne_jour: moyenne },
+          { site: siteName, seuil_mh: Math.round(seuilBase * 1.00), coefficient: 100, objectif_mh: objectif, moyenne_jour: moyenne },
+          { site: siteName, seuil_mh: Math.round(seuilBase * 1.20), coefficient: 150, objectif_mh: objectif, moyenne_jour: moyenne }
+        ];
       }
       supabase.from("paliers_primes").insert(rows).select().then(function(res) {
-        if (res.error) { console.error("Erreur creation site palier:", res.error.message); return; }
-        setPaliers(paliers.concat((res.data || []).map(palierFromDb)));
+        if (res.error) { console.error("Erreur creation site palier:", res.error.message); alert("Erreur creation site '" + siteName + "' : " + res.error.message); return; }
+        var newPaliers = (res.data || []).map(palierFromDb);
+        setPaliers(paliers.concat(newPaliers));
+        // Notification utilisateur
+        try {
+          var notice = document.createElement("div");
+          notice.textContent = "Site '" + siteName + "' cree avec " + newPaliers.length + " palier(s) par defaut. A ajuster dans Primes.";
+          notice.style.cssText = "position:fixed;top:20px;right:20px;background:rgba(34,197,94,0.95);color:white;padding:14px 20px;border-radius:8px;z-index:99999;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.3);max-width:400px;";
+          document.body.appendChild(notice);
+          setTimeout(function() { notice.style.opacity = "0"; notice.style.transition = "opacity 0.5s"; }, 4000);
+          setTimeout(function() { try { document.body.removeChild(notice); } catch (e) {} }, 4500);
+        } catch (e) {}
       });
     }
 
