@@ -11067,18 +11067,22 @@
             var dFinPrev = chantier.dateFin ? new Date(chantier.dateFin + "T00:00:00") : null;
             var nowPrev = new Date(); nowPrev.setHours(0, 0, 0, 0);
             var dureeTotal = (dDebPrev && dFinPrev) ? Math.max(1, Math.round((dFinPrev - dDebPrev) / 86400000) + 1) : 0;
-            // Compte les jours ouvres (lun-sam, dim exclu)
+            // Compte les jours ouvres (Lundi a Jeudi uniquement - semaine Wallis-Label)
             var joursOuvres = 0;
             if (dDebPrev && dFinPrev) {
               var cur = new Date(dDebPrev);
-              while (cur <= dFinPrev) { if (cur.getDay() !== 0) joursOuvres++; cur.setDate(cur.getDate() + 1); }
+              while (cur <= dFinPrev) {
+                var dow = cur.getDay();
+                if (dow >= 1 && dow <= 4) joursOuvres++; // 1=lun, 2=mar, 3=mer, 4=jeu
+                cur.setDate(cur.getDate() + 1);
+              }
             }
             var metragePrev = parseFloat(chantier.metrage) || 0;
             var prixPrev = parseFloat(chantier.prixMetre) || 0;
             var caTotalPrev = metragePrev * prixPrev;
             var metragesParJour = joursOuvres > 0 ? metragePrev / joursOuvres : 0;
             var caParJour = caTotalPrev / Math.max(1, dureeTotal);
-            var prodRequise = metragesParJour / 10;
+            var prodRequise = metragesParJour / 9; // 9h de foration par jour
             var joursAvantDeb = dDebPrev ? Math.ceil((dDebPrev - nowPrev) / 86400000) : 0;
             var libDebut = joursAvantDeb < 0 ? "Demarrage retarde" : joursAvantDeb === 0 ? "Demarrage AUJOURD'HUI" : "Dans " + joursAvantDeb + " jour" + (joursAvantDeb > 1 ? "s" : "");
 
@@ -11097,6 +11101,8 @@
             };
             var cutoffHist = new Date(); cutoffHist.setDate(cutoffHist.getDate() - 90);
             var minTotalHist = 0, minProductivesHist = 0, minPerduesHist = 0;
+            // Index pour productivite moyenne d'une machine sur 90j
+            var metragesParMachineJour = {}; // "machineCode_date" -> total_metres
             (ctxAv.dbRapportsForage || []).forEach(function(r) {
               if (!r.date_rapport) return;
               var dh = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
@@ -11109,6 +11115,13 @@
                 if (lib === "FORATION") minProductivesHist += dur;
                 else if (lib.indexOf("PANNE") >= 0 || lib.indexOf("INTEMP") >= 0 || lib.indexOf("PLUIE") >= 0 || lib.indexOf("MAINT") >= 0 || lib.indexOf("ATTENTE") >= 0) minPerduesHist += dur;
               });
+              // Comptabilise le metrage par machine-jour pour la prod moyenne
+              var mCode = r.sondeuse_code || r.equipement_id;
+              if (mCode) {
+                var dKey = String(r.date_rapport).substring(0, 10);
+                var key = String(mCode) + "_" + dKey;
+                metragesParMachineJour[key] = (metragesParMachineJour[key] || 0) + (parseFloat(r.total_metres) || 0);
+              }
             });
             // Coefficient de delai = 1 / ratio productif (ex: si 70% productif -> coef 1.43)
             var ratioProductif = minTotalHist > 0 ? minProductivesHist / minTotalHist : 0.7;
@@ -11144,6 +11157,20 @@
               }
             });
             var nbMachinesReel = dureeTotal > 0 ? machineDaysTotal / dureeTotal : 0;
+
+            // ── Calcul du nombre de MACHINES THEORIQUES pour tenir les delais ──
+            // Productivite moyenne d'une machine sur 90j (m / jour avec activite)
+            var totalMachineJoursHist = Object.keys(metragesParMachineJour).length;
+            var sumMetragesHist = 0;
+            Object.keys(metragesParMachineJour).forEach(function(k) { sumMetragesHist += metragesParMachineJour[k]; });
+            var prodMoyMachineJour = totalMachineJoursHist > 0 ? sumMetragesHist / totalMachineJoursHist : 80; // 80m/j fallback NC
+            // Effort reel = metrage total / ratio productif (compense les pertes pannes/intemperies)
+            var effortReel = metragePrev / Math.max(0.4, Math.min(1, ratioProductif));
+            // Capacite d'1 machine sur la duree du chantier (jours ouvres lun-jeu)
+            var capacite1MachineSurChantier = prodMoyMachineJour * joursOuvres;
+            var nbMachinesTheoriques = capacite1MachineSurChantier > 0 ? effortReel / capacite1MachineSurChantier : 0;
+            // Difference entre theorique et reel (negative = sous-affecte)
+            var ecartMachines = nbMachinesReel - nbMachinesTheoriques;
             var prevColor = joursAvantDeb < 0 ? "#f43f5e" : joursAvantDeb <= 7 ? "#fbbf24" : "#6366f1";
             var prevBg = joursAvantDeb < 0 ? "rgba(244,63,94,0.15)" : joursAvantDeb <= 7 ? "rgba(251,191,36,0.15)" : "rgba(99,102,241,0.15)";
 
@@ -11194,6 +11221,13 @@
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbMachinesReel.toFixed(2) + " mach."),
                     h("div", { style: { fontSize: 10.5, color: nbMachinesReel === 0 ? "#fb7185" : "#94a3b8", marginTop: 3 } }, nbMachinesReel === 0 ? "A definir Planning" : nbEnginsDistinct + " engin(s) / " + dureeTotal + "j")
                   ),
+                  // Machines theoriques (selon meteo + pannes + arrets)
+                  capacite1MachineSurChantier > 0 ? h("div", { style: { background: ecartMachines >= -0.1 ? "rgba(34,197,94,0.10)" : "rgba(244,63,94,0.10)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (ecartMachines >= -0.1 ? "rgba(34,197,94,0.25)" : "rgba(244,63,94,0.25)") } },
+                    h("div", { style: { fontSize: 10, fontWeight: 800, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Machines theoriques"),
+                    h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbMachinesTheoriques.toFixed(2) + " mach."),
+                    h("div", { style: { fontSize: 10.5, color: ecartMachines >= -0.1 ? "#86efac" : "#fda4af", marginTop: 3, fontWeight: 600 } }, ecartMachines >= -0.1 ? (ecartMachines > 0.1 ? "Surcapacite +" + ecartMachines.toFixed(2) : "Capacite OK") : "Manque " + Math.abs(ecartMachines).toFixed(2) + " mach."),
+                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Prod moy " + Math.round(prodMoyMachineJour) + " m/jour x " + joursOuvres + " j ouvres")
+                  ) : null,
                   minTotalHist > 0 ? h("div", { style: { background: "rgba(244,114,182,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(244,114,182,0.18)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Pertes est."),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, Math.round(ratioPertes * 100) + " %"),
