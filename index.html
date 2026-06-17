@@ -11078,21 +11078,61 @@
             var caTotalPrev = metragePrev * prixPrev;
             var metragesParJour = joursOuvres > 0 ? metragePrev / joursOuvres : 0;
             var caParJour = caTotalPrev / Math.max(1, dureeTotal);
-            // Productivite requise si 10h foration / jour
             var prodRequise = metragesParJour / 10;
-            // Date de demarrage (relative)
             var joursAvantDeb = dDebPrev ? Math.ceil((dDebPrev - nowPrev) / 86400000) : 0;
             var libDebut = joursAvantDeb < 0 ? "Demarrage retarde" : joursAvantDeb === 0 ? "Demarrage AUJOURD'HUI" : "Dans " + joursAvantDeb + " jour" + (joursAvantDeb > 1 ? "s" : "");
-            // Affectations connues (planning) pour ce chantier
+
+            // ── Calcul du delai theorique base sur l'historique pannes/intemperies/autres ──
+            // Sur les 90 derniers jours, calcul du % de temps perdu vs temps total
+            var cutoffHist = new Date(); cutoffHist.setDate(cutoffHist.getDate() - 90);
+            var minTotalHist = 0, minProductivesHist = 0, minPerduesHist = 0;
+            (ctxAv.dbRapportsForage || []).forEach(function(r) {
+              if (!r.date_rapport) return;
+              var dh = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
+              if (dh < cutoffHist) return;
+              (r.activites || []).forEach(function(a) {
+                var dur = durBtw(a.debut, a.fin);
+                if (dur <= 0) return;
+                minTotalHist += dur;
+                var lib = (a.libelle || "").toUpperCase();
+                if (lib === "FORATION") minProductivesHist += dur;
+                else if (lib.indexOf("PANNE") >= 0 || lib.indexOf("INTEMP") >= 0 || lib.indexOf("PLUIE") >= 0 || lib.indexOf("MAINT") >= 0 || lib.indexOf("ATTENTE") >= 0) minPerduesHist += dur;
+              });
+            });
+            // Coefficient de delai = 1 / ratio productif (ex: si 70% productif -> coef 1.43)
+            var ratioProductif = minTotalHist > 0 ? minProductivesHist / minTotalHist : 0.7;
+            var coefDelay = 1 / Math.max(0.4, Math.min(1, ratioProductif));
+            var ratioPertes = minTotalHist > 0 ? minPerduesHist / minTotalHist : 0.30;
+            // Date fin theorique = date debut + duree planifiee × coef
+            var dureeTheorique = Math.round(dureeTotal * coefDelay);
+            var dFinTheorique = dDebPrev ? new Date(dDebPrev) : null;
+            if (dFinTheorique) dFinTheorique.setDate(dFinTheorique.getDate() + dureeTheorique - 1);
+            var retardJours = dFinTheorique && dFinPrev ? Math.round((dFinTheorique - dFinPrev) / 86400000) : 0;
+
+            // Affectations personnel
             var affChantier = (ctxAv.dbAffectations || []).filter(function(a) { return a.chantierId === chantier.id; });
             var personnelAffectes = {};
             affChantier.forEach(function(a) { if (a.personnelId) personnelAffectes[a.personnelId] = true; });
             var nbPersonnelAffectes = Object.keys(personnelAffectes).length;
-            // Affectations machines (depuis chantier_equipements - Planning Engins)
+
+            // ── Affectations machines : DECIMAL (machine-jours / duree chantier) ──
+            // Si 1 machine sur 30j d'un chantier de 60j -> 0.5 machines reelles
             var affEngins = (ctxAv.dbChantierEquipements || []).filter(function(ce) { return ce.chantierId === chantier.id; });
             var enginsAffectes = {};
             affEngins.forEach(function(ce) { if (ce.equipementId) enginsAffectes[ce.equipementId] = true; });
-            var nbEnginsAffectes = Object.keys(enginsAffectes).length;
+            var nbEnginsDistinct = Object.keys(enginsAffectes).length;
+            var machineDaysTotal = 0;
+            affEngins.forEach(function(ce) {
+              if (!ce.dateDebut || !ce.dateFin || !dDebPrev || !dFinPrev) return;
+              var aDeb = new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00");
+              var aFin = new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00");
+              var interStart = aDeb > dDebPrev ? aDeb : dDebPrev;
+              var interEnd = aFin < dFinPrev ? aFin : dFinPrev;
+              if (interEnd >= interStart) {
+                machineDaysTotal += Math.round((interEnd - interStart) / 86400000) + 1;
+              }
+            });
+            var nbMachinesReel = dureeTotal > 0 ? machineDaysTotal / dureeTotal : 0;
             var prevColor = joursAvantDeb < 0 ? "#f43f5e" : joursAvantDeb <= 7 ? "#fbbf24" : "#6366f1";
             var prevBg = joursAvantDeb < 0 ? "rgba(244,63,94,0.15)" : joursAvantDeb <= 7 ? "rgba(251,191,36,0.15)" : "rgba(99,102,241,0.15)";
 
@@ -11107,7 +11147,13 @@
                       h("button", { onClick: function(e) { e.stopPropagation(); openEditChantier(chantier); }, style: actionBtnStyleAv, title: "Modifier" }, h(Icon, { name: "pencil", size: 14, color: "#a1a1aa" })),
                       h("button", { onClick: function(e) { e.stopPropagation(); setToDelete({ id: chantier.id, titre: chantier.titre }); }, style: actionBtnStyleAv, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#ef4444" }))
                     ),
-                    h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, formatDateFrAv(chantier.dateDebut) + " - " + formatDateFrAv(chantier.dateFin) + " · " + dureeTotal + " jours calendaires · " + joursOuvres + " jours ouvres")
+                    h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, formatDateFrAv(chantier.dateDebut) + " - " + formatDateFrAv(chantier.dateFin) + " · " + dureeTotal + " jours calendaires · " + joursOuvres + " jours ouvres"),
+                    dFinTheorique && minTotalHist > 0 ? h("div", { style: { fontSize: 11.5, color: retardJours > 0 ? "#fbbf24" : "#94a3b8", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+                      h(Icon, { name: "clock", size: 11, color: retardJours > 0 ? "#fbbf24" : "#94a3b8" }),
+                      "Fin theorique : " + formatDateFrAv(dFinTheorique.toISOString().substring(0, 10)) + " (" + dureeTheorique + " j)",
+                      retardJours > 0 ? h("span", { style: { padding: "1px 7px", borderRadius: 999, background: "rgba(251,191,36,0.18)", color: "#fde68a", fontSize: 10.5, fontWeight: 700 } }, "+" + retardJours + " j retard") : null,
+                      h("span", { style: { fontSize: 10.5, color: "#71717a" } }, "(" + Math.round(ratioPertes * 100) + "% pertes pannes/intemperies/maintenance/attente sur 90j historique)")
+                    ) : null
                   ),
                   h(Icon, { name: isExpanded ? "chevron-up" : "chevron-down", size: 20, color: "#a1a1aa" })
                 ),
@@ -11129,9 +11175,9 @@
                     h("div", { style: { fontSize: 10.5, color: nbPersonnelAffectes === 0 ? "#fb7185" : "#94a3b8", marginTop: 2 } }, nbPersonnelAffectes === 0 ? "A definir dans Planning" : "Planning Employes")
                   ),
                   h("div", { style: { background: "rgba(0,0,0,0.20)", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" } },
-                    h("div", { style: { fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Engins affectes"),
-                    h("div", { style: { fontSize: 16, fontWeight: 800, color: nbEnginsAffectes > 0 ? "#fbbf24" : "#71717a", fontFamily: "monospace" } }, nbEnginsAffectes + " engin" + (nbEnginsAffectes > 1 ? "s" : "")),
-                    h("div", { style: { fontSize: 10.5, color: nbEnginsAffectes === 0 ? "#fb7185" : "#94a3b8", marginTop: 2 } }, nbEnginsAffectes === 0 ? "A definir dans Planning" : "Planning Engins")
+                    h("div", { style: { fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Engins affectes (reel)"),
+                    h("div", { style: { fontSize: 16, fontWeight: 800, color: nbMachinesReel > 0 ? "#fbbf24" : "#71717a", fontFamily: "monospace" } }, nbMachinesReel.toFixed(2) + " machine" + (nbMachinesReel > 1 ? "s" : "")),
+                    h("div", { style: { fontSize: 10.5, color: nbMachinesReel === 0 ? "#fb7185" : "#94a3b8", marginTop: 2 } }, nbMachinesReel === 0 ? "A definir dans Planning" : nbEnginsDistinct + " engin(s) sur " + dureeTotal + "j")
                   ),
                   h("div", { style: { background: "rgba(0,0,0,0.20)", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "CA / jour"),
