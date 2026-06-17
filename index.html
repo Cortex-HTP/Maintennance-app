@@ -11209,6 +11209,14 @@
               : 0;
             // Risque rentabilite : metrage realisable < point mort => perte projetee
             var pointMortAtteignable = metrageRealisable >= pointMortMetres;
+            // Metrage journalier minimum pour atteindre le point mort sur la duree du chantier
+            var pointMortMetresParJour = (pointMortMetres > 0 && joursOuvres > 0)
+              ? pointMortMetres / joursOuvres
+              : 0;
+            // La moyenne site Primes permet-elle d'atteindre le point mort journalier ?
+            var pointMortAtteignableMoyenne = pointMortMetresParJour > 0 && moyenneJourSite > 0
+              ? moyenneJourSite >= pointMortMetresParJour
+              : null;
 
             // ── Date de fin theorique = quand finira le chantier au rythme actuel ──
             // Si metrageRealisable >= metragePrev : pas de retard
@@ -11260,6 +11268,38 @@
                     h("button", { onClick: function() { setToDelete({ id: chantier.id, titre: chantier.titre }); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.25)", padding: "6px 8px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#fda4af" }))
                   )
                 ),
+                // ── BANNIERE POINT MORT (au-dessus de la grille) ──
+                pointMortMetres > 0 ? h("div", { style: { background: margePrev >= 0 ? "linear-gradient(135deg, rgba(99,102,241,0.12), rgba(34,197,94,0.10))" : "linear-gradient(135deg, rgba(244,63,94,0.15), rgba(251,191,36,0.08))", padding: "14px 18px", borderRadius: 12, border: "1px solid " + (margePrev >= 0 ? "rgba(99,102,241,0.30)" : "rgba(244,63,94,0.35)"), marginBottom: 10 } },
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                    h(Icon, { name: "trending-up", size: 16, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af" }),
+                    h("div", { style: { fontSize: 11, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1.2 } }, "Point mort estime")
+                  ),
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 8 } },
+                    // Point mort total
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Total a faire"),
+                      h("div", { style: { fontSize: 22, fontWeight: 900, color: "#fafafa", fontFamily: "monospace", lineHeight: 1 } }, fmtNum(pointMortMetres) + " m"),
+                      h("div", { style: { fontSize: 10.5, color: margePrev >= 0 ? "#86efac" : "#fda4af", marginTop: 4, fontWeight: 700 } }, margePrev >= 0 ? "Marge " + fmtNum(margePrev) + " m (+" + margePrevPct + "%)" : "Deficit " + fmtNum(Math.abs(margePrev)) + " m (" + margePrevPct + "%)")
+                    ),
+                    // Point mort journalier
+                    pointMortMetresParJour > 0 ? h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Minimum / jour"),
+                      h("div", { style: { fontSize: 22, fontWeight: 900, color: "#fafafa", fontFamily: "monospace", lineHeight: 1 } }, Math.round(pointMortMetresParJour) + " m/j"),
+                      h("div", { style: { fontSize: 10.5, marginTop: 4, fontWeight: 700, color: pointMortAtteignableMoyenne === true ? "#86efac" : pointMortAtteignableMoyenne === false ? "#fda4af" : "#94a3b8" } }, pointMortAtteignableMoyenne === true ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (OK)" : pointMortAtteignableMoyenne === false ? "Moy. site " + Math.round(moyenneJourSite) + " m/j (-" + Math.round(pointMortMetresParJour - moyenneJourSite) + ")" : "Sur " + joursOuvres + " j ouvres")
+                    ) : null,
+                    // Statut atteint au rythme actuel
+                    h("div", null,
+                      h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Au rythme actuel"),
+                      h("div", { style: { fontSize: 16, fontWeight: 800, color: pointMortAtteignable ? "#86efac" : "#fda4af", lineHeight: 1.1, display: "flex", alignItems: "center", gap: 6, marginTop: 4 } },
+                        h(Icon, { name: pointMortAtteignable ? "check-circle" : "alert-triangle", size: 16, color: pointMortAtteignable ? "#86efac" : "#fda4af" }),
+                        pointMortAtteignable ? "Atteint" : "Hors d'atteinte"
+                      ),
+                      h("div", { style: { fontSize: 10.5, color: "#94a3b8", marginTop: 4 } }, metrageRealisable > 0 ? "Realisable " + fmtNum(metrageRealisable) + " m" : "—")
+                    )
+                  ),
+                  h("div", { style: { fontSize: 10, color: "#71717a", borderTop: "1px solid rgba(99,102,241,0.15)", paddingTop: 8 } }, "Cout estime " + fmtNum(coutTotalEstime) + " XPF · " + Math.round(coutMetreGlobalEstime) + " XPF/m moyen 90j (personnel + charges patronales + charges fixes + emprunts + carburant + primes + consommables)")
+                ) : null,
+
                 h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 } },
                   h("div", { style: { background: "rgba(167,139,250,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(167,139,250,0.18)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: "#c4b5fd", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Metrage prevu"),
@@ -11272,14 +11312,6 @@
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(caTotalPrev) + " XPF"),
                     h("div", { style: { fontSize: 10.5, color: "#94a3b8", marginTop: 3 } }, prixPrev > 0 ? fmtNum(prixPrev) + " XPF/m" : "Prix non defini")
                   ),
-                  // Point mort estime (cout/m global 90j toutes depenses)
-                  pointMortMetres > 0 ? h("div", { style: { background: margePrev >= 0 ? "rgba(99,102,241,0.08)" : "rgba(244,63,94,0.10)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (margePrev >= 0 ? "rgba(99,102,241,0.20)" : "rgba(244,63,94,0.25)") } },
-                    h("div", { style: { fontSize: 10, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Point mort"),
-                    h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(pointMortMetres) + " m"),
-                    h("div", { style: { fontSize: 10.5, color: margePrev >= 0 ? "#86efac" : "#fda4af", marginTop: 3, fontWeight: 700 } }, margePrev >= 0 ? "Marge " + fmtNum(margePrev) + " m (+" + margePrevPct + "%)" : "Deficit " + fmtNum(Math.abs(margePrev)) + " m"),
-                    h("div", { style: { fontSize: 9.5, color: pointMortAtteignable ? "#86efac" : "#fda4af", marginTop: 2 } }, pointMortAtteignable ? "Atteint au rythme actuel" : "Hors d'atteinte (realisable " + fmtNum(metrageRealisable) + " m)"),
-                    h("div", { style: { fontSize: 9.5, color: "#71717a", marginTop: 2 } }, "Cout estime " + fmtNum(coutTotalEstime) + " XPF (" + Math.round(coutMetreGlobalEstime) + " XPF/m sur 90j)")
-                  ) : null,
                   h("div", { style: { background: nbPersonnelAffectes > 0 ? "rgba(167,139,250,0.08)" : "rgba(244,63,94,0.06)", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (nbPersonnelAffectes > 0 ? "rgba(167,139,250,0.18)" : "rgba(244,63,94,0.18)") } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: nbPersonnelAffectes > 0 ? "#c4b5fd" : "#fb7185", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Personnel"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, nbPersonnelAffectes + " pers."),
