@@ -14932,14 +14932,42 @@
 
       // ── Projection CA sur la periode (caPeriode deja calcule plus haut via dbRelevesJourn) ──
       // Projection : utile seulement si la periode contient le futur (mois en cours)
+      // Methode alignee avec Avancement : CA realise + projection par chantier planifie sur reste du mois
+      // (au lieu d'extrapolation lineaire simple). Si pas de chantier planifie -> fallback extrapolation.
       var caProjPeriode = caPeriode;
       var periodLabelShort = "";
       if (period === "mois") {
         var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
         var totalDaysMonth = monthEnd.getDate();
         var elapsedDaysMonth = Math.max(1, Math.floor((now - monthStart) / 86400000) + 1);
-        caProjPeriode = (caPeriode / elapsedDaysMonth) * totalDaysMonth;
+        // Calcul CA previsionnel des chantiers actifs pour le reste du mois
+        var caPrevMoisChantiers = 0;
+        (dbChantiers || []).forEach(function(c) {
+          if (c.statut === "Termine" || c.statut === "Annule") return;
+          var metrage = parseFloat(c.metrage) || 0;
+          var prix = parseFloat(c.prixMetre) || 0;
+          if (metrage <= 0 || prix <= 0) return;
+          var dDeb = c.dateDebut ? new Date(c.dateDebut) : null;
+          var dFin = c.dateFin ? new Date(c.dateFin) : null;
+          if (!dDeb || !dFin || isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return;
+          if (dFin < now) return;
+          if (dDeb > monthEnd) return;
+          var caTotalCh = metrage * prix;
+          var dureeChantier = Math.max(1, (dFin - dDeb) / 86400000);
+          var restantStart = dDeb > now ? dDeb : now;
+          var restantEnd = dFin > monthEnd ? monthEnd : dFin;
+          if (restantEnd <= restantStart) return;
+          var dureeRestante = (restantEnd - restantStart) / 86400000;
+          caPrevMoisChantiers += caTotalCh * (dureeRestante / dureeChantier);
+        });
+        // Si chantiers planifies sur le reste du mois -> realise + previsionnel chantiers
+        // Sinon -> extrapolation lineaire (comportement historique)
+        if (caPrevMoisChantiers > 0) {
+          caProjPeriode = caPeriode + caPrevMoisChantiers;
+        } else {
+          caProjPeriode = (caPeriode / elapsedDaysMonth) * totalDaysMonth;
+        }
         periodLabelShort = "mois en cours";
       } else if (period === "moisdernier") periodLabelShort = "mois dernier";
       else if (period === "3mois") periodLabelShort = "3 mois";
