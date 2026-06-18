@@ -2880,6 +2880,298 @@
       );
     }
 
+    // ═══ Stats mecaniciens / Facturation ════════════════════════════════
+    // Page dediee au suivi des heures et a la facturation des mecaniciens
+    // sous-traitants. KPIs + tableau detaille + export PDF/CSV + top machines.
+    function EcranStatsMecaniciens({ onNavigate }) {
+      const { interventions, equipements, parametres } = useAppData();
+      const [periodKey, setPeriodKey] = useState("mois");  // mois, moisdernier, 3mois, 6mois, 1an, all
+      const [selectedMecCode, setSelectedMecCode] = useState("all");  // 'all' ou code mecanicien
+
+      // Liste des mecaniciens sous-traitants
+      const mecaniciens = (function() {
+        try {
+          var row = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+          if (!row || !row.valeur) return [];
+          return (JSON.parse(row.valeur) || []).filter(function(p) { return p && p.roleMecanicien; });
+        } catch (e) { return []; }
+      })();
+      function getMecLabel(code) {
+        var m = mecaniciens.find(function(x) { return x.code === code; });
+        if (!m) return code || "?";
+        return ((m.prenom || "") + " " + (m.nom || "")).trim();
+      }
+      function getMecTaux(code) {
+        var m = mecaniciens.find(function(x) { return x.code === code; });
+        return m ? (parseFloat(m.tauxHoraire) || 0) : 0;
+      }
+
+      // Periode
+      var now = new Date();
+      var pStart = null, pEnd = null;
+      if (periodKey === "mois") {
+        pStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        pEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      } else if (periodKey === "moisdernier") {
+        pStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        pEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+      } else if (periodKey === "3mois") {
+        pStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+      } else if (periodKey === "6mois") {
+        pStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      } else if (periodKey === "1an") {
+        pStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      }
+
+      // Filtre interventions sur la periode + mecaniciens uniquement (avec mecanicien_code)
+      var allMecInterventions = (interventions || []).filter(function(i) { return i.MecanicienCode; });
+      var filteredInterv = allMecInterventions.filter(function(i) {
+        if (selectedMecCode !== "all" && i.MecanicienCode !== selectedMecCode) return false;
+        if (!i.Date_Intervention) return false;
+        var d = new Date(String(i.Date_Intervention).substring(0, 10));
+        if (pStart && d < pStart) return false;
+        if (pEnd && d > pEnd) return false;
+        return true;
+      });
+
+      // Interventions terminees (a facturer)
+      var terminees = filteredInterv.filter(function(i) { return i.Statut_Intervention === "Termine"; });
+      var enCours = filteredInterv.filter(function(i) { return i.Statut_Intervention === "En cours" || i.Statut_Intervention === "Pieces a commander"; });
+      var demandesEnAttente = filteredInterv.filter(function(i) { return i.Statut_Intervention === "Demande en attente"; });
+      var rejetees = filteredInterv.filter(function(i) { return i.Statut_Intervention === "Rejetee"; });
+      var demandesTotal = filteredInterv.filter(function(i) { return i.Source === "mecanicien"; }).length;
+      var demandesValidees = filteredInterv.filter(function(i) { return i.Source === "mecanicien" && i.ValidePar; }).length;
+
+      // KPIs
+      var heuresTotales = terminees.reduce(function(s, i) { return s + (parseFloat(i.DureeHeures) || 0); }, 0);
+      var facturable = terminees.reduce(function(s, i) {
+        var d = parseFloat(i.DureeHeures) || 0;
+        var t = parseFloat(i.TauxHoraireApplique) || 0;
+        return s + (d * t);
+      }, 0);
+      var nbInterv = terminees.length;
+      // Delai moyen de validation (heures entre date_demande et valide_le)
+      var delaisValidation = filteredInterv.filter(function(i) { return i.Source === "mecanicien" && i.DateDemande && i.ValideLe; }).map(function(i) {
+        try {
+          var d1 = new Date(i.DateDemande).getTime();
+          var d2 = new Date(i.ValideLe).getTime();
+          return Math.max(0, (d2 - d1) / 3600000);  // heures
+        } catch (e) { return 0; }
+      });
+      var delaiMoyenValid = delaisValidation.length > 0 ? (delaisValidation.reduce(function(a, b) { return a + b; }, 0) / delaisValidation.length) : 0;
+
+      // Top machines par charge mecanique
+      var byMachine = {};
+      terminees.forEach(function(i) {
+        var key = i.Equipement || "?";
+        if (!byMachine[key]) byMachine[key] = { code: key, heures: 0, facturable: 0, nb: 0 };
+        var d = parseFloat(i.DureeHeures) || 0;
+        var t = parseFloat(i.TauxHoraireApplique) || 0;
+        byMachine[key].heures += d;
+        byMachine[key].facturable += d * t;
+        byMachine[key].nb += 1;
+      });
+      var topMachines = Object.keys(byMachine).map(function(k) { return byMachine[k]; }).sort(function(a, b) { return b.heures - a.heures; }).slice(0, 10);
+
+      // Tableau de detail trie par date desc
+      var tableRows = terminees.slice().sort(function(a, b) { return (b.Date_Intervention || "").localeCompare(a.Date_Intervention || ""); });
+
+      // Export CSV simple
+      function exportCSV() {
+        var sep = ";";
+        var header = ["Date", "Mecanicien", "Machine", "Titre", "Duree (h)", "Taux (XPF/h)", "Total (XPF)", "Statut"].join(sep);
+        var lines = tableRows.map(function(i) {
+          var d = parseFloat(i.DureeHeures) || 0;
+          var t = parseFloat(i.TauxHoraireApplique) || 0;
+          return [
+            i.Date_Intervention || "",
+            getMecLabel(i.MecanicienCode),
+            i.Equipement || "",
+            (i.Title || "").replace(/[\r\n;]/g, " "),
+            d.toFixed(2),
+            Math.round(t),
+            Math.round(d * t),
+            i.Statut_Intervention || ""
+          ].join(sep);
+        });
+        // Ligne totale
+        lines.push(["", "", "", "TOTAL", heuresTotales.toFixed(2), "", Math.round(facturable), ""].join(sep));
+        var csv = "﻿" + header + "\n" + lines.join("\n");
+        var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "facturation_mecanicien_" + (selectedMecCode === "all" ? "tous" : selectedMecCode) + "_" + periodKey + ".csv";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      // Export PDF basique via window.print() sur une vue dediee
+      function exportPDF() {
+        var win = window.open("", "_blank");
+        if (!win) return alert("Le navigateur bloque la fenetre. Autorise les popups.");
+        var label = selectedMecCode === "all" ? "Tous les mecaniciens" : getMecLabel(selectedMecCode);
+        var html = '<!DOCTYPE html><html><head><title>Facture mecanicien - ' + label + '</title>';
+        html += '<style>body{font-family:Arial;padding:30px;color:#222}h1{margin:0 0 20px}table{width:100%;border-collapse:collapse;margin-top:20px;font-size:13px}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}th{background:#f5f5f5;font-weight:700}td.num{text-align:right;font-family:monospace}.total{font-weight:800;background:#fffbe6}</style>';
+        html += '</head><body>';
+        html += '<h1>Facturation mecanicien sous-traitant</h1>';
+        html += '<p><b>Mecanicien :</b> ' + label + '<br><b>Periode :</b> ' + periodKey + '<br><b>Edite le :</b> ' + now.toLocaleDateString("fr-FR") + '</p>';
+        html += '<table><thead><tr><th>Date</th><th>Mecanicien</th><th>Machine</th><th>Titre</th><th class="num">Duree</th><th class="num">Taux</th><th class="num">Total</th></tr></thead><tbody>';
+        tableRows.forEach(function(i) {
+          var d = parseFloat(i.DureeHeures) || 0;
+          var t = parseFloat(i.TauxHoraireApplique) || 0;
+          html += '<tr>';
+          html += '<td>' + (i.Date_Intervention || "") + '</td>';
+          html += '<td>' + getMecLabel(i.MecanicienCode) + '</td>';
+          html += '<td>' + (i.Equipement || "") + '</td>';
+          html += '<td>' + (i.Title || "").replace(/</g, "&lt;") + '</td>';
+          html += '<td class="num">' + d.toFixed(2) + ' h</td>';
+          html += '<td class="num">' + Math.round(t).toLocaleString("fr-FR") + ' XPF</td>';
+          html += '<td class="num">' + Math.round(d * t).toLocaleString("fr-FR") + ' XPF</td>';
+          html += '</tr>';
+        });
+        html += '<tr class="total"><td colspan="4">TOTAL</td><td class="num">' + heuresTotales.toFixed(2) + ' h</td><td></td><td class="num">' + Math.round(facturable).toLocaleString("fr-FR") + ' XPF</td></tr>';
+        html += '</tbody></table>';
+        html += '<p style="margin-top:30px;font-size:11px;color:#999">Document genere par Wallis-Label - Pour controle et facturation</p>';
+        html += '</body></html>';
+        win.document.write(html);
+        win.document.close();
+        setTimeout(function() { win.print(); }, 300);
+      }
+
+      var pLabel = { mois: "Mois en cours", moisdernier: "Mois dernier", "3mois": "3 derniers mois", "6mois": "6 derniers mois", "1an": "1 an", all: "Tout l'historique" };
+      var selS = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, padding: "8px 12px", color: "#fafafa", fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "wrench", size: 20 }, "🔧 Mecaniciens / Facturation"),
+          subtitle: nbInterv + " intervention" + (nbInterv > 1 ? "s" : "") + " terminee" + (nbInterv > 1 ? "s" : "") + " · " + heuresTotales.toFixed(1) + " h · " + fmtNum(Math.round(facturable)) + " XPF",
+          action: h("div", { style: { display: "flex", gap: 8 } },
+            h(Button, { variant: "secondary", onClick: exportCSV }, h(IconText, { icon: "table", size: 14 }, "CSV")),
+            h(Button, { onClick: exportPDF }, h(IconText, { icon: "printer", size: 14 }, "PDF / Imprimer"))
+          )
+        }),
+
+        // Filtres
+        h(Card, { style: { marginBottom: 16 } },
+          h("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" } },
+            h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Periode"),
+            h("select", { value: periodKey, onChange: function(e) { setPeriodKey(e.target.value); }, style: selS },
+              h("option", { value: "mois" }, "Mois en cours"),
+              h("option", { value: "moisdernier" }, "Mois dernier"),
+              h("option", { value: "3mois" }, "3 mois"),
+              h("option", { value: "6mois" }, "6 mois"),
+              h("option", { value: "1an" }, "1 an"),
+              h("option", { value: "all" }, "Tout")
+            ),
+            h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginLeft: 12 } }, "Mecanicien"),
+            h("select", { value: selectedMecCode, onChange: function(e) { setSelectedMecCode(e.target.value); }, style: selS },
+              h("option", { value: "all" }, "Tous les mecaniciens (" + mecaniciens.length + ")"),
+              mecaniciens.map(function(m) {
+                return h("option", { key: m.code, value: m.code }, getMecLabel(m.code) + " (" + m.code + ")");
+              })
+            )
+          )
+        ),
+
+        // KPIs
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 } },
+          h(KPICard, { icon: h(Icon, { name: "clock", size: 32, color: "#a78bfa" }), label: "Heures totales", value: heuresTotales.toFixed(1) + " h", color: "#a78bfa", hint: nbInterv + " interventions" }),
+          h(KPICard, { icon: h(Icon, { name: "coins", size: 32, color: "#22c55e" }), label: "A facturer", value: fmtMoney(Math.round(facturable)), color: "#22c55e", hint: (heuresTotales > 0 ? Math.round(facturable / heuresTotales) + " XPF/h moyen" : "") }),
+          h(KPICard, { icon: h(Icon, { name: "alert-circle", size: 32, color: "#fbbf24" }), label: "Demandes en attente", value: String(demandesEnAttente.length), color: "#fbbf24", hint: demandesTotal + " demandes au total" }),
+          h(KPICard, { icon: h(Icon, { name: "check-circle", size: 32, color: "#60a5fa" }), label: "Delai validation moyen", value: delaiMoyenValid > 0 ? delaiMoyenValid.toFixed(1) + " h" : "—", color: "#60a5fa", hint: delaisValidation.length + " demandes validees" })
+        ),
+
+        // Vue d'ensemble par mecanicien (si "Tous")
+        selectedMecCode === "all" && mecaniciens.length > 0 ? h(Card, { style: { marginBottom: 16 } },
+          h("h3", { style: { margin: "0 0 12px", fontSize: 15, color: "#fafafa" } }, "Recap par mecanicien"),
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("thead", null, h("tr", { style: { textAlign: "left" } },
+                ["Mecanicien", "Heures", "A facturer", "Interventions", "Taux moyen"].map(function(x) {
+                  return h("th", { key: x, style: { padding: "8px 12px", fontWeight: 700, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, x);
+                })
+              )),
+              h("tbody", null,
+                mecaniciens.map(function(m) {
+                  var mecInt = terminees.filter(function(i) { return i.MecanicienCode === m.code; });
+                  var mH = mecInt.reduce(function(s, i) { return s + (parseFloat(i.DureeHeures) || 0); }, 0);
+                  var mF = mecInt.reduce(function(s, i) { return s + ((parseFloat(i.DureeHeures) || 0) * (parseFloat(i.TauxHoraireApplique) || 0)); }, 0);
+                  var mTaux = mH > 0 ? Math.round(mF / mH) : 0;
+                  return h("tr", { key: m.code, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#fafafa" } }, getMecLabel(m.code) + " (" + m.code + ")"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace" } }, mH.toFixed(1) + " h"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: "#86efac", fontWeight: 700 } }, fmtMoney(Math.round(mF))),
+                    h("td", { style: { padding: "10px 12px" } }, mecInt.length),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: "#a1a1aa" } }, mTaux > 0 ? fmtNum(mTaux) + " XPF/h" : "—")
+                  );
+                })
+              )
+            )
+          )
+        ) : null,
+
+        // Tableau detaille
+        h(Card, { style: { marginBottom: 16 } },
+          h("h3", { style: { margin: "0 0 12px", fontSize: 15, color: "#fafafa" } }, "Detail des interventions a facturer"),
+          tableRows.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention terminee sur cette periode.") :
+          h("div", { style: { overflowX: "auto", maxHeight: 500 } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("thead", { style: { position: "sticky", top: 0, background: "rgba(28,30,42,0.98)", backdropFilter: "blur(8px)" } }, h("tr", { style: { textAlign: "left" } },
+                ["Date", "Mecanicien", "Machine", "Titre", "Duree", "Taux", "Total"].map(function(x) {
+                  return h("th", { key: x, style: { padding: "10px 12px", fontWeight: 700, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.15)" } }, x);
+                })
+              )),
+              h("tbody", null,
+                tableRows.map(function(i) {
+                  var d = parseFloat(i.DureeHeures) || 0;
+                  var t = parseFloat(i.TauxHoraireApplique) || 0;
+                  var total = d * t;
+                  return h("tr", { key: i.Id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "10px 12px" } }, i.Date_Intervention || "-"),
+                    h("td", { style: { padding: "10px 12px", color: "#fde68a" } }, getMecLabel(i.MecanicienCode)),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 600 } }, i.Equipement || "-"),
+                    h("td", { style: { padding: "10px 12px", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, i.Title || "-"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", textAlign: "right" } }, d.toFixed(2) + " h"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", textAlign: "right", color: "#a1a1aa" } }, fmtNum(Math.round(t))),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", textAlign: "right", fontWeight: 700, color: "#86efac" } }, fmtNum(Math.round(total)))
+                  );
+                }).concat([
+                  h("tr", { key: "total", style: { borderTop: "2px solid rgba(34,197,94,0.30)", background: "rgba(34,197,94,0.05)" } },
+                    h("td", { colSpan: 4, style: { padding: "12px", fontWeight: 800 } }, "TOTAL"),
+                    h("td", { style: { padding: "12px", fontFamily: "monospace", textAlign: "right", fontWeight: 800 } }, heuresTotales.toFixed(2) + " h"),
+                    h("td", null),
+                    h("td", { style: { padding: "12px", fontFamily: "monospace", textAlign: "right", fontWeight: 800, color: "#86efac", fontSize: 14 } }, fmtNum(Math.round(facturable)) + " XPF")
+                  )
+                ])
+              )
+            )
+          )
+        ),
+
+        // Top machines par charge
+        topMachines.length > 0 ? h(Card, null,
+          h("h3", { style: { margin: "0 0 12px", fontSize: 15, color: "#fafafa" } }, "🏗️ Top machines par charge mecanique"),
+          h("p", { style: { fontSize: 12, color: "#a1a1aa", margin: "0 0 12px" } }, "Reperer les machines les plus sollicitees en maintenance. Utile pour decider de remplacements / amelioration preventive."),
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+            topMachines.map(function(m, idx) {
+              var maxH = topMachines[0].heures;
+              var pct = maxH > 0 ? (m.heures / maxH) * 100 : 0;
+              return h("div", { key: m.code, style: { fontSize: 13 } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 } },
+                  h("span", { style: { fontWeight: 700 } }, "#" + (idx + 1) + " · " + m.code),
+                  h("span", null, m.heures.toFixed(1) + " h · " + fmtMoney(Math.round(m.facturable)) + " · " + m.nb + " interv.")
+                ),
+                h("div", { style: { background: "rgba(245,158,11,0.10)", height: 6, borderRadius: 3, overflow: "hidden" } },
+                  h("div", { style: { background: "linear-gradient(90deg, #fbbf24, #f59e0b)", height: "100%", width: pct + "%" } })
+                )
+              );
+            })
+          )
+        ) : null
+      );
+    }
+
     // ─── Formulaire Piece ───────────────────────────────────────────────
     function PieceForm({ onSave, onCancel, editItem }) {
       const cats = useParams("cat_piece");
@@ -14165,6 +14457,7 @@
         { key: "emprunts", label: "Emprunts", icon: "landmark" },
         { key: "charges-fixes", label: "Charges fixes", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
+        { key: "stats-mecaniciens", label: "Mecaniciens / Facturation", icon: "wrench" },
         { key: "coffre-rh", label: "Coffre-fort RH", icon: "folder-lock" },
         { key: "messages", label: "Messages", icon: "mail" },
         { key: "soumissions", label: "Soumissions employes", icon: "inbox" },
@@ -22280,6 +22573,7 @@
         ]},
         { name: "Equipe", pages: [
           { key: "personnel", label: "Personnel", lucide: "user-round" },
+          { key: "stats-mecaniciens", label: "🔧 Mecaniciens / Facturation", lucide: "wrench" },
           { key: "coffre-rh", label: "Coffre-fort RH", lucide: "folder-lock" },
           { key: "messages", label: "Messages", lucide: "mail" },
         ]},
@@ -24882,6 +25176,7 @@
         if (currentPage === "equipements") return h(EcranEquipements, { onNavigate: navigate });
         if (currentPage === "fiche-equipement") return h(EcranFicheEquipement, { onNavigate: navigate, equipement: pageData });
         if (currentPage === "personnel") return h(EcranPersonnel, { onNavigate: navigate });
+        if (currentPage === "stats-mecaniciens") return h(EcranStatsMecaniciens, { onNavigate: navigate });
         if (currentPage === "messages") return h(EcranMessages, null);
         if (currentPage === "pieces") return h(EcranPieces, null);
         if (currentPage === "carburant") return h(EcranCarburant, null);
