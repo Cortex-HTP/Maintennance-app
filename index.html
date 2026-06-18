@@ -359,7 +359,8 @@
         cycle_number: i.CycleNumber != null ? parseInt(i.CycleNumber) : null,
         // Champs mecanicien sous-traitant
         mecanicien_code: i.MecanicienCode || null,
-        source: i.Source || "admin",
+        // Source : si pas explicite, deduit du contexte (mecanicien assigne -> demande, sinon admin)
+        source: i.Source ? i.Source : (i.MecanicienCode ? "admin" : "admin"),
         description_probleme: i.DescriptionProbleme || null,
         duree_heures: i.DureeHeures !== "" && i.DureeHeures != null ? parseFloat(i.DureeHeures) : null,
         pieces_utilisees: Array.isArray(i.PiecesUtilisees) && i.PiecesUtilisees.length > 0 ? i.PiecesUtilisees : null,
@@ -2749,10 +2750,16 @@
 
       async function validerDemande(item) {
         try {
+          // Fallback taux horaire : si pas snapshote sur l'intervention, charge depuis le profil mecanicien
+          var tauxFallback = item.TauxHoraireApplique || 0;
+          if (!tauxFallback && item.MecanicienCode && mecaniciensByCode[item.MecanicienCode]) {
+            tauxFallback = parseFloat(mecaniciensByCode[item.MecanicienCode].tauxHoraire) || 0;
+          }
           await updateIntervention(Object.assign({}, item, {
             Statut_Intervention: "Planifiee",
             Source: item.Source || "mecanicien",
-            ValidePar: userEmail || "",
+            TauxHoraireApplique: tauxFallback,
+            ValidePar: userEmail || "admin",
             ValideLe: new Date().toISOString(),
             RejeteMotif: ""
           }));
@@ -2960,9 +2967,10 @@
       // Filtre interventions sur la periode + mecaniciens uniquement (avec mecanicien_code)
       var allMecInterventions = (interventions || []).filter(function(i) { return i.MecanicienCode; });
       var filteredInterv = allMecInterventions.filter(function(i) {
-        if (selectedMecCode !== "all" && i.MecanicienCode !== selectedMecCode) return false;
+        if (selectedMecCode !== "all" && String(i.MecanicienCode || "").toLowerCase() !== String(selectedMecCode).toLowerCase()) return false;
         if (!i.Date_Intervention) return false;
         var d = new Date(String(i.Date_Intervention).substring(0, 10));
+        if (isNaN(d.getTime())) return false;  // date invalide -> exclu
         if (pStart && d < pStart) return false;
         if (pEnd && d > pEnd) return false;
         return true;
