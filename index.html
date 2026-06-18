@@ -283,9 +283,9 @@
     // ─── Mappers (DB snake_case <-> UI PascalCase) ──────────────────────
     const STATUT_EQ_TO_UI = { actif: "En service", en_panne: "En panne", en_maintenance: "En maintenance", reforme: "Reforme" };
     const STATUT_EQ_TO_DB = { "En service": "actif", "En panne": "en_panne", "En maintenance": "en_maintenance", "Reforme": "reforme" };
-    const STATUT_INT_TO_UI = { termine: "Termine", en_cours: "En cours", planifie: "Planifiee", pas_fait: "Pas fait", partiel: "Partiellement terminee" };
+    const STATUT_INT_TO_UI = { termine: "Termine", en_cours: "En cours", planifie: "Planifiee", pas_fait: "Pas fait", partiel: "Partiellement terminee", demande_attente: "Demande en attente", pieces_attente: "Pieces a commander", rejetee: "Rejetee", annulee: "Annulee" };
     // Partiellement terminee : stocke en DB comme "en_cours" (compat enum), reconstitue en UI via gamme
-    const STATUT_INT_TO_DB = { "Termine": "termine", "En cours": "en_cours", "Planifiee": "planifie", "Pas fait": "pas_fait", "Partiellement terminee": "en_cours" };
+    const STATUT_INT_TO_DB = { "Termine": "termine", "En cours": "en_cours", "Planifiee": "planifie", "Pas fait": "pas_fait", "Partiellement terminee": "en_cours", "Demande en attente": "demande_attente", "Pieces a commander": "pieces_attente", "Rejetee": "rejetee", "Annulee": "annulee" };
     const STATUT_PLAN_TO_UI = { actif: "Actif", en_retard: "En retard", suspendu: "Suspendu", inactif: "Suspendu" };
     const STATUT_PLAN_TO_DB = { "Actif": "actif", "En retard": "en_retard", "Suspendu": "suspendu" };
 
@@ -316,14 +316,61 @@
       var extra = parseDescExtra(rawDesc);
       var travauxText = extra._text != null ? extra._text : rawDesc;
       var gamme = Array.isArray(extra.gamme) ? extra.gamme : [];
-      return { Id: r.id, Title: r.titre || "", Equipement: r._equipement_code || "", EquipementId: r.equipement_id, Date_Intervention: r.date_intervention || "", Technicien: r.technicien || "", Statut_Intervention: STATUT_INT_TO_UI[r.statut] || "Planifiee", Travaux_Effectues: travauxText || "", Temps_Arret: r.temps_arret || "", Cout: String(r.cout_total ?? ""), Plan: r.plan_nom || "", Horametre: r.horametre != null ? String(r.horametre) : "", KM: r.km != null ? String(r.km) : "", Type: r.type === "preventive" ? "Preventive" : "Curative", CycleNumber: r.cycle_number != null ? r.cycle_number : null, Gamme: gamme };
+      return {
+        Id: r.id, Title: r.titre || "", Equipement: r._equipement_code || "", EquipementId: r.equipement_id,
+        Date_Intervention: r.date_intervention || "", Technicien: r.technicien || "",
+        Statut_Intervention: STATUT_INT_TO_UI[r.statut] || "Planifiee",
+        Travaux_Effectues: travauxText || "", Temps_Arret: r.temps_arret || "",
+        Cout: String(r.cout_total ?? ""), Plan: r.plan_nom || "",
+        Horametre: r.horametre != null ? String(r.horametre) : "",
+        KM: r.km != null ? String(r.km) : "",
+        Type: r.type === "preventive" ? "Preventive" : "Curative",
+        CycleNumber: r.cycle_number != null ? r.cycle_number : null, Gamme: gamme,
+        // Champs mecanicien sous-traitant
+        MecanicienCode: r.mecanicien_code || "",
+        Source: r.source || "admin",
+        DescriptionProbleme: r.description_probleme || "",
+        DureeHeures: r.duree_heures != null ? String(r.duree_heures) : "",
+        PiecesUtilisees: Array.isArray(r.pieces_utilisees) ? r.pieces_utilisees : (r.pieces_utilisees || []),
+        Photos: Array.isArray(r.photos) ? r.photos : (r.photos || []),
+        TauxHoraireApplique: r.taux_horaire_applique != null ? parseFloat(r.taux_horaire_applique) : 0,
+        Urgence: r.urgence || "normale",
+        DateDemande: r.date_demande || "",
+        ValidePar: r.valide_par || "",
+        ValideLe: r.valide_le || "",
+        RejeteMotif: r.rejete_motif || ""
+      };
     }
     function interventionToDb(i, equipementIdByCode) {
       var travauxObj = {};
       if (i.Travaux_Effectues) travauxObj._text = i.Travaux_Effectues;
       if (Array.isArray(i.Gamme) && i.Gamme.length > 0) travauxObj.gamme = i.Gamme;
       var travauxStr = Object.keys(travauxObj).length > 0 ? JSON.stringify(travauxObj) : "";
-      return { equipement_id: i.EquipementId || equipementIdByCode[i.Equipement] || null, titre: i.Title, technicien: i.Technicien, date_intervention: i.Date_Intervention, statut: STATUT_INT_TO_DB[i.Statut_Intervention] || "planifie", travaux_effectues: travauxStr, temps_arret: i.Temps_Arret, cout_total: parseFloat(i.Cout) || 0, plan_nom: i.Plan, horametre: i.Horametre !== "" ? parseFloat(i.Horametre) : null, km: i.KM !== "" ? parseFloat(i.KM) : null, type: i.Type === "Preventive" ? "preventive" : "curative", description: travauxStr || i.Title, cycle_number: i.CycleNumber != null ? parseInt(i.CycleNumber) : null };
+      return {
+        equipement_id: i.EquipementId || equipementIdByCode[i.Equipement] || null,
+        titre: i.Title, technicien: i.Technicien, date_intervention: i.Date_Intervention,
+        statut: STATUT_INT_TO_DB[i.Statut_Intervention] || "planifie",
+        travaux_effectues: travauxStr, temps_arret: i.Temps_Arret,
+        cout_total: parseFloat(i.Cout) || 0, plan_nom: i.Plan,
+        horametre: i.Horametre !== "" ? parseFloat(i.Horametre) : null,
+        km: i.KM !== "" ? parseFloat(i.KM) : null,
+        type: i.Type === "Preventive" ? "preventive" : "curative",
+        description: travauxStr || i.Title,
+        cycle_number: i.CycleNumber != null ? parseInt(i.CycleNumber) : null,
+        // Champs mecanicien sous-traitant
+        mecanicien_code: i.MecanicienCode || null,
+        source: i.Source || "admin",
+        description_probleme: i.DescriptionProbleme || null,
+        duree_heures: i.DureeHeures !== "" && i.DureeHeures != null ? parseFloat(i.DureeHeures) : null,
+        pieces_utilisees: Array.isArray(i.PiecesUtilisees) && i.PiecesUtilisees.length > 0 ? i.PiecesUtilisees : null,
+        photos: Array.isArray(i.Photos) && i.Photos.length > 0 ? i.Photos : null,
+        taux_horaire_applique: i.TauxHoraireApplique != null && i.TauxHoraireApplique > 0 ? parseFloat(i.TauxHoraireApplique) : null,
+        urgence: i.Urgence || null,
+        date_demande: i.DateDemande || null,
+        valide_par: i.ValidePar || null,
+        valide_le: i.ValideLe || null,
+        rejete_motif: i.RejeteMotif || null
+      };
     }
     function planFromDb(r) {
       var desc = r.description || "";
@@ -1893,9 +1940,23 @@
 
     // ─── Formulaire Intervention (utilise dans un modal) ────────────────
     function InterventionForm({ editItem, onDone }) {
-      const { equipements, plans, pieces, piecesEquipements, addIntervention, updateIntervention, addReleve } = useAppData();
+      const { equipements, plans, pieces, piecesEquipements, addIntervention, updateIntervention, addReleve, parametres } = useAppData();
       const techniciens = useParams("technicien");
-      const [f, setF] = useState(editItem || { Title: "", Equipement: "", Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "", Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "", Plan: "", Horametre: "", KM: "", Type: "Preventive", Gamme: [] });
+      const [f, setF] = useState(editItem || { Title: "", Equipement: "", Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "", Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "", Plan: "", Horametre: "", KM: "", Type: "Preventive", Gamme: [], Source: "admin", MecanicienCode: "", DescriptionProbleme: "", DureeHeures: "", Urgence: "normale", TauxHoraireApplique: 0, PiecesUtilisees: [], Photos: [] });
+
+      // Liste des mecaniciens sous-traitants disponibles (depuis personnel_data)
+      const mecaniciens = (function() {
+        try {
+          var row = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+          if (!row || !row.valeur) return [];
+          return (JSON.parse(row.valeur) || []).filter(function(p) { return p && p.roleMecanicien; });
+        } catch (e) { return []; }
+      })();
+      var selectedMec = mecaniciens.find(function(m) { return m.code === f.MecanicienCode; });
+      var isSourceMec = f.Source === "mecanicien";
+      var dureeNum = parseFloat(f.DureeHeures) || 0;
+      var tauxNum = parseFloat(f.TauxHoraireApplique) || (selectedMec ? parseFloat(selectedMec.tauxHoraire) || 0 : 0);
+      var facturable = dureeNum * tauxNum;
       const [saving, setSaving] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // Detection : intervention auto liee a un plan
@@ -1998,8 +2059,25 @@
             h(FormField, { label: "Technicien" }, h("select", { style: selectStyle, value: f.Technicien, onChange: (e) => upd("Technicien", e.target.value) },
               h("option", { value: "" }, "-- Selectionner --"),
               techniciens.map((t) => h("option", { key: t, value: t }, t)))),
+            // Champ Mecanicien sous-traitant (snapshot du taux a la selection)
+            h(FormField, { label: "🔧 Mecanicien sous-traitant (optionnel)" }, h("select", { style: Object.assign({}, selectStyle, f.MecanicienCode ? { borderColor: "rgba(245,158,11,0.5)" } : {}), value: f.MecanicienCode, onChange: function(e) {
+              var code = e.target.value;
+              var m = mecaniciens.find(function(x) { return x.code === code; });
+              setF(function(prev) {
+                return Object.assign({}, prev, {
+                  MecanicienCode: code,
+                  Source: code ? "admin" : prev.Source,  // si assigne depuis admin -> source admin
+                  TauxHoraireApplique: m ? (parseFloat(m.tauxHoraire) || 0) : 0
+                });
+              });
+            } },
+              h("option", { value: "" }, "-- Aucun --"),
+              mecaniciens.map(function(m) {
+                return h("option", { key: m.code, value: m.code }, ((m.prenom || "") + " " + (m.nom || "")).trim() + " (" + m.code + ") · " + (m.tauxHoraire || 0) + " XPF/h");
+              })
+            )),
             h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.Statut_Intervention, onChange: (e) => upd("Statut_Intervention", e.target.value) },
-              ["Planifiee", "En cours", "Termine", "Pas fait"].map((s) => h("option", { key: s, value: s }, s)))),
+              ["Planifiee", "En cours", "Termine", "Pas fait", "Demande en attente", "Pieces a commander", "Rejetee", "Annulee"].map((s) => h("option", { key: s, value: s }, s)))),
             h(FormField, { label: "Type" }, h("select", { style: selectStyle, value: f.Type, onChange: (e) => upd("Type", e.target.value) },
               ["Preventive", "Curative"].map((t) => h("option", { key: t, value: t }, t)))),
             h(FormField, { label: "Temps d'arret" }, h("input", { style: inputStyle, value: f.Temps_Arret, onChange: (e) => upd("Temps_Arret", e.target.value), placeholder: "Ex: 2h30" })),
@@ -2029,6 +2107,40 @@
             )),
             h("div", { style: { gridColumn: "1 / -1" } },
               h(FormField, { label: "Travaux effectues" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Decrivez les travaux..." })))),
+          // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
+          (f.MecanicienCode || isSourceMec) ? h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 12 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } },
+              h(Icon, { name: "wrench", size: 18, color: "#fbbf24" }),
+              h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a" } }, "Rapport mecanicien sous-traitant"),
+              isSourceMec ? h("span", { style: { fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 999, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)" } }, "DEMANDE SOUS-TRAITANT") : null
+            ),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 12 } },
+              h(FormField, { label: "Urgence" }, h("select", { style: selectStyle, value: f.Urgence, onChange: function(e) { upd("Urgence", e.target.value); } },
+                h("option", { value: "normale" }, "Normale (sous 7 jours)"),
+                h("option", { value: "elevee" }, "Elevee (sous 48h)"),
+                h("option", { value: "urgente" }, "Urgente (immediate)")
+              )),
+              h(FormField, { label: "Duree totale (heures)" }, h("input", { type: "number", step: "0.25", style: Object.assign({}, inputStyle, { fontFamily: "monospace", textAlign: "right" }), value: f.DureeHeures, onChange: function(e) { upd("DureeHeures", e.target.value); }, placeholder: "Ex : 3.5" })),
+              h(FormField, { label: "Taux horaire (XPF/h)" }, h("input", { type: "number", style: Object.assign({}, inputStyle, { fontFamily: "monospace", textAlign: "right" }), value: f.TauxHoraireApplique, onChange: function(e) { upd("TauxHoraireApplique", e.target.value); }, placeholder: "Snapshot du taux" }))
+            ),
+            h(FormField, { label: "Description du probleme (saisi par le demandeur)" },
+              h("textarea", { style: Object.assign({}, inputStyle, { minHeight: 70, resize: "vertical" }), value: f.DescriptionProbleme, onChange: function(e) { upd("DescriptionProbleme", e.target.value); }, placeholder: "Le probleme constate avant intervention..." })
+            ),
+            // Pre-calcul facturation
+            facturable > 0 ? h("div", { style: { marginTop: 12, padding: 12, background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 } },
+              h("div", null,
+                h("div", { style: { fontSize: 10, fontWeight: 800, color: "#86efac", textTransform: "uppercase", letterSpacing: 1 } }, "Pre-calcul facturation"),
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, dureeNum + " h x " + fmtNum(tauxNum) + " XPF/h")
+              ),
+              h("div", { style: { fontSize: 22, fontWeight: 900, color: "#86efac", fontFamily: "monospace" } }, fmtNum(Math.round(facturable)) + " XPF")
+            ) : null,
+            // Affichage motif rejet si applicable
+            f.RejeteMotif ? h("div", { style: { marginTop: 12, padding: 12, background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 10 } },
+              h("div", { style: { fontSize: 10, fontWeight: 800, color: "#fda4af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "Motif du rejet"),
+              h("div", { style: { fontSize: 13, color: "#fafafa" } }, f.RejeteMotif)
+            ) : null,
+            f.ValidePar ? h("div", { style: { marginTop: 8, fontSize: 11, color: "#a1a1aa" } }, "Valide par " + f.ValidePar + (f.ValideLe ? " le " + new Date(f.ValideLe).toLocaleDateString("fr-FR") : "")) : null
+          ) : null,
         // Gamme (checklist d'operations)
         h("div", { style: { marginTop: 16, padding: 14, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10 } },
           h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 } },
@@ -2582,11 +2694,59 @@
 
     // ─── Ecran Interventions (Liste + modal de saisie) ──────────────────
     function EcranInterventions({ onNavigate, editItem }) {
-      const { interventions, deleteIntervention } = useAppData();
+      const { interventions, deleteIntervention, updateIntervention, parametres, userEmail } = useAppData();
       const [sT, setST] = useState(""); const [sM, setSM] = useState(""); const [sD, setSD] = useState(""); const [sI, setSI] = useState(""); const [sS, setSS] = useState("");
+      const [sSource, setSSource] = useState("all");  // all | admin | mecanicien
       const [toDelete, setToDelete] = useState(null);
       const [showForm, setShowForm] = useState(false);
       const [editing, setEditing] = useState(null);
+      const [rejeteMotifModal, setRejeteMotifModal] = useState(null);  // { interv, motif }
+
+      // Index code -> mecanicien sous-traitant (pour resoudre nom + taux)
+      const mecaniciensByCode = (function() {
+        var idx = {};
+        try {
+          var row = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+          if (row && row.valeur) {
+            (JSON.parse(row.valeur) || []).forEach(function(p) {
+              if (p && p.roleMecanicien && p.code) idx[p.code] = p;
+            });
+          }
+        } catch (e) {}
+        return idx;
+      })();
+
+      function getMecanicienLabel(code) {
+        var m = mecaniciensByCode[code];
+        if (!m) return code || "?";
+        return ((m.prenom || "") + " " + (m.nom || "")).trim() + " (" + code + ")";
+      }
+
+      // Demandes en attente : interventions avec statut = demande_attente
+      var demandesEnAttente = interventions.filter(function(i) { return i.Statut_Intervention === "Demande en attente"; });
+
+      async function validerDemande(item) {
+        try {
+          await updateIntervention(Object.assign({}, item, {
+            Statut_Intervention: "Planifiee",
+            Source: item.Source || "mecanicien",
+            ValidePar: userEmail || "",
+            ValideLe: new Date().toISOString(),
+            RejeteMotif: ""
+          }));
+        } catch (e) { alert("Erreur validation : " + e.message); }
+      }
+      async function rejeterDemande(item, motif) {
+        try {
+          await updateIntervention(Object.assign({}, item, {
+            Statut_Intervention: "Rejetee",
+            ValidePar: userEmail || "",
+            ValideLe: new Date().toISOString(),
+            RejeteMotif: motif || ""
+          }));
+          setRejeteMotifModal(null);
+        } catch (e) { alert("Erreur rejet : " + e.message); }
+      }
       // _returnTo : si l'intervention a ete ouverte depuis la fiche equipement, on
       // memorise l'equipement pour pouvoir y retourner quand on ferme le modal.
       const [returnTo, setReturnTo] = useState(null);
@@ -2619,34 +2779,78 @@
         const mt = !sT || (i.Title || "").toLowerCase().includes(sTl) || (i.Travaux_Effectues || "").toLowerCase().includes(sTl) || gammeText.includes(sTl);
         const mm = !sM || (i.Equipement || "").toLowerCase().includes(sM.toLowerCase());
         const md = !sD || (i.Date_Intervention || "").includes(sD);
-        const mi = !sI || (i.Technicien || "").toLowerCase().includes(sI.toLowerCase());
+        const mecLabel = i.MecanicienCode ? getMecanicienLabel(i.MecanicienCode).toLowerCase() : "";
+        const mi = !sI || (i.Technicien || "").toLowerCase().includes(sI.toLowerCase()) || mecLabel.includes(sI.toLowerCase());
         const effStatus = computeIntervStatus(i);
         const ms = !sS || effStatus.toLowerCase().includes(sS.toLowerCase());
-        return mt && mm && md && mi && ms;
+        const mSource = sSource === "all" || i.Source === sSource;
+        return mt && mm && md && mi && ms && mSource;
       });
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "wrench", size: 20 }, "Interventions"), subtitle: interventions.length + " interventions", action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle intervention")) }),
+        h(PageHeader, { title: h(IconText, { icon: "wrench", size: 20 }, "Interventions"), subtitle: interventions.length + " interventions" + (demandesEnAttente.length > 0 ? " · " + demandesEnAttente.length + " demande" + (demandesEnAttente.length > 1 ? "s" : "") + " en attente" : ""), action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle intervention")) }),
+        // ─── BANDEAU DEMANDES EN ATTENTE ───
+        demandesEnAttente.length > 0 ? h("div", { style: { background: "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(251,191,36,0.06))", border: "1px solid rgba(245,158,11,0.40)", borderRadius: 12, padding: 14, marginBottom: 16 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 } },
+            h(Icon, { name: "alert-circle", size: 18, color: "#fbbf24" }),
+            h("div", { style: { fontWeight: 800, color: "#fde68a", fontSize: 14 } }, "⏳ " + demandesEnAttente.length + " demande" + (demandesEnAttente.length > 1 ? "s" : "") + " sous-traitant" + (demandesEnAttente.length > 1 ? "s" : "") + " en attente de validation")
+          ),
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+            demandesEnAttente.map(function(item) {
+              var mecLabel = item.MecanicienCode ? getMecanicienLabel(item.MecanicienCode) : "Inconnu";
+              return h("div", { key: "att-" + item.Id, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+                h("div", { style: { flex: 1, minWidth: 200 } },
+                  h("div", { style: { fontWeight: 700, color: "#fafafa", fontSize: 13 } }, item.Title || "(Sans titre)"),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" } },
+                    h("span", null, "🔧 " + mecLabel),
+                    h("span", null, "🏗️ " + (item.Equipement || "?")),
+                    item.Urgence ? h("span", { style: { color: item.Urgence === "urgente" ? "#fda4af" : item.Urgence === "elevee" ? "#fde68a" : "#a1a1aa", fontWeight: 700 } }, "⚡ " + item.Urgence) : null
+                  )
+                ),
+                h("button", { onClick: function() { openEdit(item); }, style: { padding: "6px 10px", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)", borderRadius: 6, color: "#a5b4fc", cursor: "pointer", fontWeight: 700, fontSize: 12 } }, "👁️ Voir"),
+                h("button", { onClick: function() { validerDemande(item); }, style: { padding: "6px 10px", background: "rgba(34,197,94,0.20)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, color: "#86efac", cursor: "pointer", fontWeight: 700, fontSize: 12 } }, "✓ Valider"),
+                h("button", { onClick: function() { setRejeteMotifModal({ interv: item, motif: "" }); }, style: { padding: "6px 10px", background: "rgba(244,63,94,0.20)", border: "1px solid rgba(244,63,94,0.40)", borderRadius: 6, color: "#fda4af", cursor: "pointer", fontWeight: 700, fontSize: 12 } }, "✗ Rejeter")
+              );
+            })
+          )
+        ) : null,
         h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 } },
             h(SearchInput, { placeholder: "Titre...", value: sT, onChange: setST }),
             h(SearchInput, { placeholder: "Machine...", value: sM, onChange: setSM }),
             h(SearchInput, { placeholder: "Date...", value: sD, onChange: setSD }),
-            h(SearchInput, { placeholder: "Technicien...", value: sI, onChange: setSI }),
-            h(SearchInput, { placeholder: "Statut...", value: sS, onChange: setSS }))),
+            h(SearchInput, { placeholder: "Technicien / Mecano...", value: sI, onChange: setSI }),
+            h(SearchInput, { placeholder: "Statut...", value: sS, onChange: setSS }),
+            h("select", { style: { width: "100%", padding: "8px 10px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit" }, value: sSource, onChange: function(e) { setSSource(e.target.value); } },
+              h("option", { value: "all" }, "Toutes sources"),
+              h("option", { value: "admin" }, "Crees admin"),
+              h("option", { value: "mecanicien" }, "Demandes sous-traitant")
+            )
+          )
+        ),
         h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
           filtered.length === 0 ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention trouvee")) :
             sortByField(filtered, "Title").map((item) => {
               const prog = gammeProgress(item.Gamme);
               const effStatus = computeIntervStatus(item);
-              return h(Card, { key: item.Id, style: { padding: 14 } },
+              var isSourceMec = item.Source === "mecanicien";
+              var mecLabel = item.MecanicienCode ? getMecanicienLabel(item.MecanicienCode) : "";
+              var facturable = item.DureeHeures && item.TauxHoraireApplique ? parseFloat(item.DureeHeures) * parseFloat(item.TauxHoraireApplique) : 0;
+              return h(Card, { key: item.Id, style: { padding: 14, borderLeft: isSourceMec ? "3px solid #fbbf24" : "" } },
               h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 } },
                 h("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => openEdit(item) },
-                  h("div", { style: { fontWeight: 700, fontSize: 14, marginBottom: 4, color: "#fafafa" } }, item.Title || item.Travaux_Effectues),
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
+                    h("div", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, item.Title || item.Travaux_Effectues),
+                    isSourceMec ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)", letterSpacing: 0.5 } }, "🔧 SOUS-TRAITANT") : null,
+                    item.Urgence === "urgente" ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(244,63,94,0.20)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.40)" } }, "⚡ URGENT") : null
+                  ),
                   h("div", { style: { display: "flex", gap: 16, fontSize: 13, color: "#a1a1aa", flexWrap: "wrap" } },
                     h("span", null, h(IconText, { icon: "hard-hat", size: 12, color: "#a1a1aa" }, item.Equipement)),
                     h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, item.Date_Intervention)),
                     item.Technicien && h("span", null, h(IconText, { icon: "user", size: 12, color: "#a1a1aa" }, item.Technicien)),
+                    mecLabel ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 12, color: "#fde68a" }, mecLabel)) : null,
                     item.Horametre && h("span", null, h(IconText, { icon: "timer", size: 12, color: "#a1a1aa" }, fmtNum(item.Horametre) + " h")),
+                    item.DureeHeures && h("span", null, h(IconText, { icon: "clock", size: 12, color: "#a5b4fc" }, item.DureeHeures + " h")),
+                    facturable > 0 && h("span", { style: { color: "#86efac", fontWeight: 700 } }, "💰 " + fmtNum(Math.round(facturable)) + " XPF"),
                     item.Type && h("span", null, h(IconText, { icon: item.Type === "Preventive" ? "shield-check" : "flame", size: 12, color: item.Type === "Preventive" ? "#60a5fa" : "#f43f5e" }, item.Type)),
                     prog.total > 0 && h("span", null, h(IconText, { icon: "list-checks", size: 12, color: "#a78bfa" }, "Gamme " + prog.done + "/" + prog.total)))),
                 h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
@@ -2656,7 +2860,24 @@
             })),
         showForm && h(Modal, { title: editing ? "Modifier l'intervention" : "Nouvelle intervention", onClose: closeForm, size: 760 },
           h(InterventionForm, { editItem: editing, onDone: closeForm })),
-        toDelete && h(ConfirmDialog, { title: "Supprimer l'intervention ?", message: "Confirmer la suppression de \"" + (toDelete.Title || toDelete.Travaux_Effectues || "intervention") + "\" ?", onConfirm: async () => { await deleteIntervention(toDelete.Id); setToDelete(null); }, onCancel: () => setToDelete(null) }));
+        toDelete && h(ConfirmDialog, { title: "Supprimer l'intervention ?", message: "Confirmer la suppression de \"" + (toDelete.Title || toDelete.Travaux_Effectues || "intervention") + "\" ?", onConfirm: async () => { await deleteIntervention(toDelete.Id); setToDelete(null); }, onCancel: () => setToDelete(null) }),
+        // Modal motif de rejet
+        rejeteMotifModal ? h(Modal, { title: "Rejeter la demande", onClose: function() { setRejeteMotifModal(null); }, size: 500 },
+          h("div", null,
+            h("p", { style: { color: "#a1a1aa", marginTop: 0, fontSize: 13 } }, "Le mecanicien recevra ce motif dans son app."),
+            h(FormField, { label: "Motif (obligatoire)" },
+              h("textarea", { style: Object.assign({}, inputStyle, { minHeight: 100, resize: "vertical" }), value: rejeteMotifModal.motif, onChange: function(e) { setRejeteMotifModal(Object.assign({}, rejeteMotifModal, { motif: e.target.value })); }, placeholder: "Ex : deja planifie par l'admin, hors champ, ..." })
+            ),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 } },
+              h(Button, { variant: "secondary", onClick: function() { setRejeteMotifModal(null); } }, "Annuler"),
+              h(Button, { onClick: function() {
+                if (!rejeteMotifModal.motif || !rejeteMotifModal.motif.trim()) { alert("Le motif est obligatoire."); return; }
+                rejeterDemande(rejeteMotifModal.interv, rejeteMotifModal.motif.trim());
+              } }, "✗ Confirmer le rejet")
+            )
+          )
+        ) : null
+      );
     }
 
     // ─── Formulaire Piece ───────────────────────────────────────────────
