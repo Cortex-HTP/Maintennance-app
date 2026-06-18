@@ -16831,7 +16831,8 @@
                 var cumulData = chartData.map(function(d) { cumul += d.value; return cumul; });
 
                 // Pills "Sem" pour vue journaliere uniquement (regroupe par semaine lundi->dimanche)
-                // Inclut les forecasts (jours futurs) dans le total semaine et le CA
+                // Inclut les forecasts (jours futurs) dans le total semaine et le CA.
+                // metReelSum + nbDaysSaisis : pour la ligne moyenne quotidienne reelle (verte).
                 var weeks = [];
                 if (!isMonthlyView) {
                   var curW = null;
@@ -16840,17 +16841,21 @@
                     var dayVal = chartData[wj].value + (chartData[wj].forecast || 0);
                     var dayCa = (chartData[wj].ca || 0) + (chartData[wj].forecastCA || 0);
                     var dayHasFc = !!chartData[wj].hasForecast;
+                    var realDayStat = chartData[wj].value || 0;
                     if (curW === null || dow === 1) {
                       if (curW) weeks.push(curW);
-                      curW = { startIdx: wj, endIdx: wj, total: dayVal, totalCa: dayCa, hasFc: dayHasFc };
+                      curW = { startIdx: wj, endIdx: wj, total: dayVal, totalCa: dayCa, hasFc: dayHasFc, metReelSum: realDayStat, nbDaysSaisis: realDayStat > 0 ? 1 : 0 };
                     } else {
                       curW.endIdx = wj;
                       curW.total += dayVal;
                       curW.totalCa += dayCa;
                       if (dayHasFc) curW.hasFc = true;
+                      curW.metReelSum += realDayStat;
+                      if (realDayStat > 0) curW.nbDaysSaisis += 1;
                     }
                   }
                   if (curW) weeks.push(curW);
+                  weeks.forEach(function(w) { w.avgPerDay = w.nbDaysSaisis > 0 ? w.metReelSum / w.nbDaysSaisis : 0; });
                 }
                 // Format compact XPF : 1234567 -> "1.2M" / 12345 -> "12.3K" / sinon brut
                 var fmtCompactXPF = function(v) {
@@ -16924,6 +16929,25 @@
                       showLabel ? h("text", { x: x + barW / 2, y: chartH + 12, textAnchor: "middle", fontSize: 8, fill: (d.isWE ? "#a78bfa" : "#a1a1aa"), fontWeight: isMonthlyView ? 700 : 400 }, d.label) : null
                     );
                   }),
+                  // Ligne moyenne quotidienne reelle par semaine (m/jour saisi) - vue jour uniquement
+                  !isMonthlyView ? weeks.map(function(w, wi) {
+                    if (!w.avgPerDay || w.avgPerDay <= 0 || maxDay <= 0) return null;
+                    var wx1 = paddingLR + w.startIdx * (barW + gap);
+                    var wx2 = paddingLR + w.endIdx * (barW + gap) + barW;
+                    var cxw = (wx1 + wx2) / 2;
+                    var halfWw = barW + gap / 2;
+                    var ax1 = cxw - halfWw;
+                    var ax2 = cxw + halfWw;
+                    if (ax1 < wx1) ax1 = wx1;
+                    if (ax2 > wx2) ax2 = wx2;
+                    var ay = chartH - (w.avgPerDay / maxDay) * (chartH - topPad);
+                    if (ay < topPad || ay > chartH) return null;
+                    return h("g", { key: "wavg" + wi },
+                      h("line", { x1: ax1, x2: ax2, y1: ay, y2: ay, stroke: "#34d399", strokeWidth: 1.6, strokeDasharray: "3 2", opacity: 0.9 }),
+                      h("rect", { x: cxw - 22, y: ay - 10, width: 44, height: 10, rx: 2, fill: "rgba(15,40,30,0.85)", stroke: "rgba(52,211,153,0.55)", strokeWidth: 0.6 }),
+                      h("text", { x: cxw, y: ay - 2, textAnchor: "middle", fontSize: 8, fontWeight: 700, fill: "#86efac" }, Math.round(w.avgPerDay) + " m/j")
+                    );
+                  }) : null,
                   h("line", { x1: paddingLR - 2, x2: totalW - paddingLR + 2, y1: chartH, y2: chartH, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 }),
                   // Trait horizontal SEUIL RENTABILITE (design epure)
                   (function() {
@@ -16955,6 +16979,7 @@
                 h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#f43f5e" } }), "< seuil rentab."),
                 h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#7c3aed" } }), "jour realise"),
                 h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: "#c4b5fd", border: "1px dashed #7c3aed" } }), "previsionnel"),
+                h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { display: "inline-block", width: 14, height: 0, borderTop: "2px dashed #34d399" } }), "moy/jour saisi (semaine)"),
                 h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { width: 12, height: 1.5, background: "#86efac", borderTop: "1px dashed #86efac" } }), "seuil"),
                 h("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, h("span", { style: { background: "rgba(167,139,250,0.20)", color: "#c4b5fd", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 700 } }, "Sem"), "CA semaine")
               )
