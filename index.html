@@ -14643,6 +14643,57 @@
           alert("Erreur reseau : " + e.message);
         }
       };
+      // Invite une comptable : cree un user Supabase Auth avec metadata role=comptable.
+      // Le user pourra ensuite se connecter directement sur l'APP Compta avec son email + mdp.
+      // L'API verifie le JWT admin de l'appelant (meme pattern que resetPasswordFor).
+      var inviteComptable = async function() {
+        var email = prompt("Email de la comptable :");
+        if (email == null) return;
+        email = String(email).trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { alert("Email invalide."); return; }
+        var nom = prompt("Nom complet de la comptable (optionnel, pour les logs) :", "");
+        if (nom == null) return;
+        var pwd = prompt("Mot de passe temporaire (au moins 8 caracteres, majuscules / chiffres / signe recommandes) :");
+        if (pwd == null) return;
+        pwd = String(pwd).trim();
+        if (pwd.length < 8) { alert("Le mot de passe doit faire au moins 8 caracteres."); return; }
+        if (!window.confirm("Creer l'acces APP Comptabilite pour " + email + " ?\n\nUn nouveau compte sera cree sur Supabase Auth. Tu devras transmettre les identifiants a la comptable manuellement (l'app n'envoie pas d'email d'invitation).")) return;
+        try {
+          var tok = null;
+          try {
+            var refreshed = await supabase.auth.refreshSession();
+            tok = refreshed && refreshed.data && refreshed.data.session && refreshed.data.session.access_token;
+          } catch (eRef) {
+            var sess = await supabase.auth.getSession();
+            tok = sess && sess.data && sess.data.session && sess.data.session.access_token;
+          }
+          if (!tok) { alert("Session admin expiree. Deconnecte-toi puis reconnecte-toi, puis reessaie."); return; }
+          var resp = await fetch("https://employes-psi.vercel.app/api/admin-create-compta-user", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok },
+            body: JSON.stringify({ email: email, password: pwd, nom: nom })
+          });
+          var data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            var errMsg = (data && data.error) || ("HTTP " + resp.status);
+            if (errMsg.indexOf("existe deja") >= 0) {
+              alert("Cet email a deja un compte Supabase. Si c'est la bonne personne, utilise plutot 'Reinitialiser le mot de passe' depuis la liste utilisateurs.");
+            } else if (errMsg.indexOf("invalid token") >= 0 || errMsg.indexOf("missing bearer") >= 0) {
+              alert("Session admin expiree ou invalide. Deconnecte-toi puis reconnecte-toi, puis reessaie.\n\n(Details : " + errMsg + ")");
+            } else if (errMsg.indexOf("forbidden") >= 0) {
+              alert("Tu n'as pas les droits administrateur sur l'API. Verifie que ton compte est bien admin.\n\n(Details : " + errMsg + ")");
+            } else {
+              alert("Erreur creation : " + errMsg);
+            }
+            return;
+          }
+          auditLog("invite_comptable", { actor: ctxAu.userEmail, role: "admin", targetType: "user", targetId: email, details: { user_nom: nom } });
+          var url = data.compta_url || "https://comptabilite-wallislabel.vercel.app";
+          alert("Acces APP Comptabilite cree pour " + email + ".\n\nTransmets ces infos a la comptable :\n\nURL : " + url + "\nEmail : " + email + "\nMot de passe : " + pwd + "\n\nElle peut se connecter immediatement.");
+        } catch (e) {
+          alert("Erreur reseau : " + e.message);
+        }
+      };
       var closeModal = function() { setShowModal(false); setEditing(null); };
 
       var subKeys = SOUMISSIONS_SUBPAGES.map(function(s) { return s.key; });
@@ -14797,7 +14848,10 @@
         h(PageHeader, {
           title: h(IconText, { icon: "user-cog", size: 20 }, "Administration Utilisateurs"),
           subtitle: users.length + " utilisateur" + (users.length > 1 ? "s" : "") + " enregistre" + (users.length > 1 ? "s" : ""),
-          action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14, color: "white" }, "Nouvel utilisateur"))
+          action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            h(Button, { onClick: inviteComptable, variant: "secondary", title: "Cree un acces a l'APP Comptabilite (Supabase Auth, role=comptable)" }, h(IconText, { icon: "calculator", size: 14, color: "white" }, "Acces APP Compta")),
+            h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14, color: "white" }, "Nouvel utilisateur"))
+          )
         }),
         // KPIs
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 24 } },
