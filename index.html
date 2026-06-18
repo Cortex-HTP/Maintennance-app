@@ -2725,6 +2725,28 @@
       // Demandes en attente : interventions avec statut = demande_attente
       var demandesEnAttente = interventions.filter(function(i) { return i.Statut_Intervention === "Demande en attente"; });
 
+      // URL de l'endpoint push (heberge sur APP Employes)
+      var PUSH_API_BASE = "https://employes-psi.vercel.app";
+      async function sendPushToMecanicien(mecCode, title, body) {
+        if (!mecCode) return;
+        try {
+          // Pas de credentials necessaire : le push API accepte les requetes
+          // d'origines admin via CORS configure
+          await fetch(PUSH_API_BASE + "/api/push-send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": "Bearer admin" },
+            body: JSON.stringify({
+              acteur_type: "mecanicien",
+              acteur_id: mecCode,
+              title: title,
+              body: body,
+              tag: "admin-event",
+              data: { url: "/" }
+            })
+          });
+        } catch (e) { /* fire and forget */ }
+      }
+
       async function validerDemande(item) {
         try {
           await updateIntervention(Object.assign({}, item, {
@@ -2734,6 +2756,12 @@
             ValideLe: new Date().toISOString(),
             RejeteMotif: ""
           }));
+          // Notification push au mecanicien
+          sendPushToMecanicien(
+            item.MecanicienCode,
+            "✅ Demande validee",
+            (item.Title || "Ta demande") + " a ete validee et planifiee."
+          );
         } catch (e) { alert("Erreur validation : " + e.message); }
       }
       async function rejeterDemande(item, motif) {
@@ -2744,6 +2772,12 @@
             ValideLe: new Date().toISOString(),
             RejeteMotif: motif || ""
           }));
+          // Notification push au mecanicien
+          sendPushToMecanicien(
+            item.MecanicienCode,
+            "❌ Demande rejetee",
+            (item.Title || "Ta demande") + " - Motif : " + (motif || "non specifie")
+          );
           setRejeteMotifModal(null);
         } catch (e) { alert("Erreur rejet : " + e.message); }
       }
