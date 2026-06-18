@@ -5312,6 +5312,9 @@
       var _pin = useState(editItem && editItem.pin ? editItem.pin : "");
       var _acces = useState(editItem ? !!editItem.accesAppEmploye : false);
       var _code = useState(editItem && editItem.code ? editItem.code : "");
+      // Sous-traitant mecanicien : flag distinct (le role peut aussi etre "Mecanicien" interne salarie)
+      var _roleMec = useState(editItem ? !!editItem.roleMecanicien : false);
+      var _tauxHoraire = useState(editItem && editItem.tauxHoraire ? String(editItem.tauxHoraire) : "");
 
       // Auto-generate code "p{N+1}" pour un nouvel employe
       useEffect(function() {
@@ -5362,7 +5365,9 @@
           motifFin: _motifFin[0] || "",
           role: _role[0],
           pin: _pin[0] || "",
-          accesAppEmploye: !!_acces[0]
+          accesAppEmploye: !!_acces[0],
+          roleMecanicien: !!_roleMec[0],
+          tauxHoraire: parseFloat(_tauxHoraire[0]) || 0
         });
       }
 
@@ -5422,6 +5427,25 @@
             h("span", null, h("strong", null, "Important : "), "Sans cette case cochee, l'employe n'apparaitra PAS dans l'app Employes (saisie rapports / heures). Coche uniquement pour les sondeurs et chauffeurs terrain.")
           )
         ),
+        // Section dediee : Mecanicien sous-traitant (separate flag : 'Mecanicien' role salarie != mecanicien sous-traitant facturable)
+        _acces[0] ? h("div", { style: { marginTop: 20, padding: 16, background: _roleMec[0] ? "linear-gradient(135deg, rgba(245,158,11,0.10), rgba(245,158,11,0.02))" : "rgba(255,255,255,0.03)", border: "1px solid " + (_roleMec[0] ? "rgba(245,158,11,0.40)" : "rgba(255,255,255,0.07)"), borderRadius: 12 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } },
+            h(Icon, { name: "wrench", size: 18, color: _roleMec[0] ? "#fbbf24" : "#94a3b8" }),
+            h("div", { style: { fontSize: 14, fontWeight: 800, color: _roleMec[0] ? "#fde68a" : "#cbd5e1" } }, "Mecanicien sous-traitant"),
+            _roleMec[0] ? h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(245,158,11,0.20)", color: "#fde68a" } }, "FACTURATION ACTIVE") : null
+          ),
+          h("label", { style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (_roleMec[0] ? "rgba(245,158,11,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 8, cursor: "pointer", marginBottom: 12 } },
+            h("input", { type: "checkbox", checked: _roleMec[0], onChange: function(e) { _roleMec[1](e.target.checked); }, style: { accentColor: "#fbbf24" } }),
+            h("span", { style: { fontSize: 13, fontWeight: 600, color: _roleMec[0] ? "#fde68a" : "#a1a1aa" } }, "Activer le mode mecanicien sous-traitant (interventions + facturation heures)")
+          ),
+          _roleMec[0] ? h("div", null,
+            h(FormField, { label: "Taux horaire (XPF/h)" }, h("input", { type: "number", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 16, textAlign: "right" }), value: _tauxHoraire[0], onChange: function(e) { _tauxHoraire[1](e.target.value); }, placeholder: "Ex : 5500" })),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 8, padding: 10, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 6 } },
+              h(Icon, { name: "info", size: 12, color: "#fde68a" }),
+              " Ce taux sera ", h("strong", null, "snapshote"), " sur chaque intervention au moment de la saisie. Modifier le taux ici n'affectera pas les interventions deja terminees. Le mecanicien verra son cumul a facturer dans son app, et toi dans ", h("strong", null, "Stats mecaniciens"), "."
+            )
+          ) : h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 8 } }, "Si actif : landing direct sur 'Mes interventions' dans l'APP Employes, et la grille des sondeuses lui sera cachee.")
+        ) : null,
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
           h(Button, { variant: "secondary", onClick: onCancel }, "Annuler"),
           h(Button, { onClick: handleSubmit }, h(IconText, { icon: "check", size: 14 }, editItem ? "Enregistrer" : "Ajouter"))
@@ -6024,9 +6048,12 @@
                     h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: actif ? "none" : "line-through" } }, emp.nom),
                     h("td", { style: { padding: "10px 12px", textDecoration: actif ? "none" : "line-through" } }, emp.prenom),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } },
-                      emp.role
-                        ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: emp.role === "Sondeur" ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.10)", color: emp.role === "Sondeur" ? "#fcd34d" : "#c7d2fe", border: "1px solid " + (emp.role === "Sondeur" ? "rgba(245,158,11,0.35)" : "rgba(99,102,241,0.25)") } }, emp.role)
-                        : "-"
+                      h("div", { style: { display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" } },
+                        emp.role
+                          ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: emp.role === "Sondeur" ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.10)", color: emp.role === "Sondeur" ? "#fcd34d" : "#c7d2fe", border: "1px solid " + (emp.role === "Sondeur" ? "rgba(245,158,11,0.35)" : "rgba(99,102,241,0.25)") } }, emp.role)
+                          : "-",
+                        emp.roleMecanicien ? h("span", { title: "Mecanicien sous-traitant - taux " + (emp.tauxHoraire ? fmtNum(emp.tauxHoraire) + " XPF/h" : "non defini"), style: { padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)" } }, "🔧 Sous-traitant" + (emp.tauxHoraire ? " · " + fmtNum(emp.tauxHoraire) + "/h" : "")) : null
+                      )
                     ),
                     h("td", { style: { padding: "10px 12px" } }, emp.lieuContrat || "-"),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } }, getAnciennete(emp.dateEmbauche)),
