@@ -10398,21 +10398,22 @@
               h("text", { x: cx, y: 21, textAnchor: "middle", fontSize: 11, fill: "#93c5fd", fontWeight: 700 }, "Sem : " + fmtNum(w.caSum) + " XPF")
             ));
           }
-          // Ligne moyenne quotidienne reelle de la semaine (m/jour ouvre)
-          // Centree sur le milieu de la bande de semaine, largeur = 2 barres.
+          // Ligne moyenne quotidienne reelle de la semaine (m/jour saisi)
+          // Extension a GAUCHE uniquement, bord droit cale sur la fin de la derniere
+          // colonne (jamais au-dela). Label en texte halo a gauche du trait pour
+          // ne pas chevaucher les chiffres affiches dans les barres.
           if (w.avgPerDay > 0 && maxMet > 0) {
             var ay = padT + chartHt - (w.avgPerDay / maxMet) * chartHt;
-            var avgLabel = Math.round(w.avgPerDay) + " m/j";
-            var halfW = barW + gap / 2; // demi-largeur = 2 barres + 1 gap
-            var ax1 = cx - halfW;
-            var ax2 = cx + halfW;
-            // Clamp pour ne pas deborder de la bande de semaine si elle est etroite
-            if (ax1 < x1 + 2) ax1 = x1 + 2;
-            if (ax2 > x2 - 2) ax2 = x2 - 2;
+            var avgLabel = "moy " + Math.round(w.avgPerDay) + " m/j";
+            // Bord droit : fin de la derniere barre de la semaine
+            var lastBarEndX = padL + w.endIdx * (barW + gap) + barW;
+            var ax2 = lastBarEndX;
+            // Bord gauche : etendu vers la gauche (~4 barres) sans depasser le debut de bande
+            var ax1 = ax2 - (barW + gap) * 4;
+            if (ax1 < x1 + 1) ax1 = x1 + 1;
             weekAvgLines.push(h("g", { key: "wkavg" + wIdx },
               h("line", { x1: ax1, x2: ax2, y1: ay, y2: ay, stroke: "#34d399", strokeWidth: 2, strokeDasharray: "4 3", opacity: 0.9 }),
-              h("rect", { x: cx - 28, y: ay - 14, width: 56, height: 12, rx: 3, fill: "rgba(15,40,30,0.85)", stroke: "rgba(52,211,153,0.55)", strokeWidth: 0.8 }),
-              h("text", { x: cx, y: ay - 4, textAnchor: "middle", fontSize: 10, fontWeight: 700, fill: "#86efac" }, avgLabel)
+              h("text", { x: ax1 + 2, y: ay - 4, textAnchor: "start", fontSize: 10, fontWeight: 700, fill: "#86efac", style: { paintOrder: "stroke", stroke: "rgba(15,40,30,0.92)", strokeWidth: 3, strokeLinejoin: "round" } }, avgLabel)
             ));
           }
         });
@@ -11502,23 +11503,20 @@
                               fv.val > 0 && barH > 14 ? h("text", { x: x + barW / 2, y: chartH2 - barH + 12, textAnchor: "middle", fontSize: 7, fill: "white", fontWeight: 700, opacity: 0.85, fontStyle: "italic" }, Math.round(fv.val)) : null
                             );
                           }),
-                          // Ligne moyenne quotidienne reelle par semaine (m/jour ouvre)
-                          // Centree sur la bande de semaine, largeur = 2 barres.
+                          // Ligne moyenne quotidienne reelle par semaine (m/jour saisi)
+                          // Extension a GAUCHE uniquement, bord droit cale sur la fin
+                          // de la derniere colonne. Label texte halo a gauche.
                           weeksMini.map(function(w, wIdx) {
                             if (w.avgPerDay <= 0 || maxDayVal <= 0) return null;
                             var wx1 = 20 + w.startIdx * (barW + 2);
                             var wx2 = 20 + w.endIdx * (barW + 2) + barW;
-                            var cxm = (wx1 + wx2) / 2;
-                            var halfWm = barW + 1; // demi-largeur = 2 barres + 1 gap (gap=2)
-                            var ax1 = cxm - halfWm;
-                            var ax2 = cxm + halfWm;
+                            var ax2 = wx2;
+                            var ax1 = ax2 - (barW + 2) * 4;
                             if (ax1 < wx1) ax1 = wx1;
-                            if (ax2 > wx2) ax2 = wx2;
                             var ay = chartH2 - (w.avgPerDay / maxDayVal) * (chartH2 - topPad);
                             return h("g", { key: "miwavg" + wIdx },
                               h("line", { x1: ax1, x2: ax2, y1: ay, y2: ay, stroke: "#34d399", strokeWidth: 1.6, strokeDasharray: "3 2", opacity: 0.9 }),
-                              h("rect", { x: cxm - 22, y: ay - 11, width: 44, height: 10, rx: 2, fill: "rgba(15,40,30,0.85)", stroke: "rgba(52,211,153,0.55)", strokeWidth: 0.6 }),
-                              h("text", { x: cxm, y: ay - 3, textAnchor: "middle", fontSize: 8, fontWeight: 700, fill: "#86efac" }, Math.round(w.avgPerDay) + " m/j")
+                              h("text", { x: ax1 + 2, y: ay - 3, textAnchor: "start", fontSize: 8, fontWeight: 700, fill: "#86efac", style: { paintOrder: "stroke", stroke: "rgba(15,40,30,0.92)", strokeWidth: 2.5, strokeLinejoin: "round" } }, Math.round(w.avgPerDay) + " m/j")
                             );
                           }),
                           h("line", { x1: 18, x2: svgW2 - 2, y1: chartH2, y2: chartH2, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 })
@@ -16930,22 +16928,20 @@
                     );
                   }),
                   // Ligne moyenne quotidienne reelle par semaine (m/jour saisi) - vue jour uniquement
+                  // Extension a GAUCHE uniquement, bord droit cale sur la fin de la
+                  // derniere colonne. Label texte halo a gauche du trait.
                   !isMonthlyView ? weeks.map(function(w, wi) {
                     if (!w.avgPerDay || w.avgPerDay <= 0 || maxDay <= 0) return null;
                     var wx1 = paddingLR + w.startIdx * (barW + gap);
                     var wx2 = paddingLR + w.endIdx * (barW + gap) + barW;
-                    var cxw = (wx1 + wx2) / 2;
-                    var halfWw = barW + gap / 2;
-                    var ax1 = cxw - halfWw;
-                    var ax2 = cxw + halfWw;
+                    var ax2 = wx2;
+                    var ax1 = ax2 - (barW + gap) * 4;
                     if (ax1 < wx1) ax1 = wx1;
-                    if (ax2 > wx2) ax2 = wx2;
                     var ay = chartH - (w.avgPerDay / maxDay) * (chartH - topPad);
                     if (ay < topPad || ay > chartH) return null;
                     return h("g", { key: "wavg" + wi },
                       h("line", { x1: ax1, x2: ax2, y1: ay, y2: ay, stroke: "#34d399", strokeWidth: 1.6, strokeDasharray: "3 2", opacity: 0.9 }),
-                      h("rect", { x: cxw - 22, y: ay - 10, width: 44, height: 10, rx: 2, fill: "rgba(15,40,30,0.85)", stroke: "rgba(52,211,153,0.55)", strokeWidth: 0.6 }),
-                      h("text", { x: cxw, y: ay - 2, textAnchor: "middle", fontSize: 8, fontWeight: 700, fill: "#86efac" }, Math.round(w.avgPerDay) + " m/j")
+                      h("text", { x: ax1 + 2, y: ay - 3, textAnchor: "start", fontSize: 8, fontWeight: 700, fill: "#86efac", style: { paintOrder: "stroke", stroke: "rgba(15,40,30,0.92)", strokeWidth: 2.5, strokeLinejoin: "round" } }, Math.round(w.avgPerDay) + " m/j")
                     );
                   }) : null,
                   h("line", { x1: paddingLR - 2, x2: totalW - paddingLR + 2, y1: chartH, y2: chartH, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 }),
