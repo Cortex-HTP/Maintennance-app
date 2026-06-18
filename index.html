@@ -8317,7 +8317,8 @@
     // ─── Modal Import Releves journaliers ───────────────────────────────
     function ImportRelevesModal({ onClose }) {
       const ctx = useAppData();
-      const personnel = loadPersonnelFromParametres(ctx.parametres);
+      // Sous-traitants exclus : ils ne font pas de releves de sondeurs
+      const personnel = loadPersonnelFromParametres(ctx.parametres).filter(function(p) { return !p.roleMecanicien; });
       const equipements = ctx.equipements;
       const chantiers = ctx.dbChantiers;
       const chantierEquipements = ctx.dbChantierEquipements || [];
@@ -11493,8 +11494,8 @@
       var setAffectations = ctx.setDbAffectations;
       var saisiesPe = ctx.dbSaisies || {};
       var parametres = ctx.parametres;
-      // Filtre les ex-employes (dateFinContrat passee) - non utiles dans le planning
-      var personnel = loadPersonnelFromParametres(parametres).filter(function(p) { return isActiveEmploye(p); });
+      // Filtre les ex-employes (dateFinContrat passee) ET les sous-traitants - non utiles dans le planning
+      var personnel = loadPersonnelFromParametres(parametres).filter(function(p) { return isActiveEmploye(p) && !p.roleMecanicien; });
 
       var _cm = useState(new Date());
       var currentMonth = _cm[0]; var setCurrentMonth = _cm[1];
@@ -13126,7 +13127,8 @@
       // Personnel : on garde les actifs + les ex partis dans les 6 derniers mois
       // (pour calculer la prime d'un employe qui quitte au cours de la periode).
       // Les anciens >6 mois sont exclus pour ne pas polluer la vue.
-      var personnelAll = loadPersonnelFromParametres(parametres);
+      // Sous-traitants exclus : pas de primes pour eux (factures heure)
+      var personnelAll = loadPersonnelFromParametres(parametres).filter(function(p) { return !p.roleMecanicien; });
       var nowPrimes = new Date();
       var cutoffOld = new Date(nowPrimes.getTime() - 6 * 30 * 86400000);
       var personnel = personnelAll.filter(function(p) {
@@ -15817,7 +15819,8 @@
           paliers: primesPaliers,
           affectations: ctx.dbAffectations || [],
           saisies: ctx.dbSaisies || {},
-          personnel: loadPersonnelFromParametres(parametres),
+          // Sous-traitants exclus du calcul primes (pas de primes pour eux)
+          personnel: loadPersonnelFromParametres(parametres).filter(function(p) { return !p.roleMecanicien; }),
           releves: ctx.dbRelevesJourn || [],
           rapportsForage: ctx.dbRapportsForage || []
         });
@@ -16438,13 +16441,14 @@
       };
       // Liste canonique du personnel : meme source que la page Personnel
       // (parametres > categorie personnel_data). Pas de doublons, pas de hash bigint.
+      // Sous-traitants exclus : pas de releves d'heures pour eux (factures intervention)
       var personnel = (function() {
         try {
           var row = parametres.find(function(pr) { return pr.categorie === "personnel_data"; });
           if (!row || !row.valeur) return [];
           var arr = (typeof row.valeur === "string") ? JSON.parse(row.valeur) : row.valeur;
           if (!Array.isArray(arr)) return [];
-          return arr.map(function(p) {
+          return arr.filter(function(p) { return !p.roleMecanicien; }).map(function(p) {
             return { id: p.id, code: p.code, prenom: p.prenom || "", nom: p.nom || "", role: p.role || "" };
           });
         } catch (e) { return []; }
@@ -16703,6 +16707,7 @@
           var p = personnelMap[k];
           if (!p) return;
           if (!isActiveEmploye(p)) return;
+          if (p.roleMecanicien) return;  // sous-traitants exclus des dropdowns employes
           var nomComplet;
           if (p.prenom && p.nom) {
             nomComplet = (p.prenom + " " + p.nom).trim();
@@ -20978,10 +20983,11 @@
       var userEmail = ctx.userEmail || "";
 
       // ─ Personnel : depuis parametres.personnel_data ─
+      // Sous-traitants exclus du Coffre RH (geres ailleurs - contrats prestations)
       var personnelList = (function() {
         var pdRow = (ctx.parametres || []).find(function(p) { return p.categorie === "personnel_data"; });
         if (!pdRow || !pdRow.valeur) return [];
-        try { return JSON.parse(pdRow.valeur) || []; } catch (e) { return []; }
+        try { return (JSON.parse(pdRow.valeur) || []).filter(function(p) { return !p.roleMecanicien; }); } catch (e) { return []; }
       }());
 
       // Si non-RH, on filtre sur l'employe connecte (matching par email)
