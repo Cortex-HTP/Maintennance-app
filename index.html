@@ -5587,9 +5587,13 @@
       var _typeFilter = useState("all");
       var typeFilter = _typeFilter[0], setTypeFilter = _typeFilter[1];
       var nowTodayP = new Date();
-      var actifsList = personnel.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); });
+      // Separation : Sous-traitants (mecaniciens externes) - PAS des employes
+      var sousTraitantsList = personnel.filter(function(emp) { return !!emp.roleMecanicien; });
+      var employesList = personnel.filter(function(emp) { return !emp.roleMecanicien; });
+      var actifsList = employesList.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); });
       var nbActifs = actifsList.length;
-      var nbAnciens = personnel.length - nbActifs;
+      var nbAnciens = employesList.length - nbActifs;
+      var nbSousTraitants = sousTraitantsList.length;
       var nbCDI = actifsList.filter(function(e) { return (e.typeContrat || "CDI") === "CDI"; }).length;
       var nbCDD = actifsList.filter(function(e) { return e.typeContrat === "CDD"; }).length;
       var nbAutreContrat = nbActifs - nbCDI - nbCDD;
@@ -5606,9 +5610,15 @@
 
       var filtered = personnel.filter(function(emp) {
         var actif = isActiveEmploye(emp, nowTodayP);
-        if (viewTab === "actifs" && !actif) return false;
-        if (viewTab === "anciens" && actif) return false;
-        if (typeFilter !== "all" && (emp.typeContrat || "CDI") !== typeFilter) return false;
+        var isMec = !!emp.roleMecanicien;
+        if (viewTab === "soustraitants") {
+          if (!isMec) return false;
+        } else {
+          if (isMec) return false;  // sous-traitants exclus des onglets Actifs/Anciens
+          if (viewTab === "actifs" && !actif) return false;
+          if (viewTab === "anciens" && actif) return false;
+        }
+        if (viewTab !== "soustraitants" && typeFilter !== "all" && (emp.typeContrat || "CDI") !== typeFilter) return false;
         if (!search) return true;
         var s = search.toLowerCase();
         return (emp.nom + " " + emp.prenom).toLowerCase().indexOf(s) !== -1 || (emp.lieuContrat || "").toLowerCase().indexOf(s) !== -1;
@@ -6016,6 +6026,7 @@
         h("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
           tabBtnView("actifs", "Actifs", nbActifs, "#22c55e"),
           tabBtnView("anciens", "Anciens employes", nbAnciens, "#f43f5e"),
+          tabBtnView("soustraitants", "🔧 Sous-traitants", nbSousTraitants, "#fbbf24"),
           tabBtnView("tous", "Tous", personnel.length, "#a78bfa")
         ),
         // Filtre type contrat
@@ -6037,7 +6048,7 @@
                 })
               )),
               h("tbody", null, filtered.length === 0 ?
-                h("tr", null, h("td", { colSpan: 11, style: { padding: 40, textAlign: "center", color: "#71717a" } }, viewTab === "anciens" ? "Aucun ancien employe" : "Aucun employe enregistre")) :
+                h("tr", null, h("td", { colSpan: 11, style: { padding: 40, textAlign: "center", color: "#71717a" } }, viewTab === "anciens" ? "Aucun ancien employe" : viewTab === "soustraitants" ? "Aucun sous-traitant enregistre. Cree un employe puis active 'Mecanicien sous-traitant' dans son profil." : "Aucun employe enregistre")) :
                 sortByField(filtered, "nom").map(function(emp) {
                   var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
                   var actif = isActiveEmploye(emp, nowTodayP);
@@ -9249,7 +9260,8 @@
       var coutMetreGlobalEstime = (function() {
         try {
           var parametresList = ctxAv.parametres || [];
-          var persList = loadPersonnelFromParametres(parametresList);
+          // Exclut les sous-traitants (factures a l'heure, pas salaries)
+          var persList = loadPersonnelFromParametres(parametresList).filter(function(p) { return !p.roleMecanicien; });
           var masseSalarialeMensuelle = persList.reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
           var chargesFixesMensuel = (ctxAv.dbChargesFixes || []).filter(function(c) { return c && c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
           var empruntsMensuel = (ctxAv.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
@@ -15759,7 +15771,8 @@
         }
       } catch(e) { personnelDataAll = []; }
       // Filtre : exclure les ex-employes (dateFinContrat passee)
-      var masseSalarialeMensuelle = (personnelDataAll || []).filter(function(p) { return isActiveEmploye(p, periodEnd || new Date()); }).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
+      // Exclut les sous-traitants (factures heure, pas salaries)
+      var masseSalarialeMensuelle = (personnelDataAll || []).filter(function(p) { return isActiveEmploye(p, periodEnd || new Date()) && !p.roleMecanicien; }).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
       // Nombre de mois dans la periode (approx : 30 jours = 1 mois)
       var nbMoisPeriode = (function() {
         if (!periodStart || !periodEnd) return 1;
