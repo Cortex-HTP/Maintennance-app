@@ -9,7 +9,8 @@
 
 CREATE TABLE IF NOT EXISTS public.commandes_materiel_mec (
   id bigserial PRIMARY KEY,
-  intervention_id bigint REFERENCES public.interventions(id) ON DELETE SET NULL,
+  -- interventions.id est de type uuid dans ce projet, donc on aligne ici.
+  intervention_id uuid REFERENCES public.interventions(id) ON DELETE SET NULL,
   mecanicien_code text NOT NULL,
   mecanicien_nom text,
   description text NOT NULL,
