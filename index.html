@@ -4130,7 +4130,9 @@
       const [loading, setLoading] = useState(true);
       const [refreshFlag, setRefreshFlag] = useState(0);
       // Form state
-      const [destType, setDestType] = useState("all"); // "all" ou "individuel"
+      // destType : 'all' (tous), 'sondeurs' (responsables sondeurs), 'mecaniciens'
+      // (sous-traitants meca avec roleMecanicien=true), 'individuel' (1 personne ciblee)
+      const [destType, setDestType] = useState("all");
       const [destPersonnelId, setDestPersonnelId] = useState("");
       const [sujet, setSujet] = useState("");
       const [message, setMessage] = useState("");
@@ -4182,13 +4184,18 @@
         if (!message.trim()) { alert("Le message ne peut pas etre vide."); return; }
         if (destType === "individuel" && !destPersonnelId) { alert("Choisis un destinataire."); return; }
         setSending(true);
+        var destLabel = "Tous les employes";
+        if (destType === "sondeurs") destLabel = "Tous les responsables sondeurs";
+        else if (destType === "mecaniciens") destLabel = "Tous les mecaniciens";
+        else if (destType === "individuel") {
+          var p = personnelData.find(function(pp) { return String(pp.code) === String(destPersonnelId); });
+          destLabel = p ? ((p.prenom || "") + " " + (p.nom || "")).trim() : "";
+        }
         var payload = {
           expediteur: "admin",
-          destinataire_id: destType === "all" ? null : strToBigintMessages(destPersonnelId),
-          destinataire_label: destType === "all" ? "Tous les employes" : (function() {
-            var p = personnelData.find(function(pp) { return String(pp.code) === String(destPersonnelId); });
-            return p ? ((p.prenom || "") + " " + (p.nom || "")).trim() : "";
-          })(),
+          destinataire_id: destType === "individuel" ? strToBigintMessages(destPersonnelId) : null,
+          destinataire_type: destType,
+          destinataire_label: destLabel,
           sujet: sujet.trim() || null,
           message: message.trim(),
           importance: importance
@@ -4254,6 +4261,8 @@
               h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Destinataire"),
               h("select", { value: destType, onChange: function(e) { setDestType(e.target.value); setDestPersonnelId(""); }, style: inputStyle },
                 h("option", { value: "all" }, "Tous les employes (broadcast)"),
+                h("option", { value: "sondeurs" }, "Tous les responsables sondeurs"),
+                h("option", { value: "mecaniciens" }, "Tous les mecaniciens sous-traitants"),
                 h("option", { value: "individuel" }, "Un employe specifique")
               )
             ),
@@ -18454,6 +18463,22 @@
           setCmds(cmds.map(function(x) { return x.id === id ? Object.assign({}, x, updated, { _source: x._source || "sondeur" }) : x; }));
         });
       };
+      var deleteCommande = function(id) {
+        var cmdLoc = cmds.find(function(x) { return x.id === id; });
+        if (!cmdLoc) return;
+        var label = cmdLoc._source === "mecanicien"
+          ? (cmdLoc.mecanicien_nom || "Mecanicien") + " (intervention #" + (cmdLoc.intervention_id || "?") + ")"
+          : "ce bon de commande";
+        if (!confirm("Supprimer definitivement " + label + " ? Cette action est irreversible.")) return;
+        var table = cmdLoc._source === "mecanicien" ? "commandes_materiel_mec" : "bons_commande";
+        var realId = cmdLoc._source === "mecanicien" ? cmdLoc._rawId : id;
+        supabase.from(table).delete().eq("id", realId).then(function(res) {
+          if (res.error) { if (showToast) showToast(res.error.message, "error"); else alert("Erreur : " + res.error.message); return; }
+          setCmds(cmds.filter(function(x) { return x.id !== id; }));
+          setExpanded(null);
+          if (showToast) showToast("Commande supprimee", "success");
+        });
+      };
       var updateInterventionStatut = function(id, st) {
         updateStatut("demandes_intervention", id, st, function(updated) {
           setInts(ints.map(function(x) { return x.id === id ? updated : x; }));
@@ -18851,7 +18876,8 @@
                 c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
                 (c.statut === "soumis" || c.statut === "soumise" || c.statut === "traite") ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
                 c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette commande ?")) { updateCommandeStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
-                (c.statut !== "soumis" && c.statut !== "soumise") ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCommandeStatut(c.id, isMec ? "soumise" : "soumis"); } }) : null
+                (c.statut !== "soumis" && c.statut !== "soumise") ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCommandeStatut(c.id, isMec ? "soumise" : "soumis"); } }) : null,
+                actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteCommande(c.id); } })
               )
             ]) : null
           );
