@@ -17,9 +17,15 @@ CREATE TABLE IF NOT EXISTS public.commandes_materiel_mec (
   photos text[] DEFAULT '{}',
   statut text DEFAULT 'soumise',          -- soumise, validee, refusee, commandee, livree
   notes_admin text,
+  -- Lignes detaillees de la commande (chaque ligne = un materiel demande)
+  -- Format : [{ designation, reference, isLiquide, quantite, autreInfo, photos: [url, ...] }, ...]
+  lignes jsonb DEFAULT '[]'::jsonb,
   date_creation timestamptz DEFAULT now(),
   date_traitement timestamptz
 );
+
+-- Migration : ajoute la colonne lignes si la table existait deja sans elle
+ALTER TABLE public.commandes_materiel_mec ADD COLUMN IF NOT EXISTS lignes jsonb DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_cmd_mat_mec_interv ON public.commandes_materiel_mec(intervention_id);
 CREATE INDEX IF NOT EXISTS idx_cmd_mat_mec_statut ON public.commandes_materiel_mec(statut);
