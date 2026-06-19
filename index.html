@@ -18133,7 +18133,9 @@
           supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }),
           supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }),
           supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("created_at", { ascending: false }),
-          supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false })
+          supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }),
+          // Commandes materiel des mecaniciens - fusionnees a l'onglet "Commandes" comme une source unifiee.
+          supabase.from("commandes_materiel_mec").select("id,intervention_id,mecanicien_code,mecanicien_nom,description,urgence,photos,lignes,statut,notes_admin,date_creation,date_traitement").order("date_creation", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -18142,9 +18144,36 @@
           if (results[3].error) console.warn("[soumissions] interventions:", results[3].error.message);
           if (results[4].error) console.warn("[soumissions] rapports:", results[4].error.message);
           if (results[5] && results[5].error) console.warn("[soumissions] carburant:", results[5].error.message);
+          if (results[6] && results[6].error) console.warn("[soumissions] cmd materiel mec:", results[6].error.message);
           setRels(results[0].data || []);
           setConges(results[1].data || []);
-          setCmds(results[2].data || []);
+          // Fusionne les 2 sources : bons_commande (sondeurs) + commandes_materiel_mec (mecanos).
+          // On normalise les commandes mecano au format attendu par renderCommandes/applyFilter :
+          // id, statut, lignes, created_at + un flag _source pour le rendu specifique.
+          var bonsCmd = (results[2].data || []).map(function(c) { return Object.assign({}, c, { _source: "sondeur" }); });
+          var cmdsMecRaw = (results[6] && results[6].data) || [];
+          var cmdsMec = cmdsMecRaw.map(function(c) {
+            return {
+              id: "mec-" + c.id,           // prefixe pour eviter collision d'id avec bons_commande
+              _rawId: c.id,                 // garde l'id reel pour les updates
+              _source: "mecanicien",
+              created_at: c.date_creation,
+              statut: c.statut,
+              lignes: Array.isArray(c.lignes) ? c.lignes : [],
+              description: c.description,
+              urgence: c.urgence,
+              photos: Array.isArray(c.photos) ? c.photos : [],
+              mecanicien_nom: c.mecanicien_nom,
+              mecanicien_code: c.mecanicien_code,
+              intervention_id: c.intervention_id,
+              notes_admin: c.notes_admin,
+              date_traitement: c.date_traitement
+            };
+          });
+          var allCmds = bonsCmd.concat(cmdsMec).sort(function(a, b) {
+            return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+          });
+          setCmds(allCmds);
           setInts(results[3].data || []);
           setRaps(results[4].data || []);
           setCarbs((results[5] && results[5].data) || []);
@@ -18329,8 +18358,21 @@
         }).catch(function(e) { alert("Erreur : " + e.message); });
       };
       var updateCommandeStatut = function(id, st) {
+        // Distingue source : bons_commande (sondeur) vs commandes_materiel_mec (mecanicien).
+        // L'id des commandes mecano est prefixe "mec-" pour eviter les collisions ; on
+        // recupere le vrai id via _rawId pour l'UPDATE.
+        var cmdLoc = cmds.find(function(x) { return x.id === id; });
+        if (cmdLoc && cmdLoc._source === "mecanicien") {
+          var realId = cmdLoc._rawId;
+          supabase.from("commandes_materiel_mec").update({ statut: st, date_traitement: new Date().toISOString() }).eq("id", realId).select().single().then(function(res) {
+            if (res.error) { if (showToast) showToast(res.error.message, "error"); return; }
+            setCmds(cmds.map(function(x) { return x.id === id ? Object.assign({}, x, { statut: st, date_traitement: res.data.date_traitement }) : x; }));
+            if (showToast) showToast("Statut commande mecanicien mis a jour");
+          });
+          return;
+        }
         updateStatut("bons_commande", id, st, function(updated) {
-          setCmds(cmds.map(function(x) { return x.id === id ? updated : x; }));
+          setCmds(cmds.map(function(x) { return x.id === id ? Object.assign({}, x, updated, { _source: x._source || "sondeur" }) : x; }));
         });
       };
       var updateInterventionStatut = function(id, st) {
@@ -18654,24 +18696,34 @@
       // ── Render onglet "Commandes" ──
       var renderCommandes = function() {
         var list = applyFilter(cmds);
-        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun bon de commande.");
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune commande.");
         return h("div", null, list.map(function(c) {
           var isExp = expanded === ("k-" + c.id);
           var lignes = Array.isArray(c.lignes) ? c.lignes : [];
-          var name = personnelLabel(c.demandeur_id);
-          var chant = chantierLabel(c.chantier_id);
+          var isMec = c._source === "mecanicien";
+          var name = isMec ? (c.mecanicien_nom || c.mecanicien_code || "Mecanicien") : personnelLabel(c.demandeur_id);
+          var chant = isMec ? "Intervention #" + (c.intervention_id || "?") : chantierLabel(c.chantier_id);
+          var sourceBadge = h("span", { style: { display: "inline-block", marginLeft: 8, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, letterSpacing: 0.4, background: isMec ? "rgba(245,158,11,0.20)" : "rgba(99,102,241,0.20)", color: isMec ? "#fde68a" : "#a5b4fc", border: "1px solid " + (isMec ? "rgba(245,158,11,0.45)" : "rgba(99,102,241,0.45)") } }, isMec ? "MECANICIEN" : "SONDEUR");
+          var urgenceBadge = (isMec && c.urgence) ? h("span", { style: { display: "inline-block", marginLeft: 6, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: c.urgence === "urgente" ? "rgba(220,38,38,0.20)" : c.urgence === "elevee" ? "rgba(249,115,22,0.20)" : "rgba(148,163,184,0.15)", color: c.urgence === "urgente" ? "#fca5a5" : c.urgence === "elevee" ? "#fdba74" : "#cbd5e1" } }, (c.urgence || "").toUpperCase()) : null;
           return h(React.Fragment, { key: "k-" + c.id },
             rowHeader({
-              name: name,
-              sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
-              sender: personnelLabel(c.demandeur_id),
+              name: h("span", null, name, sourceBadge, urgenceBadge),
+              sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (!isMec && c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
+              sender: name,
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
               isExpanded: isExp,
               onClick: function() { toggleExpand("k", c.id); }
             }),
             isExp ? detailWrap([
-              detailGrid([
+              detailGrid(isMec ? [
+                { label: "Mecanicien", value: name },
+                { label: "Code", value: c.mecanicien_code },
+                { label: "Intervention liee", value: "#" + (c.intervention_id || "?") },
+                { label: "Urgence", value: (c.urgence || "").toUpperCase() },
+                { label: "Cree le", value: fmtDateTime(c.created_at) },
+                c.date_traitement ? { label: "Traite le", value: fmtDateTime(c.date_traitement) } : null
+              ].filter(Boolean) : [
                 { label: "Demandeur", value: name },
                 { label: "Telephone", value: c.tel },
                 { label: "Chantier", value: chant },
@@ -18684,30 +18736,43 @@
                   lignes.map(function(l, i) {
                     var designation = l.designation || l.description || "-";
                     var refStr = l.reference || l.ref || "";
+                    var qty = l.quantite || l.qte || l.qty || 0;
+                    var unit = l.unite || l.unit || (l.isLiquide ? "L" : "");
                     var known = isPieceKnown(designation, refStr);
-                    return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "6px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, gap: 12, flexWrap: "wrap" } },
-                      h("div", { style: { flex: "1 1 200px", minWidth: 0 } },
-                        h("div", null,
-                          h("span", { style: { fontWeight: 600 } }, designation),
-                          refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
+                    var photos = Array.isArray(l.photos) ? l.photos : [];
+                    return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13 } },
+                      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
+                        h("div", { style: { flex: "1 1 200px", minWidth: 0 } },
+                          h("div", null,
+                            h("span", { style: { fontWeight: 600 } }, designation),
+                            refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
+                          ),
+                          l.autreInfo ? h("div", { style: { fontSize: 11, color: "#cbd5e1", marginTop: 4, fontStyle: "italic" } }, l.autreInfo) : null,
+                          !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
+                            style: { marginTop: 6, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" } },
+                            h(Icon, { name: "plus", size: 10, color: "#fde68a" }),
+                            "+ Pieces"
+                          ) : null
                         ),
-                        !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
-                          style: { marginTop: 6, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" } },
-                          h(Icon, { name: "plus", size: 10, color: "#fde68a" }),
-                          "+ Pieces"
-                        ) : null
+                        h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", flexShrink: 0, fontSize: 14 } }, qty + " " + unit)
                       ),
-                      h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", flexShrink: 0, fontSize: 14 } }, (l.quantite || l.qte || l.qty || 0) + " " + (l.unite || l.unit || ""))
+                      photos.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))", gap: 6, marginTop: 8 } },
+                        photos.map(function(url, pi) {
+                          return h("a", { key: pi, href: url, target: "_blank", rel: "noopener", style: { display: "block" } },
+                            h("img", { src: url, alt: "P" + (pi + 1), style: { width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 6, border: "1px solid rgba(255,255,255,0.10)" } })
+                          );
+                        })
+                      ) : null
                     );
                   })
                 )
               ) : null,
-              c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null,
+              !isMec && c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null,
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
-                c.statut === "soumis" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
-                c.statut === "soumis" || c.statut === "traite" ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
-                c.statut === "soumis" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser ce bon de commande ?")) { updateCommandeStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
-                c.statut !== "soumis" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCommandeStatut(c.id, "soumis"); } }) : null
+                c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
+                (c.statut === "soumis" || c.statut === "soumise" || c.statut === "traite") ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
+                c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette commande ?")) { updateCommandeStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
+                (c.statut !== "soumis" && c.statut !== "soumise") ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateCommandeStatut(c.id, isMec ? "soumise" : "soumis"); } }) : null
               )
             ]) : null
           );
