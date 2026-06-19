@@ -395,10 +395,10 @@
       return { nom: p.Title, description: descStr, frequence_label: p.Frequence, equipements_codes: p.Equipements, prochaine_execution_date: p.ProchainIntervention || null, statut: STATUT_PLAN_TO_DB[p.Statut] || "actif", type_recurrence: type_rec, frequence: freq_num || 1, duree_estimee_min: p.DureeEstimeeMin != null && p.DureeEstimeeMin !== "" ? parseInt(p.DureeEstimeeMin) : null };
     }
     function pieceFromDb(r) {
-      return { Id: r.id, Reference: r.reference || "", Designation: r.designation || "", Categorie: r.categorie || "", Fournisseur: r.fournisseur || "", PrixUnitaire: String(r.prix_unitaire ?? 0), Stock: String(r.stock_actuel ?? 0), StockMin: String(r.stock_minimum ?? 0), Emplacement: r.emplacement || "", Compatible: r.compatible || "" };
+      return { Id: r.id, Reference: r.reference || "", Designation: r.designation || "", Categorie: r.categorie || "", Fournisseur: r.fournisseur || "", PrixUnitaire: String(r.prix_unitaire ?? 0), Stock: String(r.stock_actuel ?? 0), StockMin: String(r.stock_minimum ?? 0), Emplacement: r.emplacement || "", Compatible: r.compatible || "", StatutValidation: r.statut_validation || "actif" };
     }
     function pieceToDb(p) {
-      return { reference: p.Reference, designation: p.Designation, categorie: p.Categorie, fournisseur: p.Fournisseur, prix_unitaire: parseFloat(p.PrixUnitaire) || 0, stock_actuel: parseInt(p.Stock) || 0, stock_minimum: parseInt(p.StockMin) || 0, emplacement: p.Emplacement, compatible: p.Compatible };
+      return { reference: p.Reference, designation: p.Designation, categorie: p.Categorie, fournisseur: p.Fournisseur, prix_unitaire: parseFloat(p.PrixUnitaire) || 0, stock_actuel: parseInt(p.Stock) || 0, stock_minimum: parseInt(p.StockMin) || 0, emplacement: p.Emplacement, compatible: p.Compatible, statut_validation: p.StatutValidation || "actif" };
     }
     function releveFromDb(r, eqCodeById) {
       return { Id: r.id, Equipement: eqCodeById[r.equipement_id] || "", EquipementId: r.equipement_id, Date: r.date_releve || "", Horametre: r.horametre != null ? String(r.horametre) : "", KM: r.km != null ? String(r.km) : "", Technicien: r.saisi_par || "" };
@@ -3324,7 +3324,7 @@
     }
 
     // ─── Pieces en attente : scan des consommables des rapports inconnus du catalogue ───
-    function PiecesEnAttenteView({ pieces, addPiece }) {
+    function PiecesEnAttenteView({ pieces, addPiece, updatePiece, deletePiece, showToast }) {
       const [raps, setRaps] = useState([]);
       const [loading, setLoading] = useState(true);
       const [refreshKey, setRefreshKey] = useState(0);
@@ -3395,8 +3395,63 @@
         }
       }
 
+      // Pieces ajoutees par les mecaniciens (saisie libre depuis commande materiel)
+      // en attente de validation par l'admin.
+      var enAttenteMec = (pieces || []).filter(function(p) { return (p.StatutValidation || "actif") === "en_attente"; });
+      async function validateMecPiece(p) {
+        try {
+          await updatePiece(Object.assign({}, p, { StatutValidation: "actif" }));
+          if (showToast) showToast("Piece validee et ajoutee au catalogue", "success");
+        } catch (e) { alert("Erreur : " + (e.message || e)); }
+      }
+      async function rejectMecPiece(p) {
+        if (!confirm("Refuser '" + (p.Designation || p.Reference) + "' ?\nLa piece sera supprimee du stock.")) return;
+        try {
+          await deletePiece(p.Id);
+          if (showToast) showToast("Piece refusee et supprimee", "success");
+        } catch (e) { alert("Erreur : " + (e.message || e)); }
+      }
       if (loading) return h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...");
       return h("div", null,
+        // Section 1 : pieces ajoutees par les MECANICIENS (en saisie libre depuis commande materiel)
+        enAttenteMec.length > 0 ? h("div", { style: { marginBottom: 24 } },
+          h("h3", { style: { margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: "#fde68a", display: "flex", alignItems: "center", gap: 8 } },
+            h(Icon, { name: "wrench", size: 14, color: "#fde68a" }),
+            "Saisies libres mecaniciens a valider (" + enAttenteMec.length + ")"
+          ),
+          h("div", { style: { background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#fde68a" } },
+            h(IconText, { icon: "info", size: 13, color: "#fde68a" }, "Pieces ajoutees au stock depuis une commande materiel mecanicien (saisie libre, hors catalogue). Valide pour ajouter au catalogue, refuse pour supprimer.")
+          ),
+          h(Card, { style: { padding: 0, overflow: "hidden" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
+                ["Reference", "Designation", "Categorie", "Compatible", "Stock", "Actions"].map(function(x, i) {
+                  return h("th", { key: i, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
+                })
+              )),
+              h("tbody", null, enAttenteMec.map(function(p) {
+                return h("tr", { key: p.Id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                  h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, p.Reference || "(pas de ref)"),
+                  h("td", { style: { padding: "10px 12px", color: "#fafafa" } }, p.Designation || "-"),
+                  h("td", { style: { padding: "10px 12px", fontSize: 12, color: "#a1a1aa" } }, p.Categorie || "-"),
+                  h("td", { style: { padding: "10px 12px", fontSize: 11, fontFamily: "monospace", color: "#a1a1aa" } }, p.Compatible || "-"),
+                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: "#cbd5e1" } }, p.Stock || 0),
+                  h("td", { style: { padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" } },
+                    h("button", { onClick: function() { validateMecPiece(p); }, title: "Valider et ajouter au catalogue",
+                      style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", color: "#86efac", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6, fontFamily: "inherit" } }, "✓ Valider"),
+                    h("button", { onClick: function() { rejectMecPiece(p); }, title: "Refuser et supprimer",
+                      style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.40)", color: "#fda4af", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" } }, "✗ Refuser")
+                  )
+                );
+              }))
+            )
+          )
+        ) : null,
+        // Section 2 : consommables saisis par les SONDEURS dans leurs rapports
+        h("h3", { style: { margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: "#67e8f9", display: "flex", alignItems: "center", gap: 8 } },
+          h(Icon, { name: "file-text", size: 14, color: "#67e8f9" }),
+          "Consommables saisis dans les rapports sondeurs"
+        ),
         h("div", { style: { background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#67e8f9" } },
           h(IconText, { icon: "info", size: 13, color: "#67e8f9" }, "Ces consommables ont ete saisis par les sondeurs dans leurs rapports mais ne sont PAS dans ton catalogue Pieces detachees. Tu peux les transformer en pieces officielles.")
         ),
@@ -3510,13 +3565,37 @@
       var nbAircore = pieces.filter(function(p) { var f = familleOf(p); return f === "aircore" || f === "both"; }).length;
       var nbCarotte = pieces.filter(function(p) { var f = familleOf(p); return f === "carotte" || f === "both"; }).length;
       var nbAutres = pieces.filter(function(p) { return familleOf(p) === "autres"; }).length;
+      // Liste des pieces en attente de validation (saisies libres mecaniciens)
+      const enAttente = pieces.filter(function(p) { return (p.StatutValidation || "actif") === "en_attente"; });
       const filtered = pieces.filter((p) => {
+        // L'onglet 'liste' n'affiche QUE les pieces validees (actif).
+        // L'onglet 'en_attente' affiche les pieces a valider.
+        const sv = p.StatutValidation || "actif";
+        if (tab === "en_attente") {
+          if (sv !== "en_attente") return false;
+        } else if (tab === "liste") {
+          if (sv === "en_attente") return false;
+        }
         const mc = categorie === "all" || p.Categorie === categorie;
         const ms = !search || p.Reference.toLowerCase().includes(search.toLowerCase()) || p.Designation.toLowerCase().includes(search.toLowerCase()) || (p.Fournisseur || "").toLowerCase().includes(search.toLowerCase());
         const f = familleOf(p);
         const mf = famille === "all" || f === famille || (famille !== "autres" && f === "both");
         return mc && ms && mf;
       });
+      // Actions de validation/refus pour une piece en attente
+      const validatePiece = async (p) => {
+        try {
+          await updatePiece(Object.assign({}, p, { StatutValidation: "actif" }));
+          if (showToast) showToast("Piece validee et ajoutee au catalogue", "success");
+        } catch (e) { alert("Erreur : " + e.message); }
+      };
+      const rejectPiece = async (p) => {
+        if (!confirm("Refuser '" + (p.Designation || p.Reference) + "' ? La piece sera supprimee du stock.")) return;
+        try {
+          await deletePiece(p.Id);
+          if (showToast) showToast("Piece refusee et supprimee", "success");
+        } catch (e) { alert("Erreur : " + e.message); }
+      };
       const statusOf = (p) => {
         const s = parseInt(p.Stock || 0), m = parseInt(p.StockMin || 0);
         if (s === 0) return "Rupture";
@@ -3595,7 +3674,7 @@
           tabBtn("inflation", "Inflation", "trending-up")
         ),
         tab === "inflation" ? h(InflationView, { pieces: pieces }) :
-        tab === "attente" ? h(PiecesEnAttenteView, { pieces: pieces, addPiece: addPiece }) :
+        tab === "attente" ? h(PiecesEnAttenteView, { pieces: pieces, addPiece: addPiece, updatePiece: updatePiece, deletePiece: deletePiece, showToast: showToast }) :
         h(React.Fragment, null,
         h("div", { style: { display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" } },
           h(KPICard, { icon: h(Icon, { name: "package", size: 22, color: "#ffffff" }), label: "References", value: fmtNum(pieces.length), color: "#818cf8" }),
