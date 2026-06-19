@@ -1939,6 +1939,57 @@
         toDelete && h(ConfirmDialog, { title: "Supprimer le plan ?", message: "Confirmer la suppression du plan \"" + toDelete.Title + "\" ?", onConfirm: handleConfirmDelete, onCancel: () => setToDelete(null) }));
     }
 
+    // ─── SearchableSelect : combobox avec filtrage texte ────────────────
+    // Remplace les <select> natifs quand la liste est longue (ex: Plans).
+    // Props : value, onChange, options [{value, label, group?}], placeholder, groupLabels
+    function SearchableSelect({ value, onChange, options, placeholder, groupLabels }) {
+      const [query, setQuery] = useState("");
+      const [open, setOpen] = useState(false);
+      var selectedOption = (options || []).find(function(o) { return o.value === value; });
+      var displayValue = selectedOption ? selectedOption.label : "";
+      var q = String(query || "").toLowerCase().trim();
+      var filtered = q === "" ? (options || []) : (options || []).filter(function(o) {
+        return (o.label || "").toLowerCase().indexOf(q) >= 0 || String(o.value || "").toLowerCase().indexOf(q) >= 0;
+      });
+      var grouped = {};
+      var groupOrder = [];
+      filtered.forEach(function(o) {
+        var g = o.group || "";
+        if (!grouped[g]) { grouped[g] = []; groupOrder.push(g); }
+        grouped[g].push(o);
+      });
+      function selectOpt(v) { onChange(v); setOpen(false); setQuery(""); }
+      return h("div", { style: { position: "relative" } },
+        h("input", {
+          type: "text",
+          style: Object.assign({}, inputStyle, { width: "100%" }),
+          value: open ? query : displayValue,
+          onFocus: function() { setOpen(true); setQuery(""); },
+          onBlur: function() { setTimeout(function() { setOpen(false); }, 200); },
+          onChange: function(e) { setQuery(e.target.value); setOpen(true); },
+          placeholder: placeholder || "Tape pour rechercher..."
+        }),
+        open ? h("div", {
+          style: { position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "rgba(36,40,60,0.97)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, maxHeight: 280, overflowY: "auto", zIndex: 100, backdropFilter: "blur(12px)", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }
+        },
+          groupOrder.map(function(g, idx) {
+            return h("div", { key: g || ("_def_" + idx) },
+              g && groupLabels ? h("div", { style: { padding: "8px 12px", fontSize: 10.5, fontWeight: 800, color: "#a1a1aa", background: "rgba(255,255,255,0.04)", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.06)" : "none", textTransform: "uppercase", letterSpacing: 0.6 } }, g) : null,
+              grouped[g].map(function(o) {
+                var isSelected = o.value === value;
+                return h("div", {
+                  key: g + "_" + o.value,
+                  onMouseDown: function(e) { e.preventDefault(); selectOpt(o.value); },
+                  style: { padding: "9px 12px", cursor: "pointer", fontSize: 13, color: isSelected ? "#a78bfa" : "#e5e7eb", background: isSelected ? "rgba(167,139,250,0.12)" : "transparent", borderTop: "1px solid rgba(255,255,255,0.03)" }
+                }, o.label);
+              })
+            );
+          }),
+          filtered.length === 0 ? h("div", { style: { padding: "12px", fontSize: 12, color: "#71717a", textAlign: "center" } }, "Aucun resultat pour \"" + query + "\"") : null
+        ) : null
+      );
+    }
+
     // ─── Formulaire Intervention (utilise dans un modal) ────────────────
     function InterventionForm({ editItem, onDone }) {
       const { equipements, plans, pieces, piecesEquipements, addIntervention, updateIntervention, addReleve, parametres } = useAppData();
@@ -2036,6 +2087,16 @@
       // Statut effectif calcule a la volee depuis la gamme
       const effectiveStatus = computeIntervStatus(f);
       const progress = gammeProgress(f.Gamme);
+      // Auto-passage du Statut a "Termine" quand toutes les etapes de la gamme sont cochees.
+      // Sans ca, le statut DB ne changeait qu'au moment du Enregistrer, et le user ne voyait
+      // pas le passage immediat. Du coup le calcul de prochaine maintenance auto (qui
+      // dependait de Statut_Intervention === 'Termine') ne se faisait pas tant qu'on n'avait
+      // pas explicitement sauve avec Statut = Termine.
+      React.useEffect(function() {
+        if (progress.total > 0 && progress.done === progress.total && f.Statut_Intervention !== "Termine") {
+          setF(function(prev) { return Object.assign({}, prev, { Statut_Intervention: "Termine" }); });
+        }
+      }, [progress.done, progress.total]);
       const submit = async () => {
         if (!f.Title || !f.Equipement) return alert("Veuillez remplir au minimum le titre et l'equipement.");
         setSaving(true);
@@ -2085,9 +2146,12 @@
             h(FormField, { label: "Cout (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.Cout, onChange: (e) => upd("Cout", e.target.value), placeholder: "0" })),
             h(FormField, { label: "Horametre (h)" }, h("input", { type: "number", style: inputStyle, value: f.Horametre, onChange: (e) => upd("Horametre", e.target.value), placeholder: "0" })),
             h(FormField, { label: "Kilometrage (km)" }, h("input", { type: "number", style: inputStyle, value: f.KM, onChange: (e) => upd("KM", e.target.value), placeholder: "0" })),
-            h(FormField, { label: "Plan de maintenance" }, h("select", { style: selectStyle, value: f.Plan, onChange: (e) => upd("Plan", e.target.value) },
-              h("option", { value: "" }, "-- Aucun (intervention curative ou hors plan) --"),
-              (function() {
+            h(FormField, { label: "Plan de maintenance" }, h(SearchableSelect, {
+              value: f.Plan || "",
+              onChange: function(v) { upd("Plan", v); },
+              placeholder: "Tape pour rechercher un plan (1000H, vidange, filtre...)",
+              groupLabels: true,
+              options: (function() {
                 var sorted = (plans || []).slice().sort(function(a, b) { return (a.Title || "").localeCompare(b.Title || ""); });
                 var eqCodeSel = (f.Equipement || "").toLowerCase();
                 var applicable = sorted.filter(function(p) {
@@ -2096,16 +2160,18 @@
                   return !eqs || eqs.indexOf(eqCodeSel) >= 0 || eqs.indexOf("tous") >= 0;
                 });
                 var others = sorted.filter(function(p) { return applicable.indexOf(p) < 0; });
-                var opts = [];
-                if (applicable.length > 0) {
-                  opts.push(h("optgroup", { key: "applicable", label: "Plans applicables a " + (f.Equipement || "cet equipement") }, applicable.map(function(p) { return h("option", { key: "a_" + p.Id, value: p.Title }, p.Title + (p.Frequence ? " (" + p.Frequence + ")" : "")); })));
-                }
-                if (others.length > 0) {
-                  opts.push(h("optgroup", { key: "others", label: applicable.length > 0 ? "Autres plans" : "Tous les plans" }, others.map(function(p) { return h("option", { key: "o_" + p.Id, value: p.Title }, p.Title + (p.Frequence ? " (" + p.Frequence + ")" : "")); })));
-                }
+                var opts = [{ value: "", label: "-- Aucun (intervention curative ou hors plan) --" }];
+                var applicableGroup = "Plans applicables a " + (f.Equipement || "cet equipement");
+                applicable.forEach(function(p) {
+                  opts.push({ value: p.Title, label: p.Title + (p.Frequence ? " (" + p.Frequence + ")" : ""), group: applicableGroup });
+                });
+                var othersGroup = applicable.length > 0 ? "Autres plans" : "Tous les plans";
+                others.forEach(function(p) {
+                  opts.push({ value: p.Title, label: p.Title + (p.Frequence ? " (" + p.Frequence + ")" : ""), group: othersGroup });
+                });
                 return opts;
               }())
-            )),
+            })),
             h("div", { style: { gridColumn: "1 / -1" } },
               h(FormField, { label: "Travaux effectues" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Decrivez les travaux..." })))),
           // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
