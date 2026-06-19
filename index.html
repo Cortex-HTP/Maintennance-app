@@ -1105,6 +1105,15 @@
       if (gamme.length === 0) return interv.Statut_Intervention || "Planifiee";
       var done = gamme.filter(function(g) { return g && g.done; }).length;
       if (done === gamme.length) return "Termine";
+      // Si TOUTES les etapes du PLAN (fromPlan=true) sont done, l'intervention de
+      // maintenance est consideree comme terminee pour le plan officiel - meme si
+      // le mecano a ajoute des etapes custom non cochees a cote (ex: chaine de mat
+      // a retendre, fuite constatee). Sans ce traitement, le statut restait bloque
+      // a 'Partiellement terminee' et la prochaine maintenance auto n'avancait pas.
+      var planSteps = gamme.filter(function(g) { return g && g.fromPlan === true; });
+      if (planSteps.length > 0 && planSteps.every(function(g) { return g.done; })) {
+        return "Termine";
+      }
       if (done > 0) return "Partiellement terminee";
       return interv.Statut_Intervention || "Planifiee";
     }
@@ -2087,16 +2096,14 @@
       // Statut effectif calcule a la volee depuis la gamme
       const effectiveStatus = computeIntervStatus(f);
       const progress = gammeProgress(f.Gamme);
-      // Auto-passage du Statut a "Termine" quand toutes les etapes de la gamme sont cochees.
-      // Sans ca, le statut DB ne changeait qu'au moment du Enregistrer, et le user ne voyait
-      // pas le passage immediat. Du coup le calcul de prochaine maintenance auto (qui
-      // dependait de Statut_Intervention === 'Termine') ne se faisait pas tant qu'on n'avait
-      // pas explicitement sauve avec Statut = Termine.
+      // Auto-passage du Statut a "Termine" quand effectiveStatus passe a Termine.
+      // effectiveStatus prend en compte le cas "toutes etapes PLAN done" meme si des
+      // etapes custom restent non cochees (cf computeIntervStatus).
       React.useEffect(function() {
-        if (progress.total > 0 && progress.done === progress.total && f.Statut_Intervention !== "Termine") {
+        if (effectiveStatus === "Termine" && f.Statut_Intervention !== "Termine") {
           setF(function(prev) { return Object.assign({}, prev, { Statut_Intervention: "Termine" }); });
         }
-      }, [progress.done, progress.total]);
+      }, [effectiveStatus]);
       const submit = async () => {
         if (!f.Title || !f.Equipement) return alert("Veuillez remplir au minimum le titre et l'equipement.");
         setSaving(true);
@@ -23092,7 +23099,13 @@
           ];
           return raccourcis.filter(function(r) { return canAccessPage(r.pageKey); });
         }
-        return out.filter(function(it) { return it.label.toLowerCase().indexOf(qq) >= 0; }).slice(0, 50);
+        // Tokenise la query sur les espaces : "1000H 36" -> ["1000h", "36"]
+        // Chaque token doit etre present dans le label (AND), independamment de l'ordre.
+        var tokens = qq.split(/\s+/).filter(Boolean);
+        return out.filter(function(it) {
+          var lbl = it.label.toLowerCase();
+          return tokens.every(function(t) { return lbl.indexOf(t) >= 0; });
+        }).slice(0, 50);
       }());
 
       // Group items par categorie
