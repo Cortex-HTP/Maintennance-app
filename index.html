@@ -335,6 +335,7 @@
         Photos: Array.isArray(r.photos) ? r.photos : (r.photos || []),
         TauxHoraireApplique: r.taux_horaire_applique != null ? parseFloat(r.taux_horaire_applique) : 0,
         TauxAppliqueLignes: Array.isArray(r.taux_applique_lignes) ? r.taux_applique_lignes : (r.taux_applique_lignes || []),
+        SessionsJournalieres: Array.isArray(r.sessions_journalieres) ? r.sessions_journalieres : (r.sessions_journalieres || []),
         Urgence: r.urgence || "normale",
         DateDemande: r.date_demande || "",
         ValidePar: r.valide_par || "",
@@ -368,6 +369,7 @@
         photos: Array.isArray(i.Photos) && i.Photos.length > 0 ? i.Photos : null,
         taux_horaire_applique: i.TauxHoraireApplique != null && i.TauxHoraireApplique > 0 ? parseFloat(i.TauxHoraireApplique) : null,
         taux_applique_lignes: Array.isArray(i.TauxAppliqueLignes) && i.TauxAppliqueLignes.length > 0 ? i.TauxAppliqueLignes : null,
+        sessions_journalieres: Array.isArray(i.SessionsJournalieres) && i.SessionsJournalieres.length > 0 ? i.SessionsJournalieres : null,
         urgence: i.Urgence || null,
         date_demande: i.DateDemande || null,
         valide_par: i.ValidePar || null,
@@ -2202,6 +2204,97 @@
             h(FormField, { label: "Description du probleme (saisi par le demandeur)" },
               h("textarea", { style: Object.assign({}, inputStyle, { minHeight: 70, resize: "vertical" }), value: f.DescriptionProbleme, onChange: function(e) { upd("DescriptionProbleme", e.target.value); }, placeholder: "Le probleme constate avant intervention..." })
             ),
+            // Timeline des sessions journalieres saisies par le mecano.
+            // Edition admin only : ajout / suppression. Le mecano y accede en lecture
+            // + ajout depuis l'APP Employes.
+            (function() {
+              var sessions = Array.isArray(f.SessionsJournalieres) ? f.SessionsJournalieres : [];
+              var sorted = sessions.slice().sort(function(a, b) { return String(b.date || "").localeCompare(String(a.date || "")); });
+              var sumHeures = sessions.reduce(function(s, x) { return s + (parseFloat(x.heures) || 0); }, 0);
+              var sumXPF = sessions.reduce(function(s, x) { return s + (parseFloat(x.heures) || 0) * (parseFloat(x.taux) || 0); }, 0);
+              function recalcAndSet(newSessions) {
+                var totH = newSessions.reduce(function(s, x) { return s + (parseFloat(x.heures) || 0); }, 0);
+                var totX = newSessions.reduce(function(s, x) { return s + (parseFloat(x.heures) || 0) * (parseFloat(x.taux) || 0); }, 0);
+                setF(function(prev) {
+                  return Object.assign({}, prev, {
+                    SessionsJournalieres: newSessions,
+                    DureeHeures: totH > 0 ? String(totH) : prev.DureeHeures,
+                    TauxHoraireApplique: totH > 0 ? Math.round(totX / totH) : prev.TauxHoraireApplique
+                  });
+                });
+              }
+              function addSession() {
+                var d = window.prompt("Date de la session (AAAA-MM-JJ)", new Date().toISOString().substring(0, 10));
+                if (!d) return;
+                var hr = window.prompt("Nombre d'heures (ex : 4.5)");
+                if (!hr) return;
+                var heures = parseFloat(String(hr).replace(",", "."));
+                if (!heures || heures <= 0) { alert("Heures invalides"); return; }
+                var defTaux = selectedMec ? (parseFloat(selectedMec.tauxHoraire) || 0) : (parseFloat(f.TauxHoraireApplique) || 0);
+                var tx = window.prompt("Taux horaire applique (XPF/h)", String(defTaux));
+                if (!tx) return;
+                var taux = parseFloat(String(tx).replace(/\s/g, ""));
+                if (isNaN(taux) || taux < 0) { alert("Taux invalide"); return; }
+                var label = window.prompt("Type de prestation (Diagnostic / Reparation / Test ...)", "Travail") || "Travail";
+                var note = window.prompt("Note courte (optionnel)", "") || "";
+                var newSessions = sessions.concat([{ date: d, heures: heures, taux: taux, label: label, note: note }]);
+                recalcAndSet(newSessions);
+              }
+              function removeSession(idx) {
+                if (!confirm("Supprimer cette session ?")) return;
+                var newSessions = sessions.filter(function(_, i) { return i !== idx; });
+                recalcAndSet(newSessions);
+              }
+              return h("div", { style: { marginTop: 12, padding: 12, background: "rgba(167,139,250,0.05)", border: "1px solid rgba(167,139,250,0.20)", borderRadius: 10 } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+                  h("div", { style: { fontSize: 10, fontWeight: 800, color: "#c4b5fd", textTransform: "uppercase", letterSpacing: 1 } }, h(IconText, { icon: "calendar-days", size: 10, color: "#c4b5fd" }, "Sessions journalieres")),
+                  h(Button, { variant: "secondary", onClick: addSession, style: { padding: "4px 10px", fontSize: 11 } }, h(IconText, { icon: "plus", size: 11 }, "Ajouter session"))
+                ),
+                sorted.length === 0 ? h("div", { style: { fontSize: 12, color: "#71717a", padding: "8px 4px" } }, "Aucune session journaliere. Le mecano peut en ajouter depuis l'APP Employes au fil de l'eau, ou tu peux en ajouter ici.")
+                : h("div", null,
+                    sorted.map(function(s, idx) {
+                      var realIdx = sessions.indexOf(s);
+                      var heures = parseFloat(s.heures) || 0;
+                      var taux = parseFloat(s.taux) || 0;
+                      var sousTotal = heures * taux;
+                      var dt = String(s.date || "");
+                      var dtObj = dt ? new Date(dt + "T00:00:00") : null;
+                      var jour = dtObj && !isNaN(dtObj.getTime()) ? dtObj.toLocaleDateString("fr-FR", { weekday: "short" }) : "";
+                      var labelColor = "#c4b5fd";
+                      var labelBg = "rgba(167,139,250,0.15)";
+                      var lLow = String(s.label || "").toLowerCase();
+                      if (lLow.indexOf("repar") >= 0) { labelColor = "#86efac"; labelBg = "rgba(34,197,94,0.15)"; }
+                      else if (lLow.indexOf("diag") >= 0) { labelColor = "#fbbf24"; labelBg = "rgba(245,158,11,0.15)"; }
+                      else if (lLow.indexOf("test") >= 0) { labelColor = "#a5b4fc"; labelBg = "rgba(99,102,241,0.15)"; }
+                      return h("div", { key: idx, style: { display: "flex", gap: 12, padding: "10px 0", borderBottom: idx === sorted.length - 1 ? "none" : "1px solid rgba(255,255,255,0.05)" } },
+                        h("div", { style: { minWidth: 70, fontSize: 12 } },
+                          h("div", { style: { fontWeight: 700, color: "#fafafa" } }, dt),
+                          jour ? h("div", { style: { fontSize: 10, color: "#71717a", textTransform: "lowercase" } }, jour) : null
+                        ),
+                        h("div", { style: { flex: 1, minWidth: 0 } },
+                          h("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 3, flexWrap: "wrap" } },
+                            h("span", { style: { fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: "#fafafa" } }, heures.toFixed(2) + " h"),
+                            h("span", { style: { background: labelBg, color: labelColor, fontSize: 10, padding: "2px 8px", borderRadius: 999, fontWeight: 700 } }, s.label || "Travail"),
+                            h("span", { style: { fontSize: 11, color: "#71717a", fontFamily: "monospace" } }, fmtNum(taux) + " XPF/h")
+                          ),
+                          s.note ? h("div", { style: { fontSize: 11, color: "#a1a1aa", lineHeight: 1.4 } }, s.note) : null
+                        ),
+                        h("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 } },
+                          h("div", { style: { fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: "#86efac" } }, fmtNum(Math.round(sousTotal))),
+                          h("button", { onClick: function() { removeSession(realIdx); }, title: "Supprimer cette session", style: { background: "transparent", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", cursor: "pointer", padding: "2px 8px", borderRadius: 6, fontSize: 10 } }, "Supprimer")
+                        )
+                      );
+                    }),
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(167,139,250,0.30)" } },
+                      h("div", { style: { fontSize: 12, fontWeight: 800, color: "#c4b5fd" } }, "Total " + sorted.length + " session" + (sorted.length > 1 ? "s" : "")),
+                      h("div", { style: { display: "flex", gap: 18 } },
+                        h("span", { style: { fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#fafafa" } }, sumHeures.toFixed(2) + " h"),
+                        h("span", { style: { fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#86efac" } }, fmtNum(Math.round(sumXPF)) + " XPF")
+                      )
+                    )
+                  )
+              );
+            })(),
             // Breakdown des lignes de temps si le mecano a facture sur plusieurs taux.
             // Affiche un tableau Prestation / Heures / Taux / Sous-total + ligne Total.
             Array.isArray(f.TauxAppliqueLignes) && f.TauxAppliqueLignes.length > 0 ? h("div", { style: { marginTop: 12, padding: 12, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.20)", borderRadius: 10 } },
