@@ -2103,7 +2103,14 @@
       // Auto-passage du Statut a "Termine" quand effectiveStatus passe a Termine.
       // effectiveStatus prend en compte le cas "toutes etapes PLAN done" meme si des
       // etapes custom restent non cochees (cf computeIntervStatus).
+      // IMPORTANT : on skip le premier render pour ne PAS auto-cloturer en ouvrant
+      // une intervention dont la gamme PLAN etait deja toute cochee (sinon ouvrir
+      // la modal pour corriger une session journaliere cloture par accident).
+      // L'auto-passage ne se declenche que si l'utilisateur coche une etape pendant
+      // l'edition (= changement de effectiveStatus apres le mount).
+      const skipFirstAutoStatusRef = React.useRef(true);
       React.useEffect(function() {
+        if (skipFirstAutoStatusRef.current) { skipFirstAutoStatusRef.current = false; return; }
         if (effectiveStatus === "Termine" && f.Statut_Intervention !== "Termine") {
           setF(function(prev) { return Object.assign({}, prev, { Statut_Intervention: "Termine" }); });
         }
@@ -2112,8 +2119,13 @@
         if (!f.Title || !f.Equipement) return alert("Veuillez remplir au minimum le titre et l'equipement.");
         setSaving(true);
         try {
-          // Auto-statut depuis la gamme avant sauvegarde
-          var finalForm = Object.assign({}, f, { Statut_Intervention: effectiveStatus });
+          // A la sauvegarde : on garde Statut_Intervention TEL QUEL (choix
+          // utilisateur), sauf si l'utilisateur a explicitement bascule en Termine
+          // pendant la session d'edition (via auto-passage du useEffect ci-dessus).
+          // Avant ce fix : on ecrasait toujours par effectiveStatus, ce qui forcait
+          // 'termine' en DB des qu'on ouvrait+enregistrait une intervention dont la
+          // gamme PLAN etait deja toute cochee - meme sans intention.
+          var finalForm = Object.assign({}, f, { Statut_Intervention: f.Statut_Intervention });
           if (editItem) await updateIntervention(finalForm); else await addIntervention(finalForm);
           if (f.Horametre || f.KM) {
             await addReleve({ Equipement: f.Equipement, Date: f.Date_Intervention, Horametre: f.Horametre || "0", KM: f.KM || "0", Technicien: f.Technicien || "" });
