@@ -6031,6 +6031,10 @@
       // Sous-traitant mecanicien : flag distinct (le role peut aussi etre "Mecanicien" interne salarie)
       var _roleMec = useState(editItem ? !!editItem.roleMecanicien : false);
       var _tauxHoraire = useState(editItem && editItem.tauxHoraire ? String(editItem.tauxHoraire) : "");
+      // Liste optionnelle de taux nommes [{label, taux}] pour les mecaniciens qui
+      // facturent differemment selon la prestation (Diagnostic vs Mecanique lourde, etc.).
+      // Le 1er taux de la liste est utilise comme defaut si tauxHoraire principal vide.
+      var _tauxHorairesList = useState((editItem && Array.isArray(editItem.tauxHoraires)) ? editItem.tauxHoraires : []);
 
       // Auto-generate code "p{N+1}" pour un nouvel employe
       useEffect(function() {
@@ -6083,7 +6087,13 @@
           pin: _pin[0] || "",
           accesAppEmploye: !!_acces[0],
           roleMecanicien: !!_roleMec[0],
-          tauxHoraire: parseFloat(_tauxHoraire[0]) || 0
+          tauxHoraire: parseFloat(_tauxHoraire[0]) || 0,
+          // Filtre les lignes vides (label ou taux non saisis) avant persistance
+          tauxHoraires: (_tauxHorairesList[0] || []).filter(function(t) {
+            return t && String(t.label || "").trim() && parseFloat(t.taux) > 0;
+          }).map(function(t) {
+            return { label: String(t.label).trim(), taux: parseFloat(t.taux) || 0 };
+          })
         });
       }
 
@@ -6165,10 +6175,45 @@
             h("span", { style: { fontSize: 13, fontWeight: 600, color: _roleMec[0] ? "#fde68a" : "#a1a1aa" } }, "Activer le mode mecanicien sous-traitant (interventions + facturation heures)")
           ),
           _roleMec[0] ? h("div", null,
-            h(FormField, { label: "Taux horaire (XPF/h)" }, h("input", { type: "number", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 16, textAlign: "right" }), value: _tauxHoraire[0], onChange: function(e) { _tauxHoraire[1](e.target.value); }, placeholder: "Ex : 5500" })),
-            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 8, padding: 10, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 6 } },
+            h(FormField, { label: "Taux horaire principal (XPF/h)" }, h("input", { type: "number", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 16, textAlign: "right" }), value: _tauxHoraire[0], onChange: function(e) { _tauxHoraire[1](e.target.value); }, placeholder: "Ex : 5500" })),
+            // Liste optionnelle de taux supplementaires (Diagnostic, Mecanique lourde, etc.)
+            // Si vide -> comportement actuel (1 seul taux). Si rempli -> le mecano choisit
+            // dans une liste deroulante au moment de saisir ses heures dans le rapport.
+            h("div", { style: { marginTop: 14, padding: 12, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8 } },
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+                h("div", { style: { fontSize: 12, fontWeight: 700, color: "#cbd5e1" } }, h(IconText, { icon: "list", size: 12, color: "#fde68a" }, "Taux supplementaires (optionnel)")),
+                h("span", { style: { fontSize: 11, color: "#71717a" } }, (_tauxHorairesList[0] || []).length + " taux")
+              ),
+              (_tauxHorairesList[0] || []).map(function(t, idx) {
+                return h("div", { key: idx, style: { display: "grid", gridTemplateColumns: "1fr 120px 28px", gap: 8, alignItems: "center", marginBottom: 6 } },
+                  h("input", { type: "text", style: Object.assign({}, inputStyle, { fontSize: 13 }), value: t.label || "", placeholder: "Ex : Diagnostic", onChange: function(e) {
+                    var copy = (_tauxHorairesList[0] || []).slice();
+                    copy[idx] = Object.assign({}, copy[idx], { label: e.target.value });
+                    _tauxHorairesList[1](copy);
+                  } }),
+                  h("input", { type: "number", style: Object.assign({}, inputStyle, { fontFamily: "monospace", fontSize: 13, textAlign: "right" }), value: t.taux || "", placeholder: "7000", onChange: function(e) {
+                    var copy = (_tauxHorairesList[0] || []).slice();
+                    copy[idx] = Object.assign({}, copy[idx], { taux: e.target.value });
+                    _tauxHorairesList[1](copy);
+                  } }),
+                  h("button", { onClick: function(e) {
+                    e.preventDefault();
+                    var copy = (_tauxHorairesList[0] || []).slice();
+                    copy.splice(idx, 1);
+                    _tauxHorairesList[1](copy);
+                  }, style: { background: "transparent", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", padding: "5px 7px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
+                );
+              }),
+              h("button", { onClick: function(e) {
+                e.preventDefault();
+                var copy = (_tauxHorairesList[0] || []).slice();
+                copy.push({ label: "", taux: "" });
+                _tauxHorairesList[1](copy);
+              }, style: { width: "100%", marginTop: 6, padding: "8px 12px", background: "rgba(245,158,11,0.08)", border: "1px dashed rgba(245,158,11,0.30)", borderRadius: 6, color: "#fde68a", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit" } }, h(Icon, { name: "plus", size: 12, color: "#fde68a" }), "Ajouter un taux nomme")
+            ),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 10, padding: 10, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 6 } },
               h(Icon, { name: "info", size: 12, color: "#fde68a" }),
-              " Ce taux sera ", h("strong", null, "snapshote"), " sur chaque intervention au moment de la saisie. Modifier le taux ici n'affectera pas les interventions deja terminees. Le mecanicien verra son cumul a facturer dans son app, et toi dans ", h("strong", null, "Stats mecaniciens"), ". Type de contrat force a 'Auto-entrepreneur' et acces APP Employes active automatiquement."
+              " Le taux principal est utilise par defaut. Les taux supplementaires permettent au mecano de detailler ses heures par prestation (ex : Diagnostic + Mecanique lourde dans la meme intervention). Snapshot conserve sur chaque intervention - les changements ici n'affectent pas les interventions terminees."
             )
           ) : h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 8 } }, "Si actif : type force a Auto-entrepreneur, embauche/salaire/fin contrat masques, landing direct sur 'Mes interventions' dans l'APP Employes.")
         ),
