@@ -23738,7 +23738,7 @@
       if (/\b(MASTER|VISA|MAESTRO|AMEX|AMERICAN\s+EXPRESS)\b/.test(t)) return "cb";
       if (/\bCB\s*\(?XPF|XPF\s*\)?\s*CB\b/.test(t)) return "cb";
       if (/PAIEMENT\s+CARTE|REGLEMENT\s+CARTE|REGLE\s+PAR\s+CARTE|PAYE\s+PAR\s+CARTE|CARTE\s+BANCAIRE|CARTE\s+BLEUE/.test(t)) return "cb";
-      if (/PAYWAVE|SANS\s+CONTACT|CONTACTLESS|\bEMV\b/.test(t)) return "cb";
+      if (/PAYWAVE|SANS\s+CONTACT|CONTACTLESS|\bEMV\b|\bNFC\b|CB\s+NFC/.test(t)) return "cb";
       // ─── Cheque ───────────────────────────────────────────────────────
       if (/CH[ÈE]QUE\s+N|N[°O]\s*CH[ÈE]QUE|REGLE\s+PAR\s+CH[ÈE]QUE|PAYE\s+PAR\s+CH[ÈE]QUE/.test(t)) return "cheque";
       if (/\bCH[ÈE]QUE\b/.test(t) && !/CHEQUIER/.test(t)) return "cheque";
@@ -23752,11 +23752,20 @@
       return null;
     }
 
-    // Detecte la date au format DD/MM/YYYY ou YYYY-MM-DD ou DD-MM-YYYY
+    // Detecte la date au format DD/MM/YYYY ou YYYY-MM-DD ou DD-MM-YYYY ou DD/MM/YY
     function detectDateFacture(text) {
       if (!text) return null;
-      // DD/MM/YYYY ou DD-MM-YYYY ou DD.MM.YYYY
+      // 1. DD/MM/YYYY ou DD-MM-YYYY ou DD.MM.YYYY (annee 4 chiffres)
       var m = text.match(/\b(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](20\d{2})\b/);
+      // 2. Fallback : DD/MM/YY (annee 2 chiffres, courant sur tickets CB NFC) -> on
+      //    suppose 20YY (cohérent avec les annees 2000-2099). Match seulement si
+      //    pas deja trouve un format 4 chiffres.
+      if (!m) {
+        var m2 = text.match(/\b(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2})\b(?!\d)/);
+        if (m2) {
+          m = [m2[0], m2[1], m2[2], "20" + m2[3]];
+        }
+      }
       if (m) {
         var d = m[1].padStart(2, "0"), mo = m[2].padStart(2, "0"), y = m[3];
         // Valide : jour 1-31, mois 1-12
@@ -23959,7 +23968,11 @@
         "EEC", "ENERCAL", "BCI", "SOCREDO", "BNC", "SOCALMO", "ALMA", "LECLERC",
         "ENGIE", "AIRCAL", "AIRCALIN", "ATI", "SOCAVIE", "ARC ", "CAILLARD",
         "AUTO-CALEDONIE", "BERNARD HAYOT", "GBH", "RENAULT", "PEUGEOT", "TOYOTA",
-        "QUINCAILLERIE PACIFIQUE", "QPN", "TRIDOME", "CASTORAMA", "MR.BRICOLAGE"
+        "QUINCAILLERIE PACIFIQUE", "QPN", "TRIDOME", "CASTORAMA", "MR.BRICOLAGE",
+        // Restaurants / cafes NC courants pour les notes de frais
+        "L'OASIS", "OASIS DE PAITA", "OASIS DE PAITA", "KAREM BAY", "LE BILBOQUET",
+        "STEAK HOUSE", "LA TABLE", "LE FARE", "LE ROOF", "L'HIPPOCAMPE",
+        "MOCAMBO", "O SESAME", "LES DELICES", "PALM BEACH"
       ];
       for (var i = 0; i < connus.length; i++) {
         if (t.indexOf(connus[i]) >= 0) return connus[i].trim();
