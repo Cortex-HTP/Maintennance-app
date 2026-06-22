@@ -11339,6 +11339,91 @@
                   h(Icon, { name: isExpanded ? "chevron-up" : "chevron-down", size: 20, color: "#a1a1aa" })
                 ),
                 isExpanded && h("div", { style: { borderTop: "1px solid rgba(255,255,255,0.07)", paddingTop: 16, marginTop: 12 } },
+                  // ── KPI Disponibilite (sur les rapports forage de ce chantier) ──
+                  // Formule : (heures_ouverture - panne - maintenance - attente) / heures_ouverture
+                  // Classification du libelle d'activite :
+                  //   PANNE / ARRET TECHNIQUE     -> indispo (panne machine)
+                  //   MAINT / MAINTENANCE         -> indispo (maintenance)
+                  //   ATTENTE                     -> indispo (attente entreprise)
+                  //   Autres (FORATION, TRAJET, etc.) -> productif
+                  // Le tooltip detaille la ventilation des heures.
+                  (function() {
+                    var rapsCh = (ctxAv.dbRapportsForage || []).filter(function(r) {
+                      if (!r) return false;
+                      if (r.chantier_id != null && String(r.chantier_id) === String(chantier.id)) return true;
+                      // Fallback : match par lieu/client sur titre/site du chantier
+                      var lieu = String(r.lieu || r.client || "").toUpperCase().trim();
+                      if (!lieu) return false;
+                      var tt = String(chantier.titre || "").toUpperCase();
+                      var ss = String(chantier.site || "").toUpperCase();
+                      return (tt && tt.indexOf(lieu) >= 0) || (ss && (ss === lieu || ss.indexOf(lieu) >= 0 || lieu.indexOf(ss) >= 0));
+                    });
+                    if (rapsCh.length === 0) return null;
+                    var durBtwDispo = function(d, f) {
+                      if (!d || !f) return 0;
+                      var p1 = String(d).split(":"); var p2 = String(f).split(":");
+                      var h1 = parseInt(p1[0]) || 0; var m1 = parseInt(p1[1]) || 0;
+                      var h2 = parseInt(p2[0]) || 0; var m2 = parseInt(p2[1]) || 0;
+                      var mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+                      if (mins < 0) mins += 24 * 60;
+                      return mins;
+                    };
+                    var minTotal = 0, minPanne = 0, minMaint = 0, minAttente = 0;
+                    rapsCh.forEach(function(r) {
+                      (r.activites || []).forEach(function(a) {
+                        var dur = durBtwDispo(a.debut, a.fin);
+                        if (dur <= 0) return;
+                        minTotal += dur;
+                        var lib = String(a.libelle || "").toUpperCase();
+                        if (lib.indexOf("PANNE") >= 0 || lib.indexOf("ARRET TECHNIQUE") >= 0) minPanne += dur;
+                        else if (lib.indexOf("MAINT") >= 0) minMaint += dur;
+                        else if (lib.indexOf("ATTENTE") >= 0) minAttente += dur;
+                      });
+                    });
+                    if (minTotal === 0) return null;
+                    var minProductif = Math.max(0, minTotal - minPanne - minMaint - minAttente);
+                    var dispoPc = (minProductif / minTotal) * 100;
+                    var hh = function(m) {
+                      m = Math.round(m);
+                      var hr = Math.floor(m / 60); var mm = m % 60;
+                      return hr + "h" + (mm < 10 ? "0" : "") + mm;
+                    };
+                    var color = dispoPc >= 80 ? "#22c55e" : dispoPc >= 60 ? "#fbbf24" : "#fb7185";
+                    return h("div", { style: { display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" } },
+                      h("div", {
+                        title: "Heures ouverture : " + hh(minTotal) +
+                               "\n- Panne / Arret technique : -" + hh(minPanne) +
+                               "\n- Maintenance : -" + hh(minMaint) +
+                               "\n- Attente entreprise : -" + hh(minAttente) +
+                               "\n= Productif : " + hh(minProductif) +
+                               "\n\nFormule : (ouverture - panne - maintenance - attente) / ouverture" +
+                               "\nBase : " + rapsCh.length + " rapport(s) forage de ce chantier",
+                        style: { padding: "10px 14px", background: "linear-gradient(135deg, rgba(34,197,94,0.12), rgba(34,197,94,0.04))", border: "1px solid " + color, borderRadius: 10, minWidth: 160, cursor: "help" }
+                      },
+                        h("div", { style: { fontSize: 10, fontWeight: 800, color: color, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4, display: "flex", alignItems: "center", gap: 4 } },
+                          h(Icon, { name: "activity", size: 11, color: color }),
+                          h("span", null, "Disponibilite")
+                        ),
+                        h("div", { style: { fontSize: 22, fontWeight: 900, color: color, fontFamily: "monospace", lineHeight: 1 } }, dispoPc.toFixed(1) + " %"),
+                        h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 4, fontFamily: "monospace" } }, hh(minProductif) + " / " + hh(minTotal))
+                      ),
+                      minPanne > 0 ? h("div", { style: { padding: "10px 14px", background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 10, minWidth: 110 } },
+                        h("div", { style: { fontSize: 10, fontWeight: 800, color: "#fda4af", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Panne"),
+                        h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fda4af", fontFamily: "monospace" } }, hh(minPanne)),
+                        h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ((minPanne / minTotal) * 100).toFixed(1) + "%")
+                      ) : null,
+                      minMaint > 0 ? h("div", { style: { padding: "10px 14px", background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.30)", borderRadius: 10, minWidth: 110 } },
+                        h("div", { style: { fontSize: 10, fontWeight: 800, color: "#fde68a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Maintenance"),
+                        h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fde68a", fontFamily: "monospace" } }, hh(minMaint)),
+                        h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ((minMaint / minTotal) * 100).toFixed(1) + "%")
+                      ) : null,
+                      minAttente > 0 ? h("div", { style: { padding: "10px 14px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.30)", borderRadius: 10, minWidth: 110 } },
+                        h("div", { style: { fontSize: 10, fontWeight: 800, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Attente"),
+                        h("div", { style: { fontSize: 16, fontWeight: 800, color: "#a5b4fc", fontFamily: "monospace" } }, hh(minAttente)),
+                        h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ((minAttente / minTotal) * 100).toFixed(1) + "%")
+                      ) : null
+                    );
+                  })(),
                   // ── Bloc PREVISIONNEL CHANTIER ──
                   // Projection basee sur :
                   //   1. Vitesse par machine = vitesse_14j / moyenne_machines_recente
@@ -18873,11 +18958,11 @@
 
       // ── KPIs par onglet ──
       var kpis = [
+        { key: "soumissions_rapports", label: "Rapports de forage", sub: "non valides", count: raps.filter(function(c) { return c.statut !== "valide_admin"; }).length, icon: "file-text", color: "#f9a8d4", bg: "rgba(236,72,153,0.15)" },
         { key: "soumissions_releves", label: "Releves d'heure", sub: "en attente", count: rels.filter(function(r) { return (r.statut || "en_attente") === "en_attente"; }).length, icon: "clock", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
         { key: "soumissions_conges", label: "Demandes de conges", sub: "en attente", count: conges.filter(function(c) { return c.statut === "en_attente"; }).length, icon: "calendar-days", color: "#86efac", bg: "rgba(34,197,94,0.15)" },
         { key: "soumissions_commandes", label: "Bons de commande", sub: "a traiter", count: cmds.filter(function(c) { return c.statut === "soumis"; }).length, icon: "shopping-cart", color: "#fde68a", bg: "rgba(251,191,36,0.15)" },
-        { key: "soumissions_interventions", label: "Demandes intervention", sub: "a planifier", count: ints.filter(function(c) { return c.statut === "soumis"; }).length, icon: "wrench", color: "#fdba74", bg: "rgba(249,115,22,0.15)" },
-        { key: "soumissions_rapports", label: "Rapports de forage", sub: "non valides", count: raps.filter(function(c) { return c.statut !== "valide_admin"; }).length, icon: "file-text", color: "#f9a8d4", bg: "rgba(236,72,153,0.15)" }
+        { key: "soumissions_interventions", label: "Demandes intervention", sub: "a planifier", count: ints.filter(function(c) { return c.statut === "soumis"; }).length, icon: "wrench", color: "#fdba74", bg: "rgba(249,115,22,0.15)" }
       ].filter(function(k) { return visibleSubs.find(function(s) { return s.key === k.key; }); });
 
       // ── Rendu commun de la ligne d'entete d'une carte ──
