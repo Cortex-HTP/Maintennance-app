@@ -23764,30 +23764,51 @@
     function detectMontantTtc(text) {
       if (!text) return null;
       var t = text;
-      var patterns = [
-        // PRIORITE MAX : nombre suivi de XPF/FCFP isole (typique ticket CB : "40629 XPF")
-        // Souvent le TTC final du ticket de paiement
-        /(\d{3,8}(?:[.,\s]\d{1,3})?)\s*(?:XPF|FCFP|F\s*CFP|F\s*$)/im,
-        // Net a payer TTC : variante avec TTC apres PAYER (gere "TIC" mal lu)
-        /NET\s*A\s*PAYER\s*(?:TTC|TIC|T[I1]C)[:.\s]*([\d][\d.,\s]*\d)/i,
-        /NET\s*A\s*PAYER[:.\s]*([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
-        /TOTAL\s*TTC\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
-        /MONTANT\s*TTC[:.\s]*([\d][\d.,\s]*\d)/i,
-        // CB receipt format : "MONTANT: 40629 XPF" / "MONTANT 1245 XPF" / "MON: 40629" (tronque)
-        /\bMON(?:TANT)?\s*[:.]?\s*\n?\s*(\d[\d.,\s]*\d)\s*(?:XPF|FCFP|F\s*CFP)?/i,
-        /TOTAL\s*A?\s*PAYER[:.\s]*([\d][\d.,\s]*\d)/i,
-        /MASTER[\/\s]*VISA\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
-        /CB\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i,
-        /TOTAL[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
-        /TTC[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i,
-        // "Totaux ... 1.245" en bas de ticket
-        /TOTAUX[:.\s]*\d*[:.\s]+([\d][\d.,\s]*\d)/i
+      // Helper : retourne le DERNIER match d'un regex (utile pour les XPF
+      // generiques - sur une facture, le TTC est en bas, pas le 1er prix
+      // unitaire rencontre en haut)
+      function lastMatch(src, rx) {
+        var g = new RegExp(rx.source, rx.flags.indexOf("g") < 0 ? rx.flags + "g" : rx.flags);
+        var last = null, m;
+        while ((m = g.exec(src)) !== null) last = m;
+        return last;
+      }
+      // Patterns CONTEXTUELS (cherchent un mot-cle TTC/NET A PAYER/MONTANT/etc.)
+      // Priorite : on prend le 1er match, plus fiable car ancre sur un libelle.
+      var patternsContextuels = [
+        { rx: /NET\s*A\s*PAYER\s*(?:TTC|TIC|T[I1]C)[:.\s]*([\d][\d.,\s]*\d)/i, label: "net-payer-ttc" },
+        { rx: /NET\s*A\s*PAYER[:.\s]*([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i, label: "net-payer" },
+        { rx: /TOTAL\s*TTC\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i, label: "total-ttc-xpf" },
+        { rx: /TOTAL\s*TTC[:.\s]+([\d][\d.,\s]*\d)/i, label: "total-ttc" },
+        { rx: /MONTANT\s*TTC[:.\s]*([\d][\d.,\s]*\d)/i, label: "montant-ttc" },
+        { rx: /\bMON(?:TANT)?\s*[:.]?\s*\n?\s*(\d[\d.,\s]*\d)\s*(?:XPF|FCFP|F\s*CFP)?/i, label: "montant" },
+        { rx: /TOTAL\s*A?\s*PAYER[:.\s]*([\d][\d.,\s]*\d)/i, label: "total-payer" },
+        { rx: /MASTER[\/\s]*VISA\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i, label: "master-visa" },
+        { rx: /CB\s*\(?\s*XPF\s*\)?[:.\s]*([\d][\d.,\s]*\d)/i, label: "cb-xpf" },
+        { rx: /TOTAL[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i, label: "total" },
+        { rx: /TTC[:.\s]+([\d][\d.,\s]*\d)\s*(?:XPF|F|FCFP)?/i, label: "ttc" },
+        { rx: /TOTAUX[:.\s]*\d*[:.\s]+([\d][\d.,\s]*\d)/i, label: "totaux" }
       ];
-      for (var i = 0; i < patterns.length; i++) {
-        var m = t.match(patterns[i]);
+      for (var i = 0; i < patternsContextuels.length; i++) {
+        var m = t.match(patternsContextuels[i].rx);
         if (m && m[1]) {
           var val = parseMontantNc(m[1].split(/[\r\n]/)[0]);
-          if (val && val > 0 && val < 99999999) return val;
+          if (val && val > 0 && val < 99999999) {
+            try { console.log("[OCR TTC v3] match", patternsContextuels[i].label, "->", val); } catch (e) {}
+            return val;
+          }
+        }
+      }
+      // Pattern XPF generique - DERNIERE occurrence dans le texte
+      // (le TTC d'une facture est typiquement en bas - le 1er XPF en haut
+      // est souvent un prix unitaire ou un sous-total, pas le TTC final)
+      var rxXpfGenerique = /(\d{3,8}(?:[.,\s]\d{1,3})?)\s*(?:XPF|FCFP|F\s*CFP)/gi;
+      var lastXpf = lastMatch(t, rxXpfGenerique);
+      if (lastXpf && lastXpf[1]) {
+        var vX = parseMontantNc(lastXpf[1].split(/[\r\n]/)[0]);
+        if (vX && vX > 0 && vX < 99999999) {
+          try { console.log("[OCR TTC v3] match xpf-last ->", vX); } catch (e) {}
+          return vX;
         }
       }
       // Fallback intelligent par score : evalue chaque nombre et selectionne le plus probable
@@ -23832,11 +23853,17 @@
           candidats.push({ val: v, score: score, ligne: idx });
         }
       });
-      if (candidats.length === 0) return null;
+      if (candidats.length === 0) {
+        try { console.log("[OCR TTC v3] aucun candidat trouve - texte OCR debut:", t.substring(0, 300)); } catch (e) {}
+        return null;
+      }
       // Tri par score decroissant
       candidats.sort(function(a, b) { return b.score - a.score; });
       // Si le top score est positif et nettement au-dessus, on prend
-      if (candidats[0].score > 5) return candidats[0].val;
+      if (candidats[0].score > 5) {
+        try { console.log("[OCR TTC v3] fallback score top ->", candidats[0].val, "(score", candidats[0].score, ")"); } catch (e) {}
+        return candidats[0].val;
+      }
       // Sinon : majoritaire (le TTC apparait souvent 2-3 fois)
       var counts = {};
       candidats.forEach(function(c) { counts[c.val] = (counts[c.val] || 0) + 1; });
@@ -23844,7 +23871,11 @@
       Object.keys(counts).forEach(function(k) {
         if (counts[k] > bestCount) { best = parseFloat(k); bestCount = counts[k]; }
       });
-      if (best && bestCount >= 2) return best;
+      if (best && bestCount >= 2) {
+        try { console.log("[OCR TTC v3] fallback majoritaire ->", best, "(apparait", bestCount, "fois)"); } catch (e) {}
+        return best;
+      }
+      try { console.log("[OCR TTC v3] aucun match sur", candidats.length, "candidats. Top 3 :", candidats.slice(0, 3)); } catch (e) {}
       return null;
     }
 
