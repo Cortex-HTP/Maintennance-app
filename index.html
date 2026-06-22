@@ -24181,6 +24181,85 @@
     }
 
     // Parseur global : extrait tous les champs en une fois
+    // ─── Apprentissage OCR : fournisseurs deja vus ─────────────────────
+    // Normalise un nom de fournisseur pour matching robuste : uppercase, sans
+    // accents, sans ponctuation, espaces compactes. Permet de matcher
+    // 'L\'OASIS de Païta' avec 'LOASIS DE PAITA' apres ocr different.
+    function normalizeOcrName(s) {
+      if (!s) return "";
+      return String(s)
+        .toUpperCase()
+        .normalize("NFD").replace(/[̀-ͯ]/g, "")  // enleve accents
+        .replace(/[^A-Z0-9\s]/g, " ")  // ponctuation -> espace
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    // Cherche dans la table d'apprentissage si un fournisseur connu apparait
+    // dans le texte OCR. Retourne { nom_final, categorie_defaut, ... } ou null.
+    // Strategie : substring match sur la version normalisee. Si plusieurs
+    // matches, prend celui avec le plus d'occurrences (le plus frequent).
+    async function lookupFournisseurAppris(texteOcr) {
+      if (!texteOcr || !window.supabase) return null;
+      try {
+        var normalise = normalizeOcrName(texteOcr);
+        if (!normalise || normalise.length < 4) return null;
+        var res = await window.supabase.from("ocr_fournisseurs_appris")
+          .select("*")
+          .order("nb_occurrences", { ascending: false });
+        if (res.error || !res.data) return null;
+        // Substring match : le nom appris doit apparaitre dans le texte OCR
+        var matches = res.data.filter(function(f) {
+          return f.nom_ocr_normalise && normalise.indexOf(f.nom_ocr_normalise) >= 0;
+        });
+        if (matches.length === 0) return null;
+        // Prend le match avec le nom_ocr_normalise le plus LONG (plus specifique)
+        matches.sort(function(a, b) { return b.nom_ocr_normalise.length - a.nom_ocr_normalise.length; });
+        return matches[0];
+      } catch (e) { console.warn("[lookupFournisseurAppris]", e); return null; }
+    }
+    // Sauvegarde / met a jour l'apprentissage d'un fournisseur.
+    async function saveFournisseurAppris(infos) {
+      if (!infos || !infos.nom_final || !window.supabase) return;
+      try {
+        var nomNorm = normalizeOcrName(infos.nom_ocr_brut || infos.nom_final);
+        if (!nomNorm || nomNorm.length < 3) return;
+        // UPSERT : si exist deja, increment nb_occurrences + maj defaults si fournis
+        var existing = await window.supabase.from("ocr_fournisseurs_appris")
+          .select("id, nb_occurrences")
+          .eq("nom_ocr_normalise", nomNorm)
+          .maybeSingle();
+        if (existing.data) {
+          await window.supabase.from("ocr_fournisseurs_appris").update({
+            nom_final: infos.nom_final,
+            categorie_defaut: infos.categorie || null,
+            mode_paiement_defaut: infos.modePaiement || null,
+            compte_comptable_defaut: infos.compteComptable || null,
+            type_facture_defaut: infos.typeFacture || null,
+            tgc_taux_defaut: infos.tgcTaux != null ? infos.tgcTaux : null,
+            nb_occurrences: (existing.data.nb_occurrences || 0) + 1,
+            derniere_utilisation: new Date().toISOString()
+          }).eq("id", existing.data.id);
+        } else {
+          await window.supabase.from("ocr_fournisseurs_appris").insert({
+            nom_ocr_normalise: nomNorm,
+            nom_final: infos.nom_final,
+            categorie_defaut: infos.categorie || null,
+            mode_paiement_defaut: infos.modePaiement || null,
+            compte_comptable_defaut: infos.compteComptable || null,
+            type_facture_defaut: infos.typeFacture || null,
+            tgc_taux_defaut: infos.tgcTaux != null ? infos.tgcTaux : null,
+            cree_par: (window.session && window.session.user && window.session.user.email) || null
+          });
+        }
+      } catch (e) { console.warn("[saveFournisseurAppris]", e); }
+    }
+    // Expose pour le DevTools / debug
+    if (typeof window !== "undefined") {
+      window.normalizeOcrName = normalizeOcrName;
+      window.lookupFournisseurAppris = lookupFournisseurAppris;
+      window.saveFournisseurAppris = saveFournisseurAppris;
+    }
+
     function extractInvoiceDataFromOcr(text) {
       if (!text) return {};
       var t = normalizeOcr(text);
@@ -24433,6 +24512,21 @@
             n++;
           }
           if (data.reference) { det.reference = data.reference; setRefPaiement(function(prev) { if (opts.force || !prev) { n++; return data.reference; } return prev; }); }
+          // Apprentissage : cherche si on a deja vu ce fournisseur dans le passe.
+          // Si oui, on applique ses defauts (categorie, mode paiement, type, TGC).
+          try {
+            var appris = await lookupFournisseurAppris(text);
+            if (appris) {
+              if (appris.nom_final) { det.fournisseur = appris.nom_final + " (appris)"; setFournisseur(function(p) { if (opts.force || !p) { return appris.nom_final; } return p; }); }
+              if (appris.categorie_defaut) { setCategorie(function(p) { if (opts.force || !p) { return appris.categorie_defaut; } return p; }); }
+              if (appris.mode_paiement_defaut) { setModePaiement(function(p) { if (opts.force || !p) { return appris.mode_paiement_defaut; } return p; }); }
+              if (appris.type_facture_defaut) { setTypeFacture(function(p) { if (opts.force || !p) { return appris.type_facture_defaut; } return p; }); }
+              if (appris.tgc_taux_defaut != null) { setTgcTaux(appris.tgc_taux_defaut); }
+              n++;
+              det._appris = appris.nom_final + " (" + appris.nb_occurrences + "x)";
+              try { console.log("[OCR APPRIS] match", appris.nom_final, "occurrences:", appris.nb_occurrences); } catch (e) {}
+            }
+          } catch (e) {}
           setOcrDetected(det);
           setOcrCount(n);
           setOcrStatus("done");
@@ -24539,6 +24633,21 @@
             setSubmitting(false); return;
           }
           setFeedback({ type: "ok", msg: "Facture envoyee a la compta" });
+          // Apprentissage : on enregistre ce qu'on a vu pour la prochaine fois.
+          // Utilise le texte OCR brut comme cle de matching et le fournisseur
+          // FINAL (eventuellement corrige par l'utilisateur) comme valeur.
+          if (ocrText && fournisseur) {
+            try {
+              saveFournisseurAppris({
+                nom_ocr_brut: ocrText,
+                nom_final: fournisseur,
+                categorie: categorie || null,
+                modePaiement: modePaiement || null,
+                typeFacture: typeFacture || null,
+                tgcTaux: multiTaux ? null : tgcTaux
+              });
+            } catch (e) { console.warn("[saveFournisseurAppris]", e); }
+          }
           reset();
           setTimeout(function() { setOpen(false); setFeedback(null); }, 1500);
         } catch (e) {
