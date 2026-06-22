@@ -24096,6 +24096,48 @@
       });
       return _tesseractPromise;
     }
+    // Lazy-load pdf.js depuis CDN. Utilise pour rasteriser une page de PDF en
+    // image dataURL (preview + OCR sur ticket/facture PDF).
+    var _pdfjsPromise = null;
+    function ensurePdfJs() {
+      if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+      if (_pdfjsPromise) return _pdfjsPromise;
+      _pdfjsPromise = new Promise(function(resolve, reject) {
+        var s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+        s.onload = function() {
+          if (!window.pdfjsLib) { reject(new Error("pdf.js charge mais pdfjsLib introuvable")); return; }
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          resolve(window.pdfjsLib);
+        };
+        s.onerror = function() { reject(new Error("pdf.js CDN load failed")); };
+        document.head.appendChild(s);
+      });
+      return _pdfjsPromise;
+    }
+    // Rasterise la 1ere page d'un PDF (File OU base64 dataURL) en dataURL PNG.
+    async function rasterizePdfFirstPage(input) {
+      var pdfjs = await ensurePdfJs();
+      var data;
+      if (typeof input === "string") {
+        // dataURL base64 : extrait la partie base64 et convertit en Uint8Array
+        var base64 = input.indexOf(",") >= 0 ? input.substring(input.indexOf(",") + 1) : input;
+        var bin = atob(base64);
+        data = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+      } else {
+        data = await input.arrayBuffer();
+      }
+      var pdf = await pdfjs.getDocument({ data: data }).promise;
+      var page = await pdf.getPage(1);
+      var viewport = page.getViewport({ scale: 2 });
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      var ctx = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+      return { dataUrl: canvas.toDataURL("image/png"), nbPages: pdf.numPages };
+    }
     // Pretraitement image pour OCR : resize + grayscale + contraste + sharpening
     // Tesseract donne BIEN meilleurs resultats sur images optimisees (~1500-2000px, B&W, contraste fort)
     function preprocessImageForOcr(dataUrl) {
@@ -24211,6 +24253,10 @@
       const [ocrCount, setOcrCount] = useState(0);
       const [ocrDetected, setOcrDetected] = useState({});
       const [ocrTextOpen, setOcrTextOpen] = useState(false);
+      // PDF : on garde une image rasterisee (page 1) pour la preview ET l'OCR.
+      // photo continue de stocker le base64 du PDF original (envoye au serveur tel quel).
+      const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
+      const [pdfState, setPdfState] = useState({ rasterizing: false, nbPages: 0, error: null });
       const [chantiers, setChantiers] = useState([]);
       const [submitting, setSubmitting] = useState(false);
       const [feedback, setFeedback] = useState(null);
@@ -24231,6 +24277,7 @@
 
       const reset = function() {
         setPhoto(null); setPhotoName(null); setPhotoMime(null);
+        setPdfPreviewUrl(null); setPdfState({ rasterizing: false, nbPages: 0, error: null });
         setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
         setCategorie(""); setChantierId(""); setNotes("");
         setTypeFacture(""); setEcheance(""); setTgcTaux(0); setMultiTaux(false); setTgcRep({ 0: "", 3: "", 6: "", 11: "", 22: "" });
@@ -24292,12 +24339,29 @@
         if (!f) return;
         if (f.size > 10 * 1024 * 1024) { setFeedback({ type: "err", msg: "Fichier > 10 Mo" }); return; }
         const reader = new FileReader();
-        reader.onload = function() {
+        reader.onload = async function() {
           var dataUrl = reader.result;
           setPhoto(dataUrl); setPhotoName(f.name); setPhotoMime(f.type);
-          // Lance OCR auto si c'est une image (pas PDF)
+          // Image : OCR direct
           if (f.type && f.type.indexOf("image/") === 0) {
             runOcrAndFill(dataUrl);
+            return;
+          }
+          // PDF : rasterise la page 1 pour preview visible + OCR.
+          // Le PDF original reste dans photo et est envoye tel quel au serveur.
+          if (f.type === "application/pdf") {
+            setPdfPreviewUrl(null);
+            setPdfState({ rasterizing: true, nbPages: 0, error: null });
+            try {
+              var r = await rasterizePdfFirstPage(f);
+              setPdfPreviewUrl(r.dataUrl);
+              setPdfState({ rasterizing: false, nbPages: r.nbPages, error: null });
+              // Lance OCR sur l'image rasterisee
+              runOcrAndFill(r.dataUrl);
+            } catch (err) {
+              setPdfState({ rasterizing: false, nbPages: 0, error: err && err.message ? err.message : "Erreur rendu PDF" });
+              try { console.error("[QuickEnvoiFactureFab] rasterize fail:", err); } catch (e) {}
+            }
           }
         };
         reader.readAsDataURL(f);
@@ -24435,7 +24499,21 @@
             h("div", { style: { marginBottom: 12 } },
               h("label", { style: lblStyle }, "Photo / fichier *"),
               photo ? h("div", { style: { position: "relative", marginBottom: 8 } },
-                h("img", { src: photo, alt: "facture", style: { width: "100%", maxHeight: 200, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,0.3)" } }),
+                // PDF : preview = image rasterisee si dispo, sinon placeholder + spinner
+                photoMime === "application/pdf" ? (
+                  pdfPreviewUrl ? h("img", { src: pdfPreviewUrl, alt: "page 1 du PDF", style: { width: "100%", maxHeight: 240, objectFit: "contain", borderRadius: 8, background: "#fff" } })
+                  : h("div", { style: { padding: 22, borderRadius: 8, background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.30)", display: "flex", alignItems: "center", gap: 12 } },
+                    pdfState.rasterizing ? h("span", { className: "loader", style: { width: 22, height: 22, borderWidth: 3 } }) : h(Icon, { name: "file-text", size: 28, color: pdfState.error ? "#fda4af" : "#a5b4fc" }),
+                    h("div", { style: { flex: 1, minWidth: 0 } },
+                      h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#fafafa" } }, photoName || "PDF"),
+                      h("div", { style: { fontSize: 11, color: pdfState.error ? "#fda4af" : "#a5b4fc", marginTop: 2 } },
+                        pdfState.rasterizing ? "Rendu en cours..." : (pdfState.error ? ("Echec rendu : " + pdfState.error) : "PDF charge - lancement OCR")
+                      )
+                    )
+                  )
+                ) : h("img", { src: photo, alt: "facture", style: { width: "100%", maxHeight: 200, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,0.3)" } }),
+                // Bandeau info pages pour les PDF multi-pages
+                photoMime === "application/pdf" && pdfState.nbPages > 1 ? h("div", { style: { marginTop: 4, fontSize: 10.5, color: "#94a3b8", textAlign: "center" } }, "PDF " + pdfState.nbPages + " pages - page 1 utilisee pour l'OCR") : null,
                 h("button", { onClick: reset, title: "Retire la photo ET tous les champs auto-detectes pour analyser une nouvelle facture", style: { position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,0.7)", border: "none", borderRadius: 6, color: "#fff", padding: "4px 8px", cursor: "pointer", fontSize: 12 } }, "Retirer & reset")
               ) : h("div", { style: rowStyle },
                 h("button", { onClick: function() { cameraInputRef.current && cameraInputRef.current.click(); }, style: { flex: 1, padding: "12px", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.4)", borderRadius: 8, color: "#10b981", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit", fontSize: 13 } }, h(Icon, { name: "camera", size: 18 }), "Photo"),
@@ -24445,7 +24523,8 @@
               h("input", { ref: fileInputRef, type: "file", accept: "image/*,application/pdf", onChange: handleFile, style: { display: "none" } })
             ),
             // Bandeau OCR (statut + nb champs + bouton reanalyser + texte brut)
-            photo && photoMime && photoMime.indexOf("image/") === 0 ? h("div", { style: { marginBottom: 12, padding: 10, borderRadius: 8, background: ocrStatus === "fail" ? "rgba(239,68,68,0.10)" : ocrStatus === "done" ? "rgba(16,185,129,0.10)" : "rgba(103,232,249,0.10)", border: "1px solid " + (ocrStatus === "fail" ? "rgba(239,68,68,0.40)" : ocrStatus === "done" ? "rgba(16,185,129,0.40)" : "rgba(103,232,249,0.40)") } },
+            // Affiche aussi pour PDF des qu'on a une image rasterisee (pdfPreviewUrl)
+            photo && (photoMime && photoMime.indexOf("image/") === 0 || pdfPreviewUrl) ? h("div", { style: { marginBottom: 12, padding: 10, borderRadius: 8, background: ocrStatus === "fail" ? "rgba(239,68,68,0.10)" : ocrStatus === "done" ? "rgba(16,185,129,0.10)" : "rgba(103,232,249,0.10)", border: "1px solid " + (ocrStatus === "fail" ? "rgba(239,68,68,0.40)" : ocrStatus === "done" ? "rgba(16,185,129,0.40)" : "rgba(103,232,249,0.40)") } },
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
                 h("div", { style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 } },
                   ocrStatus === "running" ? h("span", { className: "loader", style: { width: 14, height: 14, borderWidth: 2 } }) : h(Icon, { name: ocrStatus === "fail" ? "alert-triangle" : ocrStatus === "done" ? "check-circle-2" : "scan", size: 14, color: ocrStatus === "fail" ? "#fb7185" : ocrStatus === "done" ? "#34d399" : "#67e8f9" }),
@@ -24456,7 +24535,7 @@
                     "Pret a analyser"
                   )
                 ),
-                ocrStatus !== "running" && photo ? h("button", { type: "button", onClick: function() { runOcrAndFill(photo, { force: true }); }, style: { background: "transparent", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#cbd5e1", cursor: "pointer", fontFamily: "inherit" } }, "Re-analyser") : null
+                ocrStatus !== "running" && photo ? h("button", { type: "button", onClick: function() { runOcrAndFill(pdfPreviewUrl || photo, { force: true }); }, style: { background: "transparent", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#cbd5e1", cursor: "pointer", fontFamily: "inherit" } }, "Re-analyser") : null
               ),
               // Detail champ par champ
               ocrStatus === "done" ? h("div", { style: { marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 4, fontSize: 11 } },
