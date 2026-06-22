@@ -17953,6 +17953,12 @@
             var de = parseFloat(s.de); var a = parseFloat(s.a);
             if (isNaN(de)) de = 0; if (isNaN(a)) a = 0;
             var total = Math.max(0, a - de);
+            // Rétrocompat avec le systeme historique (commentaire "REFORATION NON FACTURABLE") :
+            // si pas de flag facturable explicite mais commentaire contient "NON FACTURABLE",
+            // on considere s.facturable = false par defaut.
+            var sFact = s.facturable;
+            if (sFact == null && s.commentaire && String(s.commentaire).toUpperCase().indexOf("NON FACTURABLE") >= 0) sFact = false;
+            else if (sFact == null && s.commentaire && /\b(REFORATION|ARRET\s*TECHNIQUE)\b/i.test(s.commentaire)) sFact = true;
             return h("div", { key: "sd-" + idx, style: { background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: 12, marginBottom: 8 } },
               h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
                 h("span", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", background: "rgba(236,72,153,0.15)", border: "1px solid rgba(236,72,153,0.35)", padding: "2px 8px", borderRadius: 999 } }, "#" + (idx + 1) + " Sondage"),
@@ -17968,10 +17974,32 @@
                   s.type && RF_TYPES_SONDAGE.indexOf(s.type) < 0 ? h("option", { key: "_custom", value: s.type }, s.type) : null
                 ))
               ),
-              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 } },
                 h("label", { style: labelStyleEdit }, "De (m)", h("input", { type: "number", value: s.de != null ? s.de : "", onChange: function(e) { updateList("sondages", idx, "de", e.target.value); }, style: inputStyleEdit })),
                 h("label", { style: labelStyleEdit }, "A (m)", h("input", { type: "number", value: s.a != null ? s.a : "", onChange: function(e) { updateList("sondages", idx, "a", e.target.value); }, style: inputStyleEdit })),
                 h("label", { style: labelStyleEdit }, "Total", h("input", { type: "text", value: total.toFixed(1), readOnly: true, style: Object.assign({}, inputStyleEdit, { color: "#f9a8d4", fontWeight: 800 }) }))
+              ),
+              // Toggle Facturable / Non facturable + commentaire libre
+              h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.30)", borderRadius: 6, padding: 2 } },
+                  h("button", {
+                    onClick: function() { updateList("sondages", idx, "facturable", sFact === true ? null : true); },
+                    title: "Ce sondage est facturable au client",
+                    style: { padding: "5px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit", background: sFact === true ? "rgba(34,197,94,0.30)" : "transparent", color: sFact === true ? "#86efac" : "#71717a", transition: "all 0.15s" }
+                  }, "Facturable"),
+                  h("button", {
+                    onClick: function() { updateList("sondages", idx, "facturable", sFact === false ? null : false); },
+                    title: "Ce sondage n'est PAS facturable au client (reforation, arret technique, etc.)",
+                    style: { padding: "5px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit", background: sFact === false ? "rgba(244,63,94,0.30)" : "transparent", color: sFact === false ? "#fda4af" : "#71717a", transition: "all 0.15s" }
+                  }, "Non facturable")
+                ),
+                h("input", {
+                  type: "text",
+                  value: s.commentaire || "",
+                  placeholder: sFact === false ? "Pourquoi non facturable ? (ex: reforation suite a perte de carotte, arret technique...)" : (sFact === true ? "Commentaire (optionnel)" : "Commentaire libre (reforation, arret technique, observation...)"),
+                  onChange: function(e) { updateList("sondages", idx, "commentaire", e.target.value); },
+                  style: Object.assign({}, inputStyleEdit, { marginTop: 0, flex: 1, fontWeight: 400, fontStyle: s.commentaire ? "normal" : "italic" })
+                })
               )
             );
           }),
