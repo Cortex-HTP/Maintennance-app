@@ -18946,6 +18946,34 @@
           }
         });
       };
+      // Bascule directe du flag s.facturable (true/false/null), pour TOUS les sondages
+      // depuis la vue deroulee. Pas de bricolage via le commentaire : on ecrit le booleen.
+      var toggleSondageFacturable = function(rapportId, sondageIdx, value) {
+        var rap = raps.find(function(x) { return x.id === rapportId; });
+        if (!rap) return;
+        var sondages = (Array.isArray(rap.sondages) ? rap.sondages : []).map(function(s, i) {
+          if (i !== sondageIdx) return s;
+          var copy = Object.assign({}, s);
+          copy.facturable = value; // true, false, ou null pour "non defini"
+          return copy;
+        });
+        var updatedLocal = Object.assign({}, rap, { sondages: sondages });
+        setRaps(raps.map(function(x) { return x.id === rapportId ? updatedLocal : x; }));
+        if (ctx.setDbRapportsForage) {
+          var cur = ctx.dbRapportsForage || [];
+          ctx.setDbRapportsForage(cur.map(function(x) { return x.id === rapportId ? Object.assign({}, x, { sondages: sondages }) : x; }));
+        }
+        supabase.from("rapports_forage").update({ sondages: sondages }).eq("id", rapportId).then(function(res) {
+          if (res.error) {
+            alert("Erreur enregistrement facturable : " + res.error.message);
+            setRaps(raps.map(function(x) { return x.id === rapportId ? rap : x; }));
+          } else if (showToast) {
+            if (value === true) showToast("Sondage marque facturable", "success");
+            else if (value === false) showToast("Sondage marque non facturable", "success");
+            else showToast("Statut facturable retire", "success");
+          }
+        });
+      };
       // Suppression definitive d'un rapport (utile pour purger les doublons d'import)
       var deleteRapport = function(r) {
         var libelle = "Rapport #" + r.id + (r.sondeuse_code ? " " + r.sondeuse_code : "") + (r.date_rapport ? " du " + fmtDate(r.date_rapport) : "");
@@ -19462,10 +19490,20 @@
                   sondages.map(function(s, i) {
                     var estReforage = estCommReforage(s.commentaire);
                     var estNonFact = estCommNonFact(s.commentaire);
-                    var toggleBtnStyle = function(active, kind) {
-                      return { border: "none", padding: "4px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                        background: active ? (kind === "fact" ? "linear-gradient(135deg,#16a34a,#22c55e)" : "linear-gradient(135deg,#e11d48,#f43f5e)") : "transparent",
-                        color: active ? "#ffffff" : "#a1a1aa" };
+                    // Etat facturable : s.facturable explicite prioritaire, sinon retrocompat via commentaire REFORATION
+                    var factExplicite = (s.facturable === true || s.facturable === false);
+                    var factDeduit = estReforage ? (estNonFact ? false : true) : null;
+                    var factEffectif = factExplicite ? s.facturable : factDeduit;
+                    // Toggle 3 etats : Facturable / Non facturable / [neutre]. Clic re-clic = retire le flag.
+                    var btnFactStyle = function(active) {
+                      return { border: "none", padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: 0.3,
+                        background: active ? "linear-gradient(135deg,#16a34a,#22c55e)" : "rgba(34,197,94,0.10)",
+                        color: active ? "#ffffff" : "#86efac" };
+                    };
+                    var btnNonStyle = function(active) {
+                      return { border: "none", padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: 0.3,
+                        background: active ? "linear-gradient(135deg,#e11d48,#f43f5e)" : "rgba(244,63,94,0.10)",
+                        color: active ? "#ffffff" : "#fda4af" };
                     };
                     return h("div", { key: i, style: { padding: "8px 0", borderBottom: i < sondages.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" } },
                       h("div", { style: { flex: "1 1 auto" } },
@@ -19473,10 +19511,12 @@
                         s.type ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11 } }, s.type) : null,
                         s.commentaire ? h("span", { style: { marginLeft: 8, color: "#fcd34d", fontSize: 11, fontStyle: "italic" } }, "« " + s.commentaire + " »") : null
                       ),
-                      // Toggle facturable/non inline (uniquement pour les reforages, sans edition complete)
-                      estReforage ? h("div", { style: { display: "inline-flex", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 999, overflow: "hidden", background: "rgba(0,0,0,0.30)" } },
-                        h("button", { onClick: function() { toggleSondageReforage(r.id, i, true); }, style: toggleBtnStyle(!estNonFact, "fact") }, "Facturable"),
-                        h("button", { onClick: function() { toggleSondageReforage(r.id, i, false); }, style: toggleBtnStyle(estNonFact, "non") }, "Non facturable")
+                      // Toggle facturable/non facturable inline, UNIQUEMENT si le sondage a un commentaire.
+                      // Un sondage sans commentaire est considere facturable par defaut (pas d'ambiguite).
+                      // Clic Facturable: s.facturable=true ; reclic: null. Idem Non facturable=false.
+                      s.commentaire ? h("div", { style: { display: "inline-flex", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 999, overflow: "hidden", background: "rgba(0,0,0,0.30)" } },
+                        h("button", { onClick: function() { toggleSondageFacturable(r.id, i, factEffectif === true ? null : true); }, style: btnFactStyle(factEffectif === true) }, "Facturable"),
+                        h("button", { onClick: function() { toggleSondageFacturable(r.id, i, factEffectif === false ? null : false); }, style: btnNonStyle(factEffectif === false) }, "Non facturable")
                       ) : null,
                       h("div", { style: { color: "#a78bfa", fontWeight: 600 } },
                         (s.metresDe != null ? s.metresDe : (s.de != null ? s.de : "?")) + " - " + (s.metresA != null ? s.metresA : (s.a != null ? s.a : "?")) + " m"
