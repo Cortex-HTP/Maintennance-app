@@ -17890,7 +17890,7 @@
       );
     }
 
-    function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, onClose, onSaved, showToast }) {
+    function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, piecesEquipements, onClose, onSaved, showToast }) {
       // Types dynamiques : lus depuis parametres (categories rf_types_sondage / rf_types_activite)
       var _parametres = useAppData().parametres || [];
       var listFromParametres = function(categorie, fallback) {
@@ -18046,10 +18046,30 @@
       var roleByNom = {};
       personnelOptions.forEach(function(p) { roleByNom[p.nom.toLowerCase()] = p.role; });
 
+      // ── Pieces filtrees par equipement du rapport ──
+      // Le rapport pointe sur un equipement (sondeuse FS1, D37, etc) via equipement_id
+      // ou sondeuse_code. On filtre les pieces de la datalist sur celles reellement
+      // liees a cet equipement (table piecesEquipements). Fallback : si l'equipement
+      // n'est pas resolu ou si aucune piece liee, on garde la liste complete pour
+      // ne pas bloquer la saisie.
+      var rapportEq = null;
+      if (rapport && rapport.equipement_id) {
+        rapportEq = (equipements || []).find(function(e) { return e.Id === rapport.equipement_id; }) || null;
+      }
+      if (!rapportEq && rapport && rapport.sondeuse_code) {
+        var code = String(rapport.sondeuse_code || "").toUpperCase().trim();
+        rapportEq = (equipements || []).find(function(e) { return String(e.Title || "").toUpperCase().trim() === code; }) || null;
+      }
+      var piecesForRapport = pieces || [];
+      if (rapportEq) {
+        var linkedIds = new Set((piecesEquipements || []).filter(function(l) { return String(l.equipement_id) === String(rapportEq.Id); }).map(function(l) { return l.piece_id; }));
+        var filtered = (pieces || []).filter(function(p) { return linkedIds.has(p.Id); });
+        if (filtered.length > 0) piecesForRapport = filtered;
+      }
       return h("div", null,
         // Datalist pour l'autocomplete des pieces (consommables perdus)
         h("datalist", { id: "rf-pieces-list" },
-          (pieces || []).map(function(p) {
+          piecesForRapport.map(function(p) {
             return h("option", { key: p.Id || p.Reference || p.Designation, value: p.Designation || "" }, p.Reference || "");
           })
         ),
@@ -20788,6 +20808,7 @@
           dbChantiers: dbChantiers,
           equipements: equipements,
           pieces: pieces,
+          piecesEquipements: ctx.piecesEquipements || [],
           showToast: showToast,
           onClose: function() { setEditingRapportId(null); },
           onSaved: function(updated) {
