@@ -981,7 +981,7 @@
           i.Type === "Preventive" &&
           (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
           (i.Plan || "").toLowerCase() === p.Title.toLowerCase() &&
-          i.Statut_Intervention === "Termine"
+          (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine")
         );
         var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
         var seuil = parseInt(p.SeuilAlerte || 50);
@@ -1034,7 +1034,7 @@
         var currentVal = freqType === "h" ? horam : km;
         var baseVal = freqType === "h" ? baseH : baseKM;
         var planInts = interventions.filter(function(i) {
-          return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && i.Statut_Intervention === "Termine";
+          return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
         });
         var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
         // Si deja du, pas d'alerte anticipee (c'est gere par computeVisitesADeclencher)
@@ -1659,7 +1659,7 @@
           var currentVal = freqType === "h" ? horam : km;
           var baseVal = freqType === "h" ? baseH : baseKM;
           var planInts = interventions.filter(function(i) {
-            return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && i.Statut_Intervention === "Termine";
+            return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
           });
           var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
           var seuil = parseInt(p.SeuilAlerte || 50);
@@ -8037,7 +8037,7 @@
             return i.Type === "Preventive" &&
               (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
               (i.Plan || "").toLowerCase() === p.Title.toLowerCase() &&
-              i.Statut_Intervention === "Termine";
+              (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
           });
           var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
           var seuilAlerte = parseInt(p.SeuilAlerte || 50);
@@ -25568,9 +25568,9 @@
                 (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
                 (i.Plan || "").toLowerCase() === (p.Title || "").toLowerCase()
               );
-              var terminatedInts = myInts.filter((i) => i.Statut_Intervention === "Termine");
+              var terminatedInts = myInts.filter((i) => i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
               const pending = myInts.filter((i) =>
-                i.Statut_Intervention !== "Termine" && (i.Title || "").startsWith("[Auto]")
+                i.Statut_Intervention !== "Termine" && derivedStatusFromGamme(i) !== "Termine" && (i.Title || "").startsWith("[Auto]")
               );
 
               var result = computeNextDue(freqNum, typeCycle, currentVal, baseVal, terminatedInts);
@@ -25775,7 +25775,11 @@
 
       // Met a jour le "Dernier entretien H/KM" de l'equipement quand une intervention preventive est terminee
       const maybeUpdateDernierEntretien = async (intervention) => {
-        if (intervention.Type !== "Preventive" || intervention.Statut_Intervention !== "Termine" || !intervention.Plan) return;
+        if (intervention.Type !== "Preventive" || !intervention.Plan) return;
+        // Met a jour DernierEntretien si Statut Termine OU gamme PLAN officiellement
+        // terminee (cas ou le mecano a coche tous les steps PLAN mais laisse le statut
+        // a "En cours" pour signaler des travaux custom restants).
+        if (intervention.Statut_Intervention !== "Termine" && derivedStatusFromGamme(intervention) !== "Termine") return;
         const eq = equipements.find(function(e) { return e.Title === intervention.Equipement || e.Id === intervention.EquipementId; });
         if (!eq) return;
         var changed = false;
