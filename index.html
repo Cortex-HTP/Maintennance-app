@@ -2839,17 +2839,43 @@
                 var isDate = !isHoram && !isKm;
                 var seuilAlerte = parseInt(p.SeuilAlerte) || 0;
                 var restant = null; var unite = ""; var pct = 0; var prochain = "";
+                // Cherche la derniere intervention de ce plan dont la gamme officielle
+                // est terminee (computeIntervStatus = "Termine" : couvre le cas ou les
+                // etapes PLAN sont toutes cochees meme si du travail custom reste a faire).
+                // Permet de respecter le cycle reel (1000H + 1000H = prochaine a HMprec+1000)
+                // plutot que de scheduler au multiple superieur de freqNum depuis HM actuel.
+                var lastDoneInter = null;
+                for (var ii = 0; ii < eqInterventions.length; ii++) {
+                  var inter = eqInterventions[ii];
+                  if (!inter || inter.Type !== "Preventive") continue;
+                  if (String(inter.Plan || "").toLowerCase() !== String(p.Title || "").toLowerCase()) continue;
+                  if (computeIntervStatus(inter) !== "Termine") continue;
+                  var refVal = isHoram ? parseFloat(inter.Horametre || 0) : (isKm ? parseFloat(inter.KM || 0) : 0);
+                  if (!(refVal > 0)) continue;
+                  var lastRef = lastDoneInter ? (isHoram ? parseFloat(lastDoneInter.Horametre || 0) : parseFloat(lastDoneInter.KM || 0)) : -1;
+                  if (refVal > lastRef) lastDoneInter = inter;
+                }
                 if (isHoram && freqNum > 0) {
-                  var prochainH = Math.ceil((hmActuel + 0.01) / freqNum) * freqNum;
+                  var prochainH;
+                  if (lastDoneInter) {
+                    prochainH = parseFloat(lastDoneInter.Horametre) + freqNum;
+                  } else {
+                    prochainH = Math.ceil((hmActuel + 0.01) / freqNum) * freqNum;
+                  }
                   restant = prochainH - hmActuel;
                   unite = "h";
-                  pct = Math.max(0, Math.min(100, ((freqNum - restant) / freqNum) * 100));
+                  pct = Math.max(0, Math.min(100, ((freqNum - Math.max(0, restant)) / freqNum) * 100));
                   prochain = "a " + fmtNum(prochainH) + " h";
                 } else if (isKm && freqNum > 0) {
-                  var prochainKm = Math.ceil((kmActuel + 0.01) / freqNum) * freqNum;
+                  var prochainKm;
+                  if (lastDoneInter) {
+                    prochainKm = parseFloat(lastDoneInter.KM) + freqNum;
+                  } else {
+                    prochainKm = Math.ceil((kmActuel + 0.01) / freqNum) * freqNum;
+                  }
                   restant = prochainKm - kmActuel;
                   unite = "km";
-                  pct = Math.max(0, Math.min(100, ((freqNum - restant) / freqNum) * 100));
+                  pct = Math.max(0, Math.min(100, ((freqNum - Math.max(0, restant)) / freqNum) * 100));
                   prochain = "a " + fmtNum(prochainKm) + " km";
                 } else if (isDate && p.ProchainIntervention) {
                   var dProch = new Date(p.ProchainIntervention + "T00:00:00");
