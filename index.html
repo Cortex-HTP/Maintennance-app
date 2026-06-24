@@ -2540,7 +2540,7 @@
 
     // ─── Ecran Fiche Equipement ─────────────────────────────────────────
     function EcranFicheEquipement({ onNavigate, equipement }) {
-      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin, dbRapportsForage } = useAppData();
+      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin, dbRapportsForage, deleteIntervention } = useAppData();
       const eq = equipement;
       if (!eq) return h("div", null, h(Button, { variant: "secondary", onClick: () => onNavigate("equipements") }, h(IconText, { icon: "arrow-left", size: 14 }, "Retour")));
       const eqInterventions = interventions.filter((i) => i.EquipementId === eq.Id || i.Equipement === eq.Title);
@@ -2949,7 +2949,7 @@
             h("div", { style: { overflowX: "auto" } },
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                 h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
-                  ["Date", "Travaux", "Technicien", "Type", "Cout", "Statut"].map((x) => h("th", { key: x, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, x)))),
+                  ["Date", "Travaux", "Technicien", "Type", "Cout", "Statut", isAdmin ? "" : null].filter(function(x) { return x !== null; }).map((x, ix) => h("th", { key: ix, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, x)))),
                 h("tbody", null, eqInterventions.map((i) =>
                   h("tr", { key: i.Id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer" }, onClick: () => onNavigate("interventions", Object.assign({}, i, { _returnTo: eq })) },
                     h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, i.Date_Intervention),
@@ -2957,7 +2957,19 @@
                     h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, i.Technicien),
                     h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, i.Type),
                     h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, i.Cout ? fmtMoney(i.Cout) : "\u2014"),
-                    h("td", { style: { padding: "10px 12px" } }, h(StatusBadge, { status: computeIntervStatus(i) })))))))),
+                    h("td", { style: { padding: "10px 12px" } }, h(StatusBadge, { status: computeIntervStatus(i) })),
+                    isAdmin ? h("td", { style: { padding: "10px 12px", textAlign: "right" } },
+                      h("button", {
+                        onClick: async function(e) {
+                          e.stopPropagation();
+                          var libelle = (i.Title || "intervention") + (i.Date_Intervention ? " du " + i.Date_Intervention : "");
+                          if (!confirm("Supprimer cette intervention ?\n\n" + libelle)) return;
+                          try { await deleteIntervention(i.Id); } catch (err) {}
+                        },
+                        title: "Supprimer cette intervention",
+                        style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }
+                      }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
+                    ) : null)))))),
         showReleveModal && h(Modal, { title: "Nouveau releve pour " + eq.Title, onClose: () => setShowReleveModal(false), size: 500 },
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
             h(FormField, { label: "Date" }, h("input", { type: "date", style: inputStyle, value: newReleve.Date, onChange: (e) => setNewReleve((p) => ({ ...p, Date: e.target.value })) })),
