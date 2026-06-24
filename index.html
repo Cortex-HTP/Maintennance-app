@@ -2814,6 +2814,19 @@
             return codes.indexOf(eqCode) >= 0;
           });
           if (plansForEq.length === 0) return null;
+          // Index freqNum + unite par titre de plan : permet de detecter les
+          // hierarchies (un 1000H done couvre un 500H done et un 250H done car
+          // 1000 est multiple de 500 et de 250).
+          var planInfoByTitle = {};
+          plansForEq.forEach(function(pp) {
+            var mm = String(pp.Frequence || "").match(/([0-9]+)/);
+            var ff = mm ? parseInt(mm[1], 10) : 0;
+            planInfoByTitle[String(pp.Title || "").toLowerCase()] = {
+              freq: ff,
+              isHoram: /horametre/i.test(pp.Frequence || ""),
+              isKm: /km/i.test(pp.Frequence || "")
+            };
+          });
           function fmtJours(j) {
             if (j == null || isNaN(j)) return "-";
             if (j < 0) return "en retard de " + Math.abs(Math.round(j)) + " j";
@@ -2839,30 +2852,47 @@
                 var isDate = !isHoram && !isKm;
                 var seuilAlerte = parseInt(p.SeuilAlerte) || 0;
                 var restant = null; var unite = ""; var pct = 0; var prochain = "";
-                // Cherche la derniere intervention de ce plan dont la gamme PLAN officielle
-                // est entierement cochee. On utilise derivedStatusFromGamme qui regarde
-                // UNIQUEMENT la gamme et ignore le statut manuel : si le mecano a coche
-                // toutes les etapes PLAN mais a laisse le statut a "En cours" (parce qu'il
-                // a ajoute du travail custom non termine a cote), on considere quand meme
-                // que la maintenance officielle est faite. Sans ca, le KPI restait coince
-                // tant que les custom n'etaient pas coches.
-                // Permet de respecter le cycle reel (1000H + 1000H = prochaine a HMprec+1000)
-                // plutot que de scheduler au multiple superieur de freqNum depuis HM actuel.
+                // Cherche la derniere intervention dont la gamme PLAN officielle est
+                // entierement cochee, en respectant la HIERARCHIE des plans : un 1000H
+                // done couvre aussi le 500H et le 250H (car 1000 % 500 === 0 et 1000 % 250 === 0).
+                // Sans ca, le KPI 500H retombait sur le modulo absolu (ceil(HM/500)*500)
+                // alors que le cycle reel partait du dernier 1000H effectue.
+                // On utilise derivedStatusFromGamme qui ignore le statut manuel : si le
+                // mecano a coche toutes les etapes PLAN mais a laisse le statut a "En cours"
+                // (travail custom non fini a cote), la maintenance officielle compte quand meme.
                 var lastDoneInter = null;
                 for (var ii = 0; ii < eqInterventions.length; ii++) {
                   var inter = eqInterventions[ii];
                   if (!inter || inter.Type !== "Preventive") continue;
-                  if (String(inter.Plan || "").toLowerCase() !== String(p.Title || "").toLowerCase()) continue;
-                  if (derivedStatusFromGamme(inter) !== "Termine") continue;
+                  var interPlanInfo = planInfoByTitle[String(inter.Plan || "").toLowerCase()];
+                  if (!interPlanInfo || interPlanInfo.freq === 0) continue;
+                  // Meme type d'unite (H ou KM)
+                  if (isHoram && !interPlanInfo.isHoram) continue;
+                  if (isKm && !interPlanInfo.isKm) continue;
+                  // Plan de l'intervention doit couvrir le plan courant (freq multiple)
+                  if (interPlanInfo.freq % freqNum !== 0) continue;
+                  if (derivedStatusFromGamme(inter) !== "Termine" && inter.Statut_Intervention !== "Termine") continue;
                   var refVal = isHoram ? parseFloat(inter.Horametre || 0) : (isKm ? parseFloat(inter.KM || 0) : 0);
                   if (!(refVal > 0)) continue;
                   var lastRef = lastDoneInter ? (isHoram ? parseFloat(lastDoneInter.Horametre || 0) : parseFloat(lastDoneInter.KM || 0)) : -1;
                   if (refVal > lastRef) lastDoneInter = inter;
                 }
+                // Si lastDoneInter vient d'un plan different (hierarchie : 1000H done
+                // couvre 500H done), on prend le prochain cycle dans le FUTUR depuis
+                // baseHM. Si c'est le meme plan, on garde le cycle litteral (baseHM+freqNum)
+                // pour preserver l'affichage du retard quand on a saute un cycle.
+                var lastIsSamePlan = lastDoneInter && String(lastDoneInter.Plan || "").toLowerCase() === String(p.Title || "").toLowerCase();
                 if (isHoram && freqNum > 0) {
                   var prochainH;
                   if (lastDoneInter) {
-                    prochainH = parseFloat(lastDoneInter.Horametre) + freqNum;
+                    var baseHM = parseFloat(lastDoneInter.Horametre);
+                    if (lastIsSamePlan) {
+                      prochainH = baseHM + freqNum;
+                    } else {
+                      var ncyc = Math.ceil((hmActuel - baseHM + 0.01) / freqNum);
+                      if (ncyc < 1) ncyc = 1;
+                      prochainH = baseHM + ncyc * freqNum;
+                    }
                   } else {
                     prochainH = Math.ceil((hmActuel + 0.01) / freqNum) * freqNum;
                   }
@@ -2873,7 +2903,14 @@
                 } else if (isKm && freqNum > 0) {
                   var prochainKm;
                   if (lastDoneInter) {
-                    prochainKm = parseFloat(lastDoneInter.KM) + freqNum;
+                    var baseKM2 = parseFloat(lastDoneInter.KM);
+                    if (lastIsSamePlan) {
+                      prochainKm = baseKM2 + freqNum;
+                    } else {
+                      var ncycK = Math.ceil((kmActuel - baseKM2 + 0.01) / freqNum);
+                      if (ncycK < 1) ncycK = 1;
+                      prochainKm = baseKM2 + ncycK * freqNum;
+                    }
                   } else {
                     prochainKm = Math.ceil((kmActuel + 0.01) / freqNum) * freqNum;
                   }
