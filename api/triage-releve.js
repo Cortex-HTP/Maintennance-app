@@ -124,8 +124,17 @@ module.exports = async function handler(req, res) {
   const ANON_KEY = process.env.SUPABASE_ANON_KEY;
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
-  if (!SUPABASE_URL || !SERVICE_KEY || !ANON_KEY || !ANTHROPIC_KEY) {
-    return res.status(500).json({ error: 'Configuration serveur incomplete' });
+  const missing = [];
+  if (!SUPABASE_URL) missing.push('SUPABASE_URL');
+  if (!SERVICE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!ANON_KEY) missing.push('SUPABASE_ANON_KEY');
+  if (!ANTHROPIC_KEY) missing.push('ANTHROPIC_API_KEY');
+  if (missing.length > 0) {
+    return res.status(500).json({
+      error: 'Configuration serveur incomplete',
+      missing_vars: missing,
+      hint: 'Ajoute ces variables dans Vercel > Settings > Environment Variables puis redeploie'
+    });
   }
 
   try {
