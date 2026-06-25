@@ -156,14 +156,19 @@ module.exports = async function handler(req, res) {
       });
     }
     const me = await meResp.json();
-    // Verifier que l'user est admin (lookup dans la table users)
-    const userResp = await fetch(SUPABASE_URL + '/rest/v1/users?id=eq.' + me.id + '&select=role,is_admin', {
+    // Verifier que l'user est admin : lookup dans app_users par email,
+    // role === "Administrateur" (la convention du projet, attention au grand A)
+    const userEmail = (me.email || '').toLowerCase();
+    const userResp = await fetch(SUPABASE_URL + '/rest/v1/app_users?email=ilike.' + encodeURIComponent(userEmail) + '&select=role,email', {
       headers: { apikey: SERVICE_KEY, Authorization: 'Bearer ' + SERVICE_KEY }
     });
     const userArr = await userResp.json();
-    const isAdmin = Array.isArray(userArr) && userArr[0] && (userArr[0].is_admin === true || userArr[0].role === 'admin');
+    const isAdmin = Array.isArray(userArr) && userArr.some(function(u) { return u.role === 'Administrateur'; });
     if (!isAdmin) {
-      return res.status(403).json({ error: 'Reserve aux admins' });
+      return res.status(403).json({
+        error: 'Reserve aux admins',
+        debug: { user_email: userEmail, matched_users: userArr, hint: 'Verifier que ton email est dans app_users avec role = "Administrateur"' }
+      });
     }
 
     // 2. Charge le releve avec contexte (chantier, sondeur)
