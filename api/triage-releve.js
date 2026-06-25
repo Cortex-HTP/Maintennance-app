@@ -15,6 +15,7 @@
 // Variables env requises (Vercel) :
 //   - SUPABASE_URL                  : URL Supabase
 //   - SUPABASE_SERVICE_ROLE_KEY     : Service role (jamais expose au client)
+//   - SUPABASE_ANON_KEY             : Anon key (requise par /auth/v1/user pour valider le JWT)
 //   - ANTHROPIC_API_KEY             : sk-ant-...
 // =====================================================================
 
@@ -120,11 +121,13 @@ module.exports = async function handler(req, res) {
 
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const ANON_KEY = process.env.SUPABASE_ANON_KEY;
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
   const missing = [];
   if (!SUPABASE_URL) missing.push('SUPABASE_URL');
   if (!SERVICE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!ANON_KEY) missing.push('SUPABASE_ANON_KEY');
   if (!ANTHROPIC_KEY) missing.push('ANTHROPIC_API_KEY');
   if (missing.length > 0) {
     return res.status(500).json({
@@ -136,9 +139,9 @@ module.exports = async function handler(req, res) {
 
   try {
     // 1. Verifie l'identite du caller via Supabase auth
-    // (on utilise SERVICE_KEY comme apikey : bypass RLS sur auth/v1/user)
+    // /auth/v1/user requiert ANON_KEY comme apikey + JWT user en Bearer
     const meResp = await fetch(SUPABASE_URL + '/auth/v1/user', {
-      headers: { apikey: SERVICE_KEY, Authorization: 'Bearer ' + jwt }
+      headers: { apikey: ANON_KEY, Authorization: 'Bearer ' + jwt }
     });
     if (!meResp.ok) {
       return res.status(401).json({ error: 'Token invalide' });
