@@ -24,7 +24,18 @@ const ANTHROPIC_MAX_TOKENS = 600;
 
 const SYSTEM_PROMPT = `Tu es un assistant qui aide un responsable d'exploitation a trier les releves d'heures journaliers de ses sondeurs (entreprise de forage en Nouvelle-Caledonie).
 
-Pour chaque releve, retourne UNIQUEMENT un JSON valide (pas de texte autour) avec cette structure exacte :
+Un releve d'heures = pointage d'un employe pour sa journee. CHAMPS OBLIGATOIRES :
+- Employe (nom)
+- Sondeuse (code engin)
+- Fonction
+- Heure debut + heure fin
+
+CHAMPS OPTIONNELS (leur absence n'est PAS une anomalie) :
+- Chantier : info contextuelle, parfois absente
+- Quart (jour/nuit) : pas toujours renseigne sur un releve d'heures
+- Remarques : facultatives
+
+Pour chaque releve, retourne UNIQUEMENT un JSON valide (pas de texte autour) :
 
 {
   "verdict": "ok" | "review" | "alert",
@@ -36,42 +47,62 @@ Pour chaque releve, retourne UNIQUEMENT un JSON valide (pas de texte autour) ave
 }
 
 REGLES DE DECISION :
-- "ok" : releve normal, rien d'inhabituel. Verdict majoritaire (~80% des cas).
-- "review" : 1 ou 2 elements meritent un oeil de l'admin (heures un peu basses, remarque ambigue, pause longue, ecart vs prevu...).
-- "alert" : 1 element grave (panne signalee, incident securite, retard important, anomalie horaire flagrante, pertes/casses anormales...).
+- "ok" : releve normal. Heures coherentes, pas de remarque preoccupante. C'est le verdict ATTENDU pour ~80% des cas. Un releve avec employe/sondeuse/horaires renseignes et pas de remarque grave = OK.
+- "review" : element vraiment inhabituel mais pas urgent (pause > 2h, heures < 5h ou > 11h, remarque ambigue qui merite lecture humaine).
+- "alert" : urgence reelle (panne foreuse signalee, incident securite, blessure, anomalie horaire flagrante < 4h ou > 12h, casse multiple/anormale).
 
-TYPES DE FLAGS POSSIBLES :
+NE FLAGGE JAMAIS :
+- Absence de chantier (pas un champ obligatoire du releve)
+- Absence de quart (pas un champ obligatoire du releve)
+- Remarque vide (c'est le cas normal)
+- Heures entre 5h et 11h (plage normale)
+- Pause de 30 min - 2h (plage normale)
+
+TYPES DE FLAGS POSSIBLES (si reellement anomalie) :
 - "panne" : equipement en panne signale dans remarques
 - "securite" : incident, blessure, danger signale
-- "heures_anormales" : total heures < 4h ou > 12h
+- "heures_anormales" : total < 4h ou > 12h
 - "pause_longue" : pause > 2h
-- "demande_materiel" : sondeur demande quelque chose
-- "absence" : membre d'equipe absent ou inhabituel
-- "casse_consommable" : casse / perte excessive
+- "demande_materiel" : sondeur demande quelque chose d'urgent
+- "absence" : equipe ou employe absent anormal
+- "casse_consommable" : casse / perte vraiment excessive
 - "retard" : arrivee tardive ou depart anticipe injustifie
 - "remarque_libre" : remarque texte qui necessite une lecture humaine
 - "autre" : autre point a signaler
 
-Reste FACTUEL et CONCIS. Ne sois pas alarmiste sur du normal.`;
+Reste FACTUEL et CONCIS. Sois PERMISSIF par defaut : en cas de doute, mets "ok".`;
 
 function buildUserPrompt(releve, contexte) {
+  // Helper : n'ajoute la ligne que si la valeur est non vide.
   const lines = [];
-  lines.push('RELEVE A ANALYSER:');
+  const add = function(label, val) {
+    if (val == null) return;
+    const s = String(val).trim();
+    if (!s || s === '?' || s === '-' || s === 'null') return;
+    lines.push(label + ': ' + s);
+  };
+
+  lines.push('RELEVE D\'HEURES A ANALYSER:');
   lines.push('');
-  lines.push('Date: ' + (releve.date_releve || '?'));
-  lines.push('Sondeuse: ' + (contexte.sondeuse_code || releve.sondeuse_code || '?'));
-  lines.push('Chantier: ' + (contexte.chantier_titre || '?'));
-  lines.push('Sondeur: ' + (contexte.sondeur_nom || '?'));
-  lines.push('Quart: ' + (releve.quart || '?'));
-  lines.push('');
+  add('Date', releve.date_releve);
+  add('Employe', contexte.sondeur_nom);
+  add('Fonction', releve.fonction);
+  add('Sondeuse', releve.sondeuse_code || contexte.sondeuse_code);
+  add('Chantier (auxiliaire)', contexte.chantier_titre);
+  add('Quart (auxiliaire)', releve.quart);
   if (releve.heure_debut || releve.heure_fin) {
     lines.push('Horaires: ' + (releve.heure_debut || '?') + ' -> ' + (releve.heure_fin || '?'));
-    if (releve.total_heures != null) lines.push('Total heures: ' + releve.total_heures);
   }
-  if (releve.horametre_debut != null || releve.horametre_fin != null) {
-    lines.push('Horametre: ' + (releve.horametre_debut || '?') + ' -> ' + (releve.horametre_fin || '?'));
-  }
+  add('Total minutes', releve.total_minutes);
+  add('Pause dejeuner', releve.pause_dejeuner);
+  add('Route chauffeur', releve.route_chauffeur);
+  add('Route passager', releve.route_passager);
+  add('Eloignement', releve.eloignement);
+  add('Absence', releve.absence_type);
+  add('Prime panier', releve.prime_panier);
+
   if (Array.isArray(releve.equipe) && releve.equipe.length > 0) {
+    lines.push('');
     lines.push('Equipe: ' + releve.equipe.map(function(m) { return (m.nom || '?') + (m.role ? ' (' + m.role + ')' : ''); }).join(', '));
   }
   if (Array.isArray(releve.activites) && releve.activites.length > 0) {
@@ -80,10 +111,6 @@ function buildUserPrompt(releve, contexte) {
     releve.activites.forEach(function(a) {
       lines.push('  - ' + (a.libelle || '?') + ' ' + (a.debut || '') + '->' + (a.fin || ''));
     });
-  }
-  if (Array.isArray(releve.sondages) && releve.sondages.length > 0) {
-    lines.push('');
-    lines.push('Sondages: ' + releve.sondages.length + ' (' + (releve.total_metres || 0) + ' m total)');
   }
   if (Array.isArray(releve.consommables_perdus) && releve.consommables_perdus.length > 0) {
     lines.push('');
@@ -96,9 +123,12 @@ function buildUserPrompt(releve, contexte) {
     lines.push('');
     lines.push('Remarques du sondeur:');
     lines.push('  "' + String(releve.remarques).trim() + '"');
+  } else {
+    lines.push('');
+    lines.push('(Pas de remarques - cas normal)');
   }
   lines.push('');
-  lines.push('Analyse ce releve et retourne le JSON.');
+  lines.push('Analyse ce releve d\'heures et retourne le JSON. Rappel: chantier et quart sont des champs auxiliaires, leur absence n\'est PAS une anomalie.');
   return lines.join('\n');
 }
 
