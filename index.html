@@ -18913,11 +18913,18 @@
         }
       };
       // Auto-trigger au mount + a chaque update de rels : analyse les releves
-      // qui n'ont pas encore d'ia_triage (max 3 en parallele pour pas spammer)
+      // qui n'ont pas encore d'ia_triage ET qui sont encore en attente.
+      // On skip les valide_admin/refuse : l'admin a deja tranche, pas la peine
+      // de gaspiller un appel API. Max 3 en parallele pour pas spammer.
       useEffect(function() {
         if (!Array.isArray(rels) || rels.length === 0) return;
         var toAnalyze = rels.filter(function(r) {
-          return r && r.id != null && r.ia_triage == null && !triageInProgress[r.id];
+          if (!r || r.id == null) return false;
+          if (r.ia_triage != null) return false; // deja analyse
+          if (triageInProgress[r.id]) return false; // en cours
+          var st = r.statut || "en_attente";
+          if (st !== "en_attente") return false; // valide ou refuse : skip
+          return true;
         }).slice(0, 3);
         toAnalyze.forEach(function(r) { triageReleve(r.id); });
       // eslint-disable-next-line react-hooks/exhaustive-deps

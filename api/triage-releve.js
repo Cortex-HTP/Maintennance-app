@@ -212,6 +212,20 @@ module.exports = async function handler(req, res) {
     }
     const releve = releveArr[0];
 
+    // Defense : ne ré-analyse pas un releve deja tranche par l'admin.
+    // Si statut != en_attente (donc valide_admin / refuse / autre), on retourne
+    // l'etat actuel sans consommer un appel Anthropic.
+    const statutActuel = releve.statut || 'en_attente';
+    if (statutActuel !== 'en_attente') {
+      return res.status(200).json({
+        ok: true,
+        releve_id: releveId,
+        skipped: true,
+        reason: 'Releve deja tranche (statut: ' + statutActuel + ')',
+        triage: releve.ia_triage || null
+      });
+    }
+
     // Contexte additionnel : chantier, sondeur
     const contexte = {};
     if (releve.chantier_id) {
