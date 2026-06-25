@@ -6161,20 +6161,33 @@
 
     // Retourne true si l'employe est ACTIF a la date refDate (par defaut aujourd'hui).
     // Un employe est actif si :
-    //   - aucune dateFinContrat renseignee, OU
-    //   - dateFinContrat est STRICTEMENT dans le futur par rapport a refDate
-    // (dateFinContrat = jour de debauche / licenciement = premier jour non employe ;
-    //  donc l'employe est "ancien" des le jour J de la fin de contrat)
+    //   - dateEmbauche <= refDate (deja embauche a la date de reference)
+    //     ou dateEmbauche absente (pas de borne basse)
+    //   ET
+    //   - dateFinContrat absente, ou dateFinContrat > refDate
+    //
+    // Conventions :
+    // - dateEmbauche = jour J1 d'employe (premier jour d'emploi inclus)
+    // - dateFinContrat = jour de debauche / fin contrat (premier jour NON employe)
     function isActiveEmploye(p, refDate) {
       if (!p) return false;
-      if (!p.dateFinContrat) return true;
       var ref = refDate || new Date();
-      try {
-        var d = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
-        if (isNaN(d.getTime())) return true; // date invalide -> traite comme actif
-        var refDay = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
-        return d.getTime() > refDay.getTime();
-      } catch (e) { return true; }
+      var refDay = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
+      // Verifie dateEmbauche : pas encore embauche -> pas actif
+      if (p.dateEmbauche) {
+        try {
+          var dEmb = new Date(String(p.dateEmbauche).substring(0, 10) + "T00:00:00");
+          if (!isNaN(dEmb.getTime()) && dEmb.getTime() > refDay) return false;
+        } catch (e) { /* date invalide : on ignore la borne basse */ }
+      }
+      // Verifie dateFinContrat : deja parti -> pas actif
+      if (p.dateFinContrat) {
+        try {
+          var dFin = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
+          if (!isNaN(dFin.getTime()) && dFin.getTime() <= refDay) return false;
+        } catch (e) { /* date invalide : on ignore la borne haute */ }
+      }
+      return true;
     }
 
     function loadPersonnelFromParametres(parametres) {
