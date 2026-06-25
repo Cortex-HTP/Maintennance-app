@@ -119,7 +119,10 @@ module.exports = async function handler(req, res) {
   }
   const jwt = auth.slice(7);
 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
+  // Normalise SUPABASE_URL : retire d'eventuels suffixes /rest/v1, /auth/v1
+  // ou trailing slash pour pouvoir concatener proprement les paths apres.
+  let SUPABASE_URL = process.env.SUPABASE_URL || '';
+  SUPABASE_URL = SUPABASE_URL.replace(/\/rest\/v1\/?$/, '').replace(/\/auth\/v1\/?$/, '').replace(/\/$/, '');
   const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const ANON_KEY = process.env.SUPABASE_ANON_KEY;
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
