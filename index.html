@@ -806,7 +806,10 @@
             adjMetrage += dayMetrage; adjJours += 1;
           }
         });
-        // ── Jours hors fenetre d'emploi (CDD partiel) : on rattrape avec siteMoyenne ──
+        // ── Jours hors fenetre d'emploi (CDD partiel) : rattrapage limite par machine ──
+        // Rattrapage = min(metrage de SA machine ce jour, siteMoyenne).
+        // Si la machine fait moins que la moyenne, on prend la valeur reelle.
+        // Si pas de machine identifiable, fallback siteMoyenne.
         if (dateEmbStr || dateFinStr) {
           var dCur = typeof periodStart === "string" ? new Date(periodStart + "T00:00:00") : new Date(periodStart);
           var dE = typeof periodEnd === "string" ? new Date(periodEnd + "T00:00:00") : new Date(periodEnd);
@@ -815,7 +818,10 @@
             if (!inEmpWindow(dStr2)) {
               var dow2 = dCur.getDay();
               if (dow2 !== 0 && dow2 !== 6) {
-                adjMetrage += siteMoyenne;
+                var machineHE2 = getMachineEmpForDate(emp.id, dStr2);
+                var metrageMachineHE2 = machineHE2 ? getMetrageMachineForDate(machineHE2, dStr2) : null;
+                var rattrapageHE2 = (metrageMachineHE2 !== null) ? Math.min(metrageMachineHE2, siteMoyenne) : siteMoyenne;
+                adjMetrage += rattrapageHE2;
                 adjJours += 1;
               }
             }
@@ -14766,14 +14772,12 @@
           // ── JOURS HORS PERIODE D'EMPLOI (CDD / debauche en cours de periode) ──
           // Pour un employe dont la fenetre d'emploi (dateEmbauche -> dateFinContrat)
           // ne couvre pas toute la periode demandee, on compte les jours OUVRABLES
-          // hors-fenetre dans son denominateur avec siteMoyenne. Ca evite qu'un CDD
-          // avec quelques bons jours touche plus qu'un CDI sur tout le mois :
-          // sa moyenne est dilue par les jours "moyens" qu'il n'a pas faits.
+          // hors-fenetre dans son denominateur. Rattrapage = min(metrage de SA machine
+          // ce jour-la, siteMoyenne). Si la machine a fait moins que la moyenne, on
+          // donne la valeur reelle (et pas la moyenne gonflee). Sinon siteMoyenne.
+          // Sans machine identifiable (jamais bosse sur ce site), fallback siteMoyenne.
           if (dateEmbStr || dateFinStr) {
-            var dCursor = new Date(period.start.getFullYear ? period.start : period.start);
-            // period.start peut etre une Date ou un string YYYY-MM-DD - normalisons
-            if (typeof period.start === "string") dCursor = new Date(period.start + "T00:00:00");
-            else dCursor = new Date(period.start);
+            var dCursor = typeof period.start === "string" ? new Date(period.start + "T00:00:00") : new Date(period.start);
             var dEnd = typeof period.end === "string" ? new Date(period.end + "T00:00:00") : new Date(period.end);
             while (dCursor <= dEnd) {
               var dStr = dCursor.getFullYear() + "-" + String(dCursor.getMonth() + 1).padStart(2, "0") + "-" + String(dCursor.getDate()).padStart(2, "0");
@@ -14783,7 +14787,10 @@
               if (horsEmploi) {
                 var dow = dCursor.getDay(); // 0=dim, 6=sam
                 if (dow !== 0 && dow !== 6) {
-                  adjMetrage += siteMoyenne;
+                  var machineHE = getMachineEmpForDate(emp.id, dStr);
+                  var metrageMachineHE = machineHE ? getMetrageMachineForDate(machineHE, dStr) : null;
+                  var rattrapageHE = (metrageMachineHE !== null) ? Math.min(metrageMachineHE, siteMoyenne) : siteMoyenne;
+                  adjMetrage += rattrapageHE;
                   adjJours += 1;
                 }
               }
