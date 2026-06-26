@@ -724,9 +724,18 @@
       personnel.forEach(function(emp) {
         var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
         var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
+        // Fenetre d'emploi pour ce salarie (utilisee pour filtrer + rattraper les jours hors fenetre)
+        var dateEmbStr = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null;
+        var dateFinStr = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null;
+        function inEmpWindow(dateStr) {
+          if (dateEmbStr && dateStr < dateEmbStr) return false;
+          if (dateFinStr && dateStr >= dateFinStr) return false;
+          return true;
+        }
         var empAffOnSite = affectations.filter(function(a) {
           if (a.personnelId !== emp.id) return false;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return false;
+          if (!inEmpWindow(a.dateAffectation)) return false;
           if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
           if (!a.chantierId) {
             var lastWork = affectations.filter(function(af) {
@@ -797,6 +806,22 @@
             adjMetrage += dayMetrage; adjJours += 1;
           }
         });
+        // ── Jours hors fenetre d'emploi (CDD partiel) : on rattrape avec siteMoyenne ──
+        if (dateEmbStr || dateFinStr) {
+          var dCur = typeof periodStart === "string" ? new Date(periodStart + "T00:00:00") : new Date(periodStart);
+          var dE = typeof periodEnd === "string" ? new Date(periodEnd + "T00:00:00") : new Date(periodEnd);
+          while (dCur <= dE) {
+            var dStr2 = dCur.getFullYear() + "-" + String(dCur.getMonth() + 1).padStart(2, "0") + "-" + String(dCur.getDate()).padStart(2, "0");
+            if (!inEmpWindow(dStr2)) {
+              var dow2 = dCur.getDay();
+              if (dow2 !== 0 && dow2 !== 6) {
+                adjMetrage += siteMoyenne;
+                adjJours += 1;
+              }
+            }
+            dCur.setDate(dCur.getDate() + 1);
+          }
+        }
         affectations.forEach(function(a) {
           if (a.personnelId !== emp.id) return;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return;
@@ -14719,6 +14744,34 @@
               joursParType.travail += 1;
             }
           });
+
+          // ── JOURS HORS PERIODE D'EMPLOI (CDD / debauche en cours de periode) ──
+          // Pour un employe dont la fenetre d'emploi (dateEmbauche -> dateFinContrat)
+          // ne couvre pas toute la periode demandee, on compte les jours OUVRABLES
+          // hors-fenetre dans son denominateur avec siteMoyenne. Ca evite qu'un CDD
+          // avec quelques bons jours touche plus qu'un CDI sur tout le mois :
+          // sa moyenne est dilue par les jours "moyens" qu'il n'a pas faits.
+          if (dateEmbStr || dateFinStr) {
+            var dCursor = new Date(period.start.getFullYear ? period.start : period.start);
+            // period.start peut etre une Date ou un string YYYY-MM-DD - normalisons
+            if (typeof period.start === "string") dCursor = new Date(period.start + "T00:00:00");
+            else dCursor = new Date(period.start);
+            var dEnd = typeof period.end === "string" ? new Date(period.end + "T00:00:00") : new Date(period.end);
+            while (dCursor <= dEnd) {
+              var dStr = dCursor.getFullYear() + "-" + String(dCursor.getMonth() + 1).padStart(2, "0") + "-" + String(dCursor.getDate()).padStart(2, "0");
+              var horsEmploi = false;
+              if (dateEmbStr && dStr < dateEmbStr) horsEmploi = true;
+              if (dateFinStr && dStr >= dateFinStr) horsEmploi = true;
+              if (horsEmploi) {
+                var dow = dCursor.getDay(); // 0=dim, 6=sam
+                if (dow !== 0 && dow !== 6) {
+                  adjMetrage += siteMoyenne;
+                  adjJours += 1;
+                }
+              }
+              dCursor.setDate(dCursor.getDate() + 1);
+            }
+          }
 
           // ── JOURS "AILLEURS" (autres sites) ──
           // Pour chaque jour ou l'employe a une affectation sur UN AUTRE site
