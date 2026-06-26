@@ -12754,13 +12754,31 @@
 
       var _cm = useState(new Date());
       var currentMonth = _cm[0]; var setCurrentMonth = _cm[1];
-      // Filtre : sous-traitants exclus, ex-employes inclus si leur fin de contrat
-      // est >= debut du mois affiche. Un employe parti mi-juin doit etre visible
-      // sur juin (il y a bosse une partie du mois), mais plus sur juillet.
+      // Filtre : sous-traitants exclus + un employe est visible sur le mois si
+      // sa fenetre d'emploi [dateEmbauche, dateFinContrat) chevauche le mois.
+      // Couvre les cas :
+      // - CDD embauche le 15/06 -> visible sur juin (et pas avant)
+      // - CDD parti le 15/06 -> visible sur juin (et pas apres)
+      // - Sans dates de contrat -> toujours visible
       var firstDayOfMonthPe = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
+      var firstDayNextMonthPe = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
       var personnel = loadPersonnelFromParametres(parametres).filter(function(p) {
-        if (p.roleMecanicien) return false; // sous-traitants exclus
-        return isActiveEmploye(p, firstDayOfMonthPe);
+        if (p.roleMecanicien) return false;
+        // Embauche apres la fin du mois affiche -> pas encore arrive
+        if (p.dateEmbauche) {
+          try {
+            var dEmb = new Date(String(p.dateEmbauche).substring(0, 10) + "T00:00:00");
+            if (!isNaN(dEmb.getTime()) && dEmb.getTime() >= firstDayNextMonthPe.getTime()) return false;
+          } catch (e) { /* date invalide : on ignore */ }
+        }
+        // Debauche avant ou pendant le debut du mois affiche -> parti
+        if (p.dateFinContrat) {
+          try {
+            var dFin = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
+            if (!isNaN(dFin.getTime()) && dFin.getTime() <= firstDayOfMonthPe.getTime()) return false;
+          } catch (e) { /* date invalide : on ignore */ }
+        }
+        return true;
       });
       // Selected chantier brush for painting
       var _brush = useState(null);
