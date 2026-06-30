@@ -11496,7 +11496,25 @@
                       if (mins < 0) mins += 24 * 60;
                       return mins;
                     };
-                    var minTotal = 0, minPanne = 0, minMaint = 0, minAttente = 0;
+                    // Set des libelles d'activites declarees facturables par defaut
+                    // (parametres > rf_activites_facturables). Permet de classer les
+                    // attentes facturable vs non facturable selon le libelle.
+                    var factLibellesSet = {};
+                    (ctxAv.parametres || []).forEach(function(p) {
+                      if (p && p.categorie === "rf_activites_facturables" && p.valeur) {
+                        factLibellesSet[String(p.valeur).toUpperCase().trim()] = true;
+                      }
+                    });
+                    // Determine si une activite est facturable :
+                    // - flag a.facturable explicite (true/false) -> prioritaire
+                    // - sinon : presence dans factLibellesSet (libelle declare facturable)
+                    var isActFact = function(a) {
+                      if (a && a.facturable === true) return true;
+                      if (a && a.facturable === false) return false;
+                      var libU = String((a && a.libelle) || "").toUpperCase().trim();
+                      return !!factLibellesSet[libU];
+                    };
+                    var minTotal = 0, minPanne = 0, minMaint = 0, minAttFact = 0, minAttNonFact = 0;
                     rapsCh.forEach(function(r) {
                       (r.activites || []).forEach(function(a) {
                         var dur = durBtwDispo(a.debut, a.fin);
@@ -11505,10 +11523,14 @@
                         var lib = String(a.libelle || "").toUpperCase();
                         if (lib.indexOf("PANNE") >= 0 || lib.indexOf("ARRET TECHNIQUE") >= 0) minPanne += dur;
                         else if (lib.indexOf("MAINT") >= 0) minMaint += dur;
-                        else if (lib.indexOf("ATTENTE") >= 0) minAttente += dur;
+                        else if (lib.indexOf("ATTENTE") >= 0) {
+                          if (isActFact(a)) minAttFact += dur;
+                          else minAttNonFact += dur;
+                        }
                       });
                     });
                     if (minTotal === 0) return null;
+                    var minAttente = minAttFact + minAttNonFact;
                     var minProductif = Math.max(0, minTotal - minPanne - minMaint - minAttente);
                     var dispoPc = (minProductif / minTotal) * 100;
                     var hh = function(m) {
@@ -11520,12 +11542,14 @@
                     var pcProd = (minProductif / minTotal) * 100;
                     var pcPanne = (minPanne / minTotal) * 100;
                     var pcMaint = (minMaint / minTotal) * 100;
-                    var pcAttente = (minAttente / minTotal) * 100;
+                    var pcAttFact = (minAttFact / minTotal) * 100;
+                    var pcAttNonFact = (minAttNonFact / minTotal) * 100;
                     // Palette desaturee, sobre - inspiree dashboards type Linear/Stripe
                     var COL_PROD = "#10b981";     // emerald-500 (vert eteint)
                     var COL_PANNE = "#dc2626";    // red-600 (rouge sombre)
                     var COL_MAINT = "#d97706";    // amber-600 (ambre fonce)
-                    var COL_ATT = "#6366f1";      // indigo-500 (bleu sobre)
+                    var COL_ATT_FACT = "#0ea5e9"; // sky-500 (bleu clair = on facture quand meme)
+                    var COL_ATT_NF = "#6366f1";   // indigo-500 (bleu sobre = non facturable, perte seche)
                     var legendItem = function(col, label, mins, pc) {
                       return h("div", { style: { display: "inline-flex", alignItems: "center", gap: 8 } },
                         h("span", { style: { width: 6, height: 6, borderRadius: "50%", background: col, display: "inline-block", flexShrink: 0 } }),
@@ -11540,7 +11564,8 @@
                              "  Productif : " + hh(minProductif) + " (" + pcProd.toFixed(1) + "%)\n" +
                              "  Panne / Arret technique : " + hh(minPanne) + " (" + pcPanne.toFixed(1) + "%)\n" +
                              "  Maintenance : " + hh(minMaint) + " (" + pcMaint.toFixed(1) + "%)\n" +
-                             "  Attente entreprise : " + hh(minAttente) + " (" + pcAttente.toFixed(1) + "%)\n\n" +
+                             "  Attente facturable : " + hh(minAttFact) + " (" + pcAttFact.toFixed(1) + "%)\n" +
+                             "  Attente non facturable : " + hh(minAttNonFact) + " (" + pcAttNonFact.toFixed(1) + "%)\n\n" +
                              "Base : " + rapsCh.length + " rapport(s) forage de ce chantier",
                       style: { marginBottom: 16, padding: "12px 14px", background: "rgba(0,0,0,0.18)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.05)", cursor: "help" }
                     },
@@ -11557,14 +11582,16 @@
                         minProductif > 0 ? h("div", { title: "Productif " + hh(minProductif), style: { width: pcProd + "%", background: COL_PROD } }) : null,
                         minPanne > 0 ? h("div", { title: "Panne " + hh(minPanne), style: { width: pcPanne + "%", background: COL_PANNE } }) : null,
                         minMaint > 0 ? h("div", { title: "Maintenance " + hh(minMaint), style: { width: pcMaint + "%", background: COL_MAINT } }) : null,
-                        minAttente > 0 ? h("div", { title: "Attente " + hh(minAttente), style: { width: pcAttente + "%", background: COL_ATT } }) : null
+                        minAttFact > 0 ? h("div", { title: "Attente facturable " + hh(minAttFact), style: { width: pcAttFact + "%", background: COL_ATT_FACT } }) : null,
+                        minAttNonFact > 0 ? h("div", { title: "Attente non facturable " + hh(minAttNonFact), style: { width: pcAttNonFact + "%", background: COL_ATT_NF } }) : null
                       ),
                       // Ligne 3 : legende minimale avec puces fines
                       h("div", { style: { display: "flex", flexWrap: "wrap", gap: 18, fontSize: 11, alignItems: "center" } },
                         legendItem(COL_PROD, "Productif", minProductif, pcProd),
                         minPanne > 0 ? legendItem(COL_PANNE, "Panne", minPanne, pcPanne) : null,
                         minMaint > 0 ? legendItem(COL_MAINT, "Maintenance", minMaint, pcMaint) : null,
-                        minAttente > 0 ? legendItem(COL_ATT, "Attente", minAttente, pcAttente) : null,
+                        minAttFact > 0 ? legendItem(COL_ATT_FACT, "Attente facturable", minAttFact, pcAttFact) : null,
+                        minAttNonFact > 0 ? legendItem(COL_ATT_NF, "Attente non fact.", minAttNonFact, pcAttNonFact) : null,
                         h("div", { style: { marginLeft: "auto", color: "#475569", fontSize: 10 } }, rapsCh.length + " rapport" + (rapsCh.length > 1 ? "s" : ""))
                       )
                     );
