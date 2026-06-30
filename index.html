@@ -3557,22 +3557,24 @@
           (function() {
             var maxFact = monthlyStats.reduce(function(m, x) { return Math.max(m, x.facturable); }, 0);
             if (maxFact <= 0) return h("div", { style: { fontSize: 12, color: "#71717a", padding: 16, textAlign: "center" } }, "Aucune donnee facturable sur la periode.");
-            var chartH = 180;
+            var chartH = 200;
             var topPad = 18;
-            var bottomPad = 26;
+            var bottomPad = 28;
             var leftPad = 56;
-            var rightPad = 12;
+            var rightPad = 16;
             var innerH = chartH - topPad - bottomPad;
-            var barW = Math.max(Math.floor(700 / monthlyStats.length) - 4, 14);
-            var barGap = 4;
-            var svgW = leftPad + rightPad + monthlyStats.length * (barW + barGap);
-            // Points pour la ligne reliant les sommets
+            var stepW = Math.max(Math.floor(700 / Math.max(1, monthlyStats.length - 1)), 28);
+            var svgW = leftPad + rightPad + (monthlyStats.length - 1) * stepW + 24;
+            // Points pour la courbe : x reparti uniformement, y proportionnel au facturable
             var pts = monthlyStats.map(function(x, idx) {
-              var bx = leftPad + idx * (barW + barGap) + barW / 2;
+              var bx = leftPad + idx * stepW + 12;
               var by = topPad + innerH - (x.facturable / maxFact) * innerH;
               return { x: bx, y: by, data: x };
             });
+            // Polyline (sommets a sommets)
             var polyPts = pts.map(function(p) { return p.x + "," + p.y; }).join(" ");
+            // Polygon ferme pour la zone sous la courbe
+            var areaPts = polyPts + " " + pts[pts.length - 1].x + "," + (topPad + innerH) + " " + pts[0].x + "," + (topPad + innerH);
             // Y axis : 4 lignes de grille
             var gridLines = [0, 0.25, 0.5, 0.75, 1].map(function(r) {
               var yPos = topPad + innerH - r * innerH;
@@ -3600,35 +3602,27 @@
                     h("text", { x: leftPad - 6, y: g.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, g.label)
                   );
                 }),
-                // Bars
-                monthlyStats.map(function(x, idx) {
-                  var bx = leftPad + idx * (barW + barGap);
-                  var bh = maxFact > 0 ? (x.facturable / maxFact) * innerH : 0;
-                  var by = topPad + innerH - bh;
-                  return h("g", { key: "bar-" + x.ymKey },
-                    h("rect", { x: bx, y: by, width: barW, height: Math.max(0, bh), fill: "url(#mecGrad)", rx: 3, opacity: x.facturable > 0 ? 0.85 : 0.15 },
-                      h("title", null, fmtYM(x.ymKey) + " : " + fmtNum(Math.round(x.facturable)) + " XPF · " + x.heures.toFixed(1) + " h · " + x.nb + " interv.")
-                    )
-                  );
-                }),
-                // Gradient definition
+                // Gradient definition pour la zone sous la courbe
                 h("defs", null,
                   h("linearGradient", { id: "mecGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
-                    h("stop", { offset: "0%", stopColor: "#fbbf24", stopOpacity: 0.9 }),
-                    h("stop", { offset: "100%", stopColor: "#f59e0b", stopOpacity: 0.5 })
+                    h("stop", { offset: "0%", stopColor: "#fbbf24", stopOpacity: 0.35 }),
+                    h("stop", { offset: "100%", stopColor: "#f59e0b", stopOpacity: 0.02 })
                   )
                 ),
-                // Ligne reliant les sommets
-                h("polyline", { points: polyPts, fill: "none", stroke: "#fde68a", strokeWidth: 1.5, strokeLinejoin: "round", strokeLinecap: "round", opacity: 0.7 }),
-                // Points sur la ligne
+                // Zone sous la courbe (translucide)
+                h("polygon", { points: areaPts, fill: "url(#mecGrad)" }),
+                // Courbe principale
+                h("polyline", { points: polyPts, fill: "none", stroke: "#fbbf24", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
+                // Points sur la courbe (avec tooltip natif)
                 pts.map(function(p, idx) {
-                  if (p.data.facturable <= 0) return null;
-                  return h("circle", { key: "pt-" + idx, cx: p.x, cy: p.y, r: 3, fill: "#fef3c7", stroke: "#f59e0b", strokeWidth: 1 });
+                  return h("circle", { key: "pt-" + idx, cx: p.x, cy: p.y, r: p.data.facturable > 0 ? 4 : 2.5, fill: p.data.facturable > 0 ? "#fef3c7" : "#71717a", stroke: p.data.facturable > 0 ? "#f59e0b" : "#52525b", strokeWidth: 1.5, style: { cursor: "pointer" } },
+                    h("title", null, fmtYM(p.data.ymKey) + " : " + fmtNum(Math.round(p.data.facturable)) + " XPF · " + p.data.heures.toFixed(1) + " h · " + p.data.nb + " interv.")
+                  );
                 }),
                 // X labels (mois)
                 monthlyStats.map(function(x, idx) {
                   if (idx % labelStep !== 0 && idx !== monthlyStats.length - 1) return null;
-                  var bx = leftPad + idx * (barW + barGap) + barW / 2;
+                  var bx = leftPad + idx * stepW + 12;
                   return h("text", { key: "lbl-" + x.ymKey, x: bx, y: chartH - 10, textAnchor: "middle", fontSize: 10, fill: "#a1a1aa" }, fmtYM(x.ymKey));
                 })
               )
