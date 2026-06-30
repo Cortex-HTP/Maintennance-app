@@ -3404,42 +3404,39 @@
       // Tableau de detail trie par date desc
       var tableRows = terminees.slice().sort(function(a, b) { return (b.Date_Intervention || "").localeCompare(a.Date_Intervention || ""); });
 
-      // Agregation mensuelle (pour la courbe affichee quand periode = all).
-      // On parcourt les interventions terminees, on les groupe par YYYY-MM,
-      // et on calcule heures + facturable + nb par mois. On comble les mois
-      // sans intervention par des 0 pour une courbe continue.
+      // Agregation journaliere (pour la courbe affichee quand periode = all).
+      // On parcourt les interventions terminees, on les groupe par YYYY-MM-DD,
+      // et on calcule heures + facturable + nb par jour. On comble TOUS les jours
+      // de l'annee (Jan 1 -> Dec 31) par des 0 pour avoir un cadrage annuel
+      // coherent meme avec peu de donnees.
       var monthlyStats = (function() {
-        var byYM = {};
+        var byD = {};
         terminees.forEach(function(i) {
-          var dStr = String(i.Date_Intervention || "").substring(0, 7);
-          if (!dStr || dStr.length !== 7) return;
-          if (!byYM[dStr]) byYM[dStr] = { ymKey: dStr, heures: 0, facturable: 0, nb: 0 };
+          var dStr = String(i.Date_Intervention || "").substring(0, 10);
+          if (!dStr || dStr.length !== 10) return;
+          if (!byD[dStr]) byD[dStr] = { ymKey: dStr, heures: 0, facturable: 0, nb: 0 };
           var dur = parseFloat(i.DureeHeures) || 0;
           var tx = parseFloat(i.TauxHoraireApplique) || 0;
-          byYM[dStr].heures += dur;
-          byYM[dStr].facturable += dur * tx;
-          byYM[dStr].nb += 1;
+          byD[dStr].heures += dur;
+          byD[dStr].facturable += dur * tx;
+          byD[dStr].nb += 1;
         });
-        var arr = Object.keys(byYM).map(function(k) { return byYM[k]; });
-        arr.sort(function(a, b) { return a.ymKey.localeCompare(b.ymKey); });
-        // On etend toujours du janvier de la premiere annee au decembre de la derniere
-        // annee, meme si une seule donnee. Si aucune donnee : on cale sur l'annee
-        // courante pour avoir Jan-Dec visible.
+        var keys = Object.keys(byD).sort();
+        // Determine bornes annuelles (Jan 1 -> Dec 31 de chaque annee concernee).
         var fy, ly;
-        if (arr.length === 0) {
+        if (keys.length === 0) {
           fy = ly = new Date().getFullYear();
         } else {
-          fy = parseInt(arr[0].ymKey.substring(0, 4));
-          ly = parseInt(arr[arr.length - 1].ymKey.substring(0, 4));
+          fy = parseInt(keys[0].substring(0, 4));
+          ly = parseInt(keys[keys.length - 1].substring(0, 4));
         }
-        var byKeyFull = {};
-        arr.forEach(function(x) { byKeyFull[x.ymKey] = x; });
         var filled = [];
-        var cy = fy, cm = 1;
-        while (cy < ly || (cy === ly && cm <= 12)) {
-          var k = cy + "-" + (cm < 10 ? "0" : "") + cm;
-          filled.push(byKeyFull[k] || { ymKey: k, heures: 0, facturable: 0, nb: 0 });
-          cm++; if (cm > 12) { cm = 1; cy++; }
+        var cur = new Date(fy, 0, 1);
+        var end = new Date(ly, 11, 31);
+        while (cur <= end) {
+          var k = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+          filled.push(byD[k] || { ymKey: k, heures: 0, facturable: 0, nb: 0 });
+          cur.setDate(cur.getDate() + 1);
         }
         return filled;
       })();
@@ -3550,13 +3547,13 @@
           h(KPICard, { icon: h(Icon, { name: "check-circle", size: 32, color: "#60a5fa" }), label: "Delai validation moyen", value: delaiMoyenValid > 0 ? delaiMoyenValid.toFixed(1) + " h" : "—", color: "#60a5fa", hint: delaisValidation.length + " demandes validees" })
         ),
 
-        // ─── Courbe mensuelle des depenses mecaniques (visible seulement si periode = all) ───
-        // Affichage : barres + ligne reliant les sommets, hover -> tooltip valeur + nb interv.
-        // Utile pour reperer les pics de depenses, saisonnalite, tendance.
+        // ─── Courbe journaliere des depenses mecaniques (visible seulement si periode = all) ───
+        // Affichage : courbe + zone remplie, points uniquement sur les jours avec activite.
+        // Labels X = mois (placement au 1er de chaque mois).
         (periodKey === "all" && monthlyStats.length > 0) ? h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
-            h("h3", { style: { margin: 0, fontSize: 15, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#fbbf24" }, "Depenses mecaniques par mois")),
-            h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, monthlyStats.length + " mois · " + monthlyStats.filter(function(x) { return x.facturable > 0; }).length + " mois avec activite")
+            h("h3", { style: { margin: 0, fontSize: 15, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#fbbf24" }, "Depenses mecaniques par jour")),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, monthlyStats.filter(function(x) { return x.facturable > 0; }).length + " jour" + (monthlyStats.filter(function(x) { return x.facturable > 0; }).length > 1 ? "s" : "") + " avec activite sur " + monthlyStats.length)
           ),
           (function() {
             var maxFact = monthlyStats.reduce(function(m, x) { return Math.max(m, x.facturable); }, 0);
@@ -3567,11 +3564,14 @@
             var leftPad = 56;
             var rightPad = 16;
             var innerH = chartH - topPad - bottomPad;
-            var stepW = Math.max(Math.floor(700 / Math.max(1, monthlyStats.length - 1)), 28);
-            var svgW = leftPad + rightPad + (monthlyStats.length - 1) * stepW + 24;
+            // Largeur cible : adapt au nb de jours (1 an = ~900px, 2 ans = ~1500)
+            var pxPerDay = monthlyStats.length <= 366 ? 2.4 : 1.6;
+            var innerW = Math.max(560, monthlyStats.length * pxPerDay);
+            var stepW = innerW / Math.max(1, monthlyStats.length - 1);
+            var svgW = leftPad + rightPad + innerW;
             // Points pour la courbe : x reparti uniformement, y proportionnel au facturable
             var pts = monthlyStats.map(function(x, idx) {
-              var bx = leftPad + idx * stepW + 12;
+              var bx = leftPad + idx * stepW;
               var by = topPad + innerH - (x.facturable / maxFact) * innerH;
               return { x: bx, y: by, data: x };
             });
@@ -3589,23 +3589,21 @@
               else label = String(val);
               return { y: yPos, label: label };
             });
-            // Mois a labelliser : tous si <= 12, sinon 1 sur 2 ou 1 sur 3
-            var labelStep = monthlyStats.length <= 12 ? 1 : (monthlyStats.length <= 24 ? 2 : 3);
-            function fmtYM(ym) {
+            function fmtMoisYY(ymd) {
               var moisCourt = ["Jan", "Fev", "Mar", "Avr", "Mai", "Juin", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
-              var mi = parseInt(ym.substring(5, 7)) - 1;
-              var yi = ym.substring(2, 4);
+              var mi = parseInt(ymd.substring(5, 7)) - 1;
+              var yi = ymd.substring(2, 4);
               return moisCourt[mi] + " " + yi;
             }
+            function fmtDate(ymd) {
+              return ymd.substring(8, 10) + "/" + ymd.substring(5, 7) + "/" + ymd.substring(0, 4);
+            }
+            // Labels X : un par 1er du mois
+            var monthLabels = pts.filter(function(p) { return p.data.ymKey.substring(8, 10) === "01"; });
+            // Cercles : uniquement sur les jours avec facturable > 0
+            var activePts = pts.filter(function(p) { return p.data.facturable > 0; });
             return h("div", { style: { overflowX: "auto" } },
               h("svg", { width: svgW, height: chartH, style: { display: "block" } },
-                // Grid horizontal lines + Y labels
-                gridLines.map(function(g, idx) {
-                  return h("g", { key: "grid-" + idx },
-                    h("line", { x1: leftPad, x2: svgW - rightPad, y1: g.y, y2: g.y, stroke: "rgba(255,255,255,0.08)", strokeDasharray: idx === 0 ? "none" : "3 4" }),
-                    h("text", { x: leftPad - 6, y: g.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, g.label)
-                  );
-                }),
                 // Gradient definition pour la zone sous la courbe
                 h("defs", null,
                   h("linearGradient", { id: "mecGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
@@ -3613,21 +3611,30 @@
                     h("stop", { offset: "100%", stopColor: "#f59e0b", stopOpacity: 0.02 })
                   )
                 ),
+                // Grid horizontal lines + Y labels
+                gridLines.map(function(g, idx) {
+                  return h("g", { key: "grid-" + idx },
+                    h("line", { x1: leftPad, x2: svgW - rightPad, y1: g.y, y2: g.y, stroke: "rgba(255,255,255,0.08)", strokeDasharray: idx === 0 ? "none" : "3 4" }),
+                    h("text", { x: leftPad - 6, y: g.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, g.label)
+                  );
+                }),
+                // Lignes verticales au 1er de chaque mois (tres subtiles)
+                monthLabels.map(function(p) {
+                  return h("line", { key: "vm-" + p.data.ymKey, x1: p.x, x2: p.x, y1: topPad, y2: topPad + innerH, stroke: "rgba(255,255,255,0.04)" });
+                }),
                 // Zone sous la courbe (translucide)
                 h("polygon", { points: areaPts, fill: "url(#mecGrad)" }),
                 // Courbe principale
-                h("polyline", { points: polyPts, fill: "none", stroke: "#fbbf24", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
-                // Points sur la courbe (avec tooltip natif)
-                pts.map(function(p, idx) {
-                  return h("circle", { key: "pt-" + idx, cx: p.x, cy: p.y, r: p.data.facturable > 0 ? 4 : 2.5, fill: p.data.facturable > 0 ? "#fef3c7" : "#71717a", stroke: p.data.facturable > 0 ? "#f59e0b" : "#52525b", strokeWidth: 1.5, style: { cursor: "pointer" } },
-                    h("title", null, fmtYM(p.data.ymKey) + " : " + fmtNum(Math.round(p.data.facturable)) + " XPF · " + p.data.heures.toFixed(1) + " h · " + p.data.nb + " interv.")
+                h("polyline", { points: polyPts, fill: "none", stroke: "#fbbf24", strokeWidth: 1.8, strokeLinejoin: "round", strokeLinecap: "round" }),
+                // Points actifs uniquement (jours avec depense)
+                activePts.map(function(p, idx) {
+                  return h("circle", { key: "pt-" + p.data.ymKey, cx: p.x, cy: p.y, r: 3, fill: "#fef3c7", stroke: "#f59e0b", strokeWidth: 1.5, style: { cursor: "pointer" } },
+                    h("title", null, fmtDate(p.data.ymKey) + " : " + fmtNum(Math.round(p.data.facturable)) + " XPF · " + p.data.heures.toFixed(1) + " h · " + p.data.nb + " interv.")
                   );
                 }),
-                // X labels (mois)
-                monthlyStats.map(function(x, idx) {
-                  if (idx % labelStep !== 0 && idx !== monthlyStats.length - 1) return null;
-                  var bx = leftPad + idx * stepW + 12;
-                  return h("text", { key: "lbl-" + x.ymKey, x: bx, y: chartH - 10, textAnchor: "middle", fontSize: 10, fill: "#a1a1aa" }, fmtYM(x.ymKey));
+                // X labels (au 1er de chaque mois)
+                monthLabels.map(function(p) {
+                  return h("text", { key: "lbl-" + p.data.ymKey, x: p.x, y: chartH - 10, textAnchor: "middle", fontSize: 10, fill: "#a1a1aa" }, fmtMoisYY(p.data.ymKey));
                 })
               )
             );
