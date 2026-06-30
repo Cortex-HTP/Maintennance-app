@@ -3254,7 +3254,7 @@
         ),
         h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
           filtered.length === 0 ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention trouvee")) :
-            sortByField(filtered, "Title").map((item) => {
+            filtered.map((item) => {
               const prog = gammeProgress(item.Gamme);
               const effStatus = computeIntervStatus(item);
               var isSourceMec = item.Source === "mecanicien";
@@ -3310,7 +3310,7 @@
     // sous-traitants. KPIs + tableau detaille + export PDF/CSV + top machines.
     function EcranStatsMecaniciens({ onNavigate }) {
       const { interventions, equipements, parametres } = useAppData();
-      const [periodKey, setPeriodKey] = useState("mois");  // mois, moisdernier, 3mois, 6mois, 1an, all
+      const [periodKey, setPeriodKey] = useState("all");  // mois, moisdernier, 3mois, 6mois, 1an, all
       const [selectedMecCode, setSelectedMecCode] = useState("all");  // 'all' ou code mecanicien
 
       // Liste des mecaniciens sous-traitants
@@ -3403,6 +3403,42 @@
 
       // Tableau de detail trie par date desc
       var tableRows = terminees.slice().sort(function(a, b) { return (b.Date_Intervention || "").localeCompare(a.Date_Intervention || ""); });
+
+      // Agregation mensuelle (pour la courbe affichee quand periode = all).
+      // On parcourt les interventions terminees, on les groupe par YYYY-MM,
+      // et on calcule heures + facturable + nb par mois. On comble les mois
+      // sans intervention par des 0 pour une courbe continue.
+      var monthlyStats = (function() {
+        var byYM = {};
+        terminees.forEach(function(i) {
+          var dStr = String(i.Date_Intervention || "").substring(0, 7);
+          if (!dStr || dStr.length !== 7) return;
+          if (!byYM[dStr]) byYM[dStr] = { ymKey: dStr, heures: 0, facturable: 0, nb: 0 };
+          var dur = parseFloat(i.DureeHeures) || 0;
+          var tx = parseFloat(i.TauxHoraireApplique) || 0;
+          byYM[dStr].heures += dur;
+          byYM[dStr].facturable += dur * tx;
+          byYM[dStr].nb += 1;
+        });
+        var arr = Object.keys(byYM).map(function(k) { return byYM[k]; });
+        arr.sort(function(a, b) { return a.ymKey.localeCompare(b.ymKey); });
+        if (arr.length >= 2) {
+          var first = arr[0].ymKey, last = arr[arr.length - 1].ymKey;
+          var fy = parseInt(first.substring(0, 4)), fm = parseInt(first.substring(5, 7));
+          var ly = parseInt(last.substring(0, 4)), lm = parseInt(last.substring(5, 7));
+          var byKeyFull = {};
+          arr.forEach(function(x) { byKeyFull[x.ymKey] = x; });
+          var filled = [];
+          var cy = fy, cm = fm;
+          while (cy < ly || (cy === ly && cm <= lm)) {
+            var k = cy + "-" + (cm < 10 ? "0" : "") + cm;
+            filled.push(byKeyFull[k] || { ymKey: k, heures: 0, facturable: 0, nb: 0 });
+            cm++; if (cm > 12) { cm = 1; cy++; }
+          }
+          arr = filled;
+        }
+        return arr;
+      })();
 
       // Export CSV simple
       function exportCSV() {
@@ -3509,6 +3545,96 @@
           h(KPICard, { icon: h(Icon, { name: "alert-circle", size: 32, color: "#fbbf24" }), label: "Demandes en attente", value: String(demandesEnAttente.length), color: "#fbbf24", hint: demandesTotal + " demandes au total" }),
           h(KPICard, { icon: h(Icon, { name: "check-circle", size: 32, color: "#60a5fa" }), label: "Delai validation moyen", value: delaiMoyenValid > 0 ? delaiMoyenValid.toFixed(1) + " h" : "—", color: "#60a5fa", hint: delaisValidation.length + " demandes validees" })
         ),
+
+        // ─── Courbe mensuelle des depenses mecaniques (visible seulement si periode = all) ───
+        // Affichage : barres + ligne reliant les sommets, hover -> tooltip valeur + nb interv.
+        // Utile pour reperer les pics de depenses, saisonnalite, tendance.
+        (periodKey === "all" && monthlyStats.length > 0) ? h(Card, { style: { marginBottom: 16 } },
+          h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
+            h("h3", { style: { margin: 0, fontSize: 15, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#fbbf24" }, "Depenses mecaniques par mois")),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, monthlyStats.length + " mois · " + monthlyStats.filter(function(x) { return x.facturable > 0; }).length + " mois avec activite")
+          ),
+          (function() {
+            var maxFact = monthlyStats.reduce(function(m, x) { return Math.max(m, x.facturable); }, 0);
+            if (maxFact <= 0) return h("div", { style: { fontSize: 12, color: "#71717a", padding: 16, textAlign: "center" } }, "Aucune donnee facturable sur la periode.");
+            var chartH = 180;
+            var topPad = 18;
+            var bottomPad = 26;
+            var leftPad = 56;
+            var rightPad = 12;
+            var innerH = chartH - topPad - bottomPad;
+            var barW = Math.max(Math.floor(700 / monthlyStats.length) - 4, 14);
+            var barGap = 4;
+            var svgW = leftPad + rightPad + monthlyStats.length * (barW + barGap);
+            // Points pour la ligne reliant les sommets
+            var pts = monthlyStats.map(function(x, idx) {
+              var bx = leftPad + idx * (barW + barGap) + barW / 2;
+              var by = topPad + innerH - (x.facturable / maxFact) * innerH;
+              return { x: bx, y: by, data: x };
+            });
+            var polyPts = pts.map(function(p) { return p.x + "," + p.y; }).join(" ");
+            // Y axis : 4 lignes de grille
+            var gridLines = [0, 0.25, 0.5, 0.75, 1].map(function(r) {
+              var yPos = topPad + innerH - r * innerH;
+              var val = Math.round(maxFact * r);
+              var label;
+              if (val >= 1000000) label = (val / 1000000).toFixed(1) + " MF";
+              else if (val >= 1000) label = Math.round(val / 1000) + " k";
+              else label = String(val);
+              return { y: yPos, label: label };
+            });
+            // Mois a labelliser : tous si <= 12, sinon 1 sur 2 ou 1 sur 3
+            var labelStep = monthlyStats.length <= 12 ? 1 : (monthlyStats.length <= 24 ? 2 : 3);
+            function fmtYM(ym) {
+              var moisCourt = ["Jan", "Fev", "Mar", "Avr", "Mai", "Juin", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
+              var mi = parseInt(ym.substring(5, 7)) - 1;
+              var yi = ym.substring(2, 4);
+              return moisCourt[mi] + " " + yi;
+            }
+            return h("div", { style: { overflowX: "auto" } },
+              h("svg", { width: svgW, height: chartH, style: { display: "block" } },
+                // Grid horizontal lines + Y labels
+                gridLines.map(function(g, idx) {
+                  return h("g", { key: "grid-" + idx },
+                    h("line", { x1: leftPad, x2: svgW - rightPad, y1: g.y, y2: g.y, stroke: "rgba(255,255,255,0.08)", strokeDasharray: idx === 0 ? "none" : "3 4" }),
+                    h("text", { x: leftPad - 6, y: g.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, g.label)
+                  );
+                }),
+                // Bars
+                monthlyStats.map(function(x, idx) {
+                  var bx = leftPad + idx * (barW + barGap);
+                  var bh = maxFact > 0 ? (x.facturable / maxFact) * innerH : 0;
+                  var by = topPad + innerH - bh;
+                  return h("g", { key: "bar-" + x.ymKey },
+                    h("rect", { x: bx, y: by, width: barW, height: Math.max(0, bh), fill: "url(#mecGrad)", rx: 3, opacity: x.facturable > 0 ? 0.85 : 0.15 },
+                      h("title", null, fmtYM(x.ymKey) + " : " + fmtNum(Math.round(x.facturable)) + " XPF · " + x.heures.toFixed(1) + " h · " + x.nb + " interv.")
+                    )
+                  );
+                }),
+                // Gradient definition
+                h("defs", null,
+                  h("linearGradient", { id: "mecGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
+                    h("stop", { offset: "0%", stopColor: "#fbbf24", stopOpacity: 0.9 }),
+                    h("stop", { offset: "100%", stopColor: "#f59e0b", stopOpacity: 0.5 })
+                  )
+                ),
+                // Ligne reliant les sommets
+                h("polyline", { points: polyPts, fill: "none", stroke: "#fde68a", strokeWidth: 1.5, strokeLinejoin: "round", strokeLinecap: "round", opacity: 0.7 }),
+                // Points sur la ligne
+                pts.map(function(p, idx) {
+                  if (p.data.facturable <= 0) return null;
+                  return h("circle", { key: "pt-" + idx, cx: p.x, cy: p.y, r: 3, fill: "#fef3c7", stroke: "#f59e0b", strokeWidth: 1 });
+                }),
+                // X labels (mois)
+                monthlyStats.map(function(x, idx) {
+                  if (idx % labelStep !== 0 && idx !== monthlyStats.length - 1) return null;
+                  var bx = leftPad + idx * (barW + barGap) + barW / 2;
+                  return h("text", { key: "lbl-" + x.ymKey, x: bx, y: chartH - 10, textAnchor: "middle", fontSize: 10, fill: "#a1a1aa" }, fmtYM(x.ymKey));
+                })
+              )
+            );
+          }())
+        ) : null,
 
         // Vue d'ensemble par mecanicien (si "Tous")
         selectedMecCode === "all" && mecaniciens.length > 0 ? h(Card, { style: { marginBottom: 16 } },
@@ -11851,25 +11977,24 @@
                     //   tenir la date de fin contractuelle ? ─
                     // cadenceTotale = metres_restants / jours_ouvres_restants_contractuels
                     // cadenceParMachine = cadenceTotale / nb_machines_moyen_planifie_a_venir
+                    // VERSION SIMPLIFIEE : on compte juste les jours ouvres (Lun-Jeu)
+                    // entre aujourd'hui et la date contractuelle, puis on utilise
+                    // moyMachinesRecent comme estimateur futur (plus robuste qu'une
+                    // boucle qui peut throw sur des donnees planning chelou).
                     var cadenceRequise = null;
                     var cadenceParMachine = null;
                     var joursOuvresRestantsContrat = 0;
-                    var nbMachinesMoyenFutur = 0;
+                    var nbMachinesMoyenFutur = moyMachinesRecent > 0 ? moyMachinesRecent : 1;
                     if (chantier.dateFin) {
                       try {
                         var dContractFin = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
-                        if (today <= dContractFin) {
+                        if (!isNaN(dContractFin.getTime()) && today <= dContractFin) {
                           var cur = new Date(today.getTime());
-                          var sumMach = 0;
                           var safeC = 0;
                           while (cur < dContractFin && safeC < 1000) {
                             cur.setDate(cur.getDate() + 1);
                             var dowC = cur.getDay();
-                            if (dowC >= 1 && dowC <= 4) {
-                              joursOuvresRestantsContrat++;
-                              var nbM = useFallback ? moyMachinesRecent : nbMachinesPlanifieesLeJour(cur);
-                              sumMach += (nbM > 0 ? nbM : 0);
-                            }
+                            if (dowC >= 1 && dowC <= 4) joursOuvresRestantsContrat++;
                             safeC++;
                           }
                           if (joursOuvresRestantsContrat > 0) {
@@ -11877,13 +12002,12 @@
                             // tauxAbsence x jours_restants pour des feries/intemperies/pannes/etc.
                             var joursEffectifsRestants = joursOuvresRestantsContrat * (1 - tauxAbsence);
                             cadenceRequise = metresRestants / Math.max(1, joursEffectifsRestants);
-                            nbMachinesMoyenFutur = sumMach / joursOuvresRestantsContrat;
                             if (nbMachinesMoyenFutur > 0) {
                               cadenceParMachine = cadenceRequise / nbMachinesMoyenFutur;
                             }
                           }
                         }
-                      } catch (e) {}
+                      } catch (e) { console.warn("[previsionnel cadence]", e); }
                     }
                     // Comparaison avec vitesse actuelle pour colorer
                     var cadenceColor = "#a5b4fc";
