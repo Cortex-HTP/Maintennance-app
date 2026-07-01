@@ -15085,6 +15085,29 @@
             }
           }
 
+          // ── COMPLETION VIA RAPPORTS : si un employe est dans l'equipe d'un rapport
+          //    sur ce site un jour donne mais sans affectation planning correspondante,
+          //    on le compte quand meme comme travail. Utile quand le planning n'a pas
+          //    ete complete (affichage 'faux positif') alors que le rapport confirme
+          //    sa presence.
+          var datesDejaComptees = {};
+          daysDetail.forEach(function(d) { datesDejaComptees[d.date] = true; });
+          var empRapports = empRapportsList[emp.id] || [];
+          empRapports.forEach(function(r) {
+            if (r.site !== site) return;
+            if (!isDateInPeriod(r.date, period.start, period.end)) return;
+            if (!dateEnvelopeEmploye(r.date)) return;
+            if (datesDejaComptees[r.date]) return;
+            // Rapport confirme sa presence : on compte comme travail
+            var metrageMachine = getMetrageMachineForDate(r.sondeuse, r.date);
+            var dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
+            adjMetrage += dayMetrage;
+            adjJours += 1;
+            joursParType.travail += 1;
+            datesDejaComptees[r.date] = true;
+            daysDetail.push({ date: r.date, type: "travail (via rapport)", machine: r.sondeuse, metrage: dayMetrage, source: "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee" });
+          });
+
           // ── DIAGNOSTIC : liste TOUTES les affectations de la periode pour cet emp,
           //    et note celles qui n'ont PAS ete traitees ci-dessus. Aide a diagnostiquer
           //    les cas ou une affectation ne compte pas (chantier null, typeJour bizarre,
