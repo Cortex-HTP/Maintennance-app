@@ -15085,6 +15085,32 @@
             }
           }
 
+          // ── DIAGNOSTIC : liste TOUTES les affectations de la periode pour cet emp,
+          //    et note celles qui n'ont PAS ete traitees ci-dessus. Aide a diagnostiquer
+          //    les cas ou une affectation ne compte pas (chantier null, typeJour bizarre,
+          //    personnelId mismatch, etc.). Uniquement pour le modal, pas de comptage.
+          var traitees = {};
+          daysDetail.forEach(function(d) { traitees[d.date] = true; });
+          (affectations || []).forEach(function(a) {
+            if (a.personnelId !== emp.id) return;
+            if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
+            if (traitees[a.dateAffectation]) return; // deja compte
+            // Cette affectation existe pour cet emp+periode mais n'a rien produit.
+            // Raison probable ?
+            var reason;
+            if (!dateEnvelopeEmploye(a.dateAffectation)) {
+              reason = "hors fenetre emploi (avant embauche ou apres fin contrat)";
+            } else if (!a.chantierId) {
+              reason = "chantier_id null - fallback echec (pas de chantier precedent sur ce site)";
+            } else if (siteChIds.indexOf(a.chantierId) < 0) {
+              var otherSiteName = chantierToSite[a.chantierId] || "(inconnu)";
+              reason = "affectee au chantier #" + a.chantierId + " (site " + otherSiteName + ")";
+            } else {
+              reason = "raison inconnue (bug ?)";
+            }
+            daysDetail.push({ date: a.dateAffectation, type: "SKIP-" + (a.typeJour || "travail"), machine: null, metrage: 0, source: "IGNORE : " + reason });
+          });
+
           // ── JOURS "AILLEURS" (autres sites) ──
           // Pour chaque jour ou l'employe a une affectation sur UN AUTRE site
           // (travail, panne, conge, etc.), on le compte comme un jour de "rattrapage"
