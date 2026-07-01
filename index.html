@@ -1887,36 +1887,36 @@
                       h(StatusBadge, { status: st }));
                   }));
             }())),
-          // Rentabilite chantiers (prix/m relatif). Affiche les chantiers En cours
-          // classes par coef desc, avec badge de couleur (vert > 1.05, jaune 0.95-1.05,
-          // rouge < 0.95). Reference = moyenne des prix/m sur En cours + Termine.
-          isAdmin ? (function() {
+          // Rentabilite chantiers (prix/m relatif). Affiche tous les chantiers
+          // sauf Termine, tries par coef desc, avec badge (vert > 1.05, jaune
+          // 0.95-1.05, rouge < 0.95). Reference = moyenne prix/m En cours+Termine.
+          (function() {
             var allChant = ctx.chantiers || [];
-            var actifs = allChant.filter(function(c) { return c && c.statut === "En cours"; });
-            if (actifs.length === 0) return null;
+            var affiches = allChant.filter(function(c) { return c && c.statut !== "Termine"; });
             var prixMoyen = computePrixMetreMoyen(allChant);
-            var withCoef = actifs.map(function(c) {
+            var withCoef = affiches.map(function(c) {
               return { c: c, coef: computeCoefPrixMetre(c, prixMoyen) };
             }).filter(function(x) { return x.coef !== null; })
               .sort(function(a, b) { return b.coef - a.coef; });
-            if (withCoef.length === 0) return null;
             return h(Card, null,
               h("h3", { style: { margin: "0 0 8px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "target", size: 16, color: "#a78bfa" }, "Rentabilite chantiers")),
-              h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 12 } }, "Prix/m relatif · reference moyenne : " + fmtNum(Math.round(prixMoyen)) + " XPF/m"),
+              h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 12 } }, "Prix/m relatif · reference moyenne : " + (prixMoyen > 0 ? fmtNum(Math.round(prixMoyen)) + " XPF/m" : "aucun chantier de reference")),
+              withCoef.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13 } }, "Aucun chantier En cours ou A venir avec prix/m renseigne.") :
               h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" } },
                 withCoef.map(function(x) {
                   var st = styleCoefPrixMetre(x.coef);
-                  return h("div", { key: x.c.id, onClick: function() { onNavigate("avancement", x.c); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: st.bg, border: "1px solid " + st.bg.replace("0.15", "0.30"), borderRadius: 10, borderLeft: "4px solid " + st.color, cursor: "pointer", transition: "all 0.15s" } },
+                  var statutBadge = x.c.statut === "En cours" ? "En cours" : x.c.statut === "A venir" ? "A venir" : x.c.statut;
+                  return h("div", { key: x.c.id, onClick: function() { onNavigate("avancement", x.c); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 10, borderLeft: "4px solid " + st.color, cursor: "pointer", transition: "all 0.15s" } },
                     h("div", { style: { minWidth: 0, flex: 1 } },
                       h("div", { style: { fontWeight: 600, fontSize: 14, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, x.c.titre || "(sans titre)"),
-                      h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, fmtNum(x.c.prixMetre) + " XPF/m · " + fmtNum(x.c.metrage) + " m")
+                      h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, fmtNum(x.c.prixMetre) + " XPF/m · " + fmtNum(x.c.metrage) + " m · " + statutBadge)
                     ),
-                    h("span", { style: { background: st.bg, color: st.color, padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", border: "1px solid " + st.color, fontFamily: "monospace" } }, x.coef.toFixed(2) + "x")
+                    h("span", { style: { background: "rgba(0,0,0,0.30)", color: st.color, padding: "4px 10px", borderRadius: 20, fontSize: 13, fontWeight: 800, whiteSpace: "nowrap", border: "1px solid " + st.color, fontFamily: "monospace" } }, x.coef.toFixed(2) + "x")
                   );
                 })
               )
             );
-          }()) : null),
+          }())),
         autoPasFait.length > 0 && h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "bell-ring", size: 16, color: "#f43f5e" }, "Maintenance preventive")),
           h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" } },
