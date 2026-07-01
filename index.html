@@ -3552,103 +3552,59 @@
         // Labels X = mois (placement au 1er de chaque mois).
         (periodKey === "all" && monthlyStats.length > 0) ? h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
-            h("h3", { style: { margin: 0, fontSize: 15, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#fbbf24" }, "Depenses mecaniques cumulees")),
-            h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, monthlyStats.filter(function(x) { return x.facturable > 0; }).length + " jour" + (monthlyStats.filter(function(x) { return x.facturable > 0; }).length > 1 ? "s" : "") + " avec activite sur " + monthlyStats.length + " · reset au 1er janvier")
+            h("h3", { style: { margin: 0, fontSize: 15, color: "#fafafa" } }, h(IconText, { icon: "trending-up", size: 16, color: "#fbbf24" }, "Evolution des depenses mecaniques")),
+            h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, monthlyStats.filter(function(x) { return x.facturable > 0; }).length + " jour" + (monthlyStats.filter(function(x) { return x.facturable > 0; }).length > 1 ? "s" : "") + " avec activite")
           ),
           (function() {
-            // Courbe CUMULATIVE : chaque point = total depuis le 1er janvier.
-            // Evite les retours a zero et donne un sens narratif (montee progressive
-            // des depenses annuelles). Reset a 0 au 1er janvier de chaque annee.
-            var cumStats = (function() {
-              var running = 0;
-              var lastYear = null;
-              return monthlyStats.map(function(x) {
-                var y = x.ymKey.substring(0, 4);
-                if (lastYear !== null && y !== lastYear) running = 0;
-                lastYear = y;
-                running += x.facturable || 0;
-                return { ymKey: x.ymKey, cumule: running, facturable: x.facturable, heures: x.heures, nb: x.nb };
-              });
-            })();
-            var maxCum = cumStats.reduce(function(m, x) { return Math.max(m, x.cumule); }, 0);
-            if (maxCum <= 0) return h("div", { style: { fontSize: 12, color: "#71717a", padding: 16, textAlign: "center" } }, "Aucune donnee facturable sur la periode.");
-            var chartH = 200;
-            var topPad = 18;
-            var bottomPad = 28;
-            var leftPad = 56;
-            var rightPad = 16;
-            var innerH = chartH - topPad - bottomPad;
-            // Largeur cible : adapt au nb de jours (1 an = ~900px, 2 ans = ~1500)
-            var pxPerDay = cumStats.length <= 366 ? 2.4 : 1.6;
-            var innerW = Math.max(560, cumStats.length * pxPerDay);
-            var stepW = innerW / Math.max(1, cumStats.length - 1);
-            var svgW = leftPad + rightPad + innerW;
-            // Points pour la courbe : x reparti uniformement, y proportionnel au cumule
-            var pts = cumStats.map(function(x, idx) {
-              var bx = leftPad + idx * stepW;
-              var by = topPad + innerH - (x.cumule / maxCum) * innerH;
-              return { x: bx, y: by, data: x };
-            });
-            // Polyline (sommets a sommets)
-            var polyPts = pts.map(function(p) { return p.x + "," + p.y; }).join(" ");
-            // Polygon ferme pour la zone sous la courbe
-            var areaPts = polyPts + " " + pts[pts.length - 1].x + "," + (topPad + innerH) + " " + pts[0].x + "," + (topPad + innerH);
-            // Y axis : 4 lignes de grille (echelle sur le cumul max)
-            var gridLines = [0, 0.25, 0.5, 0.75, 1].map(function(r) {
-              var yPos = topPad + innerH - r * innerH;
-              var val = Math.round(maxCum * r);
+            // Meme logique que la courbe carburant : on ne garde QUE les jours avec
+            // une depense reelle (skip les zeros pour axe X compresse). La courbe
+            // relie directement les points sans retour a zero entre les jours creux.
+            var seriesG = monthlyStats.filter(function(x) { return x.facturable > 0; });
+            if (seriesG.length === 0) return h("div", { style: { fontSize: 12, color: "#71717a", padding: 16, textAlign: "center" } }, "Aucune donnee facturable sur la periode.");
+            var maxV = seriesG.reduce(function(m, x) { return Math.max(m, x.facturable); }, 0);
+            var moyenne = seriesG.reduce(function(s, x) { return s + x.facturable; }, 0) / seriesG.length;
+            var W = 720, H = 220, pad = { t: 18, r: 14, b: 32, l: 56 };
+            var iW = W - pad.l - pad.r;
+            var iH = H - pad.t - pad.b;
+            var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
+            var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
+            var linePts = seriesG.map(function(p, i) { return xFor(i) + "," + yFor(p.facturable); }).join(" ");
+            var yMoy = yFor(moyenne);
+            var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function(t) {
+              var val = t * maxV;
               var label;
               if (val >= 1000000) label = (val / 1000000).toFixed(1) + " MF";
               else if (val >= 1000) label = Math.round(val / 1000) + " k";
-              else label = String(val);
-              return { y: yPos, label: label };
+              else label = String(Math.round(val));
+              return { v: val, y: pad.t + iH - t * iH, label: label };
             });
-            function fmtMoisYY(ymd) {
-              var moisCourt = ["Jan", "Fev", "Mar", "Avr", "Mai", "Juin", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
-              var mi = parseInt(ymd.substring(5, 7)) - 1;
-              var yi = ymd.substring(2, 4);
-              return moisCourt[mi] + " " + yi;
-            }
-            function fmtDate(ymd) {
-              return ymd.substring(8, 10) + "/" + ymd.substring(5, 7) + "/" + ymd.substring(0, 4);
-            }
-            // Labels X : un par 1er du mois
-            var monthLabels = pts.filter(function(p) { return p.data.ymKey.substring(8, 10) === "01"; });
-            // Cercles : uniquement sur les jours avec facturable > 0
-            var activePts = pts.filter(function(p) { return p.data.facturable > 0; });
+            var xLabelEvery = Math.max(1, Math.ceil(seriesG.length / 12));
+            function fmtDatePt(ymd) { return ymd.substring(8, 10) + "/" + ymd.substring(5, 7); }
             return h("div", { style: { overflowX: "auto" } },
-              h("svg", { width: svgW, height: chartH, style: { display: "block" } },
-                // Gradient definition pour la zone sous la courbe
-                h("defs", null,
-                  h("linearGradient", { id: "mecGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
-                    h("stop", { offset: "0%", stopColor: "#fbbf24", stopOpacity: 0.35 }),
-                    h("stop", { offset: "100%", stopColor: "#f59e0b", stopOpacity: 0.02 })
-                  )
-                ),
-                // Grid horizontal lines + Y labels
-                gridLines.map(function(g, idx) {
-                  return h("g", { key: "grid-" + idx },
-                    h("line", { x1: leftPad, x2: svgW - rightPad, y1: g.y, y2: g.y, stroke: "rgba(255,255,255,0.08)", strokeDasharray: idx === 0 ? "none" : "3 4" }),
-                    h("text", { x: leftPad - 6, y: g.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, g.label)
+              h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 16, fontSize: 11, color: "#a1a1aa", marginBottom: 6 } },
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Depense"),
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #86efac", verticalAlign: "middle", marginRight: 6 } }), "Moyenne : " + fmtNum(Math.round(moyenne)) + " XPF")
+              ),
+              h("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, style: { maxWidth: "100%", display: "block" } },
+                h("defs", null, h("linearGradient", { id: "mec-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
+                  h("stop", { offset: "0%", "stop-color": "rgba(251,191,36,0.30)" }),
+                  h("stop", { offset: "100%", "stop-color": "rgba(245,158,11,0)" })
+                )),
+                yTicks.map(function(t, i) { return h("g", { key: "g" + i },
+                  h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
+                  h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, t.label)
+                ); }),
+                seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z", fill: "url(#mec-grad)" }) : null,
+                moyenne > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#86efac", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
+                seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#fbbf24", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                seriesG.map(function(p, i) {
+                  return h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.facturable), r: 3.5, fill: "#fef3c7", stroke: "#f59e0b", strokeWidth: 1.5, style: { cursor: "pointer" } },
+                    h("title", null, p.ymKey.substring(8, 10) + "/" + p.ymKey.substring(5, 7) + "/" + p.ymKey.substring(0, 4) + " : " + fmtNum(Math.round(p.facturable)) + " XPF (" + p.heures.toFixed(1) + " h · " + p.nb + " interv.)")
                   );
                 }),
-                // Lignes verticales au 1er de chaque mois (tres subtiles)
-                monthLabels.map(function(p) {
-                  return h("line", { key: "vm-" + p.data.ymKey, x1: p.x, x2: p.x, y1: topPad, y2: topPad + innerH, stroke: "rgba(255,255,255,0.04)" });
-                }),
-                // Zone sous la courbe (translucide)
-                h("polygon", { points: areaPts, fill: "url(#mecGrad)" }),
-                // Courbe principale
-                h("polyline", { points: polyPts, fill: "none", stroke: "#fbbf24", strokeWidth: 1.8, strokeLinejoin: "round", strokeLinecap: "round" }),
-                // Points actifs uniquement (jours avec depense)
-                activePts.map(function(p, idx) {
-                  return h("circle", { key: "pt-" + p.data.ymKey, cx: p.x, cy: p.y, r: 3, fill: "#fef3c7", stroke: "#f59e0b", strokeWidth: 1.5, style: { cursor: "pointer" } },
-                    h("title", null, fmtDate(p.data.ymKey) + "\nJour : " + fmtNum(Math.round(p.data.facturable)) + " XPF (" + p.data.heures.toFixed(1) + " h · " + p.data.nb + " interv.)\nCumul : " + fmtNum(Math.round(p.data.cumule)) + " XPF")
-                  );
-                }),
-                // X labels (au 1er de chaque mois)
-                monthLabels.map(function(p) {
-                  return h("text", { key: "lbl-" + p.data.ymKey, x: p.x, y: chartH - 10, textAnchor: "middle", fontSize: 10, fill: "#a1a1aa" }, fmtMoisYY(p.data.ymKey));
+                seriesG.map(function(p, i) {
+                  if (i % xLabelEvery !== 0 && i !== seriesG.length - 1) return null;
+                  return h("text", { key: "x" + i, x: xFor(i), y: H - 8, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, fmtDatePt(p.ymKey));
                 })
               )
             );
