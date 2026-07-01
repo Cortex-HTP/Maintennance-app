@@ -14682,6 +14682,9 @@
       var selectedMonth = _selectedMonth[0]; var setSelectedMonth = _selectedMonth[1];
       var _primesTab = useState("primes");
       var primesTab = _primesTab[0]; var setPrimesTab = _primesTab[1];
+      // Modal diagnostic : { employe, site, details } pour breakdown jour-par-jour
+      var _diagRow = useState(null);
+      var diagRow = _diagRow[0]; var setDiagRow = _diagRow[1];
 
       // Union des sites : ceux configures dans paliers + ceux utilises par les chantiers
       // (meme si pas encore de palier configure)
@@ -14936,6 +14939,10 @@
           var adjJours = 0;
           // Decompte par type de jour (pour affichage dans le tableau)
           var joursParType = { travail: 0, intemperies: 0, panne: 0, conge: 0, chomage: 0, maladie: 0, arret: 0, non_productif: 0 };
+          // Trace jour-par-jour pour debug : { date, type, machine, metrage, source }
+          // Permet de diagnostiquer pourquoi 2 employes qui travaillent pareil ont
+          // des primes differentes (name matching foireux, releve manquant, etc.)
+          var daysDetail = [];
           empAffOnSite.forEach(function(a) {
             var tj = a.typeJour || "travail";
             var dateStr = a.dateAffectation;
@@ -14947,17 +14954,22 @@
             var effectiveType = (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif" || saisieType === "arret") ? saisieType : tj;
             // Les jours feries sont COMPLETEMENT EXCLUS du calcul (comme un weekend) :
             // ni metres ajoutes, ni jour ajoute au diviseur. Sortie immediate.
-            if (effectiveType === "ferie") return;
+            if (effectiveType === "ferie") {
+              daysDetail.push({ date: dateStr, type: "ferie", machine: null, metrage: 0, source: "ferie (exclu)" });
+              return;
+            }
             // Arret : journee explicitement "rien ne se passe" -> 0m, +1j
             if (effectiveType === "arret") {
               adjJours += 1;
               joursParType.arret += 1;
+              daysDetail.push({ date: dateStr, type: "arret", machine: null, metrage: 0, source: "arret (0m, +1j)" });
             } else if (effectiveType === "panne" || effectiveType === "intemperies") {
               // Cause externe (panne machine / meteo) -> rattrapage = moyenne_jour_site fixe.
               // L'employe n'est pas responsable, il merite la moyenne complete.
               adjMetrage += siteMoyenne;
               adjJours += 1;
               joursParType[effectiveType] += 1;
+              daysDetail.push({ date: dateStr, type: effectiveType, machine: null, metrage: siteMoyenne, source: "moyenne site (rattrapage " + effectiveType + ")" });
             } else if (effectiveType === "non_productif" || effectiveType === "conge" || effectiveType === "chomage") {
               // Absence liee a l'employe -> rattrapage limite par la performance reelle.
               // Cascade de sources de metrage_jour, par ordre de priorite :
@@ -14969,8 +14981,10 @@
               var machineEmp = getMachineEmpForDate(emp.id, dateStr);
               var metrageMachine = machineEmp ? getMetrageMachineForDate(machineEmp, dateStr) : null;
               var rattrapage;
+              var rattrSource;
               if (metrageMachine !== null) {
                 rattrapage = Math.min(metrageMachine, siteMoyenne);
+                rattrSource = "machine " + machineEmp + " ce jour (" + metrageMachine + " m, plafonne a " + siteMoyenne + ")";
               } else {
                 // Pas de rapport pour sa machine -> fallback saisie chantier
                 var chForSaisie = chId || (siteCh.length > 0 ? siteCh[0].id : null);
@@ -14978,17 +14992,21 @@
                 var sVFb = saisieFallback ? (typeof saisieFallback === "object" ? (parseFloat(saisieFallback.valeur) || 0) : (parseFloat(saisieFallback) || 0)) : 0;
                 if (sVFb > 0) {
                   rattrapage = Math.min(sVFb, siteMoyenne);
+                  rattrSource = "saisie chantier (" + sVFb + " m, plafonne a " + siteMoyenne + ")";
                 } else {
                   // Ultime fallback : moyenne site
                   rattrapage = siteMoyenne;
+                  rattrSource = "fallback moyenne site (aucun rapport ni saisie)";
                 }
               }
               adjMetrage += rattrapage;
               adjJours += 1;
               joursParType[effectiveType] += 1;
+              daysDetail.push({ date: dateStr, type: effectiveType, machine: machineEmp || null, metrage: rattrapage, source: rattrSource });
             } else if (effectiveType === "maladie") {
               adjJours += 1;
               joursParType.maladie += 1;
+              daysDetail.push({ date: dateStr, type: "maladie", machine: null, metrage: 0, source: "maladie (0m, +1j)" });
             } else {
               // Travail : on prend le metrage de SA machine habituelle uniquement.
               // Evite le double-comptage quand un employe apparait dans 2 rapports
@@ -14996,24 +15014,31 @@
               // de saisie -> on prend juste celui de D36, sa machine recente).
               var dayMetrage = 0;
               var machineW = getMachineEmpForDate(emp.id, dateStr);
+              var workSource = "";
               if (machineW) {
                 var vMachine = getMetrageMachineForDate(machineW, dateStr);
-                if (vMachine !== null) dayMetrage = vMachine;
+                if (vMachine !== null) { dayMetrage = vMachine; workSource = "machine " + machineW + " (" + vMachine + " m)"; }
               }
               // Fallback : pas de machine identifiable OU pas de rapport pour sa machine
               // -> releves classiques (somme) ou saisie chantier
               if (dayMetrage === 0) {
                 if (releveByDate[dateStr] && releveByDate[dateStr].length > 0) {
+                  var nbR = releveByDate[dateStr].length;
                   releveByDate[dateStr].forEach(function(r) {
                     dayMetrage += parseFloat(r.metrage) || 0;
                   });
+                  workSource = "somme " + nbR + " releve(s) (" + dayMetrage + " m)";
                 } else if (saisieVal > 0) {
                   dayMetrage = saisieVal;
+                  workSource = "saisie chantier (" + saisieVal + " m)";
+                } else {
+                  workSource = "aucune source (0 m)" + (machineW ? " - machine " + machineW + " detectee mais sans rapport" : " - pas de machine detectee");
                 }
               }
               adjMetrage += dayMetrage;
               adjJours += 1;
               joursParType.travail += 1;
+              daysDetail.push({ date: dateStr, type: "travail", machine: machineW || null, metrage: dayMetrage, source: workSource });
             }
           });
 
@@ -15047,6 +15072,7 @@
                   var rattrapageHE = (metrageMachineHE !== null) ? Math.min(metrageMachineHE, siteMoyenne) : siteMoyenne;
                   adjMetrage += rattrapageHE;
                   adjJours += 1;
+                  daysDetail.push({ date: dStr, type: "hors-emploi", machine: machineHE || null, metrage: rattrapageHE, source: metrageMachineHE !== null ? ("hors fenetre emploi - machine " + machineHE + " (" + metrageMachineHE + " m, plafonne)") : "hors fenetre emploi - moyenne site" });
                 }
               }
               dCursor.setDate(dCursor.getDate() + 1);
@@ -15088,6 +15114,7 @@
             // Rattrapage : +moyenne_jour_site, +1 jour
             adjMetrage += siteMoyenne;
             adjJours += 1;
+            daysDetail.push({ date: a.dateAffectation, type: "ailleurs-" + tj, machine: null, metrage: siteMoyenne, source: "jour sur autre site (" + otherSite + ") - rattrapage moyenne site" });
           });
 
           // Verifier que l'employe a au moins 1 JOUR TRAVAIL REEL sur ce site
@@ -15114,7 +15141,8 @@
               objectif: objectif,
               coef: coef,
               prime: primeFinale,
-              metrage: adjMetrage
+              metrage: adjMetrage,
+              daysDetail: daysDetail.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; })
             }]
           });
         });
@@ -15325,7 +15353,8 @@
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "m/h"),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Obj."),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Coef"),
-                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Prime")
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "right" }) }, "Prime"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "center", width: 44 }) }, "")
               )
             ),
             h("tbody", null,
@@ -15358,14 +15387,18 @@
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", fontWeight: 600, color: det.mhRealise > det.objectif ? "#86efac" : "#fda4af" }) }, (det.mhRealise || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#a1a1aa" }) }, (det.objectif || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#d4d4d8" }) }, fmtNum(det.coef)),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: det.prime > 0 ? "#86efac" : "#71717a" }) }, fmtNum(Math.round(det.prime)))
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: det.prime > 0 ? "#86efac" : "#71717a" }) }, fmtNum(Math.round(det.prime))),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+                      h("button", { onClick: function() { setDiagRow({ employe: row.employe, employeId: row.employeId, det: det }); }, title: "Voir le detail jour par jour", style: { background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", borderRadius: 6, padding: "4px 6px", cursor: "pointer" } }, h(Icon, { name: "search", size: 12, color: "#a5b4fc" }))
+                    )
                   ));
                 });
                 return lines;
               }).reduce(function(acc, cur) { return acc.concat(cur); }, []),
               h("tr", { style: { background: "rgba(34,197,94,0.15)" } },
                 h("td", { colSpan: 6, style: Object.assign({}, tdStyle, { fontWeight: 700, borderTop: "2px solid #22c55e", color: "#fafafa" }) }, "Total " + displaySite),
-                h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, color: "#86efac", borderTop: "2px solid #22c55e" }) }, fmtNum(Math.round(totalPrimeSite)) + " XPF")
+                h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, color: "#86efac", borderTop: "2px solid #22c55e" }) }, fmtNum(Math.round(totalPrimeSite)) + " XPF"),
+                h("td", { style: Object.assign({}, tdStyle, { borderTop: "2px solid #22c55e" }) })
               )
             )
           )
@@ -15494,6 +15527,37 @@
               )
             ) : null
           ) : null
+        ) : null,
+        // Modal diagnostic : breakdown jour par jour pour comprendre pourquoi
+        // 2 employes qui font le meme travail ont des primes differentes.
+        diagRow ? h(Modal, { title: "Detail journalier - " + diagRow.employe + " sur " + diagRow.det.chantier, onClose: function() { setDiagRow(null); }, size: 900 },
+          h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 12 } },
+            h("span", { style: { fontWeight: 700, color: "#fafafa" } }, "Total : "), diagRow.det.jours + " jours · " + fmtNum(Math.round(diagRow.det.metrage)) + " m · m/h = " + (diagRow.det.mhRealise || 0).toFixed(2) + " · Prime = " + fmtNum(Math.round(diagRow.det.prime)) + " XPF"
+          ),
+          h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 10, fontStyle: "italic" } }, "Si 2 employes ont des primes differentes en travaillant 'exactement pareil', compare les colonnes Machine + Source ligne par ligne : une divergence indique un probleme de matching (nom mal orthographie dans un rapport, employe absent d'une equipe, etc.)."),
+          h("div", { style: { overflowX: "auto", maxHeight: 500 } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+              h("thead", { style: { position: "sticky", top: 0, background: "rgba(28,30,42,0.98)" } },
+                h("tr", null,
+                  ["Date", "Type", "Machine", "Metrage", "Source"].map(function(t) {
+                    return h("th", { key: t, style: { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, t);
+                  })
+                )
+              ),
+              h("tbody", null,
+                (diagRow.det.daysDetail || []).map(function(d, i) {
+                  var typeColor = d.type === "travail" ? "#86efac" : d.type === "ferie" ? "#a1a1aa" : d.type === "maladie" ? "#f472b6" : d.type === "arret" ? "#71717a" : d.type === "panne" || d.type === "intemperies" ? "#fbbf24" : d.type.indexOf("ailleurs") === 0 ? "#94a3b8" : d.type === "hors-emploi" ? "#c4b5fd" : "#60a5fa";
+                  return h("tr", { key: i, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "8px 10px", fontFamily: "monospace" } }, d.date),
+                    h("td", { style: { padding: "8px 10px" } }, h("span", { style: { fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(255,255,255,0.04)", border: "1px solid " + typeColor, color: typeColor } }, d.type)),
+                    h("td", { style: { padding: "8px 10px", fontFamily: "monospace", color: d.machine ? "#fde68a" : "#52525b" } }, d.machine || "—"),
+                    h("td", { style: { padding: "8px 10px", fontFamily: "monospace", textAlign: "right", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#52525b" } }, fmtNum(Math.round(d.metrage)) + " m"),
+                    h("td", { style: { padding: "8px 10px", fontSize: 11, color: "#cbd5e1" } }, d.source)
+                  );
+                })
+              )
+            )
+          )
         ) : null
       );
     }
