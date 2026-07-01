@@ -964,6 +964,64 @@
       return list.map((p) => p.valeur);
     }
 
+    // ─── Helper : metrage moyen par jour productif (Lun-Jeu) d'un chantier ─
+    // Se base sur dbRelevesJourn (max par machine puis somme) et fallback sur
+    // dbSaisies. Iteres jusqu'a 14 jours saisis (les seuls productifs
+    // comptent - jours a 0 ou creux ignores).
+    function computeMetragePerJourChantier(chantier, dbRelevesJourn, dbSaisies, refDate) {
+      if (!chantier) return 0;
+      var today = refDate ? new Date(refDate.getTime()) : new Date();
+      today.setHours(0, 0, 0, 0);
+      // Metrage par jour de ce chantier (source relevés : max par machine puis somme)
+      var byDate = {};
+      var maxByDateMk = {};
+      (dbRelevesJourn || []).forEach(function(r) {
+        if (!r || String(r.chantierId) !== String(chantier.id) || !r.dateReleve) return;
+        var d = String(r.dateReleve).substring(0, 10);
+        var mk = String(r.equipementId || r.sondeuseCode || "_no").toUpperCase().trim();
+        if (!maxByDateMk[d]) maxByDateMk[d] = {};
+        var v = parseFloat(r.metrage) || 0;
+        if (v > (maxByDateMk[d][mk] || 0)) maxByDateMk[d][mk] = v;
+      });
+      Object.keys(maxByDateMk).forEach(function(d) {
+        var sum = 0;
+        Object.keys(maxByDateMk[d]).forEach(function(mk) { sum += maxByDateMk[d][mk]; });
+        byDate[d] = sum;
+      });
+      // Fallback saisies (si pas de relevés pour un jour)
+      var sais = (dbSaisies || {})[chantier.id] || {};
+      Object.keys(sais).forEach(function(d) {
+        if (!byDate[d] || byDate[d] <= 0) {
+          var s = sais[d];
+          var v = typeof s === "object" ? (parseFloat(s.valeur) || 0) : (parseFloat(s) || 0);
+          if (v > 0) byDate[d] = v;
+        }
+      });
+      // Iterer 14 derniers jours productifs (Lun-Jeu) avec metrage > 0
+      var tot = 0, nb = 0;
+      var cur = new Date(today.getTime()); var safe = 0;
+      while (nb < 14 && safe < 100) {
+        cur.setDate(cur.getDate() - 1);
+        var dow = cur.getDay();
+        if (dow >= 1 && dow <= 4) {
+          var iso = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+          var v = byDate[iso] || 0;
+          if (v > 0) { tot += v; nb++; }
+        }
+        safe++;
+      }
+      return nb > 0 ? tot / nb : 0;
+    }
+    // CA/jour attendu = metrage moyen jour * prix/m du chantier
+    // Reflete la RENTABILITE CONCRETE de chaque chantier : "combien ce chantier
+    // rapporte par jour au rythme actuel". Le meilleur chantier = celui qui
+    // combine vitesse (m/j) + tarif (XPF/m).
+    function computeCaJourChantier(chantier, dbRelevesJourn, dbSaisies, refDate) {
+      var prix = parseFloat(chantier && chantier.prixMetre) || 0;
+      var metJour = computeMetragePerJourChantier(chantier, dbRelevesJourn, dbSaisies, refDate);
+      return { metJour: metJour, prix: prix, caJour: metJour * prix };
+    }
+
     // ─── Helpers : positionnement prix/m ───────────────────────────────
     // Coef prix/m = (prix_m du chantier) / (prix_m mediane des chantiers).
     // La MEDIANE est utilisee comme reference (plus robuste que la moyenne :
@@ -1897,31 +1955,46 @@
                       h(StatusBadge, { status: st }));
                   }));
             }())),
-          // Rentabilite chantiers (prix/m relatif). Affiche uniquement les chantiers
-          // En cours, tries par coef desc, avec badge (vert > 1.05, jaune
-          // 0.95-1.05, rouge < 0.95). Reference = moyenne prix/m En cours+Termine.
+          // Rentabilite chantiers = CA/jour attendu (metrage moyen jour × prix/m).
+          // Reflete la rentabilite CONCRETE : le meilleur chantier combine vitesse
+          // + tarif. Trie par CA/jour desc. Rank-based coloring : top vert, bas rouge.
           (function() {
             var allChant = ctx.chantiers || [];
             var affiches = allChant.filter(function(c) { return c && c.statut === "En cours"; });
-            var prixMoyen = computePrixMetreMoyen(allChant);
-            var withCoef = affiches.map(function(c) {
-              return { c: c, coef: computeCoefPrixMetre(c, prixMoyen) };
-            }).filter(function(x) { return x.coef !== null; })
-              .sort(function(a, b) { return b.coef - a.coef; });
+            var withCa = affiches.map(function(c) {
+              var r = computeCaJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
+              return { c: c, metJour: r.metJour, prix: r.prix, caJour: r.caJour };
+            }).filter(function(x) { return x.prix > 0; })
+              .sort(function(a, b) { return b.caJour - a.caJour; });
+            function rankColor(i, total) {
+              if (total <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)" };
+              var pct = i / (total - 1);
+              if (pct <= 0.33) return { color: "#86efac", bg: "rgba(34,197,94,0.12)" };
+              if (pct <= 0.66) return { color: "#fde68a", bg: "rgba(251,191,36,0.12)" };
+              return { color: "#fda4af", bg: "rgba(244,63,94,0.12)" };
+            }
+            function fmtCa(v) {
+              if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+              if (v >= 1000) return Math.round(v / 1000) + " k";
+              return String(Math.round(v));
+            }
             return h(Card, null,
-              h("h3", { style: { margin: "0 0 8px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "target", size: 16, color: "#a78bfa" }, "Positionnement prix/m")),
-              h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 12 } }, "Coef vs mediane du portefeuille : " + (prixMoyen > 0 ? fmtNum(Math.round(prixMoyen)) + " XPF/m" : "aucun chantier de reference")),
-              withCoef.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13 } }, "Aucun chantier En cours avec prix/m renseigne.") :
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" } },
-                withCoef.map(function(x) {
-                  var st = styleCoefPrixMetre(x.coef);
-                  var statutBadge = x.c.statut === "En cours" ? "En cours" : x.c.statut === "A venir" ? "A venir" : x.c.statut;
+              h("h3", { style: { margin: "0 0 8px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "target", size: 16, color: "#a78bfa" }, "Rentabilite chantiers")),
+              h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 12 } }, "CA/jour attendu = metrage moyen jour × prix/m · trie du plus au moins rentable"),
+              withCa.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13 } }, "Aucun chantier En cours avec prix/m renseigne.") :
+              h("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" } },
+                withCa.map(function(x, i) {
+                  var st = rankColor(i, withCa.length);
+                  var hasMetr = x.metJour > 0;
                   return h("div", { key: x.c.id, onClick: function() { onNavigate("avancement", x.c); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 10, borderLeft: "4px solid " + st.color, cursor: "pointer", transition: "all 0.15s" } },
                     h("div", { style: { minWidth: 0, flex: 1 } },
                       h("div", { style: { fontWeight: 600, fontSize: 14, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, x.c.titre || "(sans titre)"),
-                      h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, fmtNum(x.c.prixMetre) + " XPF/m · " + fmtNum(x.c.metrage) + " m · " + statutBadge)
+                      h("div", { style: { fontSize: 12, color: "#a1a1aa" } }, hasMetr ? (Math.round(x.metJour) + " m/j · " + fmtNum(x.prix) + " XPF/m") : (fmtNum(x.prix) + " XPF/m · pas de metrage recent"))
                     ),
-                    h("span", { style: { background: "rgba(0,0,0,0.30)", color: st.color, padding: "4px 10px", borderRadius: 20, fontSize: 13, fontWeight: 800, whiteSpace: "nowrap", border: "1px solid " + st.color, fontFamily: "monospace" } }, x.coef.toFixed(2) + "x")
+                    h("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 } },
+                      h("span", { style: { color: st.color, fontSize: 15, fontWeight: 900, fontFamily: "monospace", whiteSpace: "nowrap" } }, hasMetr ? (fmtCa(x.caJour) + " /j") : "—"),
+                      hasMetr ? h("span", { style: { color: "#71717a", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 } }, "#" + (i + 1) + " sur " + withCa.length) : null
+                    )
                   );
                 })
               )
@@ -8830,15 +8903,20 @@
         ),
         activeTab === "chantiers" && h("div", null,
           viewMode === "liste" ? (function() {
-            var prixMoyenAll = computePrixMetreMoyen(chantiers);
             return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 } },
             chantiers.map(function(chantier) {
               var ca = chantier.metrage * chantier.prixMetre;
               var marge = ca - (chantier.depensesPrevues || 0);
               var margePercent = ca > 0 ? Math.round((marge / ca) * 100) : 0;
               var statusColor = chantier.statut === "Termine" ? "#059669" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
-              var coefRent = computeCoefPrixMetre(chantier, prixMoyenAll);
-              var coefStyle = styleCoefPrixMetre(coefRent);
+              // Rentabilite = CA/jour attendu = metrage moyen jour × prix/m
+              var caJourInfo = computeCaJourChantier(chantier, ctx.dbRelevesJourn, ctx.dbSaisies);
+              var caJourVal = caJourInfo.caJour;
+              function fmtCaChant(v) {
+                if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+                if (v >= 1000) return Math.round(v / 1000) + " k";
+                return String(Math.round(v));
+              }
               return h(Card, { key: chantier.id, style: { borderLeft: "4px solid " + statusColor } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
                   h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, flex: 1 } }, chantier.titre),
@@ -8856,9 +8934,9 @@
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Prix/m"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#059669" } }, fmtNum(chantier.prixMetre) + " XPF")
                   ),
-                  coefRent !== null ? h("div", { style: { background: coefStyle.bg, padding: 10, borderRadius: 6, cursor: "help" }, title: "Positionnement prix/m : ce chantier (" + fmtNum(chantier.prixMetre) + " XPF/m) ÷ mediane des chantiers En cours + Termine (" + fmtNum(Math.round(prixMoyenAll)) + " XPF/m)" },
-                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Coef prix/m"),
-                    h("div", { style: { fontWeight: 700, fontSize: 14, color: coefStyle.color } }, coefRent.toFixed(2) + "x")
+                  caJourVal > 0 ? h("div", { style: { background: "rgba(167,139,250,0.15)", padding: 10, borderRadius: 6, cursor: "help" }, title: "Rentabilite = metrage moyen (" + Math.round(caJourInfo.metJour) + " m/j sur 14 derniers jours productifs) × prix/m (" + fmtNum(chantier.prixMetre) + " XPF/m) = " + fmtNum(Math.round(caJourVal)) + " XPF/jour" },
+                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Rentab. /jour"),
+                    h("div", { style: { fontWeight: 700, fontSize: 14, color: "#c4b5fd" } }, fmtCaChant(caJourVal))
                   ) : null,
                   h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA"),
@@ -12120,9 +12198,31 @@
                             if (v > 0) sparkPts.unshift(v);
                           }
                         }
-                        var prixMoyenAv = computePrixMetreMoyen(ctxAv.chantiers);
-                        var coefPrev = computeCoefPrixMetre(chantier, prixMoyenAv);
-                        var coefStylePrev = styleCoefPrixMetre(coefPrev);
+                        // Rentabilite chantier = m/j × prix/m (CA journalier attendu).
+                        // Vitesse actuelle vient de vitesse14j deja calcule plus haut,
+                        // Multipllie par prix/m => CA/jour concret. Rang parmi les chantiers
+                        // En cours pour couleur.
+                        var caJourPrev = vitesse14j * (parseFloat(chantier.prixMetre) || 0);
+                        var caJourRangSt = (function() {
+                          var others = (ctxAv.chantiers || []).filter(function(c) { return c && c.statut === "En cours" && (parseFloat(c.prixMetre) || 0) > 0; })
+                            .map(function(c) {
+                              var r = computeCaJourChantier(c, ctxAv.dbRelevesJourn, ctxAv.dbSaisies);
+                              return { id: c.id, caJour: r.caJour };
+                            })
+                            .sort(function(a, b) { return b.caJour - a.caJour; });
+                          var idx = -1;
+                          for (var i = 0; i < others.length; i++) { if (String(others[i].id) === String(chantier.id)) { idx = i; break; } }
+                          if (idx < 0 || others.length <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)", rank: null, total: others.length };
+                          var pct = idx / (others.length - 1);
+                          if (pct <= 0.33) return { color: "#86efac", bg: "rgba(34,197,94,0.15)", rank: idx + 1, total: others.length };
+                          if (pct <= 0.66) return { color: "#fde68a", bg: "rgba(251,191,36,0.15)", rank: idx + 1, total: others.length };
+                          return { color: "#fda4af", bg: "rgba(244,63,94,0.15)", rank: idx + 1, total: others.length };
+                        })();
+                        function fmtCaTile(v) {
+                          if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+                          if (v >= 1000) return Math.round(v / 1000) + " k";
+                          return String(Math.round(v));
+                        }
                         return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 } },
                           KpiTile({
                             icon: "zap", accent: "#a78bfa",
@@ -12200,17 +12300,17 @@
                             badgeBg: margePct >= 20 ? "rgba(34,197,94,0.15)" : margePct >= 10 ? "rgba(251,191,36,0.15)" : "rgba(244,63,94,0.15)",
                             tooltip: coutSource
                           }),
-                          coefPrev !== null ? KpiTile({
+                          caJourPrev > 0 ? KpiTile({
                             icon: "target",
-                            accent: coefStylePrev.color,
-                            label: "Coef prix/m",
-                            value: coefPrev.toFixed(2) + "x",
-                            valueColor: coefStylePrev.color,
-                            hint: fmtNum(chantier.prixMetre) + " / " + fmtNum(Math.round(prixMoyenAv)),
-                            badge: coefStylePrev.badge,
-                            badgeColor: coefStylePrev.color,
-                            badgeBg: coefStylePrev.bg,
-                            tooltip: "Prix/m de ce chantier (" + fmtNum(chantier.prixMetre) + " XPF) divise par prix/m mediane des chantiers En cours + Termine (" + fmtNum(Math.round(prixMoyenAv)) + " XPF).\n> 1.15 = prix eleve dans le portefeuille\n0.85 - 1.15 = correct\n< 0.85 = prix bas\n\nAttention : c'est un positionnement RELATIF, pas une rentabilite absolue (couts non inclus)."
+                            accent: caJourRangSt.color,
+                            label: "Rentab. /jour",
+                            value: fmtCaTile(caJourPrev) + " /j",
+                            valueColor: caJourRangSt.color,
+                            hint: Math.round(vitesse14j) + " m/j × " + fmtNum(chantier.prixMetre) + " XPF/m",
+                            badge: caJourRangSt.rank ? ("#" + caJourRangSt.rank + "/" + caJourRangSt.total) : "—",
+                            badgeColor: caJourRangSt.color,
+                            badgeBg: caJourRangSt.bg,
+                            tooltip: "CA/jour attendu = vitesse actuelle × prix/m du chantier.\n\n" + Math.round(vitesse14j) + " m/j × " + fmtNum(chantier.prixMetre) + " XPF/m = " + fmtNum(Math.round(caJourPrev)) + " XPF/j\n\nRang parmi les " + caJourRangSt.total + " chantiers En cours."
                           }) : null
                         );
                       }())
@@ -16898,14 +16998,26 @@
         return 0;
       };
       var caByDate = {}; // "YYYY-MM-DD" ou "YYYY-MM" -> CA total
+      // Breakdown par chantier pour tooltip (pill "Sem" hover) : date -> chantier -> { m, ca, prix }
+      var caByDateByCh = {};
+      // Index chantier_id -> titre
+      var chNameById = {};
+      (dbChantiers || []).forEach(function(c) { chNameById[c.id] = c.titre || c.nom || ("#" + c.id); });
       filtered.forEach(function(r) {
         if (!r.date_rapport) return;
         var prix = lookupPrixMetre(r);
-        var ca = (parseFloat(r.total_metres) || 0) * prix;
+        var m = parseFloat(r.total_metres) || 0;
+        var ca = m * prix;
         var keyDay = String(r.date_rapport).substring(0, 10);
         var keyMonth = keyDay.substring(0, 7);
         caByDate[keyDay] = (caByDate[keyDay] || 0) + ca;
         caByDate[keyMonth] = (caByDate[keyMonth] || 0) + ca;
+        // Breakdown par chantier : nom du chantier (via chantier_id) ou lieu si null
+        var chName = r.chantier_id && chNameById[r.chantier_id] ? chNameById[r.chantier_id] : (r.lieu || r.client || "?");
+        if (!caByDateByCh[keyDay]) caByDateByCh[keyDay] = {};
+        if (!caByDateByCh[keyDay][chName]) caByDateByCh[keyDay][chName] = { m: 0, ca: 0, prix: prix };
+        caByDateByCh[keyDay][chName].m += m;
+        caByDateByCh[keyDay][chName].ca += ca;
       });
 
       // ── Agregats YTD (1er janvier -> aujourd'hui) + projections annuelles ──
@@ -17833,39 +17945,51 @@
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
-          // ── Rentabilite chantiers (prix/m relatif) ──
-          // Coef = prix/m de chaque chantier ÷ prix/m moyen des chantiers.
-          // Ne depend QUE du metrage et du prix/m (independant des couts).
-          // On limite aux chantiers En cours (A venir = devis speculatifs, Termine = passe).
+          // ── Rentabilite chantiers = CA/jour attendu (metrage moyen × prix/m) ──
+          // Le meilleur chantier combine vitesse (m/j) + tarif (XPF/m). Trie par
+          // CA/jour desc. Rank-based coloring : top vert, milieu jaune, bas rouge.
           (function() {
             var affiches = (dbChantiers || []).filter(function(c) { return c && c.statut === "En cours"; });
-            var prixMoyen = computePrixMetreMoyen(dbChantiers);
-            var withCoef = affiches.map(function(c) {
-              return { c: c, coef: computeCoefPrixMetre(c, prixMoyen) };
-            }).filter(function(x) { return x.coef !== null; })
-              .sort(function(a, b) { return b.coef - a.coef; });
+            var withCa = affiches.map(function(c) {
+              var r = computeCaJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
+              return { c: c, metJour: r.metJour, prix: r.prix, caJour: r.caJour };
+            }).filter(function(x) { return x.prix > 0; })
+              .sort(function(a, b) { return b.caJour - a.caJour; });
+            function rankColSt(i, total) {
+              if (total <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)" };
+              var pct = i / (total - 1);
+              if (pct <= 0.33) return { color: "#86efac", bg: "rgba(34,197,94,0.12)" };
+              if (pct <= 0.66) return { color: "#fde68a", bg: "rgba(251,191,36,0.12)" };
+              return { color: "#fda4af", bg: "rgba(244,63,94,0.12)" };
+            }
+            function fmtCaShort(v) {
+              if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+              if (v >= 1000) return Math.round(v / 1000) + " k";
+              return String(Math.round(v));
+            }
             return h("div", { style: { background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 14 } },
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
                 h("div", null,
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: "#c4b5fd", display: "flex", alignItems: "center", gap: 8 } },
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
-                    "Positionnement prix/m par chantier"
+                    "Rentabilite chantiers - CA/jour attendu"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Coef = prix/m chantier / mediane du portefeuille (reference : " + (prixMoyen > 0 ? fmtNum(Math.round(prixMoyen)) + " XPF/m" : "aucune donnee") + ") · Positionnel, pas de rentabilite absolue")
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "CA/jour = metrage moyen jour (14 derniers jours productifs) × prix/m du chantier · trie du plus rentable au moins rentable")
                 )
               ),
-              withCoef.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucun chantier En cours avec prix/m renseigne.") :
+              withCa.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucun chantier En cours avec prix/m renseigne.") :
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 } },
-                withCoef.map(function(x) {
-                  var st = styleCoefPrixMetre(x.coef);
+                withCa.map(function(x, i) {
+                  var st = rankColSt(i, withCa.length);
+                  var hasMetr = x.metJour > 0;
                   return h("div", { key: x.c.id, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
                     h("div", { style: { minWidth: 0, flex: 1 } },
                       h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, x.c.titre || "(sans titre)"),
-                      h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, fmtNum(x.c.prixMetre) + " XPF/m · " + fmtNum(x.c.metrage) + " m · " + (x.c.statut || ""))
+                      h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, hasMetr ? (Math.round(x.metJour) + " m/j × " + fmtNum(x.prix) + " XPF/m") : (fmtNum(x.prix) + " XPF/m · pas de metrage recent"))
                     ),
                     h("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 } },
-                      h("span", { style: { color: st.color, fontSize: 16, fontWeight: 900, fontFamily: "monospace" } }, x.coef.toFixed(2) + "x"),
-                      h("span", { style: { fontSize: 9.5, color: st.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, st.badge)
+                      h("span", { style: { color: st.color, fontSize: 15, fontWeight: 900, fontFamily: "monospace", whiteSpace: "nowrap" } }, hasMetr ? (fmtCaShort(x.caJour) + " /j") : "—"),
+                      h("span", { style: { fontSize: 9.5, color: st.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "#" + (i + 1))
                     )
                   );
                 })
@@ -18000,9 +18124,12 @@
                     var dayCa = (chartData[wj].ca || 0) + (chartData[wj].forecastCA || 0);
                     var dayHasFc = !!chartData[wj].hasForecast;
                     var realDayStat = chartData[wj].value || 0;
+                    // Breakdown chantier pour ce jour (issu de caByDateByCh)
+                    var dayIso = chartData[wj].jsDate.getFullYear() + "-" + String(chartData[wj].jsDate.getMonth() + 1).padStart(2, "0") + "-" + String(chartData[wj].jsDate.getDate()).padStart(2, "0");
+                    var dayCh = caByDateByCh[dayIso] || {};
                     if (curW === null || dow === 1) {
                       if (curW) weeks.push(curW);
-                      curW = { startIdx: wj, endIdx: wj, total: dayVal, totalCa: dayCa, hasFc: dayHasFc, metReelSum: realDayStat, nbDaysSaisis: realDayStat > 0 ? 1 : 0 };
+                      curW = { startIdx: wj, endIdx: wj, total: dayVal, totalCa: dayCa, hasFc: dayHasFc, metReelSum: realDayStat, nbDaysSaisis: realDayStat > 0 ? 1 : 0, byCh: {} };
                     } else {
                       curW.endIdx = wj;
                       curW.total += dayVal;
@@ -18011,9 +18138,22 @@
                       curW.metReelSum += realDayStat;
                       if (realDayStat > 0) curW.nbDaysSaisis += 1;
                     }
+                    // Aggrege le breakdown chantier dans la semaine
+                    Object.keys(dayCh).forEach(function(chName) {
+                      if (!curW.byCh[chName]) curW.byCh[chName] = { m: 0, ca: 0, prix: dayCh[chName].prix };
+                      curW.byCh[chName].m += dayCh[chName].m;
+                      curW.byCh[chName].ca += dayCh[chName].ca;
+                    });
                   }
                   if (curW) weeks.push(curW);
-                  weeks.forEach(function(w) { w.avgPerDay = w.nbDaysSaisis > 0 ? w.metReelSum / w.nbDaysSaisis : 0; });
+                  weeks.forEach(function(w) {
+                    w.avgPerDay = w.nbDaysSaisis > 0 ? w.metReelSum / w.nbDaysSaisis : 0;
+                    // Prix/m moyen pondere sur la semaine (utile pour comprendre le CA)
+                    var totM = 0, totCa = 0;
+                    Object.keys(w.byCh).forEach(function(k) { totM += w.byCh[k].m; totCa += w.byCh[k].ca; });
+                    w.prixMoyPonder = totM > 0 ? totCa / totM : 0;
+                    w.totalMReel = totM;
+                  });
                 }
                 // Format compact XPF : 1234567 -> "1.2M" / 12345 -> "12.3K" / sinon brut
                 var fmtCompactXPF = function(v) {
