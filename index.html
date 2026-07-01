@@ -15161,6 +15161,22 @@
           var coef = lookupCoefficient(paliers, site, mhRealise);
           var diff = mhRealise - objectif;
           var primeFinale = diff > 0 && coef > 0 ? diff * coef : 0;
+          // Diagnostic supplementaire : combien d'affectations existent au TOTAL
+          // pour cet employe dans la periode (toutes sites confondus), et combien
+          // orphelines (nom matche mais personnelId different).
+          var affTotalPeriode = (affectations || []).filter(function(a) {
+            return a.personnelId === emp.id && isDateInPeriod(a.dateAffectation, period.start, period.end);
+          }).length;
+          // Recherche d'affectations par NOM (au cas ou personnelId serait mismatch)
+          var empNomKey = ((emp.prenom || "") + " " + (emp.nom || "")).toLowerCase().trim();
+          var affByName = (affectations || []).filter(function(a) {
+            if (a.personnelId === emp.id) return false; // deja compte au dessus
+            if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return false;
+            if (!a.employeNom) return false;
+            var an = String(a.employeNom).toLowerCase().trim();
+            return an === empNomKey || an === ((emp.nom || "") + " " + (emp.prenom || "")).toLowerCase().trim();
+          }).length;
+
           results.push({
             employe: (emp.prenom || "") + " " + (emp.nom || ""),
             employeId: emp.id,
@@ -15174,7 +15190,10 @@
               coef: coef,
               prime: primeFinale,
               metrage: adjMetrage,
-              daysDetail: daysDetail.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; })
+              daysDetail: daysDetail.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; }),
+              affTotalPeriode: affTotalPeriode,
+              affByName: affByName,
+              empId: emp.id
             }]
           });
         });
@@ -15563,8 +15582,12 @@
         // Modal diagnostic : breakdown jour par jour pour comprendre pourquoi
         // 2 employes qui font le meme travail ont des primes differentes.
         diagRow ? h(Modal, { title: "Detail journalier - " + diagRow.employe + " sur " + diagRow.det.chantier, onClose: function() { setDiagRow(null); }, size: 900 },
-          h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 12 } },
+          h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 8 } },
             h("span", { style: { fontWeight: 700, color: "#fafafa" } }, "Total : "), diagRow.det.jours + " jours · " + fmtNum(Math.round(diagRow.det.metrage)) + " m · m/h = " + (diagRow.det.mhRealise || 0).toFixed(2) + " · Prime = " + fmtNum(Math.round(diagRow.det.prime)) + " XPF"
+          ),
+          h("div", { style: { fontSize: 11, color: "#c4b5fd", background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.25)", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontFamily: "monospace" } },
+            h("span", null, "personnelId = " + diagRow.det.empId + " · Affectations totales pour cet ID dans la periode = " + (diagRow.det.affTotalPeriode || 0)),
+            diagRow.det.affByName > 0 ? h("div", { style: { color: "#fda4af", fontWeight: 700, marginTop: 4 } }, "⚠ " + diagRow.det.affByName + " affectation(s) avec le meme NOM mais un AUTRE personnelId (probable doublon dans le personnel)") : null
           ),
           h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 10, fontStyle: "italic" } }, "Si 2 employes ont des primes differentes en travaillant 'exactement pareil', compare les colonnes Machine + Source ligne par ligne : une divergence indique un probleme de matching (nom mal orthographie dans un rapport, employe absent d'une equipe, etc.)."),
           h("div", { style: { overflowX: "auto", maxHeight: 500 } },
