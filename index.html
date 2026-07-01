@@ -17668,6 +17668,44 @@
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
+          // ── Rentabilite chantiers (prix/m relatif) ──
+          // Coef = prix/m de chaque chantier ÷ prix/m moyen des chantiers.
+          // Ne depend QUE du metrage et du prix/m (independant des couts).
+          (function() {
+            var affiches = (dbChantiers || []).filter(function(c) { return c && c.statut !== "Termine"; });
+            var prixMoyen = computePrixMetreMoyen(dbChantiers);
+            var withCoef = affiches.map(function(c) {
+              return { c: c, coef: computeCoefPrixMetre(c, prixMoyen) };
+            }).filter(function(x) { return x.coef !== null; })
+              .sort(function(a, b) { return b.coef - a.coef; });
+            return h("div", { style: { background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 14 } },
+              h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
+                h("div", null,
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#c4b5fd", display: "flex", alignItems: "center", gap: 8 } },
+                    h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
+                    "Rentabilite par chantier (prix/m relatif)"
+                  ),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Coef = prix/m chantier / prix/m moyen (reference : " + (prixMoyen > 0 ? fmtNum(Math.round(prixMoyen)) + " XPF/m" : "aucune donnee") + ")")
+                )
+              ),
+              withCoef.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucun chantier En cours ou A venir avec prix/m renseigne.") :
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 } },
+                withCoef.map(function(x) {
+                  var st = styleCoefPrixMetre(x.coef);
+                  return h("div", { key: x.c.id, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
+                    h("div", { style: { minWidth: 0, flex: 1 } },
+                      h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, x.c.titre || "(sans titre)"),
+                      h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, fmtNum(x.c.prixMetre) + " XPF/m · " + fmtNum(x.c.metrage) + " m · " + (x.c.statut || ""))
+                    ),
+                    h("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 } },
+                      h("span", { style: { color: st.color, fontSize: 16, fontWeight: 900, fontFamily: "monospace" } }, x.coef.toFixed(2) + "x"),
+                      h("span", { style: { fontSize: 9.5, color: st.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, st.badge)
+                    )
+                  );
+                })
+              )
+            );
+          }()),
           // Ligne 1 : Periode (compactes) — Seuil + Cout/m + Gain/m sur toute la periode
           seuilMois > 0 ? h("div", { style: { display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" } },
             // Seuil rentabilite (compact)
