@@ -17596,11 +17596,21 @@
         var code = r.sondeuse_code || "—";
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
-          coutConso: 0, coutPersonnel: 0, coutEmprunt: 0
+          coutConso: 0, coutPersonnel: 0, coutEmprunt: 0,
+          caGenere: 0, joursTravailles: {}, chantierMetres: {}
         };
         sondeusesMap[code].rapports += 1;
-        sondeusesMap[code].metres += parseFloat(r.total_metres) || 0;
+        var mR = parseFloat(r.total_metres) || 0;
+        sondeusesMap[code].metres += mR;
         sondeusesMap[code].minutes += parseFloat(r.total_heures) || 0;
+        // CA genere = metrage × prix/m du CHANTIER de ce rapport (pas de moyenne)
+        var prixR = lookupPrixMetre(r);
+        if (mR > 0 && prixR > 0) sondeusesMap[code].caGenere += mR * prixR;
+        // Jours travailles (unique dates de rapport)
+        if (r.date_rapport) sondeusesMap[code].joursTravailles[String(r.date_rapport).substring(0, 10)] = true;
+        // Chantier principal (max metres) - pour affichage
+        var chIdKey = r.chantier_id ? String(r.chantier_id) : (r.lieu || "?");
+        sondeusesMap[code].chantierMetres[chIdKey] = (sondeusesMap[code].chantierMetres[chIdKey] || 0) + mR;
         var activites = Array.isArray(r.activites) ? r.activites : [];
         activites.forEach(function(a) {
           if (activiteMatch(a.libelle, "FORATION")) {
@@ -17806,6 +17816,22 @@
         var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
         var coutIndirect = chargesIndirectesTotal * partMetres;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        // Chantier principal (celui avec le plus de metres pour cette machine)
+        var chantPrincipal = null;
+        var maxM = 0;
+        Object.keys(s.chantierMetres || {}).forEach(function(cid) {
+          if (s.chantierMetres[cid] > maxM) { maxM = s.chantierMetres[cid]; chantPrincipal = cid; }
+        });
+        var chantPrincipalNom = "?";
+        if (chantPrincipal) {
+          var chObj = (dbChantiers || []).find(function(c) { return String(c.id) === chantPrincipal; });
+          chantPrincipalNom = chObj ? (chObj.titre || chObj.nom || ("#" + chObj.id)) : String(chantPrincipal);
+        }
+        var nbJoursTravailles = Object.keys(s.joursTravailles || {}).length;
+        var caJour = nbJoursTravailles > 0 ? s.caGenere / nbJoursTravailles : 0;
+        var coutJour = nbJoursTravailles > 0 ? coutTotal / nbJoursTravailles : 0;
+        var margeJour = caJour - coutJour;
+        var metresJour = nbJoursTravailles > 0 ? s.metres / nbJoursTravailles : 0;
         return {
           code: code,
           rapports: s.rapports,
@@ -17819,7 +17845,14 @@
           coutEmprunt: s.coutEmprunt,
           coutIndirect: coutIndirect,
           coutTotal: coutTotal,
-          coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0
+          coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0,
+          caGenere: s.caGenere,
+          nbJoursTravailles: nbJoursTravailles,
+          caJour: caJour,
+          coutJour: coutJour,
+          margeJour: margeJour,
+          metresJour: metresJour,
+          chantPrincipal: chantPrincipalNom
         };
       }).sort(function(a, b) { return b.metres - a.metres; });
 
@@ -17945,16 +17978,14 @@
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
-          // ── Rentabilite chantiers = CA/jour attendu (metrage moyen × prix/m) ──
-          // Le meilleur chantier combine vitesse (m/j) + tarif (XPF/m). Trie par
-          // CA/jour desc. Rank-based coloring : top vert, milieu jaune, bas rouge.
+          // ── Rentabilite PAR MACHINE = CA generé - coûts complets (marge nette/jour) ──
+          // Le CA est calcule par rapport avec le prix/m du chantier (pas de moyenne).
+          // Les coûts incluent : consommables + carburant + personnel + charges patronales
+          // + emprunts + charges indirectes ventilees (charges fixes, carburant VL, personnel hors-equipe).
+          // Marge/jour = (CA total période / jours travaillés) - (coût total période / jours travaillés).
           (function() {
-            var affiches = (dbChantiers || []).filter(function(c) { return c && c.statut === "En cours"; });
-            var withCa = affiches.map(function(c) {
-              var r = computeCaJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
-              return { c: c, metJour: r.metJour, prix: r.prix, caJour: r.caJour };
-            }).filter(function(x) { return x.prix > 0; })
-              .sort(function(a, b) { return b.caJour - a.caJour; });
+            var withMarge = sondeusesDetail.filter(function(s) { return s.nbJoursTravailles > 0 && s.caGenere > 0; })
+              .slice().sort(function(a, b) { return b.margeJour - a.margeJour; });
             function rankColSt(i, total) {
               if (total <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)" };
               var pct = i / (total - 1);
@@ -17963,33 +17994,45 @@
               return { color: "#fda4af", bg: "rgba(244,63,94,0.12)" };
             }
             function fmtCaShort(v) {
-              if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
-              if (v >= 1000) return Math.round(v / 1000) + " k";
-              return String(Math.round(v));
+              var s = v < 0 ? "-" : "";
+              var abs = Math.abs(v);
+              if (abs >= 1000000) return s + (abs / 1000000).toFixed(2) + " MF";
+              if (abs >= 1000) return s + Math.round(abs / 1000) + " k";
+              return s + String(Math.round(abs));
             }
             return h("div", { style: { background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 14 } },
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
                 h("div", null,
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: "#c4b5fd", display: "flex", alignItems: "center", gap: 8 } },
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
-                    "Rentabilite chantiers - CA/jour attendu"
+                    "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "CA/jour = metrage moyen jour (14 derniers jours productifs) × prix/m du chantier · trie du plus rentable au moins rentable")
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA généré (metrage × prix chantier) - coûts complets (conso + personnel + charges + emprunts + indirects) · sur la periode filtree · trie du plus au moins rentable")
                 )
               ),
-              withCa.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucun chantier En cours avec prix/m renseigne.") :
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 } },
-                withCa.map(function(x, i) {
-                  var st = rankColSt(i, withCa.length);
-                  var hasMetr = x.metJour > 0;
-                  return h("div", { key: x.c.id, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
-                    h("div", { style: { minWidth: 0, flex: 1 } },
-                      h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, x.c.titre || "(sans titre)"),
-                      h("div", { style: { fontSize: 11, color: "#a1a1aa" } }, hasMetr ? (Math.round(x.metJour) + " m/j × " + fmtNum(x.prix) + " XPF/m") : (fmtNum(x.prix) + " XPF/m · pas de metrage recent"))
+              withMarge.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucune machine avec CA sur cette periode.") :
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 } },
+                withMarge.map(function(x, i) {
+                  var st = rankColSt(i, withMarge.length);
+                  return h("div", { key: x.code, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "12px 14px" } },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 } },
+                      h("div", { style: { fontWeight: 800, fontSize: 15, color: "#fafafa", fontFamily: "monospace" } }, x.code),
+                      h("span", { style: { fontSize: 9.5, color: st.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "#" + (i + 1) + " sur " + withMarge.length)
                     ),
-                    h("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 } },
-                      h("span", { style: { color: st.color, fontSize: 15, fontWeight: 900, fontFamily: "monospace", whiteSpace: "nowrap" } }, hasMetr ? (fmtCaShort(x.caJour) + " /j") : "—"),
-                      h("span", { style: { fontSize: 9.5, color: st.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "#" + (i + 1))
+                    h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 8 } }, x.chantPrincipal + " · " + x.nbJoursTravailles + " j travaillés · " + Math.round(x.metresJour) + " m/j"),
+                    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8, fontSize: 11 } },
+                      h("div", { style: { padding: "6px 8px", background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 6 } },
+                        h("div", { style: { color: "#a1a1aa", fontSize: 10 } }, "CA/jour"),
+                        h("div", { style: { fontWeight: 800, color: "#86efac", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.caJour))
+                      ),
+                      h("div", { style: { padding: "6px 8px", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.25)", borderRadius: 6 } },
+                        h("div", { style: { color: "#a1a1aa", fontSize: 10 } }, "Coûts/jour"),
+                        h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour))
+                      )
+                    ),
+                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConsommables : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF" },
+                      h("div", { style: { color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 } }, "Marge nette/jour"),
+                      h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 18 } }, fmtCaShort(x.margeJour) + " /j")
                     )
                   );
                 })
