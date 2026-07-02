@@ -17802,6 +17802,17 @@
       var netParJourReel = joursTravailles > 0 ? (entreesTempsReel - depensesTempsReel) / joursTravailles : 0;
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
+      // ── Moyennes de la flotte pour LISSER les depenses conso + carburant ──
+      // Ex: une machine avec 2 jours de rapports peut avoir une conso 'spiky'
+      // (grosse commande ce jour la). On utilise la moyenne conso/m de la flotte
+      // × metrage reel de la machine pour un chiffre + realiste sur peu de donnees.
+      var totalConsoFleet = 0, totalMetresFleet = 0;
+      Object.keys(sondeusesMap).forEach(function(code) {
+        totalConsoFleet += sondeusesMap[code].coutConso;
+        totalMetresFleet += sondeusesMap[code].metres;
+      });
+      var avgConsoParMetreFleet = totalMetresFleet > 0 ? totalConsoFleet / totalMetresFleet : 0;
+
       // Pour ventiler les charges indirectes (carburant VL, salaires hors-equipe, charges fixes)
       // aux JOURS PREVISIONNELS TRAVAILLES par la flotte : produit en croix.
       // Ex: 5MF/mois de charges fixes / 48 jours prevus (3 machines × 16 j Lun-Jeu)
@@ -17858,7 +17869,13 @@
         // Le reste (20/22) = cout structurel de l'inactivite, non attribue a une machine.
         var nbJoursMach = Object.keys(s.joursTravailles || {}).length;
         var coutIndirect = chargesIndirectesParJour * nbJoursMach;
-        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        // LISSAGE conso + carburant : utilise la moyenne flotte × metres reels de la machine.
+        // Evite les spikes quand une machine a peu de rapports mais un gros achat dedans.
+        // Fallback : si pas de metres, retombe sur la valeur reelle enregistree.
+        var coutConsoLisse = s.metres > 0 && avgConsoParMetreFleet > 0
+          ? s.metres * avgConsoParMetreFleet
+          : s.coutConso;
+        var coutTotal = coutConsoLisse + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
         var maxM = 0;
@@ -17882,7 +17899,8 @@
           heures: s.minutes / 60,
           heuresForation: s.minutesForation / 60,
           productivite: s.minutesForation > 0 ? s.metres / (s.minutesForation / 60) : 0,
-          coutConso: s.coutConso,
+          coutConso: coutConsoLisse,
+          coutConsoReel: s.coutConso,
           coutPersonnel: s.coutPersonnel,
           coutCharges: coutCharges,
           coutEmprunt: s.coutEmprunt,
@@ -18073,7 +18091,7 @@
                         h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour) + " /j")
                       )
                     ),
-                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConsommables : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF" },
+                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant LISSE (moy flotte × metres) : " + fmtNum(Math.round(x.coutConso)) + " XPF" + (x.coutConsoReel != null && Math.abs(x.coutConsoReel - x.coutConso) > 1 ? " [reel : " + fmtNum(Math.round(x.coutConsoReel)) + "]" : "") + "\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata jours previs. flotte) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF" },
                       h("div", { style: { color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 } }, "Marge nette/jour"),
                       h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 18 } }, fmtCaShort(x.margeJour) + " /j")
                     )
