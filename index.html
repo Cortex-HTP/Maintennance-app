@@ -17803,18 +17803,26 @@
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
       // Pour ventiler les charges indirectes (carburant VL, salaires hors-equipe, charges fixes)
-      // au prorata des metres realises par chaque sondeuse sur la periode.
+      // aux JOURS TRAVAILLES par chaque sondeuse (pas aux metres) : ainsi le cout/jour
+      // reflete bien la periode reelle d'activite de la machine.
       var sumPersonnelTerrainAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
       var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
       var chargesIndirectesTotal = coutCarburantVL + coutPersonnelHorsTerrain + coutChargesFixesTotal;
+      // Total des jours travailles (unique dates × machine) pour ventilation prorata.
+      var sumJoursTravailles = 0;
+      Object.keys(sondeusesMap).forEach(function(code) {
+        sumJoursTravailles += Object.keys(sondeusesMap[code].joursTravailles || {}).length;
+      });
 
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
         var coutCharges = s.coutPersonnel * 0.40;  // 40% charges patronales sur personnel terrain
-        // Part des charges indirectes au prorata des metres
-        var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
-        var coutIndirect = chargesIndirectesTotal * partMetres;
+        // Part des charges indirectes AU PRORATA DES JOURS TRAVAILLES par cette machine.
+        // Une machine qui a travaille 15 j sur 60 j-flotte bear 15/60 des indirectes.
+        var nbJoursMach = Object.keys(s.joursTravailles || {}).length;
+        var partJours = sumJoursTravailles > 0 ? (nbJoursMach / sumJoursTravailles) : 0;
+        var coutIndirect = chargesIndirectesTotal * partJours;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
