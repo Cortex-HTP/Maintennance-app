@@ -17802,80 +17802,26 @@
       var netParJourReel = joursTravailles > 0 ? (entreesTempsReel - depensesTempsReel) / joursTravailles : 0;
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
-      // ── Moyennes de la flotte pour LISSER les depenses conso + carburant ──
-      // Ex: une machine avec 2 jours de rapports peut avoir une conso 'spiky'
-      // (grosse commande ce jour la). On utilise la moyenne conso/m de la flotte
-      // × metrage reel de la machine pour un chiffre + realiste sur peu de donnees.
-      var totalConsoFleet = 0, totalMetresFleet = 0;
-      Object.keys(sondeusesMap).forEach(function(code) {
-        totalConsoFleet += sondeusesMap[code].coutConso;
-        totalMetresFleet += sondeusesMap[code].metres;
-      });
-      var avgConsoParMetreFleet = totalMetresFleet > 0 ? totalConsoFleet / totalMetresFleet : 0;
-
-      // Pour ventiler les charges indirectes (carburant VL, salaires hors-equipe, charges fixes)
-      // aux JOURS PREVISIONNELS TRAVAILLES par la flotte : produit en croix.
-      // Ex: 5MF/mois de charges fixes / 48 jours prevus (3 machines × 16 j Lun-Jeu)
-      //     = 104k/j de charges. Machine qui bosse 2 j reels = 2 × 104k = 208k.
-      // Source du prevu : chantier_equipements (planning machines), overlap Lun-Jeu
-      // avec [periodStart, periodEnd].
+      // Charges indirectes = carburant VL + personnel hors-equipe + charges fixes
+      // Reparties AU PRORATA DU METRAGE (comme le cout au metre), pas des jours.
       var sumPersonnelTerrainAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
       var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
       var chargesIndirectesTotal = coutCarburantVL + coutPersonnelHorsTerrain + coutChargesFixesTotal;
-      // Compte des jours PREVISIONNELS travailles par la flotte sur la periode.
-      // = SUM (chaque chantier_equipement) des jours Lun-Jeu dans intersection avec periode.
-      var totalJoursPrevisionnels = (function() {
-        var pStart = periodStart ? new Date(periodStart.getTime()) : null;
-        var pEnd = periodEnd ? new Date(periodEnd.getTime()) : new Date(now.getTime());
-        if (pStart) pStart.setHours(0, 0, 0, 0);
-        if (pEnd) pEnd.setHours(23, 59, 59, 999);
-        var total = 0;
-        (ctx.dbChantierEquipements || []).forEach(function(ce) {
-          if (!ce || !ce.dateDebut || !ce.dateFin) return;
-          try {
-            var d1 = new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00");
-            var d2 = new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00");
-            if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
-            // Intersection avec periode filtree
-            if (pStart && d2 < pStart) return;
-            if (pEnd && d1 > pEnd) return;
-            var start = pStart && d1 < pStart ? new Date(pStart.getTime()) : d1;
-            var end = pEnd && d2 > pEnd ? new Date(pEnd.getTime()) : d2;
-            // Compte les jours Lun-Jeu (dow 1-4) dans [start, end]
-            var cur = new Date(start.getTime()); cur.setHours(0, 0, 0, 0);
-            var safe = 0;
-            while (cur.getTime() <= end.getTime() && safe < 400) {
-              var dow = cur.getDay();
-              if (dow >= 1 && dow <= 4) total++;
-              cur.setDate(cur.getDate() + 1);
-              safe++;
-            }
-          } catch (e) {}
-        });
-        return total;
-      })();
-      // Fallback si pas de planning : joursOuvres × nbMachinesActives (estimate)
-      var joursReferencePeriode = totalJoursPrevisionnels > 0
-        ? totalJoursPrevisionnels
-        : (joursOuvres > 0 ? joursOuvres * Math.max(1, Object.keys(sondeusesMap).length) : 22);
-      var chargesIndirectesParJour = joursReferencePeriode > 0 ? chargesIndirectesTotal / joursReferencePeriode : 0;
+      // Diviseur d'affichage (pour CA/jour et Couts/jour) = jours OUVRABLES Lun-Ven
+      // de la periode filtree. Fallback 22 si periode 'all' non definie.
+      var joursOuvrablesPeriode = joursOuvres > 0 ? joursOuvres : 22;
 
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
         var s = sondeusesMap[code];
         var coutCharges = s.coutPersonnel * 0.40;  // 40% charges patronales sur personnel terrain
-        // Part des charges indirectes = charges_par_jour_ouvre × jours_travailles_machine.
-        // Une machine qui bosse 2 j sur 22 j ouvres du mois prend 2/22 des charges fixes.
-        // Le reste (20/22) = cout structurel de l'inactivite, non attribue a une machine.
         var nbJoursMach = Object.keys(s.joursTravailles || {}).length;
-        var coutIndirect = chargesIndirectesParJour * nbJoursMach;
-        // LISSAGE conso + carburant : utilise la moyenne flotte × metres reels de la machine.
-        // Evite les spikes quand une machine a peu de rapports mais un gros achat dedans.
-        // Fallback : si pas de metres, retombe sur la valeur reelle enregistree.
-        var coutConsoLisse = s.metres > 0 && avgConsoParMetreFleet > 0
-          ? s.metres * avgConsoParMetreFleet
-          : s.coutConso;
-        var coutTotal = coutConsoLisse + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        // Charges indirectes AU PRORATA DU METRAGE (identique au cout au metre) :
+        // credits, impots, locations, personnel hors-equipe -> reparties selon la
+        // contribution en metres de chaque machine sur la periode.
+        var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
+        var coutIndirect = chargesIndirectesTotal * partMetres;
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
         var maxM = 0;
@@ -17888,9 +17834,15 @@
           chantPrincipalNom = chObj ? (chObj.titre || chObj.nom || ("#" + chObj.id)) : String(chantPrincipal);
         }
         var nbJoursTravailles = Object.keys(s.joursTravailles || {}).length;
-        var caJour = nbJoursTravailles > 0 ? s.caGenere / nbJoursTravailles : 0;
-        var coutJour = nbJoursTravailles > 0 ? coutTotal / nbJoursTravailles : 0;
+        // DIVISEUR financier = jours OUVRABLES de la periode (Lun-Ven).
+        // Ainsi 5MF de charges sur 22 j ouvrables = 227k/j, pas 2.5MF/j
+        // (division par 2 jours reels). Reflete un cout journalier realiste
+        // et amortissable sur toute la periode.
+        var divJours = joursOuvrablesPeriode;
+        var caJour = divJours > 0 ? s.caGenere / divJours : 0;
+        var coutJour = divJours > 0 ? coutTotal / divJours : 0;
         var margeJour = caJour - coutJour;
+        // metresJour = productivite reelle (metres / jours REELLEMENT travailles)
         var metresJour = nbJoursTravailles > 0 ? s.metres / nbJoursTravailles : 0;
         return {
           code: code,
@@ -17899,8 +17851,7 @@
           heures: s.minutes / 60,
           heuresForation: s.minutesForation / 60,
           productivite: s.minutesForation > 0 ? s.metres / (s.minutesForation / 60) : 0,
-          coutConso: coutConsoLisse,
-          coutConsoReel: s.coutConso,
+          coutConso: s.coutConso,
           coutPersonnel: s.coutPersonnel,
           coutCharges: coutCharges,
           coutEmprunt: s.coutEmprunt,
@@ -17909,6 +17860,7 @@
           coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0,
           caGenere: s.caGenere,
           nbJoursTravailles: nbJoursTravailles,
+          joursOuvrables: joursOuvrablesPeriode,
           caJour: caJour,
           coutJour: coutJour,
           margeJour: margeJour,
@@ -18068,7 +18020,7 @@
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
                     "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA généré (metrage × prix chantier) - coûts complets (conso + personnel + charges + emprunts + indirects) · sur la periode filtree · trie du plus au moins rentable")
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = (CA généré - coûts complets) ÷ jours ouvrables Lun-Ven de la periode. Conso reelle par machine + indirects (credit, impots, locations, hors-equipe) au prorata du metrage · trie du plus au moins rentable")
                 )
               ),
               withMarge.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucune machine avec CA sur cette periode.") :
@@ -18091,7 +18043,7 @@
                         h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour) + " /j")
                       )
                     ),
-                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant LISSE (moy flotte × metres) : " + fmtNum(Math.round(x.coutConso)) + " XPF" + (x.coutConsoReel != null && Math.abs(x.coutConsoReel - x.coutConso) > 1 ? " [reel : " + fmtNum(Math.round(x.coutConsoReel)) + "]" : "") + "\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata jours previs. flotte) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF" },
+                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant (reel machine) : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts periode : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré periode : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette periode : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF\n\nDivisions par " + x.joursOuvrables + " jours ouvrables Lun-Ven de la periode filtree" },
                       h("div", { style: { color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 } }, "Marge nette/jour"),
                       h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 18 } }, fmtCaShort(x.margeJour) + " /j")
                     )
