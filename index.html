@@ -17803,16 +17803,51 @@
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
       // Pour ventiler les charges indirectes (carburant VL, salaires hors-equipe, charges fixes)
-      // aux JOURS OUVRES DE LA PERIODE (Lun-Ven filtree) : ainsi une machine qui bosse
-      // peu de jours ne prend qu'une petite part des charges fixes (car les charges des
-      // jours d'inactivite ne lui incombent pas). Le reste = 'cout structurel non couvert'.
+      // aux JOURS PREVISIONNELS TRAVAILLES par la flotte : produit en croix.
+      // Ex: 5MF/mois de charges fixes / 48 jours prevus (3 machines × 16 j Lun-Jeu)
+      //     = 104k/j de charges. Machine qui bosse 2 j reels = 2 × 104k = 208k.
+      // Source du prevu : chantier_equipements (planning machines), overlap Lun-Jeu
+      // avec [periodStart, periodEnd].
       var sumPersonnelTerrainAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
       var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
       var chargesIndirectesTotal = coutCarburantVL + coutPersonnelHorsTerrain + coutChargesFixesTotal;
-      // Reference : jours ouvres de la periode filtree (deja calcule plus haut ligne ~17662).
-      // Si joursOuvres est vide (all/1an), fallback sur nb jours calendaires x 5/7.
-      var joursReferencePeriode = joursOuvres > 0 ? joursOuvres : 22;
+      // Compte des jours PREVISIONNELS travailles par la flotte sur la periode.
+      // = SUM (chaque chantier_equipement) des jours Lun-Jeu dans intersection avec periode.
+      var totalJoursPrevisionnels = (function() {
+        var pStart = periodStart ? new Date(periodStart.getTime()) : null;
+        var pEnd = periodEnd ? new Date(periodEnd.getTime()) : new Date(now.getTime());
+        if (pStart) pStart.setHours(0, 0, 0, 0);
+        if (pEnd) pEnd.setHours(23, 59, 59, 999);
+        var total = 0;
+        (ctx.dbChantierEquipements || []).forEach(function(ce) {
+          if (!ce || !ce.dateDebut || !ce.dateFin) return;
+          try {
+            var d1 = new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00");
+            var d2 = new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00");
+            if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
+            // Intersection avec periode filtree
+            if (pStart && d2 < pStart) return;
+            if (pEnd && d1 > pEnd) return;
+            var start = pStart && d1 < pStart ? new Date(pStart.getTime()) : d1;
+            var end = pEnd && d2 > pEnd ? new Date(pEnd.getTime()) : d2;
+            // Compte les jours Lun-Jeu (dow 1-4) dans [start, end]
+            var cur = new Date(start.getTime()); cur.setHours(0, 0, 0, 0);
+            var safe = 0;
+            while (cur.getTime() <= end.getTime() && safe < 400) {
+              var dow = cur.getDay();
+              if (dow >= 1 && dow <= 4) total++;
+              cur.setDate(cur.getDate() + 1);
+              safe++;
+            }
+          } catch (e) {}
+        });
+        return total;
+      })();
+      // Fallback si pas de planning : joursOuvres × nbMachinesActives (estimate)
+      var joursReferencePeriode = totalJoursPrevisionnels > 0
+        ? totalJoursPrevisionnels
+        : (joursOuvres > 0 ? joursOuvres * Math.max(1, Object.keys(sondeusesMap).length) : 22);
       var chargesIndirectesParJour = joursReferencePeriode > 0 ? chargesIndirectesTotal / joursReferencePeriode : 0;
 
       var sondeusesDetail = Object.keys(sondeusesMap).map(function(code) {
