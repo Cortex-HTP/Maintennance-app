@@ -5931,6 +5931,7 @@
         { key: "rf_types_activite",    label: "Types d'activite",     lucide: "activity",      group: "employes" },
         { key: "rf_commentaires",      label: "Commentaires sondage", lucide: "message-circle", group: "employes" },
         { key: "rf_activites_facturables", label: "Activites facturables", lucide: "circle-dollar-sign", group: "admin" },
+        { key: "rf_tarifs_activites",  label: "Tarifs activites (XPF/h)", lucide: "banknote",      group: "admin" },
         { key: "clients",              label: "Clients",              lucide: "briefcase",     group: "employes" },
         { key: "type_engin",           label: "Types d'engin",        lucide: "hard-hat",      group: "admin" },
         { key: "type_vl",              label: "Types de vehicule",    lucide: "car",           group: "admin" },
@@ -6042,6 +6043,8 @@
               ? h(DestinatairesEmailsEditor, null)
               : selected === "rf_activites_facturables"
               ? h(ActivitesFacturablesEditor, null)
+              : selected === "rf_tarifs_activites"
+              ? h(TarifsActivitesEditor, null)
               : h(React.Fragment, null,
                   h("div", { style: { display: "flex", gap: 8, marginBottom: 16 } },
                     h("input", { style: { ...inputStyle, flex: 1 }, value: newValeur, placeholder: "Nouvelle valeur...", onChange: (e) => setNewValeur(e.target.value), onKeyDown: (e) => e.key === "Enter" && handleAdd() }),
@@ -6103,6 +6106,101 @@
               h("input", { type: "checkbox", checked: isFact, disabled: saving, onChange: function() { toggle(p.valeur); }, style: { width: 18, height: 18, cursor: saving ? "wait" : "pointer" } }),
               h("span", { style: { flex: 1, fontWeight: 600, fontSize: 14 } }, p.valeur),
               isFact ? h("span", { style: { padding: "3px 10px", background: "rgba(34,197,94,0.20)", color: "#86efac", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 999, fontSize: 11, fontWeight: 700 } }, "FACTURABLE") : null
+            );
+          })
+        )
+      );
+    }
+
+    // ─── Editeur Tarifs activites (XPF/h) ──────────────────────────────
+    // Stockage : parametres.categorie = "rf_tarifs_activites",
+    // parametres.valeur = JSON stringifie { libelle, prix_horaire, duree_min_minutes }.
+    // Une entree par regle. Ex: { libelle: "DEPLACEMENT", prix_horaire: 47250, duree_min_minutes: 15 }.
+    function TarifsActivitesEditor() {
+      const { parametres, addParametre, deleteParametre, updateParametre } = useAppData();
+      const activites = parametres.filter(function(p) { return p.categorie === "rf_types_activite"; }).sort(function(a, b) {
+        return String(a.valeur || "").localeCompare(String(b.valeur || ""), "fr", { sensitivity: "base" });
+      });
+      const tarifsRaw = parametres.filter(function(p) { return p.categorie === "rf_tarifs_activites"; });
+      const tarifs = tarifsRaw.map(function(p) {
+        try {
+          var v = JSON.parse(p.valeur || "{}");
+          return { id: p.id, libelle: String(v.libelle || "").toUpperCase().trim(), prixHoraire: parseFloat(v.prix_horaire) || 0, dureeMin: parseInt(v.duree_min_minutes) || 0 };
+        } catch (e) { return { id: p.id, libelle: "", prixHoraire: 0, dureeMin: 0 }; }
+      }).filter(function(x) { return x.libelle; }).sort(function(a, b) { return a.libelle.localeCompare(b.libelle); });
+      const [newLibelle, setNewLibelle] = useState("");
+      const [newPrix, setNewPrix] = useState("");
+      const [newDuree, setNewDuree] = useState("0");
+      const [saving, setSaving] = useState(false);
+      async function handleAdd() {
+        if (saving || !newLibelle || !newPrix) return;
+        setSaving(true);
+        try {
+          var v = JSON.stringify({ libelle: String(newLibelle).toUpperCase().trim(), prix_horaire: parseFloat(newPrix) || 0, duree_min_minutes: parseInt(newDuree) || 0 });
+          await addParametre("rf_tarifs_activites", v, 0);
+          setNewLibelle(""); setNewPrix(""); setNewDuree("0");
+        } catch (err) { /* toast deja affiche */ }
+        finally { setSaving(false); }
+      }
+      async function handleUpdate(t, field, newVal) {
+        if (saving) return;
+        setSaving(true);
+        try {
+          var updated = { libelle: t.libelle, prix_horaire: t.prixHoraire, duree_min_minutes: t.dureeMin };
+          if (field === "prix") updated.prix_horaire = parseFloat(newVal) || 0;
+          if (field === "duree") updated.duree_min_minutes = parseInt(newVal) || 0;
+          await updateParametre(t.id, { valeur: JSON.stringify(updated) });
+        } catch (err) { /* toast deja affiche */ }
+        finally { setSaving(false); }
+      }
+      async function handleDelete(t) {
+        if (saving) return;
+        if (!confirm("Supprimer le tarif pour " + t.libelle + " ?")) return;
+        setSaving(true);
+        try { await deleteParametre(t.id); }
+        catch (err) { /* toast deja affiche */ }
+        finally { setSaving(false); }
+      }
+      var inputSt = { padding: "6px 10px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, color: "#fafafa", fontSize: 13, fontFamily: "inherit" };
+      return h(React.Fragment, null,
+        h("div", { style: { padding: 12, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 8, marginBottom: 16, fontSize: 12, color: "#fde68a", display: "flex", gap: 8, alignItems: "flex-start" } },
+          h(Icon, { name: "info", size: 14, color: "#fde68a" }),
+          h("span", null, "Chaque tarif = un type d'activite (ex: ATTENTE, DEPLACEMENT), un prix horaire (XPF), et une duree minimum en minutes en dessous de laquelle l'activite n'est pas facturee (0 = toujours facturée).")
+        ),
+        // Formulaire ajout
+        h("div", { style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, marginBottom: 16, padding: 12, background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.20)", borderRadius: 8, alignItems: "end" } },
+          h("div", null,
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Libellé activité"),
+            h("select", { style: Object.assign({}, inputSt, { width: "100%" }), value: newLibelle, onChange: function(e) { setNewLibelle(e.target.value); } },
+              h("option", { value: "" }, "-- Choisir --"),
+              activites.map(function(a) { return h("option", { key: a.id, value: a.valeur }, a.valeur); })
+            )
+          ),
+          h("div", null,
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Prix / heure (XPF)"),
+            h("input", { type: "number", style: Object.assign({}, inputSt, { width: "100%" }), value: newPrix, placeholder: "36250", onChange: function(e) { setNewPrix(e.target.value); } })
+          ),
+          h("div", null,
+            h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Durée min. (min)"),
+            h("input", { type: "number", style: Object.assign({}, inputSt, { width: "100%" }), value: newDuree, onChange: function(e) { setNewDuree(e.target.value); } })
+          ),
+          h(Button, { onClick: handleAdd, disabled: saving || !newLibelle || !newPrix }, "+ Ajouter")
+        ),
+        // Liste des tarifs
+        tarifs.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun tarif configuré.") :
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+          tarifs.map(function(t) {
+            return h("div", { key: t.id, style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, alignItems: "center", padding: "10px 14px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.20)", borderRadius: 8 } },
+              h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, t.libelle),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                h("input", { type: "number", defaultValue: t.prixHoraire, onBlur: function(e) { if (parseFloat(e.target.value) !== t.prixHoraire) handleUpdate(t, "prix", e.target.value); }, style: Object.assign({}, inputSt, { width: "100%", textAlign: "right", fontFamily: "monospace", color: "#86efac", fontWeight: 700 }) }),
+                h("span", { style: { fontSize: 11, color: "#a1a1aa" } }, "XPF/h")
+              ),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                h("input", { type: "number", defaultValue: t.dureeMin, onBlur: function(e) { if (parseInt(e.target.value) !== t.dureeMin) handleUpdate(t, "duree", e.target.value); }, style: Object.assign({}, inputSt, { width: "100%", textAlign: "right", fontFamily: "monospace" }) }),
+                h("span", { style: { fontSize: 11, color: "#a1a1aa" } }, "min")
+              ),
+              h("button", { onClick: function() { handleDelete(t); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
             );
           })
         )
@@ -17545,6 +17643,24 @@
         return empruntCacheDediesByMois[yyyymm][equipementId] || 0;
       }
 
+      // ── Tarifs facturation activites (attentes, deplacements, etc.) ──
+      // Stockage : parametres[rf_tarifs_activites].valeur = JSON
+      // { libelle, prix_horaire, duree_min_minutes }.
+      // On construit un dict libelleUpper -> {prixHoraire, dureeMin}.
+      var tarifsActivitesMap = (function() {
+        var m = {};
+        (parametres || []).forEach(function(p) {
+          if (!p || p.categorie !== "rf_tarifs_activites" || !p.valeur) return;
+          try {
+            var v = JSON.parse(p.valeur);
+            var lib = String(v.libelle || "").toUpperCase().trim();
+            if (!lib) return;
+            m[lib] = { prixHoraire: parseFloat(v.prix_horaire) || 0, dureeMin: parseInt(v.duree_min_minutes) || 0 };
+          } catch (e) {}
+        });
+        return m;
+      })();
+
       // ── Detail par sondeuse ──
       var sondeusesMap = {}; // code -> stats
       filtered.forEach(function(r) {
@@ -17552,7 +17668,7 @@
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
           coutConso: 0, coutPersonnel: 0, coutEmprunt: 0,
-          caGenere: 0, joursTravailles: {}, chantierMetres: {}
+          caGenere: 0, caFacturationActivites: 0, joursTravailles: {}, chantierMetres: {}
         };
         sondeusesMap[code].rapports += 1;
         var mR = parseFloat(r.total_metres) || 0;
@@ -17570,6 +17686,16 @@
         activites.forEach(function(a) {
           if (activiteMatch(a.libelle, "FORATION")) {
             sondeusesMap[code].minutesForation += durBtw(a.debut, a.fin);
+          }
+          // CA facturation activites : lookup libelle dans tarifsActivitesMap,
+          // applique le tarif si duree >= duree_min (sinon 0). Duree en minutes.
+          var libU = String(a && a.libelle || "").toUpperCase().trim();
+          var tarif = tarifsActivitesMap[libU];
+          if (tarif && tarif.prixHoraire > 0) {
+            var durAct = durBtw(a.debut, a.fin);
+            if (durAct >= tarif.dureeMin) {
+              sondeusesMap[code].caFacturationActivites += (durAct / 60) * tarif.prixHoraire;
+            }
           }
         });
         var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
@@ -17789,12 +17915,14 @@
           chantPrincipalNom = chObj ? (chObj.titre || chObj.nom || ("#" + chObj.id)) : String(chantPrincipal);
         }
         var nbJoursTravailles = Object.keys(s.joursTravailles || {}).length;
+        // CA total = metrage + facturation activites (attentes, deplacements, etc.)
+        var caTotal = s.caGenere + (s.caFacturationActivites || 0);
         // DIVISEUR financier = jours OUVRABLES de la periode (Lun-Ven).
         // Ainsi 5MF de charges sur 22 j ouvrables = 227k/j, pas 2.5MF/j
         // (division par 2 jours reels). Reflete un cout journalier realiste
         // et amortissable sur toute la periode.
         var divJours = joursOuvrablesPeriode;
-        var caJour = divJours > 0 ? s.caGenere / divJours : 0;
+        var caJour = divJours > 0 ? caTotal / divJours : 0;
         var coutJour = divJours > 0 ? coutTotal / divJours : 0;
         var margeJour = caJour - coutJour;
         // metresJour = productivite reelle (metres / jours REELLEMENT travailles)
@@ -17814,6 +17942,8 @@
           coutTotal: coutTotal,
           coutParMetre: s.metres > 0 ? coutTotal / s.metres : 0,
           caGenere: s.caGenere,
+          caFacturationActivites: s.caFacturationActivites || 0,
+          caTotal: caTotal,
           nbJoursTravailles: nbJoursTravailles,
           joursOuvrables: joursOuvrablesPeriode,
           caJour: caJour,
@@ -17944,7 +18074,17 @@
             kpiCard("green", "coins", fmtCaCompact(caYTD) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)", "Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
             kpiCard("red", "trending-up", fmtCaCompact(caAnnuelProj) + " XPF", "CA annuel projete", (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? " - mois : " + fmtCaCompact(caProjPeriode) + " XPF" : " - " + periodLabelShort + " : " + fmtCaCompact(caPeriode) + " XPF")),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
-            kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
+            kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h"),
+            // CA facturation activites : somme des tarifs configures (attentes, deplacements >= X min)
+            (function() {
+              var caFactTotal = sondeusesDetail.reduce(function(s, x) { return s + (x.caFacturationActivites || 0); }, 0);
+              var tarifsConfigs = Object.keys(tarifsActivitesMap).length;
+              return kpiCard("green", "banknote", fmtCaCompact(caFactTotal) + " XPF",
+                "CA facturation activites",
+                tarifsConfigs === 0
+                  ? "Aucun tarif configure (Parametres > Tarifs activites)"
+                  : tarifsConfigs + " tarif(s) configure(s) : " + Object.keys(tarifsActivitesMap).join(", "));
+            }())
           ),
           // ── Rentabilite PAR MACHINE = CA generé - coûts complets (marge nette/jour) ──
           // Le CA est calcule par rapport avec le prix/m du chantier (pas de moyenne).
@@ -17952,7 +18092,7 @@
           // + emprunts + charges indirectes ventilees (charges fixes, carburant VL, personnel hors-equipe).
           // Marge/jour = (CA total période / jours travaillés) - (coût total période / jours travaillés).
           (function() {
-            var withMarge = sondeusesDetail.filter(function(s) { return s.nbJoursTravailles > 0 && s.caGenere > 0; })
+            var withMarge = sondeusesDetail.filter(function(s) { return s.nbJoursTravailles > 0 && s.caTotal > 0; })
               .slice().sort(function(a, b) { return b.margeJour - a.margeJour; });
             function rankColSt(i, total) {
               if (total <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)" };
@@ -17975,7 +18115,7 @@
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
                     "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = (CA généré - coûts complets) ÷ jours ouvrables Lun-Ven de la periode. Conso reelle par machine + indirects (credit, impots, locations, hors-equipe) au prorata du metrage · trie du plus au moins rentable")
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = (CA metrage + CA facturation activites - coûts complets) ÷ jours ouvrables Lun-Ven de la periode. Conso reelle par machine + indirects (credit, impots, locations, hors-equipe) au prorata du metrage · trie du plus au moins rentable")
                 )
               ),
               withMarge.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucune machine avec CA sur cette periode.") :
@@ -17998,7 +18138,7 @@
                         h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour) + " /j")
                       )
                     ),
-                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant (reel machine) : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts periode : " + fmtNum(Math.round(x.coutTotal)) + " XPF\nCA généré periode : " + fmtNum(Math.round(x.caGenere)) + " XPF\nMarge nette periode : " + fmtNum(Math.round(x.caGenere - x.coutTotal)) + " XPF\n\nDivisions par " + x.joursOuvrables + " jours ouvrables Lun-Ven de la periode filtree" },
+                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant (reel machine) : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts periode : " + fmtNum(Math.round(x.coutTotal)) + " XPF\n\nCA metrage : " + fmtNum(Math.round(x.caGenere)) + " XPF\nCA facturation activites : " + fmtNum(Math.round(x.caFacturationActivites || 0)) + " XPF\nCA total : " + fmtNum(Math.round(x.caTotal)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caTotal - x.coutTotal)) + " XPF\n\nDivisions par " + x.joursOuvrables + " jours ouvrables Lun-Ven de la periode filtree" },
                       h("div", { style: { color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 } }, "Marge nette/jour"),
                       h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 18 } }, fmtCaShort(x.margeJour) + " /j")
                     )
