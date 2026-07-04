@@ -1,7 +1,7 @@
 -- =====================================================================
 -- Systeme de tickets support (bugs, demandes, questions)
 -- Utilise depuis : APP admin, APP compta, APP employes (via meme table)
--- Admin unique : tom.picot@gmail.com
+-- Admin unique : tom.wallislabel@gmail.com
 -- =====================================================================
 
 -- ─── Table principale ───
@@ -51,7 +51,7 @@ CREATE POLICY tickets_select_own
   FOR SELECT
   USING (
     user_email = (auth.jwt() ->> 'email')
-    OR (auth.jwt() ->> 'email') = 'tom.picot@gmail.com'  -- Admin voit tout
+    OR (auth.jwt() ->> 'email') = 'tom.wallislabel@gmail.com'  -- Admin voit tout
   );
 
 -- Politique : chacun peut creer un ticket avec son propre email
@@ -69,15 +69,15 @@ DROP POLICY IF EXISTS tickets_update_admin ON public.tickets;
 CREATE POLICY tickets_update_admin
   ON public.tickets
   FOR UPDATE
-  USING ((auth.jwt() ->> 'email') = 'tom.picot@gmail.com')
-  WITH CHECK ((auth.jwt() ->> 'email') = 'tom.picot@gmail.com');
+  USING ((auth.jwt() ->> 'email') = 'tom.wallislabel@gmail.com')
+  WITH CHECK ((auth.jwt() ->> 'email') = 'tom.wallislabel@gmail.com');
 
 -- Politique : seul l'admin peut DELETE
 DROP POLICY IF EXISTS tickets_delete_admin ON public.tickets;
 CREATE POLICY tickets_delete_admin
   ON public.tickets
   FOR DELETE
-  USING ((auth.jwt() ->> 'email') = 'tom.picot@gmail.com');
+  USING ((auth.jwt() ->> 'email') = 'tom.wallislabel@gmail.com');
 
 -- ─── Bucket Storage pour les screenshots ───
 -- (a executer via l'UI Supabase si SQL Storage indisponible :
