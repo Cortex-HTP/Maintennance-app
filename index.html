@@ -21962,6 +21962,8 @@
         if (initialTab) setTab(initialTab);
       }, [initialTab]);
       const bugsUnresolved = (ctx.dbBugLogs || []).filter(function(b) { return !b.resolved; }).length;
+      // Tickets support : seul tom.picot@gmail.com peut voir ce tab
+      const isTomOnly = String(ctx.userEmail || "").toLowerCase() === "tom.picot@gmail.com";
       const tabs = [
         { key: "mon-profil", label: "Mon profil", icon: "user-round", adminOnly: false },
         { key: "parametres", label: "Parametres", icon: "sliders-horizontal", adminOnly: false },
@@ -21970,8 +21972,12 @@
         { key: "connectes", label: "Qui est en ligne", icon: "users", adminOnly: true },
         { key: "corbeille", label: "Corbeille", icon: "trash-2", adminOnly: true },
         { key: "bugs", label: "Journal des bugs", icon: "alert-triangle", adminOnly: true, badge: bugsUnresolved },
+        { key: "tickets", label: "Tickets support", icon: "life-buoy", tomOnly: true },
       ];
-      const visibleTabs = tabs.filter(function(t) { return !t.adminOnly || isAdmin; });
+      const visibleTabs = tabs.filter(function(t) {
+        if (t.tomOnly) return isTomOnly;
+        return !t.adminOnly || isAdmin;
+      });
       // Si l'onglet actif n'est pas accessible, retomber sur le premier visible
       React.useEffect(function() {
         if (!visibleTabs.find(function(t) { return t.key === tab; })) {
@@ -22005,7 +22011,8 @@
         tab === "utilisateurs" && isAdmin ? h(EcranAdminUtilisateurs, null) : null,
         tab === "connectes" && isAdmin ? h(EcranConnectes, null) : null,
         tab === "corbeille" && isAdmin ? h(EcranCorbeille, null) : null,
-        tab === "bugs" && isAdmin ? h(EcranBugs, null) : null
+        tab === "bugs" && isAdmin ? h(EcranBugs, null) : null,
+        tab === "tickets" && isTomOnly ? h(EcranTickets, null) : null
       );
     }
 
@@ -22316,6 +22323,292 @@
             );
           })
         )
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // TICKETS SUPPORT : bouton flottant + modal utilisateur + ecran admin
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Helper : upload d'un fichier (image) vers Supabase Storage bucket
+    // 'tickets_screenshots'. Retourne l'URL publique ou null si echec.
+    async function uploadTicketScreenshot(file, userEmail) {
+      if (!file) return null;
+      try {
+        var ext = (file.name || "").split(".").pop().toLowerCase() || "png";
+        var path = String(userEmail || "anon").replace(/[^a-zA-Z0-9]/g, "_") + "/" + Date.now() + "_" + Math.random().toString(36).substring(2, 8) + "." + ext;
+        var res = await supabase.storage.from("tickets_screenshots").upload(path, file, { cacheControl: "3600", upsert: false });
+        if (res.error) { console.warn("[ticket] upload:", res.error.message); return null; }
+        var pub = supabase.storage.from("tickets_screenshots").getPublicUrl(path);
+        return (pub && pub.data && pub.data.publicUrl) || null;
+      } catch (e) { console.warn("[ticket] upload err:", e); return null; }
+    }
+
+    // ─── FAB Support : bouton flottant + modal utilisateur ──────────────
+    // Bouton en bas a droite (au dessus de la loupe Recherche). Ouvre un
+    // modal avec 2 onglets : "Nouveau ticket" et "Mes tickets" (historique).
+    function TicketSupportFab() {
+      var ctx = useAppData();
+      var userEmail = String(ctx.userEmail || "").toLowerCase();
+      var _o = useState(false); var open = _o[0]; var setOpen = _o[1];
+      var _tab = useState("new"); var tab = _tab[0]; var setTab = _tab[1];
+      var _mine = useState([]); var mine = _mine[0]; var setMine = _mine[1];
+      var _loading = useState(false); var loading = _loading[0]; var setLoading = _loading[1];
+      // Form nouveau ticket
+      var _type = useState("bug"); var tType = _type[0]; var setType = _type[1];
+      var _title = useState(""); var title = _title[0]; var setTitle = _title[1];
+      var _desc = useState(""); var desc = _desc[0]; var setDesc = _desc[1];
+      var _file = useState(null); var file = _file[0]; var setFile = _file[1];
+      var _saving = useState(false); var saving = _saving[0]; var setSaving = _saving[1];
+      // Fetch mes tickets quand on ouvre l'onglet
+      React.useEffect(function() {
+        if (!open || tab !== "mine" || !userEmail) return;
+        setLoading(true);
+        supabase.from("tickets").select("*").eq("user_email", userEmail).order("created_at", { ascending: false }).limit(50).then(function(res) {
+          if (!res.error) setMine(res.data || []);
+          setLoading(false);
+        });
+      }, [open, tab, userEmail]);
+      async function submit() {
+        if (saving || !title.trim()) return;
+        setSaving(true);
+        try {
+          var screenshots = [];
+          if (file) {
+            var url = await uploadTicketScreenshot(file, userEmail);
+            if (url) screenshots.push(url);
+          }
+          var payload = {
+            app_source: "admin", user_email: userEmail, user_name: ctx.userEmail || "",
+            type: tType, title: title.trim(), description: desc.trim(), screenshots: screenshots
+          };
+          var res = await supabase.from("tickets").insert(payload).select().single();
+          if (res.error) { alert("Erreur : " + res.error.message); return; }
+          // Reset form + switch to mine
+          setTitle(""); setDesc(""); setFile(null); setType("bug");
+          setTab("mine");
+          setMine(function(prev) { return [res.data].concat(prev); });
+        } catch (e) { alert("Erreur : " + e.message); }
+        finally { setSaving(false); }
+      }
+      if (!userEmail) return null; // Pas connecte -> pas de bouton
+      var fab = h("button", { onClick: function() { setOpen(true); }, title: "Signaler un bug / demande",
+        style: { position: "fixed", bottom: "calc(70px + env(safe-area-inset-bottom))", right: "calc(16px + env(safe-area-inset-right))", zIndex: 90, width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg, #f59e0b, #ea580c)", border: "1px solid rgba(245,158,11,0.5)", color: "#fff", cursor: "pointer", boxShadow: "0 8px 24px rgba(245,158,11,0.4)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }
+      }, h(Icon, { name: "life-buoy", size: 20, color: "#fff" }));
+      if (!open) return fab;
+      var STATUS_LABEL = { ouvert: "Ouvert", en_cours: "En cours", resolu: "Resolu", ferme: "Ferme" };
+      var STATUS_COLOR = { ouvert: "#fbbf24", en_cours: "#60a5fa", resolu: "#22c55e", ferme: "#71717a" };
+      var TYPE_LABEL = { bug: "Bug", demande: "Demande", question: "Question" };
+      var TYPE_ICON = { bug: "bug", demande: "sparkles", question: "help-circle" };
+      var inputSt = { padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", width: "100%", boxSizing: "border-box" };
+      return h("div", null, fab,
+        h("div", { onClick: function() { setOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 200, display: "flex", justifyContent: "center", paddingTop: "5vh", padding: 16 } },
+          h("div", { onClick: function(e) { e.stopPropagation(); }, style: { background: "rgba(28,30,42,0.98)", borderRadius: 12, maxWidth: 560, width: "100%", maxHeight: "88vh", overflow: "auto", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 24px 60px rgba(0,0,0,0.6)" } },
+            // Header + tabs
+            h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)" } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                h(Icon, { name: "life-buoy", size: 20, color: "#fbbf24" }),
+                h("span", { style: { fontSize: 15, fontWeight: 800, color: "#fafafa" } }, "Support")
+              ),
+              h("button", { onClick: function() { setOpen(false); }, style: { background: "transparent", border: "none", color: "#a1a1aa", cursor: "pointer", fontSize: 20, padding: 0 } }, "×")
+            ),
+            h("div", { style: { display: "flex", gap: 4, padding: "8px 12px 0", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
+              ["new", "mine"].map(function(k) {
+                var active = tab === k;
+                return h("button", { key: k, onClick: function() { setTab(k); },
+                  style: { padding: "8px 14px", background: active ? "rgba(251,191,36,0.15)" : "transparent", border: "none", color: active ? "#fde68a" : "#a1a1aa", borderBottom: active ? "2px solid #fbbf24" : "2px solid transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, borderRadius: "6px 6px 0 0" }
+                }, k === "new" ? "Nouveau ticket" : "Mes tickets");
+              })
+            ),
+            // Contenu
+            tab === "new" ? h("div", { style: { padding: 20, display: "flex", flexDirection: "column", gap: 12 } },
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Type"),
+                h("div", { style: { display: "flex", gap: 8 } },
+                  ["bug", "demande", "question"].map(function(t) {
+                    var active = tType === t;
+                    return h("button", { key: t, onClick: function() { setType(t); },
+                      style: { flex: 1, padding: "10px 8px", background: active ? "rgba(251,191,36,0.15)" : "rgba(255,255,255,0.04)", border: "1px solid " + (active ? "rgba(251,191,36,0.50)" : "rgba(255,255,255,0.08)"), borderRadius: 8, color: active ? "#fde68a" : "#a1a1aa", cursor: "pointer", fontSize: 12, fontWeight: 700, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }
+                    }, h(Icon, { name: TYPE_ICON[t], size: 16, color: active ? "#fbbf24" : "#71717a" }), TYPE_LABEL[t]);
+                  })
+                )
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Titre"),
+                h("input", { style: inputSt, value: title, onChange: function(e) { setTitle(e.target.value); }, placeholder: "Ex: Bouton supprimer ne fonctionne pas" })
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Description"),
+                h("textarea", { style: Object.assign({}, inputSt, { minHeight: 100, resize: "vertical" }), value: desc, onChange: function(e) { setDesc(e.target.value); }, placeholder: "Decris ce qui se passe, ce que tu essayais de faire, et le comportement attendu..." })
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Capture d'ecran (optionnel)"),
+                h("input", { type: "file", accept: "image/*", onChange: function(e) { setFile(e.target.files && e.target.files[0] || null); }, style: { fontSize: 12, color: "#cbd5e1" } }),
+                file ? h("div", { style: { fontSize: 11, color: "#86efac", marginTop: 4 } }, "✓ " + file.name) : null
+              ),
+              h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 } },
+                h(Button, { variant: "secondary", onClick: function() { setOpen(false); } }, "Annuler"),
+                h(Button, { onClick: submit, disabled: saving || !title.trim() }, saving ? "Envoi..." : "Envoyer")
+              )
+            ) : null,
+            tab === "mine" ? h("div", { style: { padding: 20 } },
+              loading ? h("div", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Chargement...") :
+              mine.length === 0 ? h("div", { style: { textAlign: "center", color: "#71717a", padding: 20, fontSize: 13 } }, "Aucun ticket. Cree ton premier via l'onglet Nouveau.") :
+              h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+                mine.map(function(t) {
+                  var col = STATUS_COLOR[t.status] || "#a1a1aa";
+                  return h("div", { key: t.id, style: { padding: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, borderLeft: "3px solid " + col } },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4, gap: 8 } },
+                      h("span", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa" } }, t.title),
+                      h("span", { style: { fontSize: 10, color: col, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, whiteSpace: "nowrap" } }, STATUS_LABEL[t.status] || t.status)
+                    ),
+                    h("div", { style: { fontSize: 11, color: "#71717a" } }, TYPE_LABEL[t.type] || t.type, " · ", new Date(t.created_at).toLocaleDateString("fr-FR")),
+                    t.description ? h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 6, whiteSpace: "pre-wrap" } }, t.description) : null,
+                    t.admin_response ? h("div", { style: { marginTop: 8, padding: 8, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.20)", borderRadius: 6, fontSize: 12, color: "#a7f3d0" } },
+                      h("div", { style: { fontSize: 10, color: "#86efac", fontWeight: 700, marginBottom: 4 } }, "REPONSE ADMIN"),
+                      h("span", { style: { whiteSpace: "pre-wrap" } }, t.admin_response)
+                    ) : null
+                  );
+                })
+              )
+            ) : null
+          )
+        )
+      );
+    }
+
+    // ─── EcranTickets : vue admin (seul tom.picot@gmail.com y a acces) ──
+    function EcranTickets() {
+      var _list = useState([]); var list = _list[0]; var setList = _list[1];
+      var _loading = useState(true); var loading = _loading[0]; var setLoading = _loading[1];
+      var _appF = useState("all"); var appF = _appF[0]; var setAppF = _appF[1];
+      var _statutF = useState("all"); var statutF = _statutF[0]; var setStatutF = _statutF[1];
+      var _typeF = useState("all"); var typeF = _typeF[0]; var setTypeF = _typeF[1];
+      var _selected = useState(null); var selected = _selected[0]; var setSelected = _selected[1];
+      var _response = useState(""); var response = _response[0]; var setResponse = _response[1];
+      var _newStatus = useState("ouvert"); var newStatus = _newStatus[0]; var setNewStatus = _newStatus[1];
+      function reload() {
+        setLoading(true);
+        supabase.from("tickets").select("*").order("created_at", { ascending: false }).limit(500).then(function(res) {
+          if (!res.error) setList(res.data || []);
+          setLoading(false);
+        });
+      }
+      React.useEffect(function() { reload(); }, []);
+      React.useEffect(function() {
+        if (selected) { setResponse(selected.admin_response || ""); setNewStatus(selected.status || "ouvert"); }
+      }, [selected]);
+      var filtered = list.filter(function(t) {
+        if (appF !== "all" && t.app_source !== appF) return false;
+        if (statutF !== "all" && t.status !== statutF) return false;
+        if (typeF !== "all" && t.type !== typeF) return false;
+        return true;
+      });
+      var STATUS_LABEL = { ouvert: "Ouvert", en_cours: "En cours", resolu: "Resolu", ferme: "Ferme" };
+      var STATUS_COLOR = { ouvert: "#fbbf24", en_cours: "#60a5fa", resolu: "#22c55e", ferme: "#71717a" };
+      var TYPE_LABEL = { bug: "Bug", demande: "Demande", question: "Question" };
+      var APP_LABEL = { admin: "Admin", employes: "Employes", compta: "Compta" };
+      var selSt = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 12, fontFamily: "inherit", cursor: "pointer" };
+      async function saveResponse() {
+        if (!selected) return;
+        var payload = { status: newStatus, admin_response: response.trim() || null };
+        if (response.trim()) payload.admin_responded_at = new Date().toISOString();
+        if (newStatus === "resolu" || newStatus === "ferme") payload.resolved_at = new Date().toISOString();
+        var res = await supabase.from("tickets").update(payload).eq("id", selected.id).select().single();
+        if (res.error) { alert("Erreur : " + res.error.message); return; }
+        setList(function(prev) { return prev.map(function(t) { return t.id === selected.id ? res.data : t; }); });
+        setSelected(res.data);
+      }
+      async function deleteTicket(t) {
+        if (!confirm("Supprimer definitivement ce ticket ?")) return;
+        var res = await supabase.from("tickets").delete().eq("id", t.id);
+        if (res.error) { alert("Erreur : " + res.error.message); return; }
+        setList(function(prev) { return prev.filter(function(x) { return x.id !== t.id; }); });
+        if (selected && selected.id === t.id) setSelected(null);
+      }
+      return h("div", null,
+        h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 } },
+          h("div", null,
+            h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fafafa", display: "flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: "life-buoy", size: 18, color: "#fbbf24" }), "Tickets support"
+            ),
+            h("div", { style: { fontSize: 12, color: "#a1a1aa", marginTop: 2 } }, filtered.length + " ticket(s) affiche(s) sur " + list.length + " au total")
+          ),
+          h("button", { onClick: reload, style: { padding: "6px 12px", background: "rgba(99,102,241,0.10)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 6, color: "#c7d2fe", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "↻ Actualiser")
+        ),
+        // Filtres
+        h("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "App"),
+          h("select", { value: appF, onChange: function(e) { setAppF(e.target.value); }, style: selSt },
+            h("option", { value: "all" }, "Toutes"),
+            h("option", { value: "admin" }, "Admin"),
+            h("option", { value: "employes" }, "Employes"),
+            h("option", { value: "compta" }, "Compta")
+          ),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Statut"),
+          h("select", { value: statutF, onChange: function(e) { setStatutF(e.target.value); }, style: selSt },
+            h("option", { value: "all" }, "Tous"),
+            Object.keys(STATUS_LABEL).map(function(k) { return h("option", { key: k, value: k }, STATUS_LABEL[k]); })
+          ),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Type"),
+          h("select", { value: typeF, onChange: function(e) { setTypeF(e.target.value); }, style: selSt },
+            h("option", { value: "all" }, "Tous"),
+            Object.keys(TYPE_LABEL).map(function(k) { return h("option", { key: k, value: k }, TYPE_LABEL[k]); })
+          )
+        ),
+        // Liste
+        loading ? h("div", { style: { textAlign: "center", color: "#71717a", padding: 40 } }, "Chargement...") :
+        filtered.length === 0 ? h("div", { style: { textAlign: "center", color: "#71717a", padding: 40 } }, "Aucun ticket.") :
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+          filtered.map(function(t) {
+            var col = STATUS_COLOR[t.status] || "#a1a1aa";
+            return h("div", { key: t.id, onClick: function() { setSelected(t); }, style: { display: "grid", gridTemplateColumns: "auto 1fr auto auto auto", gap: 12, padding: "10px 14px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderLeft: "3px solid " + col, borderRadius: 8, cursor: "pointer", alignItems: "center" } },
+              h("span", { style: { fontSize: 11, color: "#a1a1aa", fontFamily: "monospace", whiteSpace: "nowrap" } }, new Date(t.created_at).toLocaleDateString("fr-FR")),
+              h("div", { style: { minWidth: 0 } },
+                h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title),
+                h("div", { style: { fontSize: 11, color: "#71717a" } }, t.user_email)
+              ),
+              h("span", { style: { fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.04)", color: "#a1a1aa", fontWeight: 700 } }, APP_LABEL[t.app_source] || t.app_source),
+              h("span", { style: { fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.04)", color: "#a1a1aa", fontWeight: 700 } }, TYPE_LABEL[t.type] || t.type),
+              h("span", { style: { fontSize: 10, color: col, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, whiteSpace: "nowrap" } }, STATUS_LABEL[t.status] || t.status)
+            );
+          })
+        ),
+        // Modal detail + reponse
+        selected ? h(Modal, { title: "Ticket #" + selected.id + " - " + selected.title, onClose: function() { setSelected(null); }, size: 700 },
+          h("div", null,
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 12 } },
+              h("span", null, selected.user_email), " · ",
+              h("span", null, APP_LABEL[selected.app_source] || selected.app_source), " · ",
+              h("span", null, TYPE_LABEL[selected.type] || selected.type), " · ",
+              h("span", null, new Date(selected.created_at).toLocaleString("fr-FR"))
+            ),
+            selected.description ? h("div", { style: { padding: 12, background: "rgba(255,255,255,0.04)", borderRadius: 8, fontSize: 13, color: "#cbd5e1", whiteSpace: "pre-wrap", marginBottom: 12 } }, selected.description) : null,
+            (selected.screenshots || []).length > 0 ? h("div", { style: { marginBottom: 12 } },
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Captures"),
+              h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } },
+                (selected.screenshots || []).map(function(url, i) { return h("a", { key: i, href: url, target: "_blank", rel: "noopener" }, h("img", { src: url, style: { maxHeight: 140, borderRadius: 6, border: "1px solid rgba(255,255,255,0.10)" } })); })
+              )
+            ) : null,
+            h("div", { style: { marginTop: 14 } },
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Statut"),
+              h("select", { value: newStatus, onChange: function(e) { setNewStatus(e.target.value); }, style: { padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", width: "100%" } },
+                Object.keys(STATUS_LABEL).map(function(k) { return h("option", { key: k, value: k }, STATUS_LABEL[k]); })
+              )
+            ),
+            h("div", { style: { marginTop: 12 } },
+              h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, marginBottom: 6 } }, "Reponse (visible par l'utilisateur)"),
+              h("textarea", { value: response, onChange: function(e) { setResponse(e.target.value); }, style: { padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", width: "100%", minHeight: 80, resize: "vertical", boxSizing: "border-box" }, placeholder: "Reponse..." })
+            ),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "space-between", marginTop: 14 } },
+              h(Button, { variant: "danger", onClick: function() { deleteTicket(selected); } }, "Supprimer"),
+              h("div", { style: { display: "flex", gap: 10 } },
+                h(Button, { variant: "secondary", onClick: function() { setSelected(null); } }, "Fermer"),
+                h(Button, { onClick: saveResponse }, "Enregistrer")
+              )
+            )
+          )
+        ) : null
       );
     }
 
@@ -27420,6 +27713,8 @@
         h(RechercheGlobale, { onNavigate: navigate }),
         // FAB envoi rapide facture vers compta (bouton flottant + modal)
         h(QuickEnvoiFactureFab, null),
+        // FAB support : signaler un bug / faire une demande (visible pour tout user connecte)
+        h(TicketSupportFab, null),
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
