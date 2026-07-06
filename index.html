@@ -17178,34 +17178,103 @@
       });
       var daysElapsed = Math.max(1, Math.floor((now - yearStart) / 86400000) + 1);
 
-      // ── CA annuel projete : prend en compte les chantiers planifies (en cours + a venir) ──
-      // Pour chaque chantier non termine/annule, on calcule la part de son CA total qui tombe
-      // dans la periode restante de l'annee en cours (proratisee sur sa duree totale).
-      // Si aucun planning -> fallback sur extrapolation lineaire (comportement historique).
+      // ── CA annuel projete MACHINE-AWARE : projection jour par jour respectant ──
+      //     le planning des machines (chantier_equipements), la meteo prevue,
+      //     et le taux d'absence historique du chantier (pannes/intemperies/
+      //     maintenances/conges declares dans les saisies).
+      // Fallback vers ratio lineaire simple si pas de metrage recent (chantier
+      //     n'a jamais tourne -> pas de vitesse a extrapoler).
       var yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
       var caPrevChantiers = 0;
       var metragesPrevChantiers = 0;
       var nbChantiersPlanifies = 0;
+      var todayMsProj = now.getTime();
+      var yearEndMsProj = yearEnd.getTime();
+      var metByMkAnnuel = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
+      var EXCLUDED_TYPES_PROJ = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
       (dbChantiers || []).forEach(function(c) {
         if (c.statut === "Termine" || c.statut === "Annule") return;
         var metrage = parseFloat(c.metrage) || 0;
         var prix = parseFloat(c.prixMetre) || 0;
         if (metrage <= 0 || prix <= 0) return;
-        var dDeb = c.dateDebut ? new Date(c.dateDebut) : null;
-        var dFin = c.dateFin ? new Date(c.dateFin) : null;
+        var dDeb = c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00") : null;
+        var dFin = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
         if (!dDeb || !dFin || isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return;
-        if (dFin < now) return; // chantier deja fini en pratique
-        if (dDeb > yearEnd) return; // chantier demarrant apres fin annee
-        var caTotal = metrage * prix;
-        var dureeChantier = Math.max(1, (dFin - dDeb) / 86400000);
-        // Periode restante du chantier dans l'annee : entre max(today, dateDebut) et min(dateFin, yearEnd)
-        var restantStart = dDeb > now ? dDeb : now;
-        var restantEnd = dFin > yearEnd ? yearEnd : dFin;
-        if (restantEnd <= restantStart) return;
-        var dureeRestante = (restantEnd - restantStart) / 86400000;
-        var ratio = dureeRestante / dureeChantier;
-        caPrevChantiers += caTotal * ratio;
-        metragesPrevChantiers += metrage * ratio;
+        if (dFin.getTime() < todayMsProj) return; // chantier deja fini en pratique
+        if (dDeb.getTime() > yearEndMsProj) return; // chantier demarrant apres fin annee
+        // Realise cumule via saisies (source de verite du metrage journalier)
+        var realiseTotal = 0;
+        var saisChant = (ctx.dbSaisies || {})[c.id] || {};
+        Object.keys(saisChant).forEach(function(d) {
+          var vv = saisChant[d];
+          var mm = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
+          if (mm > 0) realiseTotal += mm;
+        });
+        var restantContrat = Math.max(0, metrage - realiseTotal);
+        if (restantContrat <= 0) return;
+        // Vitesse quotidienne du chantier (14 derniers jours productifs Lun-Jeu)
+        var vitesseQuot = computeMetragePerJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
+        if (vitesseQuot <= 0) {
+          // Fallback ratio lineaire simple : pas de metrage historique
+          var caTotal = metrage * prix;
+          var dureeChantier = Math.max(1, (dFin.getTime() - dDeb.getTime()) / 86400000);
+          var restantStart = dDeb.getTime() > todayMsProj ? dDeb.getTime() : todayMsProj;
+          var restantEnd = dFin.getTime() > yearEndMsProj ? yearEndMsProj : dFin.getTime();
+          if (restantEnd <= restantStart) return;
+          var dureeRestante = (restantEnd - restantStart) / 86400000;
+          var ratio = dureeRestante / dureeChantier;
+          var metrProj = Math.min(metrage * ratio, restantContrat);
+          caPrevChantiers += metrProj * prix;
+          metragesPrevChantiers += metrProj;
+          nbChantiersPlanifies++;
+          return;
+        }
+        // Taux d'absence historique du chantier (pannes + intemperies + maintenances + conges...)
+        var joursOuvresPasses = 0, joursAbsentsPasses = 0;
+        var dCurP = new Date(dDeb.getTime());
+        var safeP = 0;
+        var todayDay = new Date(todayMsProj); todayDay.setHours(0, 0, 0, 0);
+        while (dCurP.getTime() < todayDay.getTime() && safeP < 800) {
+          var dowP = dCurP.getDay();
+          if (dowP >= 1 && dowP <= 4) {
+            joursOuvresPasses++;
+            var isoP = dCurP.getFullYear() + "-" + String(dCurP.getMonth() + 1).padStart(2, "0") + "-" + String(dCurP.getDate()).padStart(2, "0");
+            var sP = saisChant[isoP];
+            if (sP) {
+              var tP = (typeof sP === "object" && sP !== null) ? (sP.typeJour || sP.type || "") : "";
+              if (EXCLUDED_TYPES_PROJ[tP]) joursAbsentsPasses++;
+            }
+          }
+          dCurP.setDate(dCurP.getDate() + 1);
+          safeP++;
+        }
+        var tauxAbsenceCh = joursOuvresPasses > 0 ? (joursAbsentsPasses / joursOuvresPasses) : 0;
+        var coefDispoCh = Math.max(0, 1 - tauxAbsenceCh);
+        // Boucle jour par jour Lun-Jeu de today a min(dateFin, yearEnd)
+        var effectiveEnd = Math.min(dFin.getTime(), yearEndMsProj);
+        var meteoMapCh = (meteoByChantierStat || {})[c.id] || {};
+        var totalMetrageProj = 0;
+        var cursor = new Date(todayMsProj);
+        var safeF = 0;
+        while (cursor.getTime() <= effectiveEnd && safeF < 500) {
+          var dow = cursor.getDay();
+          if (dow >= 1 && dow <= 4) {
+            var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
+            // Baseline machine-aware : nb machines planifiees + adaptation
+            var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkAnnuel, vitesseQuot, todayMsProj);
+            var baseMet = prevF.metrage || vitesseQuot;
+            // Impact meteo
+            var mDay = meteoMapCh[isoF];
+            var wFactor = meteoMetrageFactor(mDay);
+            var dayMet = baseMet * wFactor * coefDispoCh;
+            if (dayMet > 0) totalMetrageProj += dayMet;
+          }
+          cursor.setDate(cursor.getDate() + 1);
+          safeF++;
+        }
+        var metrageProj = Math.min(totalMetrageProj, restantContrat);
+        caPrevChantiers += metrageProj * prix;
+        metragesPrevChantiers += metrageProj;
         nbChantiersPlanifies++;
       });
 
