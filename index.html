@@ -1898,8 +1898,20 @@
       var _alertesCount = _alertesSais.count || 0;
       var _alertesJours = (_alertesSais.list || []).length;
 
+      // Banniere alerte : rapports en demande de modification par le client
+      var _rapportsModif = (ctx.dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; });
+      var _rapportsModifCount = _rapportsModif.length;
+
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "home", size: 20 }, "Tableau de bord"), subtitle: "Vue d'ensemble de la maintenance" }),
+        _rapportsModifCount > 0 ? h("div", { onClick: function() { onNavigate("soumissions"); }, style: { cursor: "pointer", marginBottom: 18, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(249, 115, 22, 0.05))", border: "1px solid rgba(249, 115, 22, 0.45)", display: "flex", alignItems: "center", gap: 12 } },
+          h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(249, 115, 22, 0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "edit-3", size: 18, color: "#fdba74" })),
+          h("div", { style: { flex: 1, minWidth: 0 } },
+            h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa" } }, _rapportsModifCount + " rapport" + (_rapportsModifCount > 1 ? "s" : "") + " avec demande" + (_rapportsModifCount > 1 ? "s" : "") + " de modification client"),
+            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, "Le client a demande des changements sur le detail des sondages avant de signer. A reviser dans Soumissions > Rapports.")
+          ),
+          h("div", { style: { fontSize: 12, fontWeight: 600, color: "#fdba74" } }, "Voir le detail >")
+        ) : null,
         _alertesCount > 0 ? h("div", { onClick: function() { onNavigate("alertes-saisies"); }, style: { cursor: "pointer", marginBottom: 18, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(244, 63, 94, 0.15), rgba(244, 63, 94, 0.05))", border: "1px solid rgba(244, 63, 94, 0.35)", display: "flex", alignItems: "center", gap: 12 } },
           h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(244, 63, 94, 0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "alert-triangle", size: 18, color: "#fb7185" })),
           h("div", { style: { flex: 1, minWidth: 0 } },
@@ -19632,7 +19644,7 @@
         var CONGES_COLS  = "id,demandeur_id,date_demande,lieu,classification,type_conge,nombre_jours,date_debut,date_reprise,raison,statut,created_at";
         var CMDS_COLS    = "id,demandeur_id,date_demande,tel,chantier_id,machine_lieu,lignes,statut,created_at";
         var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,fait_par_employe,date_fait,confirme_at,created_at";
-        var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,remarques_client,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at";
+        var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,sondages_originaux,activites,remarques,remarques_client,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at";
 
         Promise.all([
           supabase.from("releves_heures").select(RELEVES_COLS).order("created_at", { ascending: false }),
@@ -20565,6 +20577,83 @@
                       totalH != null ? h("div", { style: { color: "#a78bfa", fontWeight: 700 } }, totalH.toFixed(1) + " h") : null
                     );
                   })
+                )
+              ) : null,
+              // Diff avant/apres si le client a demande une modification.
+              // r.sondages_originaux = snapshot des sondages soumis par le sondeur, avant modif.
+              (r.sondages_originaux && Array.isArray(r.sondages_originaux) && r.sondages_originaux.length > 0) ? h("div", { style: { marginTop: 12 } },
+                h("div", { style: { padding: 14, background: "rgba(249,115,22,0.10)", border: "2px solid rgba(249,115,22,0.45)", borderRadius: 10 } },
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" } },
+                    h(Icon, { name: "alert-triangle", size: 16, color: "#fdba74" }),
+                    h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fed7aa", letterSpacing: 0.4, textTransform: "uppercase" } }, "Modifications demandees par le client"),
+                    r.client_signataire_nom ? h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + r.client_signataire_nom) : null
+                  ),
+                  h("div", { style: { fontSize: 12, color: "#fed7aa", marginBottom: 12 } }, "Valeur initiale (sondeur) en rouge barre / Valeur demandee (client) en vert"),
+                  (function() {
+                    var orig = r.sondages_originaux;
+                    var nouv = sondages;
+                    var maxLen = Math.max(orig.length, nouv.length);
+                    var rows = [];
+                    var changesCount = 0;
+                    for (var idx = 0; idx < maxLen; idx++) {
+                      var o = orig[idx] || null;
+                      var n = nouv[idx] || null;
+                      var fields = ["num", "type", "de", "a"];
+                      var rowChanged = false;
+                      var cells = [];
+                      for (var fi = 0; fi < fields.length; fi++) {
+                        var f = fields[fi];
+                        var ov = o ? o[f] : null;
+                        var nv = n ? n[f] : null;
+                        var ovs = (ov == null || ov === "") ? "" : String(ov);
+                        var nvs = (nv == null || nv === "") ? "" : String(nv);
+                        var changed = ovs !== nvs;
+                        if (changed) rowChanged = true;
+                        cells.push(h("td", { key: f, style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12 } },
+                          changed ? h("span", null,
+                            ovs !== "" ? h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, ovs) : null,
+                            nvs !== "" ? h("span", { style: { color: "#86efac", fontWeight: 700 } }, nvs) : h("span", { style: { color: "#a1a1aa", fontStyle: "italic" } }, "vide")
+                          ) : h("span", { style: { color: "#e4e4e7" } }, nvs === "" ? "-" : nvs)
+                        ));
+                      }
+                      var oTot = o ? Math.max(0, (parseFloat(o.a) || 0) - (parseFloat(o.de) || 0)) : 0;
+                      var nTot = n ? Math.max(0, (parseFloat(n.a) || 0) - (parseFloat(n.de) || 0)) : 0;
+                      var totChanged = Math.abs(oTot - nTot) > 0.001;
+                      cells.push(h("td", { key: "tot", style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, textAlign: "right", fontWeight: 700 } },
+                        totChanged ? h("span", null,
+                          h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, oTot.toFixed(1) + " m"),
+                          h("span", { style: { color: "#86efac" } }, nTot.toFixed(1) + " m")
+                        ) : h("span", { style: { color: "#e4e4e7" } }, nTot.toFixed(1) + " m")
+                      ));
+                      if (rowChanged) changesCount++;
+                      rows.push(h("tr", { key: idx, style: { background: rowChanged ? "rgba(249,115,22,0.08)" : "transparent" } }, cells));
+                    }
+                    var oldTotal = orig.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
+                    var newTotal = nouv.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
+                    var deltaTotal = newTotal - oldTotal;
+                    return h("div", null,
+                      h("div", { style: { overflowX: "auto", borderRadius: 8, background: "rgba(0,0,0,0.25)" } },
+                        h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+                          h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.30)" } },
+                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "No"),
+                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Type"),
+                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "De (m)"),
+                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "A (m)"),
+                            h("th", { style: { padding: "8px 10px", textAlign: "right", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Total")
+                          )),
+                          h("tbody", null, rows)
+                        )
+                      ),
+                      h("div", { style: { marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(0,0,0,0.20)", borderRadius: 6, fontSize: 12, fontWeight: 700, flexWrap: "wrap", gap: 8 } },
+                        h("div", { style: { color: "#fed7aa" } }, changesCount + " ligne" + (changesCount > 1 ? "s" : "") + " modifiee" + (changesCount > 1 ? "s" : "") + " sur " + maxLen),
+                        h("div", null,
+                          h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 8 } }, "Initial : " + oldTotal.toFixed(1) + " m"),
+                          h("span", { style: { color: "#86efac" } }, "Demande : " + newTotal.toFixed(1) + " m"),
+                          Math.abs(deltaTotal) > 0.001 ? h("span", { style: { marginLeft: 8, color: deltaTotal > 0 ? "#86efac" : "#fca5a5" } }, "(" + (deltaTotal > 0 ? "+" : "") + deltaTotal.toFixed(1) + " m)") : null
+                        )
+                      )
+                    );
+                  })()
                 )
               ) : null,
               sondages.length > 0 ? h("div", null,
@@ -24839,7 +24928,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -24919,7 +25008,10 @@
               },
                 h(Icon, { name: p.lucide, size: 16, color: isActive ? "#a5b4fc" : "#71717a" }), p.label,
                 p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: pendingCount + " validation(s) en attente" }, pendingCount) : null,
-                p.key === "soumissions" && soumissionsPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
+                p.key === "soumissions" && (soumissionsPending > 0 || rapportsModifPending > 0) ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4 } },
+                  soumissionsPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
+                  rapportsModifPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f97316, #ea580c)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(249, 115, 22, 0.5)" }, title: rapportsModifPending + " demande(s) de modification rapport client" }, rapportsModifPending) : null
+                ) : null,
                 p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / heures) depuis le 1er juin" }, alertesSaisiesPending) : null,
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
@@ -27789,7 +27881,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
