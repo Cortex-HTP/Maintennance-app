@@ -20048,6 +20048,53 @@
           }
         });
       };
+      // Valider les modifications demandees par le client :
+      // le rapport retourne en "envoye" pour permettre au client de re-signer via
+      // le lien qu'il a deja recu (le token n'est pas consomme en mode modification).
+      // On garde sondages_originaux pour l'historique du diff.
+      var acceptClientMods = function(r) {
+        if (!confirm("Valider les modifications demandees par le client ?\n\n" +
+          "Le rapport passera en 'envoye au client' et il pourra re-signer via le lien qu'il a deja recu.\n" +
+          "Le diff avant/apres reste archive.")) return;
+        updateStatut("rapports_forage", r.id, "envoye", function(updated) {
+          setRaps(raps.map(function(x) { return x.id === r.id ? updated : x; }));
+          if (ctx.setDbRapportsForage) {
+            var cur = ctx.dbRapportsForage || [];
+            ctx.setDbRapportsForage(cur.map(function(x) { return x.id === r.id ? updated : x; }));
+          }
+        });
+      };
+      // Refuser les modifications : restaure les sondages originaux (du sondeur),
+      // efface le snapshot + remarques client. Le rapport repart en "envoye".
+      var rejectClientMods = function(r) {
+        if (!Array.isArray(r.sondages_originaux) || r.sondages_originaux.length === 0) {
+          alert("Aucun snapshot original disponible pour ce rapport.");
+          return;
+        }
+        if (!confirm("Refuser les modifications du client et restaurer les sondages du sondeur ?\n\n" +
+          "Les valeurs initiales soumises par le sondeur seront restaurees.\n" +
+          "Le rapport repartira en 'envoye au client' pour signature.")) return;
+        var orig = r.sondages_originaux;
+        var newTotal = orig.reduce(function(s, x) {
+          return s + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0));
+        }, 0);
+        var payload = {
+          sondages: orig,
+          sondages_originaux: null,
+          total_metres: Math.round(newTotal * 10) / 10,
+          remarques_client: null,
+          statut: "envoye"
+        };
+        supabase.from("rapports_forage").update(payload).eq("id", r.id).select().single().then(function(res) {
+          if (res.error) { alert("Erreur restauration : " + res.error.message); return; }
+          setRaps(raps.map(function(x) { return x.id === r.id ? res.data : x; }));
+          if (ctx.setDbRapportsForage) {
+            var cur = ctx.dbRapportsForage || [];
+            ctx.setDbRapportsForage(cur.map(function(x) { return x.id === r.id ? res.data : x; }));
+          }
+          if (showToast) showToast("Sondages originaux restaures", "success");
+        });
+      };
       // Suppression definitive d'un rapport (utile pour purger les doublons d'import)
       var deleteRapport = function(r) {
         var libelle = "Rapport #" + r.id + (r.sondeuse_code ? " " + r.sondeuse_code : "") + (r.date_rapport ? " du " + fmtDate(r.date_rapport) : "");
@@ -20836,7 +20883,9 @@
                 ) : null
               ),
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
-                r.statut !== "valide_admin" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
+                r.statut === "demande_modification" ? actionBtn({ label: "Valider les modifs client", icon: "check-circle", color: "green", onClick: function() { acceptClientMods(r); } }) : null,
+                r.statut === "demande_modification" && Array.isArray(r.sondages_originaux) && r.sondages_originaux.length > 0 ? actionBtn({ label: "Refuser et restaurer l'original", icon: "rotate-ccw", color: "red", onClick: function() { rejectClientMods(r); } }) : null,
+                r.statut !== "valide_admin" && r.statut !== "demande_modification" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
                 r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
                 actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingRapportId(r.id); } }),
                 canEditSoumissions ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteRapport(r); } }) : null
