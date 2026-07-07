@@ -10371,21 +10371,56 @@
       return realPast + futureWork;
     }
 
+    // Calcule le nb moyen de machines distinctes actives par jour sur les 14
+    // derniers jours productifs (Lun-Jeu avec metrage > 0) pour un chantier.
+    // Sert a normaliser la vitesse chantier (m/j total) en vitesse PAR MACHINE.
+    function computeAvgMachinesHistChantier(chantier, dbRelevesJourn, refDate) {
+      if (!chantier) return 1;
+      var today = refDate ? new Date(refDate.getTime()) : new Date();
+      today.setHours(0, 0, 0, 0);
+      var machByDate = {};
+      (dbRelevesJourn || []).forEach(function(r) {
+        if (!r || String(r.chantierId) !== String(chantier.id) || !r.dateReleve) return;
+        var d = String(r.dateReleve).substring(0, 10);
+        var mk = String(r.equipementId || r.sondeuseCode || "_no").toUpperCase().trim();
+        if (mk === "_NO") return;
+        var v = parseFloat(r.metrage) || 0;
+        if (v <= 0) return;
+        if (!machByDate[d]) machByDate[d] = {};
+        machByDate[d][mk] = 1;
+      });
+      var cur = new Date(today.getTime()); var safe = 0;
+      var sumMach = 0, nbJours = 0;
+      while (nbJours < 14 && safe < 100) {
+        cur.setDate(cur.getDate() - 1);
+        var dow = cur.getDay();
+        if (dow >= 1 && dow <= 4) {
+          var iso = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+          var m = machByDate[iso];
+          if (m) {
+            sumMach += Object.keys(m).length;
+            nbJours++;
+          }
+        }
+        safe++;
+      }
+      return nbJours > 0 ? Math.max(1, sumMach / nbJours) : 1;
+    }
+
     // Construit le metrage previsionnel d'un chantier sur une date (avant facteur meteo)
     // en respectant la logique d'adaptation machine. Retourne aussi des flags pour l'UI.
     //
     // Logique metier (validee user) :
-    //   - Si la nouvelle machine a < 3 jours REELS de metrage sur le chantier :
-    //         baseline = moyenne ANCIENNE machine sur ce chantier * 0.70 (adaptation)
-    //   - Si 3 a 6 jours REELS :
-    //         baseline = moyenne ANCIENNE machine sur ce chantier (sans adaptation)
-    //   - A partir de 7 jours REELS :
-    //         baseline = moyenne PROPRE de la nouvelle machine (sur ce chantier, fallback global)
-    //
-    // Note : "jours reels" = jours ouvres avant la date courante ou la machine a produit
-    //        du metrage saisi. Si la nouvelle machine ne travaille pas (intemperies), le
-    //        compteur n'avance pas -> on reste sur le baseline ancienne machine plus longtemps.
-    function previsionnelBaseChantierDay(chantierId, dateStr, dbChantierEquipements, equipementsList, metByMk, vitesseFallbackChantier, todayMs) {
+    //   - Si avgMachinesHist est fourni : baseline = (vitesseChantier / avgMachinesHist) * nbActivesLeJour.
+    //     Corrige le sur-forecast quand le chantier tournait avec plus de machines dans le passe
+    //     que ce qui est planifie pour le jour futur (ex : historique 2 machines a 400 m/j =>
+    //     vitesse/machine = 200 m/j ; futur planifie 1 machine => prev = 200 m/j au lieu de 400).
+    //   - Si non fourni : fallback ancien comportement (baseline = vitesseChantier), pour retro-compat.
+    //   - Adaptation machine remplaçante :
+    //       < 3 jours REELS  : reduction -50% de la part en adaptation
+    //       3 a 6 jours      : moyenne ancienne machine (pas de reduction)
+    //       >= 7 jours       : moyenne propre nouvelle machine
+    function previsionnelBaseChantierDay(chantierId, dateStr, dbChantierEquipements, equipementsList, metByMk, vitesseFallbackChantier, todayMs, avgMachinesHist) {
       var iso = String(dateStr).substring(0, 10);
       var d = new Date(iso + "T00:00:00").getTime();
       if (isNaN(d)) return { metrage: 0, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
@@ -10405,16 +10440,21 @@
         if (fin !== null && d > fin) return false;
         return true;
       });
+      var vitChant = vitesseFallbackChantier || 0;
+      var useAvgMachines = (avgMachinesHist != null && avgMachinesHist > 0);
       if (actives.length === 0) {
-        return { metrage: vitesseFallbackChantier || 0, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
+        // Pas de machine planifiee ce jour : en mode "vitesse par machine", on retourne 0.
+        // En mode legacy (avgMachinesHist non fourni), on garde le fallback historique.
+        return { metrage: useAvgMachines ? 0 : vitChant, anyAdapt: false, anyOldBaseline: false, anyOwn: false, machines: [] };
       }
-      // ─ Approche simplifiee ─
-      // Base = moyenne CHANTIER (donnees recentes 14j) qui matche la realite metier.
-      // Reduction -30% PROPORTIONNELLE a la part de machines en adaptation.
-      // Apres 7 jours reels de la machine remplacante : retour a 100% (la moyenne
-      // chantier integre naturellement la nouvelle perf via la fenetre glissante).
-      var baseMetrage = vitesseFallbackChantier || 0;
+      // ─ Baseline realiste ─
+      // Mode "vitesse par machine" (recommande) : la vitesse chantier est divisee par le
+      // nb moyen de machines historiques, puis multipliee par le nb de machines effectivement
+      // planifiees ce jour. Corrige le sur-forecast quand le chantier tournait avec plus
+      // de machines dans le passe que ce qui est planifie pour le jour futur.
+      // Mode legacy : baseline = vitesse chantier brute (buggé si le nb de machines change).
       var nbActives = Math.max(1, actives.length);
+      var baseMetrage = useAvgMachines ? (vitChant / avgMachinesHist) * nbActives : vitChant;
       var anyAdapt = false, anyOldBaseline = false;
       var adaptingFraction = 0;
       var machines = [];
@@ -11125,8 +11165,10 @@
         // maintenance / conges declares dans les saisies). Pre-calcule une fois par render
         // pour que le previsionnel jour par jour soit realiste.
         var coefDispoParChantier = {};
+        var avgMachinesParChantier = {};
         activeChantiers.forEach(function(c) {
           coefDispoParChantier[c.id] = coefDispoChantierHist(c, ctxAv.dbSaisies, bcToday.getTime()).coef;
+          avgMachinesParChantier[c.id] = computeAvgMachinesHistChantier(c, ctxAv.dbRelevesJourn, bcToday);
         });
         // Index per-machine pour le previsionnel avec adaptation
         var metByMkBC = buildMetByMachine(ctxAv.dbRelevesJourn, ctxAv.equipements);
@@ -11156,9 +11198,9 @@
             // le deficit (target > reel) sur les jours passes ainsi que la projection future.
             if (isWorkDay) {
               var vQuot = vitesseParChantier[c.id] || 0;
-              // Previsionnel base sur logique machine (anciens 7j puis propre) :
-              var prev = previsionnelBaseChantierDay(c.id, ds, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkBC, vQuot, bcToday.getTime());
-              var baseMet = prev.metrage || vQuot; // fallback chantier si aucune machine planifiee
+              // Previsionnel base sur logique machine + adaptation + nb machines planifiees ce jour
+              var prev = previsionnelBaseChantierDay(c.id, ds, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkBC, vQuot, bcToday.getTime(), avgMachinesParChantier[c.id]);
+              var baseMet = prev.metrage; // 0 si aucune machine planifiee ce jour (mode par machine)
               // Application du coef de dispo historique UNIQUEMENT sur les jours futurs.
               // Sur les jours passes, on garde la cible brute (sans aleas historiques)
               // pour montrer visuellement le vrai deficit realise vs cible.
@@ -12485,10 +12527,11 @@
                       // Facteur meteo progressif (0 a 1) -> retire un % de metrage
                       // selon l'intensite de la pluie / vent / orage
                       var fFactor = meteoMetrageFactor(fMeteo);
-                      // Previsionnel base sur logique machine (anciens 7j puis propre)
+                      // Previsionnel base sur logique machine + nb machines planifiees ce jour
                       var metByMkFC = buildMetByMachine(ctxAv.dbRelevesJourn, ctxAv.equipements);
-                      var fPrev = previsionnelBaseChantierDay(chantier.id, fIso, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkFC, pVitQuot, bcToday.getTime());
-                      var fBase = fPrev.metrage || pVitQuot;
+                      var fAvgMach = computeAvgMachinesHistChantier(chantier, ctxAv.dbRelevesJourn, bcToday);
+                      var fPrev = previsionnelBaseChantierDay(chantier.id, fIso, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkFC, pVitQuot, bcToday.getTime(), fAvgMach);
+                      var fBase = fPrev.metrage; // 0 si aucune machine planifiee ce jour (mode par machine)
                       // Coef dispo historique (aleas : pannes / intemperies / maintenance / conges declares)
                       var fCoefDispo = coefDispoChantierHist(chantier, ctxAv.dbSaisies, bcToday.getTime()).coef;
                       fBase = fBase * fCoefDispo;
@@ -17315,13 +17358,14 @@
         var totalMetrageProj = 0;
         var cursor = new Date(todayMsProj);
         var safeF = 0;
+        var avgMachAnnuel = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, new Date(todayMsProj));
         while (cursor.getTime() <= effectiveEnd && safeF < 500) {
           var dow = cursor.getDay();
           if (dow >= 1 && dow <= 4) {
             var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
-            // Baseline machine-aware : nb machines planifiees + adaptation
-            var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkAnnuel, vitesseQuot, todayMsProj);
-            var baseMet = prevF.metrage || vitesseQuot;
+            // Baseline machine-aware : vitesse par machine * nb machines planifiees + adaptation
+            var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkAnnuel, vitesseQuot, todayMsProj, avgMachAnnuel);
+            var baseMet = prevF.metrage; // 0 si aucune machine planifiee ce jour
             // Impact meteo
             var mDay = meteoMapCh[isoF];
             var wFactor = meteoMetrageFactor(mDay);
@@ -17519,9 +17563,10 @@
               var mMap = meteoByChantierStat[c.id];
               var mDay = mMap ? mMap[dStr] : null;
               var fact = meteoMetrageFactor(mDay);
-              // Previsionnel base sur logique machine (anciens 7j puis propre)
-              var prev = previsionnelBaseChantierDay(c.id, dStr, ctx.dbChantierEquipements, ctx.equipements, metByMkStat, vQuot, bcToday.getTime());
-              var baseMet = prev.metrage || vQuot;
+              // Previsionnel base sur logique machine + nb machines planifiees ce jour
+              var avgMachStat = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, bcToday);
+              var prev = previsionnelBaseChantierDay(c.id, dStr, ctx.dbChantierEquipements, ctx.equipements, metByMkStat, vQuot, bcToday.getTime(), avgMachStat);
+              var baseMet = prev.metrage; // 0 si aucune machine planifiee ce jour
               // Coef dispo historique (aleas)
               var coefD = coefDispoChantierHist(c, ctx.dbSaisies, bcToday.getTime()).coef;
               baseMet = baseMet * coefD;
