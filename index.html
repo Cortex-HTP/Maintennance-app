@@ -25081,7 +25081,7 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -25160,7 +25160,10 @@
                 onMouseLeave: (e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }
               },
                 h(Icon, { name: p.lucide, size: 16, color: isActive ? "#a5b4fc" : "#71717a" }), p.label,
-                p.key === "administration" && isAdmin && pendingCount > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: pendingCount + " validation(s) en attente" }, pendingCount) : null,
+                p.key === "administration" && isAdmin && (pendingCount > 0 || ticketsPending > 0) ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4 } },
+                  pendingCount > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: pendingCount + " validation(s) en attente" }, pendingCount) : null,
+                  ticketsPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f59e0b, #ea580c)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.5)" }, title: ticketsPending + " ticket(s) support ouvert(s) / en cours" }, ticketsPending) : null
+                ) : null,
                 p.key === "soumissions" && (soumissionsPending > 0 || rapportsModifPending > 0) ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4 } },
                   soumissionsPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
                   rapportsModifPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f97316, #ea580c)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(249, 115, 22, 0.5)" }, title: rapportsModifPending + " demande(s) de modification rapport client" }, rapportsModifPending) : null
@@ -26790,6 +26793,7 @@
       const [rhSignaturesPending, setRhSignaturesPending] = useState(0);
       const [onlinePresences, setOnlinePresences] = useState([]);
       const [comptaPending, setComptaPending] = useState(0);
+      const [ticketsPending, setTicketsPending] = useState(0);
       // Donnees brutes pour la detection des saisies manquantes (fenetre [1er juin -> hier])
       const [recentRelHeures, setRecentRelHeures] = useState([]);
       const [toast, setToast] = useState({ message: "", type: "success" });
@@ -27655,6 +27659,24 @@
         return function() { stop = true; clearInterval(tid); };
       }, [session]);
 
+      // ── Tickets support : count des tickets non resolus (poll 60s) ─────
+      // Visible uniquement pour tom.wallislabel@gmail.com (admin unique du support).
+      useEffect(function() {
+        var mail = String((session && session.user && session.user.email) || "").toLowerCase();
+        if (mail !== "tom.wallislabel@gmail.com") { setTicketsPending(0); return; }
+        var stop = false;
+        function refresh() {
+          supabase.from("tickets").select("id, status", { count: "exact", head: true }).in("status", ["ouvert", "en_cours"]).then(function(res) {
+            if (stop) return;
+            if (res.error) { console.warn("[tickets-pending]", res.error.message); return; }
+            setTicketsPending(res.count || 0);
+          });
+        }
+        refresh();
+        var tid = setInterval(refresh, 60000);
+        return function() { stop = true; clearInterval(tid); };
+      }, [session]);
+
       // Allowed pages: admin gets everything, others get only assigned pages
       var allowedPages = null; // null = all pages (admin)
       if (!isAdmin && currentAppUser) {
@@ -28034,7 +28056,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
