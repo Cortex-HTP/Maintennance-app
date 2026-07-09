@@ -18372,6 +18372,155 @@
               )
             );
           }()),
+          // ── Trésorerie prévisionnelle 12 mois glissants (Phase 1 : sources internes uniquement) ──
+          // Encaissements : CA chantiers projete (proportionnel au metrage prevu par mois via
+          //   caPrevChantiers reparti uniformement) + CA activites recurrent (moyenne YTD).
+          // Decaissements : salaires (masseSalariale x 1.4) + charges fixes mensuelles + emprunts.
+          // Solde initial : lu dans parametres.tresorerie_solde_init (defaut 0).
+          // Phase 2 fera : lecture solde grand livre Compta, creances client, dettes fournisseurs
+          // avec echeances J+30 et vue hebdo detaillee.
+          (function() {
+            var now2 = new Date(); now2.setHours(0,0,0,0);
+            var soldeInitParam = (parametres || []).find(function(p) { return p && p.categorie === "tresorerie_solde_init"; });
+            var soldeInit = soldeInitParam ? (parseFloat(soldeInitParam.valeur) || 0) : 0;
+            // Mensualites emprunts actifs
+            var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
+              .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+            // Charges fixes / mois (deja disponible via chargesFixesMensuelles calcule plus haut)
+            var chargesFixesMens = chargesFixesMensuelles;
+            // Salaires + charges patronales / mois
+            var salairesMens = masseSalarialeMensuelle * 1.40;
+            // CA chantiers projete reparti uniformement sur 12 mois (Phase 2 : distribuer via planning fin de chantier)
+            var caChantiersMens = caPrevChantiers / 12;
+            // CA activites recurrent : moyenne mensuelle sur les mois passes YTD
+            var moisEcoules = Math.max(1, Math.floor(daysElapsed / 30));
+            var caActivitesMens = caFactYTD / moisEcoules;
+            // Construction 12 mois glissants
+            var trMois = [];
+            var solde = soldeInit;
+            for (var mi = 0; mi < 12; mi++) {
+              var d = new Date(now2.getFullYear(), now2.getMonth() + mi, 1);
+              var encaiss = caChantiersMens + caActivitesMens;
+              var decaiss = salairesMens + chargesFixesMens + empruntsMensuel;
+              var net = encaiss - decaiss;
+              solde += net;
+              trMois.push({ d: d, encaiss: encaiss, decaiss: decaiss, net: net, solde: solde });
+            }
+            var soldeFin = trMois[trMois.length - 1].solde;
+            var minSolde = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
+            var minIdx = trMois.findIndex(function(x) { return x.solde === minSolde; });
+            var totalIn = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
+            var totalOut = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
+            var fmtCa = function(v) {
+              var sign = v < 0 ? "-" : "";
+              var abs = Math.abs(v);
+              if (abs >= 1000000) return sign + (abs / 1000000).toFixed(2) + " MF";
+              if (abs >= 1000) return sign + Math.round(abs / 1000) + " k";
+              return sign + Math.round(abs);
+            };
+            // Bornes SVG
+            var W = 900, H = 260, pL = 55, pR = 15, pT = 15, pB = 30;
+            var iw = W - pL - pR, ih = H - pT - pB;
+            var allVals = [];
+            trMois.forEach(function(x) { allVals.push(x.solde); });
+            var maxV = Math.max.apply(null, allVals);
+            var minV = Math.min.apply(null, allVals);
+            if (minV > 0) minV = 0;
+            if (maxV < 0) maxV = 0;
+            var yTop = maxV, yBot = minV;
+            var yRange = (yTop - yBot) || 1;
+            function xToPx(i) { return pL + (i / (trMois.length - 1)) * iw; }
+            function yToPx(v) { return pT + ((yTop - v) / yRange) * ih; }
+            var yZero = yToPx(0);
+            var svgPaths = "";
+            // Grille
+            for (var k = 0; k <= 4; k++) {
+              var v0 = yTop - (yRange * k / 4);
+              var y0 = yToPx(v0);
+              svgPaths += '<line x1="' + pL + '" y1="' + y0 + '" x2="' + (W-pR) + '" y2="' + y0 + '" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>';
+              svgPaths += '<text x="' + (pL-6) + '" y="' + (y0+3) + '" fill="#71717a" font-size="10" text-anchor="end">' + fmtCa(v0) + '</text>';
+            }
+            // Zero line accentuée
+            svgPaths += '<line x1="' + pL + '" y1="' + yZero + '" x2="' + (W-pR) + '" y2="' + yZero + '" stroke="rgba(244,63,94,0.40)" stroke-width="1" stroke-dasharray="4 4"/>';
+            // Zone rouge où solde < 0
+            var inNeg = false, segStart = null;
+            trMois.forEach(function(x, i) {
+              var neg = x.solde < 0;
+              if (neg && !inNeg) { inNeg = true; segStart = i; }
+              else if (!neg && inNeg) {
+                var x1a = xToPx(segStart), x2a = xToPx(i);
+                svgPaths += '<rect x="' + x1a + '" y="' + pT + '" width="' + (x2a-x1a) + '" height="' + ih + '" fill="rgba(244,63,94,0.10)"/>';
+                inNeg = false; segStart = null;
+              }
+            });
+            if (inNeg) {
+              var x1b = xToPx(segStart), x2b = xToPx(trMois.length - 1);
+              svgPaths += '<rect x="' + x1b + '" y="' + pT + '" width="' + (x2b-x1b) + '" height="' + ih + '" fill="rgba(244,63,94,0.10)"/>';
+            }
+            // Courbe solde
+            var pSoldeStr = "M";
+            trMois.forEach(function(x, i) { pSoldeStr += (i > 0 ? "L" : "") + xToPx(i) + "," + yToPx(x.solde); });
+            svgPaths += '<path d="' + pSoldeStr + '" stroke="#818cf8" stroke-width="3" fill="none"/>';
+            // Points hover invisibles + labels axe X
+            trMois.forEach(function(x, i) {
+              svgPaths += '<circle cx="' + xToPx(i) + '" cy="' + yToPx(x.solde) + '" r="4" fill="#818cf8"/>';
+              svgPaths += '<text x="' + xToPx(i) + '" y="' + (H-pB+16) + '" fill="#71717a" font-size="10" text-anchor="middle">' + x.d.toLocaleDateString("fr-FR", { month: "short" }) + '</text>';
+            });
+            return h("div", { style: { background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 14 } },
+              h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
+                h("div", null,
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8 } },
+                    h(Icon, { name: "line-chart", size: 16, color: "#93c5fd" }),
+                    "Tresorerie previsionnelle - 12 mois glissants"
+                  ),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Encaissements : CA chantiers projete + CA activites (moyenne YTD). Decaissements : salaires + charges patronales + emprunts + charges fixes. Solde initial saisi dans Parametres > tresorerie_solde_init.")
+                )
+              ),
+              // KPI top
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 14 } },
+                h("div", { style: { padding: "10px 12px", background: "rgba(96,165,250,0.10)", border: "1px solid rgba(96,165,250,0.30)", borderRadius: 8 } },
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Solde initial"),
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: "#93c5fd", fontFamily: "monospace" } }, fmtCa(soldeInit) + " XPF")
+                ),
+                h("div", { style: { padding: "10px 12px", background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 8 } },
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Encaissements 12m"),
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: "#86efac", fontFamily: "monospace" } }, fmtCa(totalIn) + " XPF")
+                ),
+                h("div", { style: { padding: "10px 12px", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 8 } },
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Decaissements 12m"),
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCa(totalOut) + " XPF")
+                ),
+                h("div", { style: { padding: "10px 12px", background: soldeFin >= soldeInit ? "rgba(34,197,94,0.10)" : "rgba(244,63,94,0.10)", border: "1px solid " + (soldeFin >= soldeInit ? "rgba(34,197,94,0.30)" : "rgba(244,63,94,0.30)"), borderRadius: 8 } },
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Solde fin de periode"),
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: soldeFin >= soldeInit ? "#86efac" : "#fda4af", fontFamily: "monospace" } }, fmtCa(soldeFin) + " XPF"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, "Delta " + (soldeFin - soldeInit >= 0 ? "+" : "") + fmtCa(soldeFin - soldeInit))
+                ),
+                h("div", { style: { padding: "10px 12px", background: minSolde < 0 ? "rgba(244,63,94,0.10)" : "rgba(251,191,36,0.10)", border: "1px solid " + (minSolde < 0 ? "rgba(244,63,94,0.30)" : "rgba(251,191,36,0.30)"), borderRadius: 8 } },
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Point le plus bas"),
+                  h("div", { style: { fontSize: 18, fontWeight: 800, color: minSolde < 0 ? "#fda4af" : "#fde68a", fontFamily: "monospace" } }, fmtCa(minSolde) + " XPF"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, trMois[minIdx].d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }))
+                )
+              ),
+              // Courbe
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, overflowX: "auto" } },
+                h("div", { dangerouslySetInnerHTML: { __html: '<svg viewBox="0 0 ' + W + ' ' + H + '" style="display:block;width:100%;min-width:600px;height:260px">' + svgPaths + '</svg>' } })
+              ),
+              // Legende
+              h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, marginTop: 10 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                  h("div", { style: { width: 14, height: 3, borderRadius: 2, background: "#818cf8" } }),
+                  h("span", { style: { color: "#cbd5e1" } }, "Solde net cumule")
+                ),
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                  h("div", { style: { width: 14, height: 14, borderRadius: 3, background: "rgba(244,63,94,0.20)", border: "1px solid rgba(244,63,94,0.40)" } }),
+                  h("span", { style: { color: "#cbd5e1" } }, "Zone tresorerie negative")
+                )
+              ),
+              minSolde < 0 ? h("div", { style: { marginTop: 10, padding: "8px 12px", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 8, fontSize: 12, color: "#fecaca" } },
+                "Attention : tresorerie previsionnelle negative en " + trMois[minIdx].d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }) + ". Envisager relance clients ou avance de credit."
+              ) : null
+            );
+          }()),
           // Ligne 1 : Periode (compactes) — Seuil + Cout/m + Gain/m sur toute la periode
           seuilMois > 0 ? h("div", { style: { display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" } },
             // Seuil rentabilite (compact)
