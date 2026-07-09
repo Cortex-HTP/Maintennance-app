@@ -18121,15 +18121,21 @@
         }
         // CA total = metrage + facturation activites (attentes, deplacements, etc.)
         var caTotal = s.caGenere + (s.caFacturationActivites || 0);
-        // DIVISEUR = jours REELLEMENT travailles par la machine sur la periode.
-        // Avant : divise par joursOuvrablesPeriode (22 j Lun-Ven du mois) -> la
-        // marge/jour d'une machine ayant travaille 2 jours puis arretee fondait
-        // artificiellement quand la periode s'allongeait, alors qu'elle ne bosse
-        // plus. Maintenant : marge/jour = perf reelle des jours travailles,
-        // stable dans le temps si la machine reste inactive.
-        var divJours = nbJoursTravailles;
-        var caJour = divJours > 0 ? caTotal / divJours : 0;
-        var coutJour = divJours > 0 ? coutTotal / divJours : 0;
+        // ── Repartition juste des coûts entre les 2 echelles temps ──
+        // DIRECTS (variables, uniquement quand la machine bosse) :
+        //   conso reelle (mazout + consommables) + personnel equipe present + charges patronales
+        //   -> divises par jours REELLEMENT travailles
+        // INDIRECTS (fixes/mensuels, tournent tout le mois) :
+        //   emprunts + charges fixes + personnel hors-equipe + carburant VL
+        //   -> divises par jours OUVRABLES de la periode
+        // Sans cette separation, une machine bossant 2j/mois se retrouve avec des indirects
+        // du mois entier ecrases sur 2 jours -> couts/jour surestimes, marge/jour faussee.
+        var coutDirect = s.coutConso + s.coutPersonnel + coutCharges;
+        var coutIndirectTotal = s.coutEmprunt + coutIndirect;
+        var caJour = nbJoursTravailles > 0 ? caTotal / nbJoursTravailles : 0;
+        var coutDirectJour = nbJoursTravailles > 0 ? coutDirect / nbJoursTravailles : 0;
+        var coutIndirectJour = joursOuvrablesPeriode > 0 ? coutIndirectTotal / joursOuvrablesPeriode : 0;
+        var coutJour = coutDirectJour + coutIndirectJour;
         var margeJour = caJour - coutJour;
         // metresJour = productivite reelle (metres / jours REELLEMENT travailles)
         var metresJour = nbJoursTravailles > 0 ? s.metres / nbJoursTravailles : 0;
@@ -18317,7 +18323,7 @@
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
                     "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = (CA metrage + CA facturation activites - coûts complets) ÷ jours REELLEMENT travailles par la machine. Conso reelle par machine + indirects (credit, impots, locations, hors-equipe) au prorata du metrage · trie du plus au moins rentable"),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA/jour - couts DIRECTS/jour (conso + personnel equipe + charges patronales, ÷ jours travailles) - couts INDIRECTS/jour (emprunts + charges fixes + hors-equipe, au prorata metres ÷ jours ouvrables du mois). Cette separation evite d'ecraser les charges fixes du mois entier sur quelques jours travailles."),
                   hiddenInactive > 0 ? h("div", { style: { fontSize: 10.5, color: "#fdba74", marginTop: 4, fontStyle: "italic" } }, hiddenInactive + " machine" + (hiddenInactive > 1 ? "s" : "") + " masquee" + (hiddenInactive > 1 ? "s" : "") + " (inactive" + (hiddenInactive > 1 ? "s" : "") + " depuis plus de 7 jours)") : null
                 )
               ),
