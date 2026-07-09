@@ -26997,19 +26997,31 @@
 
       useEffect(() => { if (session) loadAll(); }, [session, loadAll]);
 
-      // ── Auto-refresh des rapports_forage toutes les 60s ──
+      // ── Auto-refresh des rapports_forage via Supabase Realtime ──
       // (Avancement, Planning, Primes lisent depuis le contexte global, contrairement a
-      //  Stats qui a son propre fetch. Cet intervalle assure qu'ils voient les nouveaux
-      //  rapports soumis par les sondeurs sans recharger la page.)
+      //  Stats qui a son propre fetch. Le realtime declenche un refresh instantane des
+      //  qu'un rapport est ajoute / modifie / supprime cote sondeur, sans polling 60s.)
+      // Fallback : poll long (5 min) au cas ou la connexion realtime saute.
       useEffect(() => {
         if (!session) return;
-        var timer = setInterval(() => {
+        function refreshRapports() {
           supabase.from("rapports_forage")
             .select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at")
             .order("date_rapport", { ascending: false })
             .then(res => { if (res.data) setDbRapportsForage(res.data); });
-        }, 60000);
-        return () => clearInterval(timer);
+        }
+        var channel = null;
+        try {
+          channel = supabase.channel("rapports_forage_watcher")
+            .on("postgres_changes", { event: "*", schema: "public", table: "rapports_forage" }, refreshRapports)
+            .subscribe();
+        } catch (e) { console.warn("[rapports realtime]", e); }
+        // Fallback poll long : filet de securite si le realtime saute (5 min)
+        var timer = setInterval(refreshRapports, 300000);
+        return () => {
+          clearInterval(timer);
+          if (channel) { try { supabase.removeChannel(channel); } catch (e) {} }
+        };
       }, [session]);
 
       // ── Compteurs soumissions en attente + pieces inconnues (pour macarons sidebar) ──
