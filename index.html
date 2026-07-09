@@ -18136,6 +18136,9 @@
         var coutDirectJour = nbJoursTravailles > 0 ? coutDirect / nbJoursTravailles : 0;
         var coutIndirectJour = joursOuvrablesPeriode > 0 ? coutIndirectTotal / joursOuvrablesPeriode : 0;
         var coutJour = coutDirectJour + coutIndirectJour;
+        // Marge OPERATIONNELLE : CA - directs (perf intrinseque de la machine, sans imputation des charges globales)
+        var margeOpJour = caJour - coutDirectJour;
+        // Marge NETTE : CA - directs - indirects (contribution de la machine aux charges globales)
         var margeJour = caJour - coutJour;
         // metresJour = productivite reelle (metres / jours REELLEMENT travailles)
         var metresJour = nbJoursTravailles > 0 ? s.metres / nbJoursTravailles : 0;
@@ -18162,6 +18165,9 @@
           joursInactive: joursInactive,
           caJour: caJour,
           coutJour: coutJour,
+          coutDirectJour: coutDirectJour,
+          coutIndirectJour: coutIndirectJour,
+          margeOpJour: margeOpJour,
           margeJour: margeJour,
           metresJour: metresJour,
           chantPrincipal: chantPrincipalNom
@@ -18347,9 +18353,19 @@
                         h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour) + " /j")
                       )
                     ),
-                    h("div", { style: { padding: "8px 12px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Detail des couts sur la periode :\nConso + carburant (reel machine) : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel terrain : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\nEmprunts machine : " + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : " + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nTotal couts periode : " + fmtNum(Math.round(x.coutTotal)) + " XPF\n\nCA metrage : " + fmtNum(Math.round(x.caGenere)) + " XPF\nCA facturation activites : " + fmtNum(Math.round(x.caFacturationActivites || 0)) + " XPF\nCA total : " + fmtNum(Math.round(x.caTotal)) + " XPF\nMarge nette : " + fmtNum(Math.round(x.caTotal - x.coutTotal)) + " XPF\n\nDivisions par " + x.joursOuvrables + " jours ouvrables Lun-Ven de la periode filtree" },
-                      h("div", { style: { color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 } }, "Marge nette/jour"),
-                      h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 18 } }, fmtCaShort(x.margeJour) + " /j")
+                    // 2 marges cote a cote : OPERATIONNELLE (CA - directs propres a la machine)
+                    // + NETTE (CA - directs - indirects ventiles).
+                    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 } },
+                      // Marge OP : perf intrinseque de la machine
+                      h("div", { style: { padding: "8px 10px", background: x.margeOpJour >= 0 ? "rgba(34,197,94,0.14)" : "rgba(251,146,60,0.14)", border: "1px solid " + (x.margeOpJour >= 0 ? "rgba(34,197,94,0.40)" : "rgba(251,146,60,0.40)"), borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge OPERATIONNELLE = CA - couts DIRECTS de la machine (conso + personnel equipe + charges patronales)\n\nCA total : " + fmtNum(Math.round(x.caTotal)) + " XPF\nConso reelle : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel equipe : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\n─────────\nMarge op periode : " + fmtNum(Math.round(x.caTotal - x.coutConso - x.coutPersonnel - x.coutCharges)) + " XPF\n÷ " + x.nbJoursTravailles + " jours travailles\n= " + fmtNum(Math.round(x.margeOpJour)) + " XPF/jour\n\nReflete la perf intrinseque de la machine + son equipe, sans quote-part des charges globales." },
+                        h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge op/jour"),
+                        h("div", { style: { fontWeight: 900, color: x.margeOpJour >= 0 ? "#86efac" : "#fdba74", fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(x.margeOpJour) + " /j")
+                      ),
+                      // Marge NETTE : contribution complete (utilisee pour classement)
+                      h("div", { style: { padding: "8px 10px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge NETTE = marge op - part des couts INDIRECTS (emprunts + charges fixes + hors-equipe, au prorata metres)\n\nMarge op : " + fmtNum(Math.round(x.caTotal - x.coutConso - x.coutPersonnel - x.coutCharges)) + " XPF\nEmprunts machine : -" + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : -" + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nMarge nette periode : " + fmtNum(Math.round(x.caTotal - x.coutTotal)) + " XPF\n\nDirects ÷ " + x.nbJoursTravailles + " j travailles\nIndirects ÷ " + x.joursOuvrables + " j ouvrables Lun-Ven du mois\n= " + fmtNum(Math.round(x.margeJour)) + " XPF/jour\n\nReflete la contribution de la machine a couvrir toutes les charges de l'entreprise." },
+                        h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge nette/jour"),
+                        h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(x.margeJour) + " /j")
+                      )
                     )
                   );
                 })
