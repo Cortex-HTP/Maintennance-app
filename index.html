@@ -18960,9 +18960,19 @@
               }
             });
 
+            // ── Determination du dernier mois "fiable" cote Compta ──
+            // Un mois est reel seulement s'il existe un mois strictement PLUS RECENT
+            // avec des ecritures 512* : sinon on considere qu'il est en cours de saisie
+            // (la compta est toujours en retard). Ex : dernieres ecritures en mars ->
+            // avril/mai/juin passent en projete meme si "passes".
+            var latestMonthKey = null;
+            Object.keys(mvtsBanqueParMois).forEach(function(k) {
+              if (!latestMonthKey || k > latestMonthKey) latestMonthKey = k;
+            });
+
             // ── Reconstruction du solde au 1er janvier de l'annee ──
-            // solde 1er janv = solde bancaire actuel - somme des flux depuis le 1er janv
-            // (les flux passes viennent des ecritures compta 512*).
+            // solde 1er janv = solde bancaire actuel - somme des flux "reels fiables"
+            // depuis le 1er janv (les mois non fiables sont retires du calcul aussi).
             var currentYear = now2.getFullYear();
             var flux1erJanvIci = 0;
             Object.keys(mvtsBanqueParMois).forEach(function(k) {
@@ -18986,16 +18996,19 @@
               var estPasse = dMEnd < now2;
               var estCourant = mi2 === now2.getMonth();
               var estFutur = dM > now2 && !estCourant;
+              // Fiable = a des ecritures ET n'est pas le dernier mois avec ecritures
+              // (le dernier mois est probablement en cours de saisie par la compta)
+              var estFiable = !!mvtReel && latestMonthKey && kMonth < latestMonthKey;
               var encaiss, decaiss, source;
               var caChantiersMi = caChantiersParMois[mi2] || 0;
               var factFrsMi = factFrsFutures[kMonth] || 0;
-              if ((estPasse || estCourant) && mvtReel) {
-                // Mois passe ou courant avec ecritures Compta : utiliser le REEL
+              if (estFiable) {
+                // Mois passe fiable (compta a jour) : utiliser le REEL
                 encaiss = mvtReel.in;
                 decaiss = mvtReel.out;
-                source = estCourant ? "reel_partiel" : "reel";
+                source = "reel";
               } else {
-                // Mois futur (ou mois passe sans donnee Compta) : PROJECTION
+                // Mois pas encore saisi cote compta OU mois futur : PROJECTION
                 encaiss = caChantiersMi + caActivitesMens;
                 decaiss = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
                 source = "projete";
@@ -19050,7 +19063,7 @@
                   "Tresorerie previsionnelle - annee " + now2.getFullYear(),
                   soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres")
                 ),
-                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Passe (janvier a hier) : mouvements bancaires REELS du grand livre Compta (512*). Futur : projections CA chantiers + activites moyenne YTD - salaires 1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees (echeance J+30). Solde initial reconstruit au 1er janvier a partir du solde bancaire actuel et des flux depuis le 1er janv.")
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Chaque mois : REEL (mouvements bancaires Compta 512*) tant que la compta est a jour, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). La bascule est automatique : des qu'un mois n'a pas d'ecritures posterieures, il est considere non fiable et passe en projete." + (latestMonthKey ? " Dernier mois compta complet : " + (function() { var p = latestMonthKey.split("-"); var mn = ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][parseInt(p[1])-2] || latestMonthKey; return mn + " " + p[0].slice(2); })() + "." : ""))
               ),
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 14 } },
                 h("div", { style: { padding: "10px 12px", background: "rgba(96,165,250,0.10)", border: "1px solid rgba(96,165,250,0.30)", borderRadius: 8 } },
