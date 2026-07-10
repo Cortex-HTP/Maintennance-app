@@ -8968,14 +8968,21 @@
         ),
         activeTab === "chantiers" && h("div", null,
           viewMode === "liste" ? (function() {
+            // Cout de revient reel au metre (FEC, grand livre). 0 si pas de donnees -> fallback.
+            var coutMetreFEC = computeCoutMetreFEC(ctx, new Date());
             return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 } },
             chantiers.map(function(chantier) {
               var ca = chantier.metrage * chantier.prixMetre;
-              var marge = ca - (chantier.depensesPrevues || 0);
-              var margePercent = ca > 0 ? Math.round((marge / ca) * 100) : 0;
+              // Cout = depenses saisies si renseignees, sinon cout/m reel FEC x metrage
+              var coutChantier = (parseFloat(chantier.depensesPrevues) || 0) > 0
+                ? parseFloat(chantier.depensesPrevues)
+                : (coutMetreFEC > 0 ? coutMetreFEC * chantier.metrage : 0);
+              var marge = ca - coutChantier;
+              var margePercent = ca > 0 && coutChantier > 0 ? Math.round((marge / ca) * 100) : null;
               var statusColor = chantier.statut === "Termine" ? "#059669" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
-              // Rentabilite = CA/jour attendu = metrage moyen jour × prix/m
+              // Marge/jour reelle = metrage moyen jour x (prix/m - cout/m reel FEC)
               var caJourInfo = computeCaJourChantier(chantier, ctx.dbRelevesJourn, ctx.dbSaisies);
+              var margeJourVal = coutMetreFEC > 0 ? (caJourInfo.metJour * (chantier.prixMetre - coutMetreFEC)) : caJourInfo.caJour;
               var caJourVal = caJourInfo.caJour;
               function fmtCaChant(v) {
                 if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
@@ -8999,17 +9006,17 @@
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Prix/m"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#059669" } }, fmtNum(chantier.prixMetre) + " XPF")
                   ),
-                  caJourVal > 0 ? h("div", { style: { background: "rgba(167,139,250,0.15)", padding: 10, borderRadius: 6, cursor: "help" }, title: "Rentabilite = metrage moyen (" + Math.round(caJourInfo.metJour) + " m/j sur 14 derniers jours productifs) × prix/m (" + fmtNum(chantier.prixMetre) + " XPF/m) = " + fmtNum(Math.round(caJourVal)) + " XPF/jour" },
-                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Rentab. /jour"),
-                    h("div", { style: { fontWeight: 700, fontSize: 14, color: "#c4b5fd" } }, fmtCaChant(caJourVal))
+                  caJourInfo.metJour > 0 ? h("div", { style: { background: coutMetreFEC > 0 ? (margeJourVal >= 0 ? "rgba(34,197,94,0.12)" : "rgba(244,63,94,0.12)") : "rgba(167,139,250,0.15)", padding: 10, borderRadius: 6, cursor: "help" }, title: coutMetreFEC > 0 ? ("Marge/jour = " + Math.round(caJourInfo.metJour) + " m/j x (prix " + fmtNum(chantier.prixMetre) + " - cout reel " + fmtNum(Math.round(coutMetreFEC)) + " XPF/m) = " + fmtNum(Math.round(margeJourVal)) + " XPF/jour") : ("CA/jour = " + Math.round(caJourInfo.metJour) + " m/j x prix " + fmtNum(chantier.prixMetre) + " XPF/m (cout reel FEC indisponible)") },
+                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, coutMetreFEC > 0 ? "Marge /jour" : "CA /jour"),
+                    h("div", { style: { fontWeight: 700, fontSize: 14, color: coutMetreFEC > 0 ? (margeJourVal >= 0 ? "#059669" : "#dc2626") : "#c4b5fd" } }, fmtCaChant(margeJourVal))
                   ) : null,
                   h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#2563eb" } }, fmtNum(ca) + " XPF")
                   ),
-                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
+                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6, cursor: coutMetreFEC > 0 ? "help" : "default" }, title: margePercent != null ? ("Marge = CA - cout (" + ((parseFloat(chantier.depensesPrevues) || 0) > 0 ? "depenses saisies" : "cout reel FEC " + fmtNum(Math.round(coutMetreFEC)) + " XPF/m") + ") = " + fmtNum(Math.round(marge)) + " XPF") : "Cout indisponible (renseigne depenses prevues ou attends les donnees compta)" },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Marge"),
-                    h("div", { style: { fontWeight: 700, fontSize: 14, color: margePercent >= 0 ? "#059669" : "#dc2626" } }, margePercent + "%")
+                    h("div", { style: { fontWeight: 700, fontSize: 14, color: margePercent == null ? "#a1a1aa" : (margePercent >= 0 ? "#059669" : "#dc2626") } }, margePercent == null ? "—" : (margePercent + "%"))
                   )
                 ),
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
@@ -10288,6 +10295,37 @@
         poolStructMoyenMensuel: poolStructMoyenMensuel,
         aDonnees: reliableIdx.length > 0
       };
+    }
+
+    // ── Cout de revient reel au metre depuis le FEC ──
+    // = total charges classe 6 (TOUT : personnel, carburant, entretien, structure, interets)
+    //   sur les mois compta a jour / total metres fores sur ces memes mois.
+    // C'est le cout/m le plus complet et le plus juste (adosse au grand livre).
+    // Retourne 0 si pas de donnees FEC fiables -> l'appelant garde son fallback.
+    function computeCoutMetreFEC(ctx, refDate) {
+      var fg = computeFraisGenerauxFEC(ctx.dbEcrCompta || [], refDate);
+      if (!fg.aDonnees) return 0;
+      var year = refDate.getFullYear();
+      var reliableSet = {};
+      fg.reliableIdx.forEach(function(mi) { reliableSet[mi] = 1; });
+      var totCharges = 0;
+      (ctx.dbEcrCompta || []).forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        var d = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
+        if (String(e.compte_code || "").charAt(0) !== "6") return;
+        if (!reliableSet[d.getMonth()]) return;
+        totCharges += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+      });
+      var totMetres = 0;
+      (ctx.dbRelevesJourn || []).forEach(function(r) {
+        if (!r || !r.dateReleve) return;
+        var d = new Date(String(r.dateReleve).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
+        if (!reliableSet[d.getMonth()]) return;
+        totMetres += parseFloat(r.metrage) || 0;
+      });
+      return totMetres > 0 ? totCharges / totMetres : 0;
     }
 
     function buildMetByMachine(dbRelevesJourn, equipementsList) {
