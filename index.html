@@ -16800,6 +16800,10 @@
       var rapports = _rapports[0]; var setRapports = _rapports[1];
       var _carburants = useState([]);
       var carburants = _carburants[0]; var setCarburants = _carburants[1];
+      // Ecritures compta (comptes 512* banque + 401* fournisseurs) pour la tresorerie previsionnelle Phase 2.
+      // Charge uniquement les 2 classes utiles pour eviter de tirer toute la compta.
+      var _dbEcr = useState([]);
+      var dbEcrCompta = _dbEcr[0]; var setDbEcrCompta = _dbEcr[1];
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
       // ─ Cache meteo par chantier (pour previsions ajustees) ─
@@ -16894,10 +16898,23 @@
           }
           return all;
         }
-        Promise.all([fetchAllRapports(), fetchAllCarburants()]).then(function(arr) {
+        // Ecritures compta 512* (banque) + 401* (fournisseurs) de l'annee en cours + N-1.
+        // Utilise pour la tresorerie previsionnelle : solde bancaire live, mouvements
+        // reels passes, factures fournisseurs futures avec echeance J+30.
+        async function fetchEcrituresBanqueFrs() {
+          var yearNow = new Date().getFullYear();
+          var res = await supabase.from("ecritures_compta")
+            .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
+            .in("exercice", [yearNow - 1, yearNow])
+            .or("compte_code.like.512%,compte_code.like.401%");
+          if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); return []; }
+          return res.data || [];
+        }
+        Promise.all([fetchAllRapports(), fetchAllCarburants(), fetchEcrituresBanqueFrs()]).then(function(arr) {
           if (cancelled) return;
           setRapports(arr[0]);
           setCarburants(arr[1]);
+          setDbEcrCompta(arr[2]);
           setLoading(false);
         });
         return function() { cancelled = true; };
@@ -18803,8 +18820,54 @@
           // Solde initial : lu dans parametres.tresorerie_solde_init (defaut 0).
           (function() {
             var now2 = new Date(); now2.setHours(0, 0, 0, 0);
+            // ── Phase 2 : lecture COMPTA (grand livre) pour le passe reel + solde bancaire ──
+            // Solde bancaire live = SUM(debit) - SUM(credit) sur comptes 512*
+            var soldeBanqueLive = 0;
+            var nbEcrBanque = 0;
+            (dbEcrCompta || []).forEach(function(e) {
+              if (!e.compte_code || String(e.compte_code).substring(0,3) !== "512") return;
+              soldeBanqueLive += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+              nbEcrBanque++;
+            });
+            // Fallback si aucune ecriture Compta chargee : parametres.tresorerie_solde_init
             var soldeInitParam = (parametres || []).find(function(p) { return p && p.categorie === "tresorerie_solde_init"; });
-            var soldeInit = soldeInitParam ? (parseFloat(soldeInitParam.valeur) || 0) : 0;
+            var soldeInitParamVal = soldeInitParam ? (parseFloat(soldeInitParam.valeur) || 0) : 0;
+            var soldeInit = nbEcrBanque > 0 ? soldeBanqueLive : soldeInitParamVal;
+            var soldeSource = nbEcrBanque > 0 ? "compta" : "parametres";
+
+            // ── Mouvements bancaires reels PASSES par mois (via 512*) ──
+            // Encaissements = debits (argent entre), Decaissements = credits (argent sort).
+            var mvtsBanqueParMois = {}; // key "YYYY-MM" -> { in, out }
+            (dbEcrCompta || []).forEach(function(e) {
+              if (!e.compte_code || String(e.compte_code).substring(0,3) !== "512") return;
+              if (!e.date_ecriture) return;
+              var d = new Date(String(e.date_ecriture).substring(0,10) + "T00:00:00");
+              if (isNaN(d.getTime())) return;
+              var k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+              if (!mvtsBanqueParMois[k]) mvtsBanqueParMois[k] = { in: 0, out: 0 };
+              mvtsBanqueParMois[k].in += parseFloat(e.debit) || 0;
+              mvtsBanqueParMois[k].out += parseFloat(e.credit) || 0;
+            });
+
+            // ── Factures fournisseurs FUTURES : lignes 401* non lettrees ──
+            // Echeance = date_ecriture + 30 jours (regle standard NC).
+            // Solde par tiers / piece : on prend le solde net credit-debit = ce qu'il reste a payer.
+            var factFrsFutures = {}; // key "YYYY-MM" -> montant a payer
+            (dbEcrCompta || []).forEach(function(e) {
+              if (!e.compte_code || String(e.compte_code).substring(0,3) !== "401") return;
+              if (e.lettrage) return; // lettree = payee
+              if (!e.date_ecriture) return;
+              var d = new Date(String(e.date_ecriture).substring(0,10) + "T00:00:00");
+              if (isNaN(d.getTime())) return;
+              var echeance = new Date(d.getTime() + 30 * 86400000);
+              if (echeance < now2) return; // deja passe -> deja compte dans les decaissements passes reels
+              // Solde fournisseur = credit - debit (ce qu'il reste a payer)
+              var mtNet = (parseFloat(e.credit) || 0) - (parseFloat(e.debit) || 0);
+              if (mtNet <= 0) return;
+              var k = echeance.getFullYear() + "-" + String(echeance.getMonth() + 1).padStart(2, "0");
+              factFrsFutures[k] = (factFrsFutures[k] || 0) + mtNet;
+            });
+
             var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
               .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
             var chargesFixesMens = chargesFixesMensuelles;
@@ -18812,9 +18875,12 @@
             var moisEcoules = Math.max(1, Math.floor(daysElapsed / 30));
             var caActivitesMens = caFactYTD / moisEcoules;
 
-            // ── Annee calendaire : du mois courant a decembre de l'annee en cours ──
-            var nbMoisRestants = 12 - now2.getMonth();
-            var caChantiersParMois = new Array(nbMoisRestants).fill(0);
+            // ── Annee calendaire complete : janvier a decembre ──
+            // Mois passes : donnees Compta reelles (mouvements bancaires 512*)
+            // Mois futurs : projections (CA chantiers + activites - salaires - fixes -
+            //   emprunts - factures fournisseurs 401 non lettrees a echeance J+30)
+            var nbMoisRestants = 12; // annee complete
+            var caChantiersParMois = new Array(12).fill(0);
             var metByMkTr = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
             var EXCL_TR = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
             var horizonMs = new Date(now2.getFullYear(), 11, 31, 23, 59, 59).getTime(); // fin d'annee courante
@@ -18890,22 +18956,63 @@
               }
             });
 
-            // Construction des mois restants jusqu'a fin d'annee courante
+            // ── Reconstruction du solde au 1er janvier de l'annee ──
+            // solde 1er janv = solde bancaire actuel - somme des flux depuis le 1er janv
+            // (les flux passes viennent des ecritures compta 512*).
+            var currentYear = now2.getFullYear();
+            var flux1erJanvIci = 0;
+            Object.keys(mvtsBanqueParMois).forEach(function(k) {
+              var parts = k.split("-");
+              var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
+              if (y === currentYear && m <= now2.getMonth()) {
+                flux1erJanvIci += mvtsBanqueParMois[k].in - mvtsBanqueParMois[k].out;
+              }
+            });
+            var solde1erJanvier = nbEcrBanque > 0 ? (soldeBanqueLive - flux1erJanvIci) : soldeInit;
+
+            // Construction annee complete : janvier a decembre
             var trMois = [];
-            var solde = soldeInit;
-            for (var mi2 = 0; mi2 < nbMoisRestants; mi2++) {
-              var dM = new Date(now2.getFullYear(), now2.getMonth() + mi2, 1);
-              var encaiss = caChantiersParMois[mi2] + caActivitesMens;
-              var decaiss = salairesMens + chargesFixesMens + empruntsMensuel;
+            var solde = solde1erJanvier;
+            for (var mi2 = 0; mi2 < 12; mi2++) {
+              var dM = new Date(currentYear, mi2, 1);
+              var dMEnd = new Date(currentYear, mi2 + 1, 0); // dernier jour du mois
+              var kMonth = currentYear + "-" + String(mi2 + 1).padStart(2, "0");
+              var mvtReel = mvtsBanqueParMois[kMonth];
+              // Determine source : passe = mois entierement termine, courant = mois en cours, futur = mois entierement a venir
+              var estPasse = dMEnd < now2;
+              var estCourant = mi2 === now2.getMonth();
+              var estFutur = dM > now2 && !estCourant;
+              var encaiss, decaiss, source;
+              var caChantiersMi = caChantiersParMois[mi2] || 0;
+              var factFrsMi = factFrsFutures[kMonth] || 0;
+              if ((estPasse || estCourant) && mvtReel) {
+                // Mois passe ou courant avec ecritures Compta : utiliser le REEL
+                encaiss = mvtReel.in;
+                decaiss = mvtReel.out;
+                source = estCourant ? "reel_partiel" : "reel";
+              } else {
+                // Mois futur (ou mois passe sans donnee Compta) : PROJECTION
+                encaiss = caChantiersMi + caActivitesMens;
+                decaiss = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
+                source = "projete";
+              }
               var net = encaiss - decaiss;
               solde += net;
-              trMois.push({ d: dM, encaiss: encaiss, decaiss: decaiss, net: net, solde: solde, caChantiers: caChantiersParMois[mi2] });
+              trMois.push({
+                d: dM, encaiss: encaiss, decaiss: decaiss, net: net, solde: solde,
+                caChantiers: caChantiersMi, factFrs: factFrsMi, source: source, estPasse: estPasse, estCourant: estCourant
+              });
             }
             var soldeFinTr = trMois[trMois.length - 1].solde;
             var minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
             var minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
-            var totalInTr = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
-            var totalOutTr = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
+            // KPIs "a venir" = uniquement mois futurs (ou courant partiellement projete)
+            var futursTr = trMois.filter(function(x) { return x.source === "projete" || x.source === "reel_partiel"; });
+            var totalInTr = futursTr.reduce(function(s, x) { return s + x.encaiss; }, 0);
+            var totalOutTr = futursTr.reduce(function(s, x) { return s + x.decaiss; }, 0);
+            // Totaux annee complete (passe + futur) - utilises pour info
+            var totalInAnnee = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
+            var totalOutAnnee = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
             var fmtCaTr = function(v) {
               var sign = v < 0 ? "-" : "";
               var abs = Math.abs(v);
@@ -18936,9 +19043,10 @@
               h("div", { style: { marginBottom: 12 } },
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8 } },
                   h(Icon, { name: "line-chart", size: 16, color: "#93c5fd" }),
-                  "Tresorerie previsionnelle - annee " + now2.getFullYear() + " (jusqu'a decembre)"
+                  "Tresorerie previsionnelle - annee " + now2.getFullYear(),
+                  soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres")
                 ),
-                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Fenetre : du mois courant a decembre " + now2.getFullYear() + ". Encaissements : projection CA chantiers jour par jour (planning + coef dispo historique) + CA activites moyenne YTD. Decaissements : salaires x 1.4 + charges fixes + mensualites emprunts. Solde initial : parametres > tresorerie_solde_init.")
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Passe (janvier a hier) : mouvements bancaires REELS du grand livre Compta (512*). Futur : projections CA chantiers + activites moyenne YTD - salaires 1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees (echeance J+30). Solde initial reconstruit au 1er janvier a partir du solde bancaire actuel et des flux depuis le 1er janv.")
               ),
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 14 } },
                 h("div", { style: { padding: "10px 12px", background: "rgba(96,165,250,0.10)", border: "1px solid rgba(96,165,250,0.30)", borderRadius: 8 } },
@@ -18996,14 +19104,26 @@
                   yZeroT >= padT.t && yZeroT <= padT.t + iht ? h("line", { x1: padT.l, y1: yZeroT, x2: padT.l + iwt, y2: yZeroT, stroke: "#f43f5e", strokeWidth: 1.5, strokeDasharray: "5 4", opacity: 0.65 }) : null,
                   // Ligne moyenne (jaune pointille, comme carburant)
                   h("line", { x1: padT.l, y1: yForT(moyenneSolde), x2: padT.l + iwt, y2: yForT(moyenneSolde), stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }),
+                  // Ligne verticale "Aujourd'hui" (separe passe reel Compta et futur projete)
+                  (function() {
+                    var idxToday = now2.getMonth();
+                    var xToday = xForT(idxToday);
+                    return h("g", null,
+                      h("line", { x1: xToday, y1: padT.t, x2: xToday, y2: padT.t + iht, stroke: "#a5b4fc", strokeWidth: 1.5, strokeDasharray: "3 3", opacity: 0.55 }),
+                      h("text", { x: xToday + 4, y: padT.t + 10, fontSize: 9, fill: "#a5b4fc", fontFamily: "monospace", fontWeight: 700 }, "Aujourd'hui")
+                    );
+                  }()),
                   // Polyline principale (solde)
                   trMois.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#818cf8", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
-                  // Points sur chaque mois
+                  // Points sur chaque mois - passe = plein, futur = plus clair
                   trMois.map(function(x, i) {
                     var col = x.solde >= 0 ? "#a5b4fc" : "#fda4af";
-                    return h("g", { key: "p" + i },
+                    var isReel = x.source === "reel" || x.source === "reel_partiel";
+                    var opa = isReel ? 1 : 0.55;
+                    var srcLbl = x.source === "reel" ? "Reel (Compta)" : (x.source === "reel_partiel" ? "Reel partiel + projection" : "Projete");
+                    return h("g", { key: "p" + i, opacity: opa },
                       h("circle", { cx: xForT(i), cy: yForT(x.solde), r: 4, fill: col, stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }),
-                      h("title", null, x.d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }) + "\nEncaissements : " + fmtCaTr(x.encaiss) + " XPF\nDecaissements : -" + fmtCaTr(x.decaiss) + " XPF\nNet : " + (x.net >= 0 ? "+" : "") + fmtCaTr(x.net) + " XPF\nSolde fin : " + fmtCaTr(x.solde) + " XPF")
+                      h("title", null, x.d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }) + " [" + srcLbl + "]\nEncaissements : " + fmtCaTr(x.encaiss) + " XPF\nDecaissements : -" + fmtCaTr(x.decaiss) + " XPF\nNet : " + (x.net >= 0 ? "+" : "") + fmtCaTr(x.net) + " XPF\nSolde fin : " + fmtCaTr(x.solde) + " XPF")
                     );
                   }),
                   // Labels axe X (nom du mois)
@@ -19018,24 +19138,27 @@
                   h("thead", null,
                     h("tr", { style: { background: "rgba(0,0,0,0.30)" } },
                       h("th", { style: { padding: "6px 8px", textAlign: "left", color: "#93c5fd", textTransform: "uppercase", fontSize: 10, letterSpacing: 0.4 } }, "Mois"),
-                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", textTransform: "uppercase", fontSize: 10 } }, "CA chantiers"),
-                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", textTransform: "uppercase", fontSize: 10 } }, "CA activites"),
-                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", textTransform: "uppercase", fontSize: 10 } }, "Salaires"),
-                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", textTransform: "uppercase", fontSize: 10 } }, "Charges fixes"),
-                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", textTransform: "uppercase", fontSize: 10 } }, "Emprunts"),
+                      h("th", { style: { padding: "6px 8px", textAlign: "center", color: "#a5b4fc", textTransform: "uppercase", fontSize: 10 } }, "Source"),
+                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", textTransform: "uppercase", fontSize: 10 } }, "Encaiss."),
+                      h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", textTransform: "uppercase", fontSize: 10 } }, "Decaiss."),
                       h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#c4b5fd", textTransform: "uppercase", fontSize: 10 } }, "Net"),
                       h("th", { style: { padding: "6px 8px", textAlign: "right", color: "#a5b4fc", textTransform: "uppercase", fontSize: 10 } }, "Solde fin")
                     )
                   ),
                   h("tbody", null,
                     trMois.map(function(x, i) {
-                      return h("tr", { key: i, style: { borderTop: "1px solid rgba(255,255,255,0.05)" } },
+                      var badgeStyle, badgeText;
+                      if (x.source === "reel") { badgeStyle = { background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.35)" }; badgeText = "Reel"; }
+                      else if (x.source === "reel_partiel") { badgeStyle = { background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.35)" }; badgeText = "Reel + proj"; }
+                      else { badgeStyle = { background: "rgba(129,140,248,0.15)", color: "#a5b4fc", border: "1px solid rgba(129,140,248,0.35)" }; badgeText = "Projete"; }
+                      var rowOpa = x.source === "reel" ? 0.75 : 1;
+                      return h("tr", { key: i, style: { borderTop: "1px solid rgba(255,255,255,0.05)", opacity: rowOpa } },
                         h("td", { style: { padding: "6px 8px", fontWeight: 700 } }, x.d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" })),
-                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", fontFamily: "monospace" } }, fmtCaTr(x.caChantiers)),
-                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", fontFamily: "monospace" } }, fmtCaTr(caActivitesMens)),
-                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(salairesMens)),
-                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(chargesFixesMens)),
-                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(empruntsMensuel)),
+                        h("td", { style: { padding: "6px 8px", textAlign: "center" } },
+                          h("span", { style: Object.assign({ display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.3 }, badgeStyle) }, badgeText)
+                        ),
+                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#86efac", fontFamily: "monospace" } }, fmtCaTr(x.encaiss)),
+                        h("td", { style: { padding: "6px 8px", textAlign: "right", color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(x.decaiss)),
                         h("td", { style: { padding: "6px 8px", textAlign: "right", fontWeight: 700, color: x.net >= 0 ? "#86efac" : "#fda4af", fontFamily: "monospace" } }, (x.net >= 0 ? "+" : "") + fmtCaTr(x.net)),
                         h("td", { style: { padding: "6px 8px", textAlign: "right", fontWeight: 800, color: x.solde >= 0 ? "#a5b4fc" : "#fda4af", fontFamily: "monospace" } }, fmtCaTr(x.solde))
                       );
