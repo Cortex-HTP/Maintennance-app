@@ -18995,8 +18995,9 @@
             // si la compta a du retard. Des que la compta est a jour -> le mois passe en REEL
             // bancaire (512*) et ecrase cette estimation.
             var currentYearReal = now2.getFullYear();
-            var caChantiersRealiseParMois = new Array(12).fill(0);  // CA metrage (chantiers)
-            var caActivitesRealiseParMois = new Array(12).fill(0);  // CA facturation activites
+            // Source A : rapports de forage (identique KPI stats) -> CA metrage + CA activites
+            var caChantiersRapportsParMois = new Array(12).fill(0);
+            var caActivitesRealiseParMois = new Array(12).fill(0);
             (rapports || []).forEach(function(r) {
               if (!r || !r.date_rapport) return;
               var dR = new Date(String(r.date_rapport).substring(0,10) + "T00:00:00");
@@ -19005,7 +19006,7 @@
               // CA metrage = total_metres x prix/m du chantier (identique stats KPI)
               var mR = parseFloat(r.total_metres) || 0;
               var prixR = lookupPrixMetre(r);
-              if (mR > 0 && prixR > 0) caChantiersRealiseParMois[moisR] += mR * prixR;
+              if (mR > 0 && prixR > 0) caChantiersRapportsParMois[moisR] += mR * prixR;
               // CA facturation activites (attentes/deplacements tarifes >= duree_min)
               var actsR = Array.isArray(r.activites) ? r.activites : [];
               actsR.forEach(function(a) {
@@ -19016,6 +19017,57 @@
                 if (durAct >= tarif.dureeMin) caActivitesRealiseParMois[moisR] += (durAct / 60) * tarif.prixHoraire;
               });
             });
+            // Source B : Avancement (releves journaliers + saisies manuelles) -> CA metrage.
+            // Certains mois (ex: avril/mai) ont du metrage saisi dans Avancement sans rapport
+            // de forage detaille correspondant. On calcule ce CA en parallele et on prendra
+            // le MAX des 2 sources par mois (evite de perdre du CA present dans un seul canal).
+            var caChantiersAvancementParMois = new Array(12).fill(0);
+            var prixParChantierTr = {};
+            (dbChantiers || []).forEach(function(c) { prixParChantierTr[String(c.id)] = parseFloat(c.prixMetre) || 0; });
+            // B1 : releves journaliers (max metrage par chantier x date x machine)
+            var relIdxAv = {};
+            (ctx.dbRelevesJourn || []).forEach(function(r) {
+              if (!r || !r.chantierId || !r.dateReleve) return;
+              var ck = String(r.chantierId);
+              var dk = String(r.dateReleve).substring(0,10);
+              var mk = String(r.sondeuseCode || r.equipementId || "_no").toUpperCase().trim();
+              var v = parseFloat(r.metrage) || 0;
+              if (!relIdxAv[ck]) relIdxAv[ck] = {};
+              if (!relIdxAv[ck][dk]) relIdxAv[ck][dk] = {};
+              if (v > (relIdxAv[ck][dk][mk] || 0)) relIdxAv[ck][dk][mk] = v;
+            });
+            Object.keys(relIdxAv).forEach(function(ck) {
+              var prix = prixParChantierTr[ck] || 0;
+              if (prix <= 0) return;
+              Object.keys(relIdxAv[ck]).forEach(function(dk) {
+                var d = new Date(dk + "T00:00:00");
+                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
+                var mksAv = Object.keys(relIdxAv[ck][dk]); var sTot = 0;
+                for (var mAv = 0; mAv < mksAv.length; mAv++) sTot += relIdxAv[ck][dk][mksAv[mAv]];
+                if (sTot > 0) caChantiersAvancementParMois[d.getMonth()] += sTot * prix;
+              });
+            });
+            // B2 : saisies manuelles admin (fallback si pas de releve pour chantier x date)
+            (dbChantiers || []).forEach(function(c) {
+              var ck = String(c.id);
+              var prix = prixParChantierTr[ck] || 0;
+              if (prix <= 0) return;
+              var saisCh = (ctx.dbSaisies || {})[c.id] || {};
+              Object.keys(saisCh).forEach(function(dateStr) {
+                var d = new Date(String(dateStr).substring(0,10) + "T00:00:00");
+                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
+                if (relIdxAv[ck] && relIdxAv[ck][dateStr] != null) return; // releve prioritaire
+                var vv = saisCh[dateStr];
+                var val = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
+                if (val <= 0) return;
+                caChantiersAvancementParMois[d.getMonth()] += val * prix;
+              });
+            });
+            // CA metrage retenu par mois = MAX(rapports, avancement)
+            var caChantiersRealiseParMois = new Array(12).fill(0);
+            for (var mMax = 0; mMax < 12; mMax++) {
+              caChantiersRealiseParMois[mMax] = Math.max(caChantiersRapportsParMois[mMax], caChantiersAvancementParMois[mMax]);
+            }
 
             // ── Determination du dernier mois "fiable" cote Compta ──
             // Un mois est reel seulement s'il existe un mois strictement PLUS RECENT
