@@ -18795,7 +18795,7 @@
               )
             )
           ),
-          // ── Tresorerie previsionnelle 12 mois glissants ──
+          // ── Tresorerie previsionnelle - annee calendaire (mois courant a decembre) ──
           // Encaissements par mois : pour chaque chantier en cours ou a venir, projection
           //   metrage jour par jour (via previsionnelBaseChantierDay + coefDispo historique)
           //   agregee par mois puis multipliee par le prixMetre. + moyenne CA activites YTD.
@@ -18812,13 +18812,12 @@
             var moisEcoules = Math.max(1, Math.floor(daysElapsed / 30));
             var caActivitesMens = caFactYTD / moisEcoules;
 
-            // ── Projection CA chantiers MOIS PAR MOIS ──
-            // Pour chaque chantier En cours + A venir (metrage restant > 0), on projette
-            // jour par jour (Lun-Jeu) le metrage prevu, agrege par mois calendaire.
-            var caChantiersParMois = new Array(12).fill(0);
+            // ── Annee calendaire : du mois courant a decembre de l'annee en cours ──
+            var nbMoisRestants = 12 - now2.getMonth();
+            var caChantiersParMois = new Array(nbMoisRestants).fill(0);
             var metByMkTr = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
             var EXCL_TR = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
-            var horizonMs = new Date(now2.getFullYear(), now2.getMonth() + 12, 0).getTime();
+            var horizonMs = new Date(now2.getFullYear(), 11, 31, 23, 59, 59).getTime(); // fin d'annee courante
             (dbChantiers || []).forEach(function(c) {
               if (c.statut === "Termine" || c.statut === "Annule") return;
               var metrage = parseFloat(c.metrage) || 0;
@@ -18884,17 +18883,17 @@
                     totalProj += dayMet;
                     // Determine l'index mois relatif
                     var mi = (cursor.getFullYear() - now2.getFullYear()) * 12 + (cursor.getMonth() - now2.getMonth());
-                    if (mi >= 0 && mi < 12) caChantiersParMois[mi] += dayMet * prix;
+                    if (mi >= 0 && mi < nbMoisRestants) caChantiersParMois[mi] += dayMet * prix;
                   }
                 }
                 cursor.setDate(cursor.getDate() + 1); safeF++;
               }
             });
 
-            // Construction 12 mois
+            // Construction des mois restants jusqu'a fin d'annee courante
             var trMois = [];
             var solde = soldeInit;
-            for (var mi2 = 0; mi2 < 12; mi2++) {
+            for (var mi2 = 0; mi2 < nbMoisRestants; mi2++) {
               var dM = new Date(now2.getFullYear(), now2.getMonth() + mi2, 1);
               var encaiss = caChantiersParMois[mi2] + caActivitesMens;
               var decaiss = salairesMens + chargesFixesMens + empruntsMensuel;
@@ -18902,7 +18901,7 @@
               solde += net;
               trMois.push({ d: dM, encaiss: encaiss, decaiss: decaiss, net: net, solde: solde, caChantiers: caChantiersParMois[mi2] });
             }
-            var soldeFinTr = trMois[11].solde;
+            var soldeFinTr = trMois[trMois.length - 1].solde;
             var minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
             var minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
             var totalInTr = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
@@ -18955,9 +18954,9 @@
               h("div", { style: { marginBottom: 12 } },
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8 } },
                   h(Icon, { name: "line-chart", size: 16, color: "#93c5fd" }),
-                  "Tresorerie previsionnelle - 12 mois glissants"
+                  "Tresorerie previsionnelle - annee " + now2.getFullYear() + " (jusqu'a decembre)"
                 ),
-                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Encaissements : projection CA chantiers jour par jour (planning + coef dispo historique) + CA activites moyenne YTD. Decaissements : salaires x 1.4 + charges fixes + mensualites emprunts. Solde initial : parametres > tresorerie_solde_init.")
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Fenetre : du mois courant a decembre " + now2.getFullYear() + ". Encaissements : projection CA chantiers jour par jour (planning + coef dispo historique) + CA activites moyenne YTD. Decaissements : salaires x 1.4 + charges fixes + mensualites emprunts. Solde initial : parametres > tresorerie_solde_init.")
               ),
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 14 } },
                 h("div", { style: { padding: "10px 12px", background: "rgba(96,165,250,0.10)", border: "1px solid rgba(96,165,250,0.30)", borderRadius: 8 } },
@@ -18965,11 +18964,11 @@
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: "#93c5fd", fontFamily: "monospace" } }, fmtCaTr(soldeInit) + " XPF")
                 ),
                 h("div", { style: { padding: "10px 12px", background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Encaissements 12m"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Encaissements a venir"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: "#86efac", fontFamily: "monospace" } }, fmtCaTr(totalInTr) + " XPF")
                 ),
                 h("div", { style: { padding: "10px 12px", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Decaissements 12m"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Decaissements a venir"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(totalOutTr) + " XPF")
                 ),
                 h("div", { style: { padding: "10px 12px", background: soldeFinTr >= soldeInit ? "rgba(34,197,94,0.10)" : "rgba(244,63,94,0.10)", border: "1px solid " + (soldeFinTr >= soldeInit ? "rgba(34,197,94,0.30)" : "rgba(244,63,94,0.30)"), borderRadius: 8 } },
