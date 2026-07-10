@@ -10235,16 +10235,24 @@
     // Helper : construit un index { mk: { _total: {dk:sum}, ck: {dk: max_metrage} } }
     //          a partir de dbRelevesJourn (qui contient rapports + CSV) + equipements pour la
     //          resolution equipement_id -> Title.
-    // ── Frais generaux reels depuis le FEC (grand livre comptable) ──
-    // Pool = charges classe 6 MOINS : personnel (64x, deja dans l'app), financier (66x,
-    // = emprunts deja dans l'app) et directs machine (entretien/conso/carburant, deja app).
-    // Reste = assurances, loyers, import, telecom, banque, taxes = vrais frais generaux.
+    // ── Couts indirects reels depuis le FEC (grand livre comptable) ──
+    // Pool = charges classe 6 MOINS ce que l'app suit deja finement par machine :
+    //   personnel (64x), financier/emprunts (66x), carburant (606130).
+    // Le pool INCLUT donc : entretien/pieces/consommables (615x, 602x, 606300) + structure
+    // (assurances, loyers, import, telecom, banque, credit-bail SOCALFI 612, taxes).
+    // Raison : la saisie terrain des consommables/pieces est incomplete (oublis employes),
+    // alors que le FEC est complet -> on repartit ces couts depuis le FEC (par CA), et on
+    // retire au niveau agrege les consommables DEJA declares en terrain (anti double-compte).
     // Un mois est "fiable" s'il est echu ET a des ecritures bancaires 512* (compta a jour).
-    // Pour les mois non encore saisis : on estime au poolMoyenMensuel (poste tres stable).
-    var FRAISGEN_DIRECT_ACC = { "615510": 1, "615515": 1, "615600": 1, "602120": 1, "606300": 1, "606130": 1 };
+    // Mois non encore saisis : on estime au poolMoyenMensuel (poste globalement stable).
+    // Comptes entretien/pieces/consommables machine (achats de materiel) : dans le pool
+    // ELARGI (rentabilite) mais PAS dans le pool STRUCTURE (tresorerie), car deja projetes
+    // via les factures fournisseurs 401 a J+30.
+    var ENTRETIEN_PIECES_ACC = { "615510": 1, "615515": 1, "615600": 1, "602120": 1, "602130": 1, "606300": 1 };
     function computeFraisGenerauxFEC(ecritures, refDate) {
       var year = refDate.getFullYear();
       var fgParMois = new Array(12).fill(0);
+      var fgStructParMois = new Array(12).fill(0);
       var hasBankMonth = {};
       (ecritures || []).forEach(function(e) {
         if (!e || !e.date_ecriture) return;
@@ -10253,23 +10261,31 @@
         var code = String(e.compte_code || "");
         var mi = d.getMonth();
         if (code.substring(0, 3) === "512") { hasBankMonth[mi] = true; return; }
-        if (code.charAt(0) !== "6") return;       // charges classe 6 uniquement
-        if (code.substring(0, 2) === "64") return; // personnel -> app
-        if (code.substring(0, 2) === "66") return; // financier / emprunts -> app
-        if (FRAISGEN_DIRECT_ACC[code]) return;      // directs machine -> app
-        fgParMois[mi] += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+        if (code.charAt(0) !== "6") return;        // charges classe 6 uniquement
+        if (code.substring(0, 2) === "64") return;  // personnel -> app (planning)
+        if (code.substring(0, 2) === "66") return;  // financier / emprunts -> app
+        if (code === "606130") return;              // carburant -> app (table carburant)
+        var mt = (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+        fgParMois[mi] += mt; // pool ELARGI (structure + entretien/pieces/conso) -> rentabilite
+        // pool STRUCTURE seule (hors entretien/pieces/conso) -> tresorerie (evite le
+        // double-compte avec les factures fournisseurs 401 deja projetees a J+30)
+        if (ENTRETIEN_PIECES_ACC[code]) return;
+        fgStructParMois[mi] += mt;
       });
       function moisEchu(mi) { return new Date(year, mi + 1, 0) < refDate; }
       var reliableIdx = [];
       for (var mi = 0; mi < 12; mi++) { if (hasBankMonth[mi] && moisEchu(mi)) reliableIdx.push(mi); }
-      var sumFiable = 0;
-      reliableIdx.forEach(function(mi) { sumFiable += fgParMois[mi]; });
+      var sumFiable = 0, sumFiableStruct = 0;
+      reliableIdx.forEach(function(mi) { sumFiable += fgParMois[mi]; sumFiableStruct += fgStructParMois[mi]; });
       var poolMoyenMensuel = reliableIdx.length ? sumFiable / reliableIdx.length : 0;
+      var poolStructMoyenMensuel = reliableIdx.length ? sumFiableStruct / reliableIdx.length : 0;
       return {
         fgParMois: fgParMois,
+        fgStructParMois: fgStructParMois,
         reliableIdx: reliableIdx,
         lastReliableMonthIdx: reliableIdx.length ? reliableIdx[reliableIdx.length - 1] : -1,
         poolMoyenMensuel: poolMoyenMensuel,
+        poolStructMoyenMensuel: poolStructMoyenMensuel,
         aDonnees: reliableIdx.length > 0
       };
     }
@@ -17957,7 +17973,7 @@
         var code = r.sondeuse_code || "—";
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
-          coutConso: 0, coutPersonnel: 0, coutEmprunt: 0,
+          coutConso: 0, coutConsommablesTerrain: 0, coutPersonnel: 0, coutEmprunt: 0,
           caGenere: 0, caFacturationActivites: 0, joursTravailles: {}, chantierMetres: {}
         };
         sondeusesMap[code].rapports += 1;
@@ -17993,6 +18009,7 @@
           var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0;
           var prix = lookupPrix(c.designation || c.nom, c.ref);
           sondeusesMap[code].coutConso += qty * prix;
+          sondeusesMap[code].coutConsommablesTerrain += qty * prix; // consommables seuls (hors carburant)
         });
         // Carburant : entrees liees a ce rapport (par rapport_id ou couple sondeuse+date).
         // Le prix unitaire est lookup depuis pieces (entree "Mazout/L").
@@ -18086,7 +18103,14 @@
       var fgInfo = computeFraisGenerauxFEC(dbEcrCompta, new Date());
       var chargesFixesMensuelles = fgInfo.aDonnees ? fgInfo.poolMoyenMensuel : chargesFixesManuelles;
       var fraisGenSource = fgInfo.aDonnees ? "fec" : "manuel";
-      var coutChargesFixesTotal = chargesFixesMensuelles * nbMoisPeriode;
+      // Pool FEC (entretien/pieces/conso + structure) pour la periode.
+      var coutFECPoolTotal = chargesFixesMensuelles * nbMoisPeriode;
+      // Anti double-compte : les consommables terrain deja declares (par machine) sont
+      // deja dans coutConso. On les retire du pool FEC pour ne les compter qu'une fois.
+      // Le net = ce que le terrain a oublie de saisir + tous les frais de structure.
+      var coutConsommablesTerrainAll = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { coutConsommablesTerrainAll += (sondeusesMap[code].coutConsommablesTerrain || 0); });
+      var coutChargesFixesTotal = fgInfo.aDonnees ? Math.max(0, coutFECPoolTotal - coutConsommablesTerrainAll) : coutFECPoolTotal;
       // ── Primes de metrage : calcul EXACT via le module computeTotalPrimesForPeriod ──
       // Replique exactement la logique de la page Primes (rattrapages, multi-sites, etc.).
       // x 1.40 pour ajouter les charges patronales sur les primes (meme regle que salaires).
@@ -18958,7 +18982,9 @@
 
             var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
               .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
-            var chargesFixesMens = chargesFixesMensuelles;
+            // Tresorerie : frais generaux STRUCTURE seule (entretien/pieces exclus car deja
+            // projetes via les factures fournisseurs 401 a J+30 -> evite le double-compte).
+            var chargesFixesMens = fgInfo.aDonnees ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles;
             var salairesMens = masseSalarialeMensuelle * 1.40;
             var moisEcoules = Math.max(1, Math.floor(daysElapsed / 30));
             var caActivitesMens = caFactYTD / moisEcoules;
