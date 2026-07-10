@@ -10235,6 +10235,45 @@
     // Helper : construit un index { mk: { _total: {dk:sum}, ck: {dk: max_metrage} } }
     //          a partir de dbRelevesJourn (qui contient rapports + CSV) + equipements pour la
     //          resolution equipement_id -> Title.
+    // ── Frais generaux reels depuis le FEC (grand livre comptable) ──
+    // Pool = charges classe 6 MOINS : personnel (64x, deja dans l'app), financier (66x,
+    // = emprunts deja dans l'app) et directs machine (entretien/conso/carburant, deja app).
+    // Reste = assurances, loyers, import, telecom, banque, taxes = vrais frais generaux.
+    // Un mois est "fiable" s'il est echu ET a des ecritures bancaires 512* (compta a jour).
+    // Pour les mois non encore saisis : on estime au poolMoyenMensuel (poste tres stable).
+    var FRAISGEN_DIRECT_ACC = { "615510": 1, "615515": 1, "615600": 1, "602120": 1, "606300": 1, "606130": 1 };
+    function computeFraisGenerauxFEC(ecritures, refDate) {
+      var year = refDate.getFullYear();
+      var fgParMois = new Array(12).fill(0);
+      var hasBankMonth = {};
+      (ecritures || []).forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        var d = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
+        var code = String(e.compte_code || "");
+        var mi = d.getMonth();
+        if (code.substring(0, 3) === "512") { hasBankMonth[mi] = true; return; }
+        if (code.charAt(0) !== "6") return;       // charges classe 6 uniquement
+        if (code.substring(0, 2) === "64") return; // personnel -> app
+        if (code.substring(0, 2) === "66") return; // financier / emprunts -> app
+        if (FRAISGEN_DIRECT_ACC[code]) return;      // directs machine -> app
+        fgParMois[mi] += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+      });
+      function moisEchu(mi) { return new Date(year, mi + 1, 0) < refDate; }
+      var reliableIdx = [];
+      for (var mi = 0; mi < 12; mi++) { if (hasBankMonth[mi] && moisEchu(mi)) reliableIdx.push(mi); }
+      var sumFiable = 0;
+      reliableIdx.forEach(function(mi) { sumFiable += fgParMois[mi]; });
+      var poolMoyenMensuel = reliableIdx.length ? sumFiable / reliableIdx.length : 0;
+      return {
+        fgParMois: fgParMois,
+        reliableIdx: reliableIdx,
+        lastReliableMonthIdx: reliableIdx.length ? reliableIdx[reliableIdx.length - 1] : -1,
+        poolMoyenMensuel: poolMoyenMensuel,
+        aDonnees: reliableIdx.length > 0
+      };
+    }
+
     function buildMetByMachine(dbRelevesJourn, equipementsList) {
       var idx = {};
       var titleById = {};
@@ -16926,17 +16965,28 @@
           }
           return all;
         }
-        // Ecritures compta 512* (banque) + 401* (fournisseurs) de l'annee en cours + N-1.
-        // Utilise pour la tresorerie previsionnelle : solde bancaire live, mouvements
-        // reels passes, factures fournisseurs futures avec echeance J+30.
+        // Ecritures compta de l'annee en cours + N-1 :
+        //  - 512* (banque) + 401* (fournisseurs) : tresorerie (solde live, mouvements, factures J+30)
+        //  - 6* (charges) : frais generaux reels (rentabilite par machine, seuil, previsionnel)
+        // Pagination manuelle : la classe 6 depasse la limite serveur de 1000 lignes.
         async function fetchEcrituresBanqueFrs() {
           var yearNow = new Date().getFullYear();
-          var res = await supabase.from("ecritures_compta")
-            .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
-            .in("exercice", [yearNow - 1, yearNow])
-            .or("compte_code.like.512%,compte_code.like.401%");
-          if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); return []; }
-          return res.data || [];
+          var all = [];
+          var pageSize = 1000;
+          var from = 0;
+          while (all.length < 50000) {
+            var res = await supabase.from("ecritures_compta")
+              .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
+              .in("exercice", [yearNow - 1, yearNow])
+              .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+              .range(from, from + pageSize - 1);
+            if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); break; }
+            if (!res.data || res.data.length === 0) break;
+            all.push.apply(all, res.data);
+            if (res.data.length < pageSize) break;
+            from += pageSize;
+          }
+          return all;
         }
         Promise.all([fetchAllRapports(), fetchAllCarburants(), fetchEcrituresBanqueFrs()]).then(function(arr) {
           if (cancelled) return;
@@ -18027,10 +18077,15 @@
         return days / 30;
       })();
       var coutPersonnelTotal = masseSalarialeMensuelle * 1.40 * nbMoisPeriode;
-      // Charges fixes mensuelles (actives) x nb mois
-      var chargesFixesMensuelles = (dbChargesFixes || [])
+      // Frais generaux : source PRIORITAIRE = grand livre FEC (reel), sinon parametres manuels.
+      // Le FEC donne le vrai cout de structure (assurances, loyers, import, telecom, banque,
+      // taxes) au lieu du montant saisi a la main dans "Charges fixes".
+      var chargesFixesManuelles = (dbChargesFixes || [])
         .filter(function(c) { return c && c.actif !== false; })
         .reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+      var fgInfo = computeFraisGenerauxFEC(dbEcrCompta, new Date());
+      var chargesFixesMensuelles = fgInfo.aDonnees ? fgInfo.poolMoyenMensuel : chargesFixesManuelles;
+      var fraisGenSource = fgInfo.aDonnees ? "fec" : "manuel";
       var coutChargesFixesTotal = chargesFixesMensuelles * nbMoisPeriode;
       // ── Primes de metrage : calcul EXACT via le module computeTotalPrimesForPeriod ──
       // Replique exactement la logique de la page Primes (rattrapages, multi-sites, etc.).
@@ -18123,12 +18178,17 @@
       var netParJourReel = joursTravailles > 0 ? (entreesTempsReel - depensesTempsReel) / joursTravailles : 0;
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
-      // Charges indirectes = carburant VL + personnel hors-equipe + charges fixes
-      // Reparties AU PRORATA DU METRAGE (comme le cout au metre), pas des jours.
+      // Charges indirectes reparties en 2 cles :
+      //  - Carburant VL + personnel hors-equipe -> AU PRORATA DES METRES (lie a l'activite forage)
+      //  - Frais generaux FEC (coutChargesFixesTotal) -> AU PRORATA DU CA (cout de structure suit le CA)
       var sumPersonnelTerrainAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
       var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
-      var chargesIndirectesTotal = coutCarburantVL + coutPersonnelHorsTerrain + coutChargesFixesTotal;
+      var chargesIndirVarTotal = coutCarburantVL + coutPersonnelHorsTerrain; // reparti par metres
+      var chargesIndirectesTotal = chargesIndirVarTotal + coutChargesFixesTotal; // total (pour agregats)
+      // CA total de la flotte (pour repartir les frais generaux par CA)
+      var totalCAFlotte = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { totalCAFlotte += (sondeusesMap[code].caGenere || 0) + (sondeusesMap[code].caFacturationActivites || 0); });
       // Diviseur d'affichage (pour CA/jour et Couts/jour) = jours OUVRABLES Lun-Ven
       // de la periode filtree. Fallback 22 si periode 'all' non definie.
       var joursOuvrablesPeriode = joursOuvres > 0 ? joursOuvres : 22;
@@ -18137,11 +18197,12 @@
         var s = sondeusesMap[code];
         var coutCharges = s.coutPersonnel * 0.40;  // 40% charges patronales sur personnel terrain
         var nbJoursMach = Object.keys(s.joursTravailles || {}).length;
-        // Charges indirectes AU PRORATA DU METRAGE (identique au cout au metre) :
-        // credits, impots, locations, personnel hors-equipe -> reparties selon la
-        // contribution en metres de chaque machine sur la periode.
+        // Indirects variables (carburant VL, perso hors-equipe) -> prorata METRES.
+        // Frais generaux FEC (structure) -> prorata CA de la machine.
         var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
-        var coutIndirect = chargesIndirectesTotal * partMetres;
+        var caMachine = (s.caGenere || 0) + (s.caFacturationActivites || 0);
+        var partCA = totalCAFlotte > 0 ? (caMachine / totalCAFlotte) : partMetres;
+        var coutIndirect = chargesIndirVarTotal * partMetres + coutChargesFixesTotal * partCA;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
