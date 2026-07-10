@@ -10347,15 +10347,14 @@
       var year = refDate.getFullYear();
       var reliableSet = {};
       fg.reliableIdx.forEach(function(mi) { reliableSet[mi] = 1; });
-      var moisOk = function(dateStr) {
-        var d = new Date(String(dateStr).substring(0, 10) + "T00:00:00");
-        return !isNaN(d.getTime()) && d.getFullYear() === year && reliableSet[d.getMonth()];
-      };
-      // Total charges classe 6 sur mois fiables (= le total a repartir)
+      var dOf = function(dateStr) { var d = new Date(String(dateStr).substring(0, 10) + "T00:00:00"); return isNaN(d.getTime()) ? null : d; };
+      var isCurYear = function(d) { return d && d.getFullYear() === year; };
+      var isReliable = function(d) { return d && d.getFullYear() === year && reliableSet[d.getMonth()]; };
+      // Total charges classe 6 sur mois fiables (= la structure a repartir)
       var totCharges = 0;
       (ctx.dbEcrCompta || []).forEach(function(e) {
         if (!e || !e.date_ecriture || String(e.compte_code || "").charAt(0) !== "6") return;
-        if (!moisOk(e.date_ecriture)) return;
+        if (!isReliable(dOf(e.date_ecriture))) return;
         totCharges += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
       });
       // Prix mazout + salaires + prix pieces
@@ -10370,33 +10369,43 @@
       var piecePrice = {};
       (ctx.pieces || []).forEach(function(p) { var d = String(p.Designation || "").toLowerCase().trim(); var r = String(p.Reference || "").toLowerCase().trim(); var pr = parseFloat(p.PrixUnitaire) || 0; if (d) piecePrice[d] = pr; if (r) piecePrice["ref:" + r] = pr; });
       var lookPiece = function(des, ref) { var d = String(des || "").toLowerCase().trim(); var r = String(ref || "").toLowerCase().trim(); if (d && piecePrice[d] != null) return piecePrice[d]; if (r && piecePrice["ref:" + r] != null) return piecePrice["ref:" + r]; return 0; };
-      // Directs par machine : metrage + conso + carburant + personnel equipe (x1.4)
-      var mach = {}; // code -> { metres, directs }
+      // Directs par machine sur TOUTE l'annee (pour couvrir les machines recentes) +
+      // cumul des directs sur les mois FIABLES seulement (pour calculer le taux de structure).
+      var mach = {}; // code -> { metres, directs }  (annee complete)
       var getM = function(code) { if (!mach[code]) mach[code] = { metres: 0, directs: 0 }; return mach[code]; };
+      var directsReliable = 0, metresReliable = 0;
       (ctx.dbRapportsForage || []).forEach(function(r) {
-        if (!r || !r.date_rapport || !moisOk(r.date_rapport)) return;
+        if (!r || !r.date_rapport) return;
+        var d = dOf(r.date_rapport);
+        if (!isCurYear(d)) return;
         var code = String(r.sondeuse_code || "").toUpperCase().trim();
         if (!code) return;
-        var m = getM(code);
-        m.metres += parseFloat(r.total_metres) || 0;
+        var metres = parseFloat(r.total_metres) || 0;
+        var directs = 0;
         var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
-        consos.forEach(function(c) { var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0; m.directs += qty * lookPiece(c.designation || c.nom, c.ref || c.reference); });
+        consos.forEach(function(c) { var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0; directs += qty * lookPiece(c.designation || c.nom, c.ref || c.reference); });
         var equipe = Array.isArray(r.equipe) ? r.equipe : [];
-        equipe.forEach(function(mem) { if (!mem || !mem.nom) return; var sal = salByName[String(mem.nom).toUpperCase().trim()] || 0; if (sal > 0) m.directs += (sal / 18) * 1.40; }); // salaire/jour (~18 j ouvres) x charges
+        equipe.forEach(function(mem) { if (!mem || !mem.nom) return; var sal = salByName[String(mem.nom).toUpperCase().trim()] || 0; if (sal > 0) directs += (sal / 18) * 1.40; });
+        var m = getM(code);
+        m.metres += metres; m.directs += directs;
+        if (isReliable(d)) { directsReliable += directs; metresReliable += metres; }
       });
-      // Carburant par machine
+      // Carburant par machine (annee + fiables)
       (ctx.dbCarburants || []).forEach(function(c) {
-        if (!c || !c.date_consommation || !moisOk(c.date_consommation)) return;
+        if (!c || !c.date_consommation) return;
+        var d = dOf(c.date_consommation);
+        if (!isCurYear(d)) return;
         var code = String(c.sondeuse_code || "").toUpperCase().trim();
-        if (!code || !mach[code]) return; // carburant VL / machine sans rapport -> reste dans l'overhead
-        mach[code].directs += (parseFloat(c.quantite_l) || 0) * prixMazout;
+        if (!code || !mach[code]) return; // carburant VL / machine sans rapport -> overhead
+        var cout = (parseFloat(c.quantite_l) || 0) * prixMazout;
+        mach[code].directs += cout;
+        if (isReliable(d)) directsReliable += cout;
       });
-      // Overhead = total charges - somme directs, reparti au prorata des metres
-      var totMetres = 0, totDirects = 0;
-      Object.keys(mach).forEach(function(code) { totMetres += mach[code].metres; totDirects += mach[code].directs; });
-      if (totMetres <= 0) return {};
-      var overheadPool = Math.max(0, totCharges - totDirects);
-      var overheadRate = overheadPool / totMetres;
+      // Taux de structure (overhead) au metre = (charges classe 6 fiables - directs fiables)
+      // / metres fiables. Applique a toutes les machines. Fallback : cout/m global FEC.
+      var overheadRate;
+      if (metresReliable > 0) overheadRate = Math.max(0, totCharges - directsReliable) / metresReliable;
+      else overheadRate = computeCoutMetreFEC(ctx, refDate);
       var out = {};
       Object.keys(mach).forEach(function(code) {
         var m = mach[code];
