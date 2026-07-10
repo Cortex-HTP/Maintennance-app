@@ -10300,10 +10300,26 @@
       };
     }
 
-    // ── Cout de revient reel au metre depuis le FEC ──
-    // = total charges classe 6 (TOUT : personnel, carburant, entretien, structure, interets)
-    //   sur les mois compta a jour / total metres fores sur ces memes mois.
-    // C'est le cout/m le plus complet et le plus juste (adosse au grand livre).
+    // ── Metrage du mois de reference = dernier mois COMPLET (avant le mois courant)
+    //    avec du metrage. C'est le mois "le plus reel" (mois plein, activite normale),
+    //    ex : juin quand on est en juillet. Sert d'ancrage pour le cout/m. ──
+    function refMonthMetres(ctx, refDate) {
+      var year = refDate.getFullYear(), curM = refDate.getMonth();
+      var byMonth = {};
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r || !r.date_rapport) return;
+        var d = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getFullYear() !== year || d.getMonth() >= curM) return;
+        byMonth[d.getMonth()] = (byMonth[d.getMonth()] || 0) + (parseFloat(r.total_metres) || 0);
+      });
+      for (var mi = curM - 1; mi >= 0; mi--) { if (byMonth[mi] && byMonth[mi] > 0) return { month: mi, metres: byMonth[mi] }; }
+      return null;
+    }
+
+    // ── Cout de revient reel au metre depuis le FEC, ANCRE SUR LE MOIS DE REFERENCE ──
+    // = charges mensuelles moyennes (classe 6, mois compta a jour) / metrage du mois plein
+    //   le plus recent (ex: juin). On divise par un mois REPRESENTATIF plutot que par la
+    //   somme des mois compta (qui peuvent etre atypiques / peu de metrage -> cout/m fausse).
     // Retourne 0 si pas de donnees FEC fiables -> l'appelant garde son fallback.
     function computeCoutMetreFEC(ctx, refDate) {
       var fg = computeFraisGenerauxFEC(ctx.dbEcrCompta || [], refDate);
@@ -10311,27 +10327,26 @@
       var year = refDate.getFullYear();
       var reliableSet = {};
       fg.reliableIdx.forEach(function(mi) { reliableSet[mi] = 1; });
-      var totCharges = 0;
+      var nbReliable = fg.reliableIdx.length || 1;
+      var totCharges = 0, totMetresReliable = 0;
       (ctx.dbEcrCompta || []).forEach(function(e) {
-        if (!e || !e.date_ecriture) return;
+        if (!e || !e.date_ecriture || String(e.compte_code || "").charAt(0) !== "6") return;
         var d = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
-        if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
-        if (String(e.compte_code || "").charAt(0) !== "6") return;
-        if (!reliableSet[d.getMonth()]) return;
+        if (isNaN(d.getTime()) || d.getFullYear() !== year || !reliableSet[d.getMonth()]) return;
         totCharges += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
       });
-      // Denominateur = metres des RAPPORTS DE FORAGE (meme source que le CA partout
-      // ailleurs). On evite dbRelevesJourn qui fusionne rapports + CSV legacy et peut
-      // double-compter le metrage -> cout/m artificiellement bas -> marge fausse.
-      var totMetres = 0;
       (ctx.dbRapportsForage || []).forEach(function(r) {
         if (!r || !r.date_rapport) return;
         var d = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
-        if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
-        if (!reliableSet[d.getMonth()]) return;
-        totMetres += parseFloat(r.total_metres) || 0;
+        if (isNaN(d.getTime()) || d.getFullYear() !== year || !reliableSet[d.getMonth()]) return;
+        totMetresReliable += parseFloat(r.total_metres) || 0;
       });
-      return totMetres > 0 ? totCharges / totMetres : 0;
+      // Charges mensuelles moyennes / metrage du mois de reference (mois plein recent).
+      var moyMensuelCharges = totCharges / nbReliable;
+      var ref = refMonthMetres(ctx, refDate);
+      if (ref && ref.metres > 0) return moyMensuelCharges / ref.metres;
+      // Fallback : ancienne base (total charges compta / metrage compta)
+      return totMetresReliable > 0 ? totCharges / totMetresReliable : 0;
     }
 
     // ── Cout de revient au metre PAR MACHINE (moyen, mois compta a jour) ──
@@ -10390,27 +10405,30 @@
         m.metres += metres; m.directs += directs;
         if (isReliable(d)) { directsReliable += directs; metresReliable += metres; }
       });
-      // Carburant par machine (annee + fiables)
+      // Carburant par machine (annee complete)
       (ctx.dbCarburants || []).forEach(function(c) {
         if (!c || !c.date_consommation) return;
         var d = dOf(c.date_consommation);
         if (!isCurYear(d)) return;
         var code = String(c.sondeuse_code || "").toUpperCase().trim();
         if (!code || !mach[code]) return; // carburant VL / machine sans rapport -> overhead
-        var cout = (parseFloat(c.quantite_l) || 0) * prixMazout;
-        mach[code].directs += cout;
-        if (isReliable(d)) directsReliable += cout;
+        mach[code].directs += (parseFloat(c.quantite_l) || 0) * prixMazout;
       });
-      // Taux de structure (overhead) au metre = (charges classe 6 fiables - directs fiables)
-      // / metres fiables. Applique a toutes les machines. Fallback : cout/m global FEC.
-      var overheadRate;
-      if (metresReliable > 0) overheadRate = Math.max(0, totCharges - directsReliable) / metresReliable;
-      else overheadRate = computeCoutMetreFEC(ctx, refDate);
+      // ── Cout/m par machine CENTRE sur le cout/m global (borne, ne peut pas exploser) ──
+      // Chaque machine = cout/m global + (ses directs/m - directs/m moyen de la flotte).
+      // Une machine dont les couts directs/m sont au-dessus de la moyenne coute plus cher,
+      // en-dessous moins cher. La moyenne ponderee reste = cout/m global (reconcilie FEC).
+      var globalCostM = computeCoutMetreFEC(ctx, refDate);
+      if (!(globalCostM > 0)) return {};
+      var totMetresAll = 0, totDirectsAll = 0;
+      Object.keys(mach).forEach(function(code) { totMetresAll += mach[code].metres; totDirectsAll += mach[code].directs; });
+      if (totMetresAll <= 0) return {};
+      var avgDirectsM = totDirectsAll / totMetresAll;
       var out = {};
       Object.keys(mach).forEach(function(code) {
         var m = mach[code];
         if (m.metres <= 0) return;
-        out[code] = (m.directs / m.metres) + overheadRate;
+        out[code] = Math.max(0, globalCostM + (m.directs / m.metres - avgDirectsM));
       });
       return out;
     }
