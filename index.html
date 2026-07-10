@@ -10811,7 +10811,12 @@
           // Exclut les sous-traitants (factures a l'heure, pas salaries)
           var persList = loadPersonnelFromParametres(parametresList).filter(function(p) { return !p.roleMecanicien; });
           var masseSalarialeMensuelle = persList.reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
-          var chargesFixesMensuel = (ctxAv.dbChargesFixes || []).filter(function(c) { return c && c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+          // Frais generaux : source FEC (grand livre) prioritaire, sinon parametre manuel.
+          // Meme helper que la rentabilite -> coherence garantie entre Previsionnel et Stats.
+          var chargesFixesManuel90 = (ctxAv.dbChargesFixes || []).filter(function(c) { return c && c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
+          var fgInfoAv = computeFraisGenerauxFEC(ctxAv.dbEcrCompta || [], new Date());
+          var fgAvActif = fgInfoAv.aDonnees;
+          var chargesFixesMensuel = fgAvActif ? fgInfoAv.poolMoyenMensuel : chargesFixesManuel90;
           var empruntsMensuel = (ctxAv.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
           var nbMois90j = 3; // 90j = 3 mois
           var coutPersonnel90j = masseSalarialeMensuelle * 1.40 * nbMois90j;
@@ -10879,8 +10884,11 @@
             });
             coutPrimes90j = (totalPrimesBrutes || 0) * 1.40;
           } catch (e) {}
+          // Anti double-compte : si frais generaux FEC (pool elargi inclut deja entretien/
+          // pieces/conso), on retire les consommables terrain deja comptes ci-dessous.
+          var coutChargesFixes90jNet = fgAvActif ? Math.max(0, coutChargesFixes90j - coutConsoSondeuses90j) : coutChargesFixes90j;
           // Total couts 90j (alignement complet avec la formule Accueil)
-          var coutTotal90j = coutPersonnel90j + coutChargesFixes90j + coutEmprunts90j + coutCarburant90j + coutPrimes90j + coutConsoSondeuses90j;
+          var coutTotal90j = coutPersonnel90j + coutChargesFixes90jNet + coutEmprunts90j + coutCarburant90j + coutPrimes90j + coutConsoSondeuses90j;
           if (coutTotal90j <= 0) return 0;
           // Metres 90j (tous chantiers confondus)
           var iso90 = d90.toISOString().substring(0, 10);
@@ -27625,6 +27633,7 @@
       const [dbRapportsForage, setDbRapportsForage] = useState([]);
       const [dbEmprunts, setDbEmprunts] = useState([]);
       const [dbChargesFixes, setDbChargesFixes] = useState([]);
+      const [dbEcrCompta, setDbEcrCompta] = useState([]); // ecritures FEC (512/401/classe 6) - couts reels
       const [dbBugLogs, setDbBugLogs] = useState([]);
       const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
       const [piecesPendingCount, setPiecesPendingCount] = useState(0);
@@ -27789,6 +27798,25 @@
           setDbEmprunts(emRes.data || []);
           setDbChargesFixes(cfRes.data || []);
           setDbBugLogs(blRes.data || []);
+          // Ecritures FEC (couts reels) : 512* banque + 401* fournisseurs + 6* charges,
+          // annee en cours + N-1. Pagine (classe 6 depasse la limite serveur de 1000).
+          try {
+            var yearFEC = new Date().getFullYear();
+            var ecrAll = []; var fromFEC = 0;
+            while (ecrAll.length < 50000) {
+              var ecrRes = await supabase.from("ecritures_compta")
+                .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
+                .in("exercice", [yearFEC - 1, yearFEC])
+                .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+                .range(fromFEC, fromFEC + 999);
+              if (ecrRes.error) { console.warn("Table ecritures_compta:", ecrRes.error.message); break; }
+              if (!ecrRes.data || ecrRes.data.length === 0) break;
+              ecrAll.push.apply(ecrAll, ecrRes.data);
+              if (ecrRes.data.length < 1000) break;
+              fromFEC += 1000;
+            }
+            setDbEcrCompta(ecrAll);
+          } catch (e) { console.warn("Fetch ecritures_compta:", e.message); }
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -28839,6 +28867,7 @@
         dbRapportsForage, setDbRapportsForage, rapportsAsReleves,
         dbEmprunts, setDbEmprunts,
         dbChargesFixes, setDbChargesFixes,
+        dbEcrCompta, setDbEcrCompta,
         dbBugLogs, setDbBugLogs,
         alertesSaisies, recentRelHeures, rhSignaturesPending, onlinePresences,
         loadAll, showToast,
