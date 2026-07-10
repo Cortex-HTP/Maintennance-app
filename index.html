@@ -10929,11 +10929,13 @@
           // Total couts 90j (alignement complet avec la formule Accueil)
           var coutTotal90j = coutPersonnel90j + coutChargesFixes90jNet + coutEmprunts90j + coutCarburant90j + coutPrimes90j + coutConsoSondeuses90j;
           if (coutTotal90j <= 0) return 0;
-          // Metres 90j (tous chantiers confondus)
+          // Metres 90j (tous chantiers confondus) : source RAPPORTS DE FORAGE (total_metres),
+          // meme source que le CA. On evite dbRelevesJourn qui fusionne rapports + CSV legacy
+          // et double-compte le metrage -> cout/m trop bas -> marge fausse.
           var iso90 = d90.toISOString().substring(0, 10);
-          var totalMetres90j = (ctxAv.dbRelevesJourn || []).filter(function(r) {
-            return (r.dateReleve || "") >= iso90;
-          }).reduce(function(s, r) { return s + (parseFloat(r.metrage) || 0); }, 0);
+          var totalMetres90j = (ctxAv.dbRapportsForage || []).filter(function(r) {
+            return r && (String(r.date_rapport || "").substring(0, 10)) >= iso90;
+          }).reduce(function(s, r) { return s + (parseFloat(r.total_metres) || 0); }, 0);
           if (totalMetres90j <= 0) return 0;
           return coutTotal90j / totalMetres90j;
         } catch (e) { return 0; }
@@ -12556,7 +12558,7 @@
                           caJourPrev > 0 ? KpiTile({
                             icon: "target",
                             accent: caJourRangSt.color,
-                            label: "Rentab. /jour",
+                            label: "CA/J",
                             value: fmtCaTile(caJourPrev) + " /j",
                             valueColor: caJourRangSt.color,
                             hint: Math.round(vitesse14j) + " m/j × " + fmtNum(chantier.prixMetre) + " XPF/m",
