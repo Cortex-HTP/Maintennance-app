@@ -19069,17 +19069,22 @@
               caChantiersRealiseParMois[mMax] = Math.max(caChantiersRapportsParMois[mMax], caChantiersAvancementParMois[mMax]);
             }
 
-            // ── Determination du dernier mois "fiable" cote Compta ──
-            // Un mois est reel seulement s'il existe un mois strictement PLUS RECENT
-            // avec des ecritures 512* : sinon on considere qu'il est en cours de saisie
-            // (la compta est toujours en retard). Ex : dernieres ecritures en mars ->
-            // avril/mai/juin passent en projete meme si "passes".
-            var latestMonthKey = null;
-            Object.keys(mvtsBanqueParMois).forEach(function(k) {
-              if (!latestMonthKey || k > latestMonthKey) latestMonthKey = k;
-            });
-
+            // ── Determination des mois "fiables" cote Compta ──
+            // Un mois est REEL s'il est ECHU (termine, dernier jour < aujourd'hui) ET a des
+            // ecritures bancaires 512*. La compta etant en retard, tous les mois avec
+            // ecritures sont des mois passes : on ne les exclut plus (avant, on excluait
+            // a tort le "dernier" mois). Le mois calendaire courant n'a pas d'ecritures
+            // et reste projete. Ex : compta a jour a fin mars -> jan/fev/mars = Reel.
             var currentYear = now2.getFullYear();
+            var moisEchu = function(monthIdx) { return new Date(currentYear, monthIdx + 1, 0) < now2; };
+            var moisFiable = function(monthIdx) {
+              var k = currentYear + "-" + String(monthIdx + 1).padStart(2, "0");
+              return !!mvtsBanqueParMois[k] && moisEchu(monthIdx);
+            };
+            // Dernier mois fiable (pour affichage sous-titre)
+            var lastReliableMonthIdx = -1;
+            for (var kkF = 0; kkF < 12; kkF++) { if (moisFiable(kkF)) lastReliableMonthIdx = kkF; }
+            var latestMonthKey = lastReliableMonthIdx >= 0 ? (currentYear + "-" + String(lastReliableMonthIdx + 1).padStart(2, "0")) : null;
 
             // ── Moyennes mensuelles reelles (mois fiables uniquement) ──
             // Utilisees pour recalibrer les projections : la moyenne des flux reellement
@@ -19089,8 +19094,7 @@
             for (var kkR = 0; kkR < 12; kkR++) {
               var kMonthKKR = currentYear + "-" + String(kkR + 1).padStart(2, "0");
               var mvR2 = mvtsBanqueParMois[kMonthKKR];
-              var isReliableKKR = !!mvR2 && latestMonthKey && kMonthKKR < latestMonthKey;
-              if (isReliableKKR) {
+              if (moisFiable(kkR)) {
                 totalInReel += mvR2.in;
                 totalOutReel += mvR2.out;
                 nbMoisReel++;
@@ -19110,9 +19114,8 @@
               var estPasse = dMEnd < now2;
               var estCourant = mi2 === now2.getMonth();
               var estFutur = dM > now2 && !estCourant;
-              // Fiable = a des ecritures ET n'est pas le dernier mois avec ecritures
-              // (le dernier mois est probablement en cours de saisie par la compta)
-              var estFiable = !!mvtReel && latestMonthKey && kMonth < latestMonthKey;
+              // Fiable = mois echu (termine) AVEC ecritures bancaires 512* (compta a jour)
+              var estFiable = moisFiable(mi2);
               var encaiss, decaiss, source;
               var caChantiersForecastMi = caChantiersParMois[mi2] || 0;
               var caChantiersRealMi = caChantiersRealiseParMois[mi2] || 0;
@@ -19266,7 +19269,7 @@
                     style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", color: "#c7d2fe", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
                 ),
-                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Chaque mois : REEL (mouvements bancaires Compta 512*) tant que la compta est a jour, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). La bascule est automatique : des qu'un mois n'a pas d'ecritures posterieures, il est considere non fiable et passe en projete." + (latestMonthKey ? " Dernier mois compta complet : " + (function() { var p = latestMonthKey.split("-"); var mn = ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][parseInt(p[1])-2] || latestMonthKey; return mn + " " + p[0].slice(2); })() + "." : ""))
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : ""))
               ),
               (function() {
                 var soldeAujourdhui = soldeManuel != null ? soldeManuel : (nbEcrBanque > 0 ? soldeBanqueLive : (trMois[now2.getMonth()] ? trMois[now2.getMonth()].solde : soldeInit));
