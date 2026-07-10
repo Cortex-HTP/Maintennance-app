@@ -18987,55 +18987,33 @@
               }
             });
 
-            // ── CA REALISE par mois (metrages produits par sondeurs) ──
-            // Meme logique que Avancement (getDailyMetrageChantier) : priorite aux releves
-            // journaliers (rapports de forage terrain, agreges par chantier x date x machine
-            // avec max par machine), fallback saisies manuelles admin si pas de releve.
-            // Utilise pour les mois passes non fiables cote Compta (au lieu d'afficher 0).
+            // ── CA REALISE par mois (facturation reelle des sondeurs) ──
+            // MEME source que la KPI "CA facturation" de la page Statistiques : on parcourt
+            // les RAPPORTS DE FORAGE (total_metres x prix/m du chantier) + le CA facturation
+            // des activites (attentes, deplacements... tarifes). Ainsi le previsionnel colle
+            // exactement au CA que l'entreprise sait deja avoir facture / va facturer, meme
+            // si la compta a du retard. Des que la compta est a jour -> le mois passe en REEL
+            // bancaire (512*) et ecrase cette estimation.
             var currentYearReal = now2.getFullYear();
-            var caChantiersRealiseParMois = new Array(12).fill(0);
-            var prixParChantier = {};
-            (dbChantiers || []).forEach(function(c) {
-              prixParChantier[String(c.id)] = parseFloat(c.prixMetre) || 0;
-            });
-            // Source 1 : releves journaliers (rapports de forage)
-            var relIdxTr = {};
-            (ctx.dbRelevesJourn || []).forEach(function(r) {
-              if (!r || !r.chantierId || !r.dateReleve) return;
-              var ck = String(r.chantierId);
-              var dk = String(r.dateReleve).substring(0,10);
-              var mk = String(r.sondeuseCode || r.equipementId || "_no").toUpperCase().trim();
-              var v = parseFloat(r.metrage) || 0;
-              if (!relIdxTr[ck]) relIdxTr[ck] = {};
-              if (!relIdxTr[ck][dk]) relIdxTr[ck][dk] = {};
-              if (v > (relIdxTr[ck][dk][mk] || 0)) relIdxTr[ck][dk][mk] = v;
-            });
-            Object.keys(relIdxTr).forEach(function(ck) {
-              var prix = prixParChantier[ck] || 0;
-              if (prix <= 0) return;
-              Object.keys(relIdxTr[ck]).forEach(function(dk) {
-                var d = new Date(dk + "T00:00:00");
-                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
-                var mksTr = Object.keys(relIdxTr[ck][dk]);
-                var sTot = 0;
-                for (var miTr = 0; miTr < mksTr.length; miTr++) sTot += relIdxTr[ck][dk][mksTr[miTr]];
-                if (sTot > 0) caChantiersRealiseParMois[d.getMonth()] += sTot * prix;
-              });
-            });
-            // Source 2 : saisies manuelles admin (fallback si pas de releve pour chantier x date)
-            (dbChantiers || []).forEach(function(c) {
-              var ck = String(c.id);
-              var prix = prixParChantier[ck] || 0;
-              if (prix <= 0) return;
-              var saisCh = (ctx.dbSaisies || {})[c.id] || {};
-              Object.keys(saisCh).forEach(function(dateStr) {
-                var d = new Date(String(dateStr).substring(0,10) + "T00:00:00");
-                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
-                if (relIdxTr[ck] && relIdxTr[ck][dateStr] != null) return; // releve prioritaire
-                var vv = saisCh[dateStr];
-                var val = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
-                if (val <= 0) return;
-                caChantiersRealiseParMois[d.getMonth()] += val * prix;
+            var caChantiersRealiseParMois = new Array(12).fill(0);  // CA metrage (chantiers)
+            var caActivitesRealiseParMois = new Array(12).fill(0);  // CA facturation activites
+            (rapports || []).forEach(function(r) {
+              if (!r || !r.date_rapport) return;
+              var dR = new Date(String(r.date_rapport).substring(0,10) + "T00:00:00");
+              if (isNaN(dR.getTime()) || dR.getFullYear() !== currentYearReal) return;
+              var moisR = dR.getMonth();
+              // CA metrage = total_metres x prix/m du chantier (identique stats KPI)
+              var mR = parseFloat(r.total_metres) || 0;
+              var prixR = lookupPrixMetre(r);
+              if (mR > 0 && prixR > 0) caChantiersRealiseParMois[moisR] += mR * prixR;
+              // CA facturation activites (attentes/deplacements tarifes >= duree_min)
+              var actsR = Array.isArray(r.activites) ? r.activites : [];
+              actsR.forEach(function(a) {
+                var libU = String(a && a.libelle || "").toUpperCase().trim();
+                var tarif = tarifsActivitesMap[libU];
+                if (!tarif || !(tarif.prixHoraire > 0)) return;
+                var durAct = durBtw(a.debut, a.fin);
+                if (durAct >= tarif.dureeMin) caActivitesRealiseParMois[moisR] += (durAct / 60) * tarif.prixHoraire;
               });
             });
 
@@ -19086,38 +19064,42 @@
               var encaiss, decaiss, source;
               var caChantiersForecastMi = caChantiersParMois[mi2] || 0;
               var caChantiersRealMi = caChantiersRealiseParMois[mi2] || 0;
+              var caActivitesRealMi = caActivitesRealiseParMois[mi2] || 0;
               var factFrsMi = factFrsFutures[kMonth] || 0;
-              var caChantiersMi = 0; // valeur affichee dans le tableau breakdown
+              var caChantiersMi = 0; // CA metrage affiche dans le tableau breakdown
+              var caActivitesMi = 0; // CA activites affiche dans le tableau breakdown
               var monthDetail = null;
               if (estFiable) {
-                // Mois passe fiable (compta a jour) : utiliser le REEL bancaire
+                // Mois passe fiable (compta a jour) : utiliser le REEL bancaire (ecrase l'estimation)
                 encaiss = mvtReel.in;
                 decaiss = mvtReel.out;
                 source = "reel";
-                caChantiersMi = caChantiersRealMi; // pour info dans tooltip
-                monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, caTerrain: caChantiersRealMi };
+                caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; // pour info
+                monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, caTerrain: caChantiersRealMi + caActivitesRealMi };
               } else {
-                // Mois pas encore saisi cote compta OU mois futur : PROJECTION
-                // Passe non fiable : CA = metrages saisis (Avancement) x prix/metre
-                // Courant : realise 1er->today + forecast today->fin de mois
-                // Futur : forecast pur
-                if (estPasse) caChantiersMi = caChantiersRealMi;
-                else if (estCourant) caChantiersMi = caChantiersRealMi + caChantiersForecastMi;
-                else caChantiersMi = caChantiersForecastMi;
-                var encaissTheorique = caChantiersMi + caActivitesMens;
+                // Mois pas encore fiable cote compta OU mois futur : ESTIMATION
+                // ── ENCAISSEMENTS : on se cale sur le CA REEL des rapports sondeurs ──
+                //   Passe : CA facture reel (rapports du mois)
+                //   Courant : reel du mois (1er->aujourd'hui via rapports) + forecast (aujourd'hui->fin)
+                //   Futur : forecast pur (planning chantiers/machines)
+                if (estPasse) { caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; }
+                else if (estCourant) { caChantiersMi = caChantiersRealMi + caChantiersForecastMi; caActivitesMi = Math.max(caActivitesRealMi, caActivitesMens); }
+                else { caChantiersMi = caChantiersForecastMi; caActivitesMi = caActivitesMens; }
+                // Encaissements = CA reel/forecast EXACT (pas de moyenne : on sait ce qu'on facture)
+                encaiss = caChantiersMi + caActivitesMi;
+                // ── DECAISSEMENTS : theorique recale sur la moyenne reelle observee ──
+                //   (les depenses precises sont inconnues tant que la compta est en retard,
+                //    donc moyenne 50/50 theorique + moyenne des mois deja saisis)
                 var decaissTheorique = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
-                // Moyenne 50/50 entre theorique et moyenne reelle observee des mois fiables
-                // -> compense les postes manques par la projection (investissements, one-shot, etc.)
-                encaiss = encaissMoyenReel != null ? (encaissTheorique + encaissMoyenReel) / 2 : encaissTheorique;
                 decaiss = decaissMoyenReel != null ? (decaissTheorique + decaissMoyenReel) / 2 : decaissTheorique;
                 source = "projete";
                 monthDetail = {
                   kind: "projete",
                   caChantiers: caChantiersMi,
-                  caActivites: caActivitesMens,
-                  encaissTheorique: encaissTheorique,
-                  encaissMoyenReel: encaissMoyenReel,
-                  encaissAjustement: encaiss - encaissTheorique,
+                  caActivites: caActivitesMi,
+                  encaissTheorique: encaiss,
+                  encaissMoyenReel: null,
+                  encaissAjustement: 0,
                   salaires: salairesMens,
                   chargesFixes: chargesFixesMens,
                   emprunts: empruntsMensuel,
@@ -19369,21 +19351,13 @@
                                 ) : null
                               ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
-                                  h("span", null, "CA chantiers " + (x.estPasse ? "(saisi)" : x.estCourant ? "(saisi + prev)" : "(prev jour x jour)")),
+                                  h("span", null, "CA chantiers " + (x.estPasse ? "(rapports sondeurs)" : x.estCourant ? "(rapports + prev)" : "(prev jour x jour)")),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caChantiers))
                                 ),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
-                                  h("span", null, "CA activites (moyenne YTD)"),
+                                  h("span", null, "CA activites " + ((!x.estPasse && !x.estCourant) ? "(moyenne YTD)" : "(rapports sondeurs)")),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caActivites))
                                 ),
-                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 6 } },
-                                  h("span", null, "= Sous-total theorique"),
-                                  h("span", { style: { fontFamily: "monospace", fontWeight: 700 } }, fmtCaTr(det.encaissTheorique))
-                                ),
-                                det.encaissMoyenReel != null ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#c7d2fe" } },
-                                  h("span", null, "Ajustement moyenne reelle (Compta)"),
-                                  h("span", { style: { fontFamily: "monospace" } }, (det.encaissAjustement >= 0 ? "+" : "") + fmtCaTr(det.encaissAjustement))
-                                ) : null,
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(34,197,94,0.30)", marginTop: 4, paddingTop: 6, fontWeight: 800, color: "#86efac" } },
                                   h("span", null, "TOTAL encaissements"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(x.encaiss))
