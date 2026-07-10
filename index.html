@@ -10316,6 +10316,425 @@
       return null;
     }
 
+    // ── Cout de revient au metre PAR MACHINE (moteur du "Detail par sondeuse" des Stats) ──
+    // Fonction module-level qui REPRODUIT EXACTEMENT le calcul inline de EcranStatistiques
+    // (section "Detail par sondeuse") sur la periode [periodStart, periodEnd]. Objectif :
+    // le cout/m d'une machine (ex FS1 = 5649 XPF/m) est IDENTIQUE ici et dans les Stats,
+    // pour que la marge de l'Avancement s'appuie sur le meme chiffre.
+    //
+    // ctx doit fournir : dbRapportsForage, dbCarburants, dbEmprunts, parametres, pieces,
+    //                    dbChantiers, dbEcrCompta, equipements, dbPaliers, dbAffectations,
+    //                    dbSaisies, dbRelevesJourn.
+    // Retourne { CODE_SONDEUSE: { coutMetre, coutTotal, metres, caTotal } }.
+    function computeCoutMachines(ctx, periodStart, periodEnd) {
+      var rapports = ctx.dbRapportsForage || [];   // TOUS les rapports (denominateurs emprunts)
+      var carburants = ctx.dbCarburants || [];
+      var emprunts = ctx.dbEmprunts || [];
+      var parametres = ctx.parametres || [];
+      var pieces = ctx.pieces || [];
+      var dbChantiers = ctx.dbChantiers || [];
+      var dbEcrCompta = ctx.dbEcrCompta || [];
+      var equipements = ctx.equipements || [];
+
+      // ── Rapports de la periode [periodStart, periodEnd] (par date_rapport) ──
+      var filtered = rapports.filter(function(r) {
+        if (!r || !r.date_rapport) return false;
+        var d = new Date(String(r.date_rapport));
+        if (periodStart && d < periodStart) return false;
+        if (periodEnd && d > periodEnd) return false;
+        return true;
+      });
+
+      // ── Index pieces : designation/ref -> prix ── (lookupPrix)
+      var pieceIndex = {};
+      pieces.forEach(function(p) {
+        var d = String(p.Designation || "").trim().toLowerCase();
+        var r = String(p.Reference || "").trim().toLowerCase();
+        var prix = parseFloat(p.PrixUnitaire) || 0;
+        if (d) pieceIndex[d] = prix;
+        if (r) pieceIndex["ref:" + r] = prix;
+      });
+      function lookupPrix(designation, ref) {
+        var d = String(designation || "").trim().toLowerCase();
+        var r = String(ref || "").trim().toLowerCase();
+        if (d && pieceIndex[d] != null) return pieceIndex[d];
+        if (r && pieceIndex["ref:" + r] != null) return pieceIndex["ref:" + r];
+        return 0;
+      }
+
+      // ── Prix/m par chantier + fallback par site ── (lookupPrixMetre)
+      var prixMetreByChantier = {};
+      var prixMetreBySite = {};
+      dbChantiers.forEach(function(c) {
+        var prix = parseFloat(c.prixMetre) || 0;
+        prixMetreByChantier[String(c.id)] = prix;
+        if (c.site && prix > 0) {
+          var siteKey = String(c.site).toUpperCase().trim();
+          if (!prixMetreBySite[siteKey] || (c.dateDebut || "") > (prixMetreBySite[siteKey].dateDebut || "")) {
+            prixMetreBySite[siteKey] = { prix: prix, dateDebut: c.dateDebut || "" };
+          }
+        }
+      });
+      function lookupPrixMetre(r) {
+        if (r.chantier_id != null) {
+          var p = prixMetreByChantier[String(r.chantier_id)];
+          if (p) return p;
+        }
+        if (r.lieu) {
+          var lk = String(r.lieu).toUpperCase().trim();
+          if (prixMetreBySite[lk]) return prixMetreBySite[lk].prix;
+          var best = 0; var bestLen = 0;
+          var keys = Object.keys(prixMetreBySite);
+          for (var i = 0; i < keys.length; i++) {
+            var sk = keys[i];
+            if (sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) {
+              var matchLen = Math.min(sk.length, lk.length);
+              if (matchLen > bestLen) { best = prixMetreBySite[sk].prix; bestLen = matchLen; }
+            }
+          }
+          return best;
+        }
+        return 0;
+      }
+
+      // ── Personnel lookup (salaires) ── (lookupPersonnel + getSalaireJour)
+      var personnelByCode = {};
+      var personnelByName = {};
+      (function() {
+        var pdRow = parametres.find(function(p) { return p && p.categorie === "personnel_data"; });
+        if (!pdRow || !pdRow.valeur) return;
+        try {
+          var list = JSON.parse(pdRow.valeur) || [];
+          list.forEach(function(p) {
+            if (!p) return;
+            if (p.code) personnelByCode[String(p.code)] = p;
+            var nm = ((p.prenom || "") + " " + (p.nom || "")).toLowerCase().trim();
+            if (nm) personnelByName[nm] = p;
+            var nmRev = ((p.nom || "") + " " + (p.prenom || "")).toLowerCase().trim();
+            if (nmRev) personnelByName[nmRev] = p;
+          });
+        } catch (e) {}
+      }());
+      function lookupPersonnel(memberName, memberId) {
+        var p = null;
+        if (memberId && personnelByCode[String(memberId)]) p = personnelByCode[String(memberId)];
+        if (!p && memberName) {
+          var nm = String(memberName).toLowerCase().trim();
+          p = personnelByName[nm];
+          if (!p) {
+            var sorted = nm.split(/\s+/).filter(Boolean).sort().join(" ");
+            Object.keys(personnelByName).forEach(function(k) {
+              if (k.split(/\s+/).filter(Boolean).sort().join(" ") === sorted) p = personnelByName[k];
+            });
+          }
+        }
+        return p;
+      }
+      var joursLunJeuParMois = {};
+      function getJoursLunJeuMois(dateStr) {
+        if (!dateStr) return 17;
+        var d = new Date(dateStr);
+        if (isNaN(d.getTime())) return 17;
+        var y = d.getFullYear();
+        var m = d.getMonth();
+        var key = y + "-" + m;
+        if (joursLunJeuParMois[key] != null) return joursLunJeuParMois[key];
+        var nbJours = new Date(y, m + 1, 0).getDate();
+        var count = 0;
+        for (var day = 1; day <= nbJours; day++) {
+          var dow = new Date(y, m, day).getDay();
+          if (dow >= 1 && dow <= 4) count++;
+        }
+        joursLunJeuParMois[key] = count;
+        return count;
+      }
+      function getSalaireJour(memberName, memberId, dateRapport) {
+        var p = lookupPersonnel(memberName, memberId);
+        if (!p) return 0;
+        var salaireMensuel = parseFloat(p.salaire) || 0;
+        if (salaireMensuel <= 0) return 0;
+        var divJours = getJoursLunJeuMois(dateRapport);
+        if (divJours <= 0) return 0;
+        return salaireMensuel / divJours;
+      }
+
+      // ── Duree entre deux heures "HH:MM" en minutes ── (durBtw)
+      function timeToMin(t) {
+        if (!t) return 0;
+        var pp = String(t).split(":");
+        return (parseInt(pp[0]) || 0) * 60 + (parseInt(pp[1]) || 0);
+      }
+      function durBtw(d, f) {
+        if (!d || !f) return 0;
+        var m = timeToMin(f) - timeToMin(d);
+        if (m < 0) m += 24 * 60;
+        return m;
+      }
+
+      // ── Emprunts au prorata des metres (mutualises + dedies), cache par mois ──
+      var empruntCacheMutByMois = {};
+      var empruntCacheDediesByMois = {};
+      var equipByCode = {};
+      equipements.forEach(function(eq) {
+        if (eq && eq.Title) equipByCode[String(eq.Title).trim().toUpperCase()] = eq.Id;
+      });
+      function getEmpruntTauxParMetreMutualise(yyyymm) {
+        if (empruntCacheMutByMois[yyyymm] != null) return empruntCacheMutByMois[yyyymm];
+        var parts = yyyymm.split("-");
+        var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
+        var firstDay = new Date(y, m, 1);
+        var lastDay = new Date(y, m + 1, 0);
+        var totalMens = 0;
+        emprunts.forEach(function(e) {
+          if (!e || e.statut !== "actif") return;
+          if (e.mutualise === false) return;
+          var db = e.date_debut ? new Date(e.date_debut) : null;
+          var df = e.date_fin ? new Date(e.date_fin) : null;
+          if (db && db > lastDay) return;
+          if (df && df < firstDay) return;
+          totalMens += parseFloat(e.mensualite) || 0;
+        });
+        if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
+        var nowE = new Date();
+        if (y === nowE.getFullYear() && m === nowE.getMonth()) {
+          totalMens = totalMens * (nowE.getDate() / lastDay.getDate());
+        }
+        var totalMetres = 0;
+        rapports.forEach(function(r) {
+          if (!r.date_rapport) return;
+          if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
+          totalMetres += parseFloat(r.total_metres) || 0;
+        });
+        if (totalMetres <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
+        var taux = totalMens / totalMetres;
+        empruntCacheMutByMois[yyyymm] = taux;
+        return taux;
+      }
+      function getEmpruntTauxParMetreDedie(yyyymm, equipementId) {
+        if (!equipementId) return 0;
+        if (!empruntCacheDediesByMois[yyyymm]) {
+          empruntCacheDediesByMois[yyyymm] = {};
+          var parts = yyyymm.split("-");
+          var y = parseInt(parts[0]); var m = parseInt(parts[1]) - 1;
+          var firstDay = new Date(y, m, 1);
+          var lastDay = new Date(y, m + 1, 0);
+          var mensParEq = {};
+          emprunts.forEach(function(e) {
+            if (!e || e.statut !== "actif") return;
+            if (e.mutualise !== false) return;
+            if (!e.equipement_id) return;
+            var db = e.date_debut ? new Date(e.date_debut) : null;
+            var df = e.date_fin ? new Date(e.date_fin) : null;
+            if (db && db > lastDay) return;
+            if (df && df < firstDay) return;
+            var mens = parseFloat(e.mensualite) || 0;
+            if (mens <= 0) return;
+            mensParEq[e.equipement_id] = (mensParEq[e.equipement_id] || 0) + mens;
+          });
+          var nowED = new Date();
+          if (y === nowED.getFullYear() && m === nowED.getMonth()) {
+            var fracD = nowED.getDate() / lastDay.getDate();
+            Object.keys(mensParEq).forEach(function(eqId) { mensParEq[eqId] = mensParEq[eqId] * fracD; });
+          }
+          var metresParEq = {};
+          rapports.forEach(function(r) {
+            if (!r.date_rapport) return;
+            if (String(r.date_rapport).substring(0, 7) !== yyyymm) return;
+            var eqId = r.equipement_id || equipByCode[String(r.sondeuse_code || "").trim().toUpperCase()] || null;
+            if (!eqId) return;
+            metresParEq[eqId] = (metresParEq[eqId] || 0) + (parseFloat(r.total_metres) || 0);
+          });
+          Object.keys(mensParEq).forEach(function(eqId) {
+            var metres = metresParEq[eqId] || 0;
+            empruntCacheDediesByMois[yyyymm][eqId] = metres > 0 ? mensParEq[eqId] / metres : 0;
+          });
+        }
+        return empruntCacheDediesByMois[yyyymm][equipementId] || 0;
+      }
+
+      // ── Tarifs facturation activites ── (tarifsActivitesMap)
+      var tarifsActivitesMap = {};
+      parametres.forEach(function(p) {
+        if (!p || p.categorie !== "rf_tarifs_activites" || !p.valeur) return;
+        try {
+          var v = JSON.parse(p.valeur);
+          var lib = String(v.libelle || "").toUpperCase().trim();
+          if (!lib) return;
+          tarifsActivitesMap[lib] = { prixHoraire: parseFloat(v.prix_horaire) || 0, dureeMin: parseInt(v.duree_min_minutes) || 0 };
+        } catch (e) {}
+      });
+
+      // ── Detail par sondeuse (sondeusesMap) ──
+      var sondeusesMap = {};
+      var prixMazoutMetre = lookupPrix("Mazout/L", "");
+      filtered.forEach(function(r) {
+        var code = r.sondeuse_code || "—";
+        if (!sondeusesMap[code]) sondeusesMap[code] = {
+          rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
+          coutConso: 0, coutConsommablesTerrain: 0, coutPersonnel: 0, coutEmprunt: 0,
+          caGenere: 0, caFacturationActivites: 0, joursTravailles: {}, chantierMetres: {}
+        };
+        sondeusesMap[code].rapports += 1;
+        var mR = parseFloat(r.total_metres) || 0;
+        sondeusesMap[code].metres += mR;
+        sondeusesMap[code].minutes += parseFloat(r.total_heures) || 0;
+        var prixR = lookupPrixMetre(r);
+        if (mR > 0 && prixR > 0) sondeusesMap[code].caGenere += mR * prixR;
+        if (r.date_rapport) sondeusesMap[code].joursTravailles[String(r.date_rapport).substring(0, 10)] = true;
+        var chIdKey = r.chantier_id ? String(r.chantier_id) : (r.lieu || "?");
+        sondeusesMap[code].chantierMetres[chIdKey] = (sondeusesMap[code].chantierMetres[chIdKey] || 0) + mR;
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+        activites.forEach(function(a) {
+          if (activiteMatch(a.libelle, "FORATION")) {
+            sondeusesMap[code].minutesForation += durBtw(a.debut, a.fin);
+          }
+          var libU = String(a && a.libelle || "").toUpperCase().trim();
+          var tarif = tarifsActivitesMap[libU];
+          if (tarif && tarif.prixHoraire > 0) {
+            var durAct = durBtw(a.debut, a.fin);
+            if (durAct >= tarif.dureeMin) {
+              sondeusesMap[code].caFacturationActivites += (durAct / 60) * tarif.prixHoraire;
+            }
+          }
+        });
+        var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+        consos.forEach(function(c) {
+          var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0;
+          var prix = lookupPrix(c.designation || c.nom, c.ref);
+          sondeusesMap[code].coutConso += qty * prix;
+          sondeusesMap[code].coutConsommablesTerrain += qty * prix;
+        });
+        carburants.forEach(function(cb) {
+          var lieParId = cb.rapport_id && cb.rapport_id === r.id;
+          var lieParDateSondeuse = !cb.rapport_id && cb.sondeuse_code === r.sondeuse_code && String(cb.date_consommation || "").substring(0, 10) === String(r.date_rapport || "").substring(0, 10);
+          if (!lieParId && !lieParDateSondeuse) return;
+          var qtyL = parseFloat(cb.quantite_l) || 0;
+          if (qtyL <= 0) return;
+          sondeusesMap[code].coutConso += qtyL * prixMazoutMetre;
+        });
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        equipe.forEach(function(m) {
+          if (!m) return;
+          sondeusesMap[code].coutPersonnel += getSalaireJour(m.nom, m.id, r.date_rapport);
+        });
+        var moisR = String(r.date_rapport || "").substring(0, 7);
+        var metresR = parseFloat(r.total_metres) || 0;
+        if (moisR && metresR > 0) {
+          sondeusesMap[code].coutEmprunt += metresR * getEmpruntTauxParMetreMutualise(moisR);
+          var eqId = r.equipement_id || equipByCode[String(r.sondeuse_code || "").trim().toUpperCase()] || null;
+          if (eqId) sondeusesMap[code].coutEmprunt += metresR * getEmpruntTauxParMetreDedie(moisR, eqId);
+        }
+      });
+
+      // ── Agregats flotte ──
+      var coutConsoSondeusesAll = 0;
+      var coutEmpruntAll = 0;
+      Object.keys(sondeusesMap).forEach(function(code) {
+        coutConsoSondeusesAll += sondeusesMap[code].coutConso;
+        coutEmpruntAll += sondeusesMap[code].coutEmprunt;
+      });
+      var sondeusesCodesSet = {};
+      Object.keys(sondeusesMap).forEach(function(c) { sondeusesCodesSet[String(c).toUpperCase()] = true; });
+      // Prix mazout au litre (carburant VL)
+      var prixMazoutLitre = 0;
+      var pmRow = parametres.find(function(p) { return p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre"); });
+      if (pmRow && pmRow.valeur) prixMazoutLitre = parseFloat(pmRow.valeur) || 0;
+      if (!prixMazoutLitre) prixMazoutLitre = 175;
+      // Carburant VL (non-sondeuses) sur la periode
+      var coutCarburantVL = 0;
+      carburants.forEach(function(c) {
+        var code = String(c.sondeuse_code || "").toUpperCase();
+        if (sondeusesCodesSet[code]) return;
+        var dStr = String(c.date_consommation || "").substring(0, 10);
+        if (!dStr) return;
+        var d = new Date(dStr);
+        if (periodStart && d < periodStart) return;
+        if (periodEnd && d > periodEnd) return;
+        coutCarburantVL += (parseFloat(c.quantite_l) || 0) * prixMazoutLitre;
+      });
+      // Masse salariale complete (hors sous-traitants / ex-employes)
+      var personnelDataAll = [];
+      try {
+        var pdRow2 = parametres.find(function(p) { return p && p.categorie === "personnel_data"; });
+        if (pdRow2 && pdRow2.valeur) {
+          personnelDataAll = (typeof pdRow2.valeur === "string") ? JSON.parse(pdRow2.valeur) : pdRow2.valeur;
+        }
+      } catch (e) { personnelDataAll = []; }
+      var masseSalarialeMensuelle = (personnelDataAll || []).filter(function(p) { return isActiveEmploye(p, periodEnd || new Date()) && !p.roleMecanicien; }).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0);
+      // Nombre de mois de la periode (30 jours = 1 mois)
+      var nbMoisPeriode = (function() {
+        if (!periodStart || !periodEnd) return 1;
+        var days = Math.max(1, Math.round((periodEnd.getTime() - periodStart.getTime()) / (24 * 3600 * 1000)));
+        return days / 30;
+      })();
+      var coutPersonnelTotal = masseSalarialeMensuelle * 1.40 * nbMoisPeriode;
+      // Frais generaux : FEC prioritaire, sinon 0 (l'Avancement garde son propre fallback)
+      var fgInfo = computeFraisGenerauxFEC(dbEcrCompta, new Date());
+      var chargesFixesMensuelles = fgInfo.aDonnees ? fgInfo.poolMoyenMensuel : 0;
+      var coutFECPoolTotal = chargesFixesMensuelles * nbMoisPeriode;
+      var coutConsommablesTerrainAll = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { coutConsommablesTerrainAll += (sondeusesMap[code].coutConsommablesTerrain || 0); });
+      var coutChargesFixesTotal = fgInfo.aDonnees ? Math.max(0, coutFECPoolTotal - coutConsommablesTerrainAll) : coutFECPoolTotal;
+      // Primes de metrage (module existant) x 1.40 charges patronales
+      var coutPrimesMetrageTotal = 0;
+      try {
+        var primesPaliers = ctx.dbPaliers || [];
+        var primesChantiers = dbChantiers;
+        var chantiersBySiteForPrimes = {};
+        primesChantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; }).forEach(function(ch) {
+          if (!ch.site) return;
+          if (!chantiersBySiteForPrimes[ch.site]) chantiersBySiteForPrimes[ch.site] = [];
+          chantiersBySiteForPrimes[ch.site].push(ch);
+        });
+        var chantierToSiteForPrimes = {};
+        primesChantiers.forEach(function(c) { if (c && c.id != null) chantierToSiteForPrimes[c.id] = c.site || ""; });
+        var totalPrimesBrutes = computeTotalPrimesForPeriod(periodStart, periodEnd, {
+          chantiers: primesChantiers,
+          chantiersBySite: chantiersBySiteForPrimes,
+          chantierToSite: chantierToSiteForPrimes,
+          paliers: primesPaliers,
+          affectations: ctx.dbAffectations || [],
+          saisies: ctx.dbSaisies || {},
+          personnel: loadPersonnelFromParametres(parametres).filter(function(p) { return !p.roleMecanicien; }),
+          releves: ctx.dbRelevesJourn || [],
+          rapportsForage: rapports
+        });
+        coutPrimesMetrageTotal = totalPrimesBrutes * 1.40;
+      } catch (e) {
+        coutPrimesMetrageTotal = 0;
+      }
+
+      // ── Totaux pour repartition ──
+      var totalMetresAll = 0;
+      filtered.forEach(function(r) { totalMetresAll += parseFloat(r.total_metres) || 0; });
+      var sumPersonnelTerrainAll = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
+      var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
+      var chargesIndirVarTotal = coutCarburantVL + coutPersonnelHorsTerrain; // reparti par metres
+      var totalCAFlotte = 0;
+      Object.keys(sondeusesMap).forEach(function(code) { totalCAFlotte += (sondeusesMap[code].caGenere || 0) + (sondeusesMap[code].caFacturationActivites || 0); });
+
+      // ── Cout par machine (identique au "Detail par sondeuse") ──
+      var out = {};
+      Object.keys(sondeusesMap).forEach(function(code) {
+        var s = sondeusesMap[code];
+        var coutCharges = s.coutPersonnel * 0.40;
+        var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
+        var caMachine = (s.caGenere || 0) + (s.caFacturationActivites || 0);
+        var partCA = totalCAFlotte > 0 ? (caMachine / totalCAFlotte) : partMetres;
+        var coutIndirect = chargesIndirVarTotal * partMetres + coutChargesFixesTotal * partCA + coutPrimesMetrageTotal * partMetres;
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        var caTotal = (s.caGenere || 0) + (s.caFacturationActivites || 0);
+        out[code] = {
+          coutMetre: s.metres > 0 ? coutTotal / s.metres : 0,
+          coutTotal: coutTotal,
+          metres: s.metres,
+          caTotal: caTotal
+        };
+      });
+      return out;
+    }
+
     // ── Cout de revient reel au metre depuis le FEC, ANCRE SUR LE MOIS DE REFERENCE ──
     // = charges mensuelles moyennes (classe 6, mois compta a jour) / metrage du mois plein
     //   le plus recent (ex: juin). On divise par un mois REPRESENTATIF plutot que par la
@@ -11048,7 +11467,14 @@
       // ── Cout/m PAR MACHINE + machine dominante de chaque chantier ──
       // Chaque chantier utilise le cout/m de SA machine (efficace = bon, lente = mauvais),
       // au lieu de la moyenne globale (injuste pour le meilleur chantier).
-      var coutMetreParMachineAv = computeCoutMetreParMachine(ctxAv, new Date());
+      // SOURCE UNIQUE = computeCoutMachines (moteur du "Detail par sondeuse" des Stats), sur la
+      // periode [1er janvier annee courante -> fin du dernier mois COMPLET]. Ex en juillet :
+      // janvier -> fin juin. Le cout/m d'une machine (ex FS1) est ainsi IDENTIQUE ici et dans
+      // les Stats "Detail par sondeuse".
+      var _coutMachNow = new Date();
+      var _coutMachDebut = new Date(_coutMachNow.getFullYear(), 0, 1);
+      var _coutMachFin = new Date(_coutMachNow.getFullYear(), _coutMachNow.getMonth(), 0, 23, 59, 59);
+      var coutMetreParMachineAv = computeCoutMachines(ctxAv, _coutMachDebut, _coutMachFin);
       var chantierMachineDom = (function() {
         var byChant = {};
         (ctxAv.dbRapportsForage || []).forEach(function(r) {
@@ -11068,9 +11494,11 @@
         return out;
       }());
       // Cout/m d'un chantier = cout de sa machine dominante, sinon moyenne globale.
+      // computeCoutMachines retourne { CODE: { coutMetre, coutTotal, metres, caTotal } }.
       function coutMetreChantier(chantierId) {
         var code = chantierMachineDom[String(chantierId)];
-        if (code && coutMetreParMachineAv[code] > 0) return coutMetreParMachineAv[code];
+        var infoMach = code ? coutMetreParMachineAv[code] : null;
+        if (infoMach && infoMach.coutMetre > 0) return infoMach.coutMetre;
         return coutMetreGlobalEstime;
       }
       var setSaisiesState = ctxAv.setDbSaisies;
@@ -12460,7 +12888,7 @@
                     var machineDom = chantierMachineDom[String(chantier.id)];
                     if (coutTotalPrevu <= 0 && coutMChantier > 0) {
                       coutTotalPrevu = coutMChantier * chantier.metrage;
-                      coutSource = (machineDom && coutMetreParMachineAv[machineDom] > 0)
+                      coutSource = (machineDom && coutMetreParMachineAv[machineDom] && coutMetreParMachineAv[machineDom].coutMetre > 0)
                         ? ("Cout/m de la machine " + machineDom + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m")
                         : ("Estime via le cout/m global : " + fmtNum(Math.round(coutMChantier)) + " XPF/m");
                     } else if (coutTotalPrevu <= 0) {
