@@ -19045,6 +19045,24 @@
 
             var currentYear = now2.getFullYear();
 
+            // ── Moyennes mensuelles reelles (mois fiables uniquement) ──
+            // Utilisees pour recalibrer les projections : la moyenne des flux reellement
+            // observes dans le grand livre est un meilleur proxy que le theorique
+            // (qui manque souvent des postes : investissements, one-shot, primes...)
+            var totalInReel = 0, totalOutReel = 0, nbMoisReel = 0;
+            for (var kkR = 0; kkR < 12; kkR++) {
+              var kMonthKKR = currentYear + "-" + String(kkR + 1).padStart(2, "0");
+              var mvR2 = mvtsBanqueParMois[kMonthKKR];
+              var isReliableKKR = !!mvR2 && latestMonthKey && kMonthKKR < latestMonthKey;
+              if (isReliableKKR) {
+                totalInReel += mvR2.in;
+                totalOutReel += mvR2.out;
+                nbMoisReel++;
+              }
+            }
+            var encaissMoyenReel = nbMoisReel > 0 ? (totalInReel / nbMoisReel) : null;
+            var decaissMoyenReel = nbMoisReel > 0 ? (totalOutReel / nbMoisReel) : null;
+
             // ── PASSE 1 : calcul des nets mensuels (encaiss - decaiss) sans solde cumule ──
             var trMoisRaw = [];
             for (var mi2 = 0; mi2 < 12; mi2++) {
@@ -19078,8 +19096,12 @@
                 if (estPasse) caChantiersMi = caChantiersRealMi;
                 else if (estCourant) caChantiersMi = caChantiersRealMi + caChantiersForecastMi;
                 else caChantiersMi = caChantiersForecastMi;
-                encaiss = caChantiersMi + caActivitesMens;
-                decaiss = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
+                var encaissTheorique = caChantiersMi + caActivitesMens;
+                var decaissTheorique = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
+                // Moyenne 50/50 entre theorique et moyenne reelle observee des mois fiables
+                // -> compense les postes manques par la projection (investissements, one-shot, etc.)
+                encaiss = encaissMoyenReel != null ? (encaissTheorique + encaissMoyenReel) / 2 : encaissTheorique;
+                decaiss = decaissMoyenReel != null ? (decaissTheorique + decaissMoyenReel) / 2 : decaissTheorique;
                 source = "projete";
               }
               var net = encaiss - decaiss;
