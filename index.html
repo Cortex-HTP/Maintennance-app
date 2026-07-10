@@ -10334,6 +10334,78 @@
       return totMetres > 0 ? totCharges / totMetres : 0;
     }
 
+    // ── Cout de revient au metre PAR MACHINE (moyen, mois compta a jour) ──
+    // Meme total que computeCoutMetreFEC (charges classe 6) mais REPARTI par machine :
+    //  - couts directs (consommables + carburant + personnel equipe) attribues a la machine
+    //    -> une machine LENTE (bcp d'heures/personnel pour peu de metres) a un cout/m eleve,
+    //       une machine RAPIDE un cout/m bas. C'est ce qui differencie les chantiers.
+    //  - le reste (structure, interets, personnel hors-equipe) reparti au prorata des metres.
+    // Reconcilie : Somme(cout machine) = total charges classe 6. Retourne { CODE: coutMetre }.
+    function computeCoutMetreParMachine(ctx, refDate) {
+      var fg = computeFraisGenerauxFEC(ctx.dbEcrCompta || [], refDate);
+      if (!fg.aDonnees) return {};
+      var year = refDate.getFullYear();
+      var reliableSet = {};
+      fg.reliableIdx.forEach(function(mi) { reliableSet[mi] = 1; });
+      var moisOk = function(dateStr) {
+        var d = new Date(String(dateStr).substring(0, 10) + "T00:00:00");
+        return !isNaN(d.getTime()) && d.getFullYear() === year && reliableSet[d.getMonth()];
+      };
+      // Total charges classe 6 sur mois fiables (= le total a repartir)
+      var totCharges = 0;
+      (ctx.dbEcrCompta || []).forEach(function(e) {
+        if (!e || !e.date_ecriture || String(e.compte_code || "").charAt(0) !== "6") return;
+        if (!moisOk(e.date_ecriture)) return;
+        totCharges += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
+      });
+      // Prix mazout + salaires + prix pieces
+      var prixMazout = 175;
+      (ctx.parametres || []).forEach(function(p) { if (p && (p.categorie === "prix_mazout_litre" || p.cle === "prix_mazout_litre") && p.valeur) { var v = parseFloat(p.valeur); if (!isNaN(v)) prixMazout = v; } });
+      var salByName = {};
+      try {
+        var pdRow = (ctx.parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+        var arr = pdRow ? (typeof pdRow.valeur === "string" ? JSON.parse(pdRow.valeur) : pdRow.valeur) : [];
+        (arr || []).forEach(function(pp) { if (pp && pp.nom) salByName[String(pp.nom).toUpperCase().trim()] = parseInt(pp.salaire) || 0; });
+      } catch (e) {}
+      var piecePrice = {};
+      (ctx.pieces || []).forEach(function(p) { var d = String(p.Designation || "").toLowerCase().trim(); var r = String(p.Reference || "").toLowerCase().trim(); var pr = parseFloat(p.PrixUnitaire) || 0; if (d) piecePrice[d] = pr; if (r) piecePrice["ref:" + r] = pr; });
+      var lookPiece = function(des, ref) { var d = String(des || "").toLowerCase().trim(); var r = String(ref || "").toLowerCase().trim(); if (d && piecePrice[d] != null) return piecePrice[d]; if (r && piecePrice["ref:" + r] != null) return piecePrice["ref:" + r]; return 0; };
+      // Directs par machine : metrage + conso + carburant + personnel equipe (x1.4)
+      var mach = {}; // code -> { metres, directs }
+      var getM = function(code) { if (!mach[code]) mach[code] = { metres: 0, directs: 0 }; return mach[code]; };
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r || !r.date_rapport || !moisOk(r.date_rapport)) return;
+        var code = String(r.sondeuse_code || "").toUpperCase().trim();
+        if (!code) return;
+        var m = getM(code);
+        m.metres += parseFloat(r.total_metres) || 0;
+        var consos = Array.isArray(r.consommables_perdus) ? r.consommables_perdus : [];
+        consos.forEach(function(c) { var qty = parseFloat(c.qty != null ? c.qty : (c.quantite != null ? c.quantite : (c.qte || 0))) || 0; m.directs += qty * lookPiece(c.designation || c.nom, c.ref || c.reference); });
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        equipe.forEach(function(mem) { if (!mem || !mem.nom) return; var sal = salByName[String(mem.nom).toUpperCase().trim()] || 0; if (sal > 0) m.directs += (sal / 18) * 1.40; }); // salaire/jour (~18 j ouvres) x charges
+      });
+      // Carburant par machine
+      (ctx.dbCarburants || []).forEach(function(c) {
+        if (!c || !c.date_consommation || !moisOk(c.date_consommation)) return;
+        var code = String(c.sondeuse_code || "").toUpperCase().trim();
+        if (!code || !mach[code]) return; // carburant VL / machine sans rapport -> reste dans l'overhead
+        mach[code].directs += (parseFloat(c.quantite_l) || 0) * prixMazout;
+      });
+      // Overhead = total charges - somme directs, reparti au prorata des metres
+      var totMetres = 0, totDirects = 0;
+      Object.keys(mach).forEach(function(code) { totMetres += mach[code].metres; totDirects += mach[code].directs; });
+      if (totMetres <= 0) return {};
+      var overheadPool = Math.max(0, totCharges - totDirects);
+      var overheadRate = overheadPool / totMetres;
+      var out = {};
+      Object.keys(mach).forEach(function(code) {
+        var m = mach[code];
+        if (m.metres <= 0) return;
+        out[code] = (m.directs / m.metres) + overheadRate;
+      });
+      return out;
+    }
+
     function buildMetByMachine(dbRelevesJourn, equipementsList) {
       var idx = {};
       var titleById = {};
@@ -10946,6 +11018,34 @@
           return coutTotal90j / totalMetres90j;
         } catch (e) { return 0; }
       }());
+      // ── Cout/m PAR MACHINE + machine dominante de chaque chantier ──
+      // Chaque chantier utilise le cout/m de SA machine (efficace = bon, lente = mauvais),
+      // au lieu de la moyenne globale (injuste pour le meilleur chantier).
+      var coutMetreParMachineAv = computeCoutMetreParMachine(ctxAv, new Date());
+      var chantierMachineDom = (function() {
+        var byChant = {};
+        (ctxAv.dbRapportsForage || []).forEach(function(r) {
+          if (!r || !r.chantier_id) return;
+          var code = String(r.sondeuse_code || "").toUpperCase().trim();
+          if (!code) return;
+          var ck = String(r.chantier_id);
+          if (!byChant[ck]) byChant[ck] = {};
+          byChant[ck][code] = (byChant[ck][code] || 0) + (parseFloat(r.total_metres) || 0);
+        });
+        var out = {};
+        Object.keys(byChant).forEach(function(ck) {
+          var best = null, max = -1;
+          Object.keys(byChant[ck]).forEach(function(code) { if (byChant[ck][code] > max) { max = byChant[ck][code]; best = code; } });
+          out[ck] = best;
+        });
+        return out;
+      }());
+      // Cout/m d'un chantier = cout de sa machine dominante, sinon moyenne globale.
+      function coutMetreChantier(chantierId) {
+        var code = chantierMachineDom[String(chantierId)];
+        if (code && coutMetreParMachineAv[code] > 0) return coutMetreParMachineAv[code];
+        return coutMetreGlobalEstime;
+      }
       var setSaisiesState = ctxAv.setDbSaisies;
       var affectationsAv = ctxAv.dbAffectations || [];
       var setAffectationsAv = ctxAv.setDbAffectations;
@@ -12329,9 +12429,13 @@
                     var caRestant = metresRestants * prixMetre;
                     var coutTotalPrevu = parseFloat(chantier.depensesPrevues) || 0;
                     var coutSource = "Saisi dans le chantier (depenses prevues)";
-                    if (coutTotalPrevu <= 0 && coutMetreGlobalEstime > 0) {
-                      coutTotalPrevu = coutMetreGlobalEstime * chantier.metrage;
-                      coutSource = "Estime via le cout/m global (" + fmtNum(Math.round(coutMetreGlobalEstime)) + " XPF/m sur 90j)";
+                    var coutMChantier = coutMetreChantier(chantier.id);
+                    var machineDom = chantierMachineDom[String(chantier.id)];
+                    if (coutTotalPrevu <= 0 && coutMChantier > 0) {
+                      coutTotalPrevu = coutMChantier * chantier.metrage;
+                      coutSource = (machineDom && coutMetreParMachineAv[machineDom] > 0)
+                        ? ("Cout/m de la machine " + machineDom + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m")
+                        : ("Estime via le cout/m global : " + fmtNum(Math.round(coutMChantier)) + " XPF/m");
                     } else if (coutTotalPrevu <= 0) {
                       coutSource = "Cout indisponible - renseigne 'depenses prevues' sur le chantier";
                     }
@@ -13201,8 +13305,9 @@
             // coutMetreGlobalEstime integre : personnel x 1.40 + charges fixes + emprunts
             //                                  + carburant + primes x 1.40 + consommables
             // Point mort = nb metres minimum a faire au prix actuel pour couvrir les couts attribues
-            var coutTotalEstime = (typeof coutMetreGlobalEstime === "number" && coutMetreGlobalEstime > 0)
-              ? Math.round(coutMetreGlobalEstime * metragePrev)
+            var coutMPrev = coutMetreChantier(chantier.id);
+            var coutTotalEstime = (typeof coutMPrev === "number" && coutMPrev > 0)
+              ? Math.round(coutMPrev * metragePrev)
               : 0;
             var pointMortMetres = (coutTotalEstime > 0 && prixPrev > 0)
               ? Math.round(coutTotalEstime / prixPrev)
@@ -27669,6 +27774,7 @@
       const [dbEmprunts, setDbEmprunts] = useState([]);
       const [dbChargesFixes, setDbChargesFixes] = useState([]);
       const [dbEcrCompta, setDbEcrCompta] = useState([]); // ecritures FEC (512/401/classe 6) - couts reels
+      const [dbCarburants, setDbCarburants] = useState([]); // consommations carburant (cout/m par machine)
       const [dbBugLogs, setDbBugLogs] = useState([]);
       const [soumissionsPendingCount, setSoumissionsPendingCount] = useState(0);
       const [piecesPendingCount, setPiecesPendingCount] = useState(0);
@@ -27852,6 +27958,12 @@
             }
             setDbEcrCompta(ecrAll);
           } catch (e) { console.warn("Fetch ecritures_compta:", e.message); }
+          // Consommations carburant (pour le cout/m par machine)
+          try {
+            var carbRes = await supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false });
+            if (carbRes.error) { console.warn("Table consommations_carburant:", carbRes.error.message); }
+            else setDbCarburants(carbRes.data || []);
+          } catch (e) { console.warn("Fetch consommations_carburant:", e.message); }
         } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
         finally { setDataLoading(false); }
       }, []);
@@ -28903,6 +29015,7 @@
         dbEmprunts, setDbEmprunts,
         dbChargesFixes, setDbChargesFixes,
         dbEcrCompta, setDbEcrCompta,
+        dbCarburants, setDbCarburants,
         dbBugLogs, setDbBugLogs,
         alertesSaisies, recentRelHeures, rhSignaturesPending, onlinePresences,
         loadAll, showToast,
