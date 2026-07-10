@@ -8980,9 +8980,7 @@
               var marge = ca - coutChantier;
               var margePercent = ca > 0 && coutChantier > 0 ? Math.round((marge / ca) * 100) : null;
               var statusColor = chantier.statut === "Termine" ? "#059669" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
-              // Marge/jour reelle = metrage moyen jour x (prix/m - cout/m reel FEC)
               var caJourInfo = computeCaJourChantier(chantier, ctx.dbRelevesJourn, ctx.dbSaisies);
-              var margeJourVal = coutMetreFEC > 0 ? (caJourInfo.metJour * (chantier.prixMetre - coutMetreFEC)) : caJourInfo.caJour;
               var caJourVal = caJourInfo.caJour;
               function fmtCaChant(v) {
                 if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
@@ -9006,9 +9004,9 @@
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Prix/m"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#059669" } }, fmtNum(chantier.prixMetre) + " XPF")
                   ),
-                  caJourInfo.metJour > 0 ? h("div", { style: { background: coutMetreFEC > 0 ? (margeJourVal >= 0 ? "rgba(34,197,94,0.12)" : "rgba(244,63,94,0.12)") : "rgba(167,139,250,0.15)", padding: 10, borderRadius: 6, cursor: "help" }, title: coutMetreFEC > 0 ? ("Marge/jour = " + Math.round(caJourInfo.metJour) + " m/j x (prix " + fmtNum(chantier.prixMetre) + " - cout reel " + fmtNum(Math.round(coutMetreFEC)) + " XPF/m) = " + fmtNum(Math.round(margeJourVal)) + " XPF/jour") : ("CA/jour = " + Math.round(caJourInfo.metJour) + " m/j x prix " + fmtNum(chantier.prixMetre) + " XPF/m (cout reel FEC indisponible)") },
-                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, coutMetreFEC > 0 ? "Marge /jour" : "CA /jour"),
-                    h("div", { style: { fontWeight: 700, fontSize: 14, color: coutMetreFEC > 0 ? (margeJourVal >= 0 ? "#059669" : "#dc2626") : "#c4b5fd" } }, fmtCaChant(margeJourVal))
+                  caJourVal > 0 ? h("div", { style: { background: "rgba(167,139,250,0.15)", padding: 10, borderRadius: 6, cursor: "help" }, title: "CA/jour = metrage moyen (" + Math.round(caJourInfo.metJour) + " m/j sur 14 derniers jours productifs) x prix/m (" + fmtNum(chantier.prixMetre) + " XPF/m) = " + fmtNum(Math.round(caJourVal)) + " XPF/jour" },
+                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA/J"),
+                    h("div", { style: { fontWeight: 700, fontSize: 14, color: "#c4b5fd" } }, fmtCaChant(caJourVal))
                   ) : null,
                   h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA"),
@@ -10317,13 +10315,16 @@
         if (!reliableSet[d.getMonth()]) return;
         totCharges += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
       });
+      // Denominateur = metres des RAPPORTS DE FORAGE (meme source que le CA partout
+      // ailleurs). On evite dbRelevesJourn qui fusionne rapports + CSV legacy et peut
+      // double-compter le metrage -> cout/m artificiellement bas -> marge fausse.
       var totMetres = 0;
-      (ctx.dbRelevesJourn || []).forEach(function(r) {
-        if (!r || !r.dateReleve) return;
-        var d = new Date(String(r.dateReleve).substring(0, 10) + "T00:00:00");
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r || !r.date_rapport) return;
+        var d = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
         if (isNaN(d.getTime()) || d.getFullYear() !== year) return;
         if (!reliableSet[d.getMonth()]) return;
-        totMetres += parseFloat(r.metrage) || 0;
+        totMetres += parseFloat(r.total_metres) || 0;
       });
       return totMetres > 0 ? totCharges / totMetres : 0;
     }
