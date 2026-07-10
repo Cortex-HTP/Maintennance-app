@@ -8364,8 +8364,14 @@
         return computeRenouvellementStatus(r) !== "Valide";
       }).length;
       var caChantiers = chantiers.reduce(function(sum, c) { return sum + (c.metrage * c.prixMetre); }, 0);
-      var depensesChantiers = chantiers.reduce(function(sum, c) { return sum + (c.depensesPrevues || 0); }, 0);
-      var margeChantiers = caChantiers > 0 ? Math.round(((caChantiers - depensesChantiers) / caChantiers) * 100) : 0;
+      // Cout de revient reel au metre (FEC). Utilise pour la marge globale ET les cartes.
+      var coutMetreFEC = computeCoutMetreFEC(ctx, new Date());
+      // Cout par chantier = depenses saisies si renseignees, sinon cout/m reel FEC x metrage
+      var depensesChantiers = chantiers.reduce(function(sum, c) {
+        var cout = (parseFloat(c.depensesPrevues) || 0) > 0 ? parseFloat(c.depensesPrevues) : (coutMetreFEC > 0 ? coutMetreFEC * (c.metrage || 0) : 0);
+        return sum + cout;
+      }, 0);
+      var margeChantiers = (caChantiers > 0 && depensesChantiers > 0) ? Math.round(((caChantiers - depensesChantiers) / caChantiers) * 100) : null;
 
       function handleMarquerFait(decl) {
         var updated = declarations.map(function(d) {
@@ -8905,7 +8911,7 @@
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#a78bfa" }), label: "A provisionner", value: fmtNum(totalAprovisionner), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "file-check", size: 32, color: "#059669" }), label: "Docs a renouveler", value: String(docsARenouveler), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel", value: fmtNum(caChantiers), color: "#d97706" }),
-          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#2563eb" }), label: "Marge %", value: margeChantiers + "%", color: "#2563eb" })
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#2563eb" }), label: "Marge %", value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
         ),
         h("div", { style: { marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
           h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
@@ -8968,8 +8974,7 @@
         ),
         activeTab === "chantiers" && h("div", null,
           viewMode === "liste" ? (function() {
-            // Cout de revient reel au metre (FEC, grand livre). 0 si pas de donnees -> fallback.
-            var coutMetreFEC = computeCoutMetreFEC(ctx, new Date());
+            // coutMetreFEC est calcule au niveau du composant (partage avec la marge globale).
             return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 } },
             chantiers.map(function(chantier) {
               var ca = chantier.metrage * chantier.prixMetre;
