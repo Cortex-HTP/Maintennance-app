@@ -18960,19 +18960,51 @@
               }
             });
 
-            // ── CA REALISE par mois (metrages saisis dans Avancement) ──
-            // Utilise pour les mois passes non fiables cote Compta : au lieu d'afficher 0,
-            // on utilise le CA reellement produit par les sondeurs (metrages jour * prix/metre).
+            // ── CA REALISE par mois (metrages produits par sondeurs) ──
+            // Meme logique que Avancement (getDailyMetrageChantier) : priorite aux releves
+            // journaliers (rapports de forage terrain, agreges par chantier x date x machine
+            // avec max par machine), fallback saisies manuelles admin si pas de releve.
+            // Utilise pour les mois passes non fiables cote Compta (au lieu d'afficher 0).
             var currentYearReal = now2.getFullYear();
             var caChantiersRealiseParMois = new Array(12).fill(0);
+            var prixParChantier = {};
             (dbChantiers || []).forEach(function(c) {
-              var prix = parseFloat(c.prixMetre) || 0;
+              prixParChantier[String(c.id)] = parseFloat(c.prixMetre) || 0;
+            });
+            // Source 1 : releves journaliers (rapports de forage)
+            var relIdxTr = {};
+            (ctx.dbRelevesJourn || []).forEach(function(r) {
+              if (!r || !r.chantierId || !r.dateReleve) return;
+              var ck = String(r.chantierId);
+              var dk = String(r.dateReleve).substring(0,10);
+              var mk = String(r.sondeuseCode || r.equipementId || "_no").toUpperCase().trim();
+              var v = parseFloat(r.metrage) || 0;
+              if (!relIdxTr[ck]) relIdxTr[ck] = {};
+              if (!relIdxTr[ck][dk]) relIdxTr[ck][dk] = {};
+              if (v > (relIdxTr[ck][dk][mk] || 0)) relIdxTr[ck][dk][mk] = v;
+            });
+            Object.keys(relIdxTr).forEach(function(ck) {
+              var prix = prixParChantier[ck] || 0;
+              if (prix <= 0) return;
+              Object.keys(relIdxTr[ck]).forEach(function(dk) {
+                var d = new Date(dk + "T00:00:00");
+                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
+                var mksTr = Object.keys(relIdxTr[ck][dk]);
+                var sTot = 0;
+                for (var miTr = 0; miTr < mksTr.length; miTr++) sTot += relIdxTr[ck][dk][mksTr[miTr]];
+                if (sTot > 0) caChantiersRealiseParMois[d.getMonth()] += sTot * prix;
+              });
+            });
+            // Source 2 : saisies manuelles admin (fallback si pas de releve pour chantier x date)
+            (dbChantiers || []).forEach(function(c) {
+              var ck = String(c.id);
+              var prix = prixParChantier[ck] || 0;
               if (prix <= 0) return;
               var saisCh = (ctx.dbSaisies || {})[c.id] || {};
               Object.keys(saisCh).forEach(function(dateStr) {
                 var d = new Date(String(dateStr).substring(0,10) + "T00:00:00");
-                if (isNaN(d.getTime())) return;
-                if (d.getFullYear() !== currentYearReal) return;
+                if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
+                if (relIdxTr[ck] && relIdxTr[ck][dateStr] != null) return; // releve prioritaire
                 var vv = saisCh[dateStr];
                 var val = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
                 if (val <= 0) return;
