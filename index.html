@@ -17120,9 +17120,11 @@
       var periodStart = null;
       var periodEnd = null; // null = jusqu'a aujourd'hui
       if (period === "mois") {
-        // Mois en cours uniquement (du 1er au dernier jour du mois)
+        // Mois en cours : du 1er a AUJOURD'HUI (pas la fin du mois).
+        // Sinon nbMoisPeriode ~1 -> couts fixes (frais generaux, salaires, emprunts) comptes
+        // pour un mois PLEIN, mais le metrage n'est que partiel (debut de mois) -> cout/m gonfle.
         periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+        periodEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
       } else if (period === "moisdernier") {
         // Mois precedent : du 1er au dernier jour du mois -1
         periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -17931,6 +17933,12 @@
           totalMens += parseFloat(e.mensualite) || 0;
         });
         if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
+        // Mois EN COURS : prorater la mensualite a la fraction du mois ecoulee, sinon on
+        // compte une traite pleine sur un metrage partiel -> cout/m gonfle en debut de mois.
+        var nowE = new Date();
+        if (y === nowE.getFullYear() && m === nowE.getMonth()) {
+          totalMens = totalMens * (nowE.getDate() / lastDay.getDate());
+        }
         // Total metres fores ce mois (toutes machines confondues)
         var totalMetres = 0;
         (rapports || []).forEach(function(r) {
@@ -17965,6 +17973,13 @@
             if (mens <= 0) return;
             mensParEq[e.equipement_id] = (mensParEq[e.equipement_id] || 0) + mens;
           });
+          // Mois EN COURS : prorater les mensualites a la fraction du mois ecoulee
+          // (traite pleine sur metrage partiel = cout/m gonfle en debut de mois).
+          var nowED = new Date();
+          if (y === nowED.getFullYear() && m === nowED.getMonth()) {
+            var fracD = nowED.getDate() / lastDay.getDate();
+            Object.keys(mensParEq).forEach(function(eqId) { mensParEq[eqId] = mensParEq[eqId] * fracD; });
+          }
           // 2) Total metres par equipement (pour le mois)
           var metresParEq = {};
           (rapports || []).forEach(function(r) {
