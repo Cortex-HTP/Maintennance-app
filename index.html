@@ -18913,43 +18913,25 @@
               if (abs >= 1000) return sign + Math.round(abs / 1000) + " k";
               return sign + Math.round(abs);
             };
-            // SVG
-            var Wt = 900, Ht = 260, pLt = 55, pRt = 15, pTt = 15, pBt = 30;
-            var iwt = Wt - pLt - pRt, iht = Ht - pTt - pBt;
+            // ── Chart style courbe carburant : polyline + aire dégradée + moyenne pointillée ──
+            var Wt = 720, Ht = 220;
+            var padT = { t: 22, r: 18, b: 32, l: 60 };
+            var iwt = Wt - padT.l - padT.r;
+            var iht = Ht - padT.t - padT.b;
             var valsTr = trMois.map(function(x) { return x.solde; });
             var maxVt = Math.max.apply(null, valsTr);
             var minVt = Math.min.apply(null, valsTr);
-            if (minVt > 0) minVt = 0;
-            if (maxVt < 0) maxVt = 0;
+            // Marge de 10 % au-dessus et au-dessous pour aerer
+            var marge = Math.max(1, (maxVt - minVt) * 0.10);
+            if (minVt > 0) minVt = 0; else minVt = minVt - marge;
+            maxVt = maxVt + marge;
             var yRangeT = (maxVt - minVt) || 1;
-            var xToPxT = function(i) { return pLt + (i / (trMois.length - 1)) * iwt; };
-            var yToPxT = function(v) { return pTt + ((maxVt - v) / yRangeT) * iht; };
-            var yZeroT = yToPxT(0);
-            var svgTr = "";
-            for (var kt = 0; kt <= 4; kt++) {
-              var v0t = maxVt - (yRangeT * kt / 4);
-              var y0t = yToPxT(v0t);
-              svgTr += '<line x1="' + pLt + '" y1="' + y0t + '" x2="' + (Wt - pRt) + '" y2="' + y0t + '" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>';
-              svgTr += '<text x="' + (pLt - 6) + '" y="' + (y0t + 3) + '" fill="#71717a" font-size="10" text-anchor="end">' + fmtCaTr(v0t) + '</text>';
-            }
-            svgTr += '<line x1="' + pLt + '" y1="' + yZeroT + '" x2="' + (Wt - pRt) + '" y2="' + yZeroT + '" stroke="rgba(244,63,94,0.40)" stroke-width="1" stroke-dasharray="4 4"/>';
-            var inNegT = false, segStartT = null;
-            trMois.forEach(function(x, i) {
-              var negT = x.solde < 0;
-              if (negT && !inNegT) { inNegT = true; segStartT = i; }
-              else if (!negT && inNegT) {
-                svgTr += '<rect x="' + xToPxT(segStartT) + '" y="' + pTt + '" width="' + (xToPxT(i) - xToPxT(segStartT)) + '" height="' + iht + '" fill="rgba(244,63,94,0.10)"/>';
-                inNegT = false; segStartT = null;
-              }
-            });
-            if (inNegT) svgTr += '<rect x="' + xToPxT(segStartT) + '" y="' + pTt + '" width="' + (xToPxT(trMois.length - 1) - xToPxT(segStartT)) + '" height="' + iht + '" fill="rgba(244,63,94,0.10)"/>';
-            var pSoldeTr = "M";
-            trMois.forEach(function(x, i) { pSoldeTr += (i > 0 ? "L" : "") + xToPxT(i) + "," + yToPxT(x.solde); });
-            svgTr += '<path d="' + pSoldeTr + '" stroke="#818cf8" stroke-width="3" fill="none"/>';
-            trMois.forEach(function(x, i) {
-              svgTr += '<circle cx="' + xToPxT(i) + '" cy="' + yToPxT(x.solde) + '" r="4" fill="#818cf8"><title>' + x.d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }) + '\nEncaiss : ' + fmtCaTr(x.encaiss) + '\nDecaiss : -' + fmtCaTr(x.decaiss) + '\nNet : ' + (x.net >= 0 ? "+" : "") + fmtCaTr(x.net) + '\nSolde : ' + fmtCaTr(x.solde) + '</title></circle>';
-              svgTr += '<text x="' + xToPxT(i) + '" y="' + (Ht - pBt + 16) + '" fill="#71717a" font-size="10" text-anchor="middle">' + x.d.toLocaleDateString("fr-FR", { month: "short" }) + '</text>';
-            });
+            var xForT = function(i) { return padT.l + (trMois.length > 1 ? (i / (trMois.length - 1)) * iwt : iwt / 2); };
+            var yForT = function(v) { return padT.t + iht - ((v - minVt) / yRangeT) * iht; };
+            var yZeroT = yForT(0);
+            var moyenneSolde = valsTr.reduce(function(s, v) { return s + v; }, 0) / valsTr.length;
+            var linePts = trMois.map(function(x, i) { return xForT(i) + ',' + yForT(x.solde); }).join(' ');
+            var yTicksT = [0, 0.25, 0.5, 0.75, 1].map(function(t) { return { v: maxVt - t * yRangeT, y: padT.t + t * iht }; });
             return h("div", { style: { background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 16 } },
               h("div", { style: { marginBottom: 12 } },
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8 } },
@@ -18982,17 +18964,52 @@
                   h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, trMois[minIdxTr].d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }))
                 )
               ),
-              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12, overflowX: "auto" } },
-                h("div", { dangerouslySetInnerHTML: { __html: '<svg viewBox="0 0 ' + Wt + ' ' + Ht + '" style="display:block;width:100%;min-width:600px;height:260px">' + svgTr + '</svg>' } })
+              // ── Legende inline en tete du chart (style carburant) ──
+              h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 16, fontSize: 11, color: "#a1a1aa", marginBottom: 6, flexWrap: "wrap" } },
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#818cf8", verticalAlign: "middle", marginRight: 6 } }), "Solde net cumule"),
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Moyenne : " + fmtCaTr(moyenneSolde) + " XPF"),
+                h("span", { style: { color: "#71717a" } }, "Seuil zero"),
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #f43f5e", verticalAlign: "middle", marginRight: 6 } }))
               ),
-              h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, marginTop: 10 } },
-                h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-                  h("div", { style: { width: 14, height: 3, borderRadius: 2, background: "#818cf8" } }),
-                  h("span", { style: { color: "#cbd5e1" } }, "Solde net cumule")
-                ),
-                h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-                  h("div", { style: { width: 14, height: 14, borderRadius: 3, background: "rgba(244,63,94,0.20)", border: "1px solid rgba(244,63,94,0.40)" } }),
-                  h("span", { style: { color: "#cbd5e1" } }, "Zone tresorerie negative")
+              // ── SVG polyline + aire degradee + moyenne pointillee (style carburant) ──
+              h("div", { style: { overflowX: "auto" } },
+                h("svg", { width: Wt, height: Ht, viewBox: "0 0 " + Wt + " " + Ht, style: { maxWidth: "100%", display: "block" } },
+                  // Gradient definition
+                  h("defs", null,
+                    h("linearGradient", { id: "tresorerie-grad-pos", x1: "0", x2: "0", y1: "0", y2: "1" },
+                      h("stop", { offset: "0%", "stop-color": "rgba(129,140,248,0.40)" }),
+                      h("stop", { offset: "100%", "stop-color": "rgba(129,140,248,0)" })
+                    ),
+                    h("linearGradient", { id: "tresorerie-grad-neg", x1: "0", x2: "0", y1: "0", y2: "1" },
+                      h("stop", { offset: "0%", "stop-color": "rgba(244,63,94,0)" }),
+                      h("stop", { offset: "100%", "stop-color": "rgba(244,63,94,0.30)" })
+                    )
+                  ),
+                  // Grille horizontale + labels Y
+                  yTicksT.map(function(t, i) { return h("g", { key: "gt" + i },
+                    h("line", { x1: padT.l, y1: t.y, x2: padT.l + iwt, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
+                    h("text", { x: padT.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, fmtCaTr(t.v))
+                  ); }),
+                  // Aire sous courbe (positive : gradient violet vers bas ; negative : gradient rouge vers haut)
+                  trMois.length > 1 ? h("path", { d: "M " + xForT(0) + "," + yZeroT + " L " + linePts + " L " + xForT(trMois.length - 1) + "," + yZeroT + " Z", fill: moyenneSolde >= 0 ? "url(#tresorerie-grad-pos)" : "url(#tresorerie-grad-neg)" }) : null,
+                  // Ligne zero (seuil rouge pointille)
+                  yZeroT >= padT.t && yZeroT <= padT.t + iht ? h("line", { x1: padT.l, y1: yZeroT, x2: padT.l + iwt, y2: yZeroT, stroke: "#f43f5e", strokeWidth: 1.5, strokeDasharray: "5 4", opacity: 0.65 }) : null,
+                  // Ligne moyenne (jaune pointille, comme carburant)
+                  h("line", { x1: padT.l, y1: yForT(moyenneSolde), x2: padT.l + iwt, y2: yForT(moyenneSolde), stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }),
+                  // Polyline principale (solde)
+                  trMois.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#818cf8", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                  // Points sur chaque mois
+                  trMois.map(function(x, i) {
+                    var col = x.solde >= 0 ? "#a5b4fc" : "#fda4af";
+                    return h("g", { key: "p" + i },
+                      h("circle", { cx: xForT(i), cy: yForT(x.solde), r: 4, fill: col, stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }),
+                      h("title", null, x.d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }) + "\nEncaissements : " + fmtCaTr(x.encaiss) + " XPF\nDecaissements : -" + fmtCaTr(x.decaiss) + " XPF\nNet : " + (x.net >= 0 ? "+" : "") + fmtCaTr(x.net) + " XPF\nSolde fin : " + fmtCaTr(x.solde) + " XPF")
+                    );
+                  }),
+                  // Labels axe X (nom du mois)
+                  trMois.map(function(x, i) {
+                    return h("text", { key: "lx" + i, x: xForT(i), y: Ht - 10, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, x.d.toLocaleDateString("fr-FR", { month: "short" }));
+                  })
                 )
               ),
               // ── Tableau breakdown mensuel : visualiser ce qui rentre chaque mois ──
