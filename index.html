@@ -18316,11 +18316,15 @@
         var nbJoursTravailles = joursKeys.length;
         // Dernier jour travaille : sert a detecter les machines inactives depuis N jours
         var dernierJourTravaille = joursKeys.length > 0 ? joursKeys.sort().pop() : null;
+        // Inactivite mesuree depuis la FIN de la periode analysee (pas aujourd'hui) : sinon
+        // sur un mois passe, toutes les machines paraissent "inactives depuis >7j" et sont
+        // toutes filtrees -> "Aucune machine avec CA sur cette periode".
+        var refInactivite = periodEnd ? new Date(periodEnd.getTime()) : new Date();
+        refInactivite.setHours(0, 0, 0, 0);
         var joursInactive = 0;
         if (dernierJourTravaille) {
           var djd = new Date(dernierJourTravaille + "T00:00:00");
-          var todayD = new Date(); todayD.setHours(0,0,0,0);
-          joursInactive = Math.max(0, Math.round((todayD.getTime() - djd.getTime()) / 86400000));
+          joursInactive = Math.max(0, Math.round((refInactivite.getTime() - djd.getTime()) / 86400000));
         }
         // CA total = metrage + facturation activites (attentes, deplacements, etc.)
         var caTotal = s.caGenere + (s.caFacturationActivites || 0);
@@ -18637,47 +18641,9 @@
               );
             }())
           ) : null,
-          // Ligne 2 : TEMPS REEL (jours travailles) — mises en avant, plus grosses
-          seuilMois > 0 && joursTravailles > 0 ? h("div", { style: { display: "flex", gap: 10, marginBottom: 22, flexWrap: "wrap" } },
-            // Cout/metre temps reel
-            (function() {
-              var positif = coutMetreReel <= prixMetreEffectif;
-              var col = positif ? { bg: "rgba(6,182,212,0.10)", br: "rgba(6,182,212,0.35)", txt: "#67e8f9", icon: "activity" }
-                                : { bg: "rgba(244,63,94,0.10)", br: "rgba(244,63,94,0.35)", txt: "#fda4af", icon: "activity" };
-              return h("div", { style: { flex: "2 1 320px", background: col.bg, border: "1px solid " + col.br, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 } },
-                h(Icon, { name: col.icon, size: 22, color: col.txt }),
-                h("div", { style: { flex: 1 } },
-                  h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Cout au metre TEMPS REEL"),
-                  h("div", { style: { fontSize: 20, fontWeight: 900, color: col.txt, lineHeight: 1.2 } },
-                    fmtXPF(Math.round(coutMetreReel)) + " /m"
-                  ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 500, marginTop: 3 } },
-                    "Depenses " + fmtXPF(Math.round(depensesParJourReel)) + "/jour - " + Math.round(metresParJourReel) + " m/jour - " + joursTravailles + " jour" + (joursTravailles > 1 ? "s" : "") + " travaille" + (joursTravailles > 1 ? "s" : "")
-                  )
-                )
-              );
-            }()),
-            // Gain/metre temps reel
-            (function() {
-              var positif = gainMetreReel > 0;
-              var col = positif ? { bg: "rgba(168,85,247,0.10)", br: "rgba(168,85,247,0.35)", txt: "#d8b4fe", icon: "trending-up" }
-                                : { bg: "rgba(244,63,94,0.10)",  br: "rgba(244,63,94,0.35)",  txt: "#fda4af", icon: "trending-down" };
-              return h("div", { style: { flex: "2 1 320px", background: col.bg, border: "1px solid " + col.br, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 } },
-                h(Icon, { name: col.icon, size: 22, color: col.txt }),
-                h("div", { style: { flex: 1 } },
-                  h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Gain au metre TEMPS REEL"),
-                  h("div", { style: { fontSize: 20, fontWeight: 900, color: col.txt, lineHeight: 1.2 } },
-                    (positif ? "+" : "") + fmtXPF(Math.round(gainMetreReel)) + " /m",
-                    h("span", { style: { fontSize: 12, color: "#a1a1aa", fontWeight: 500, marginLeft: 8 } },
-                      "(marge " + (positif ? "+" : "") + margeReelPct.toFixed(1) + "%)")
-                  ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 500, marginTop: 3 } },
-                    "Net " + (netParJourReel >= 0 ? "+" : "") + fmtXPF(Math.round(netParJourReel)) + "/jour - sur " + joursTravailles + " jour" + (joursTravailles > 1 ? "s" : "") + " travaille" + (joursTravailles > 1 ? "s" : "")
-                  )
-                )
-              );
-            }())
-          ) : null,
+          // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
+          //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
+          //  ci-dessus est la reference.)
           // Evolution + Activites
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: Object.assign({}, sectionStyle, { display: "flex", flexDirection: "column" }) },
