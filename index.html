@@ -14096,60 +14096,15 @@
         });
       });
 
-      // Affectations implicites depuis releves_journaliers (import CSV).
-      // { "empId-date": chantierId } - utilise comme fallback automatique
-      // pour que le site de chaque employe s'affiche sans saisie manuelle.
-      // IMPORTANT: on ignore les releves d'heures seules (metrage = 0).
-      // Seul un releve avec metrage > 0 declenche l'affectation auto.
-      var relevesAffMap = {};
-      var relevesPe = ctx.dbRelevesJourn || [];
-      relevesPe.forEach(function(r) {
-        if (!r.personnelId || !r.dateReleve || !r.chantierId) return;
-        if ((parseFloat(r.metrage) || 0) <= 0) return; // skip releves heures-seules
-        var k = r.personnelId + "-" + r.dateReleve;
-        relevesAffMap[k] = r.chantierId;
-      });
-
-      // Build map of recent chantiers per employee (last 60 days from current month)
-      var empRecentChantiers = {};
-      var refDate = new Date(year, monthIdx + 1, 0); // last day of current month
-      affectations.forEach(function(a) {
-        if (!a.chantierId) return;
-        var affDate = new Date(a.dateAffectation + "T12:00:00");
-        var diffDays = (refDate - affDate) / (1000 * 60 * 60 * 24);
-        if (diffDays >= 0 && diffDays <= 60) {
-          if (!empRecentChantiers[a.personnelId]) empRecentChantiers[a.personnelId] = {};
-          empRecentChantiers[a.personnelId][String(a.chantierId)] = true;
-        }
-      });
-      // Inclure aussi les releves journaliers (CSV) dans les chantiers recents,
-      // uniquement pour ceux avec metrage > 0 (on ignore les releves heures-seules).
-      relevesPe.forEach(function(r) {
-        if (!r.personnelId || !r.chantierId || !r.dateReleve) return;
-        if ((parseFloat(r.metrage) || 0) <= 0) return;
-        var rd = new Date(r.dateReleve + "T12:00:00");
-        var dd = (refDate - rd) / (1000 * 60 * 60 * 24);
-        if (dd >= 0 && dd <= 60) {
-          if (!empRecentChantiers[r.personnelId]) empRecentChantiers[r.personnelId] = {};
-          empRecentChantiers[r.personnelId][String(r.chantierId)] = true;
-        }
-      });
+      // Sources d'affichage du planning employe : UNIQUEMENT affectations manuelles (affMap)
+      // + rapports de forage (affMap avec fromRapport). Les anciennes sources implicites
+      // "releves_journaliers CSV" et "heuristique chantier recent (60j)" ont ete RETIREES :
+      // elles inventaient des presences (ex: employes affiches "T" Tiebaghi le vendredi
+      // alors qu'ils ne figuraient sur aucun rapport de forage). Choix metier : rapports + manuel.
 
       function getAffectation(empId, dateStr) {
         var entry = affMap[empId + "-" + dateStr];
         if (entry) return entry.chantierId;
-        // Fallback : releves_journaliers (import CSV)
-        var k = empId + "-" + dateStr;
-        if (relevesAffMap[k] != null) return relevesAffMap[k];
-        // Pas d'affectation: verifier si un chantier recent a une panne/intemperie ce jour
-        var recentChs = empRecentChantiers[empId];
-        if (recentChs) {
-          var rKeys = Object.keys(recentChs);
-          for (var ri = 0; ri < rKeys.length; ri++) {
-            var sType = saisieTypeMap[rKeys[ri] + "-" + dateStr];
-            if (sType) return parseInt(rKeys[ri]); // retourne le chantierId pour afficher la couleur panne
-          }
-        }
         return "";
       }
       function getAffectationType(empId, dateStr) {
@@ -14175,31 +14130,8 @@
           }
           return entry.typeJour || "travail";
         }
-        // Fallback : releves_journaliers (import CSV) - employe affecte automatiquement au site
-        var relK = empId + "-" + dateStr;
-        var relChId = relevesAffMap[relK];
-        if (relChId != null) {
-          // Verifier si le site associe a un brush (panne/intemperies/ferie) ce jour
-          var chRel = chantiers.find(function(c) { return c.id == relChId; });
-          var siteR = chRel ? chRel.site : "";
-          if (siteR) {
-            var siteRChs = chantiers.filter(function(c) { return c.site && c.site === siteR; });
-            for (var sri = 0; sri < siteRChs.length; sri++) {
-              var stR = saisieTypeMap[String(siteRChs[sri].id) + "-" + dateStr];
-              if (stR) return stR;
-            }
-          }
-          return "travail";
-        }
-        // Pas d'affectation: verifier les chantiers recents pour pannes/intemperies
-        var recentChs = empRecentChantiers[empId];
-        if (recentChs) {
-          var rKeys = Object.keys(recentChs);
-          for (var ri = 0; ri < rKeys.length; ri++) {
-            var sType = saisieTypeMap[rKeys[ri] + "-" + dateStr];
-            if (sType) return sType;
-          }
-        }
+        // Plus d'affectation implicite : ni releves CSV, ni heuristique chantier recent.
+        // Un employe n'apparait que s'il a une affectation manuelle ou figure dans un rapport de forage.
         return "";
       }
 
