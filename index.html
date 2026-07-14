@@ -14086,8 +14086,13 @@
           }
           if (!pid) return;
           var key = pid + "-" + d;
-          if (affMap[key]) return; // priorite a l'affectation explicite si elle existe
-          affMap[key] = { chantierId: chId, typeJour: "travail", auto: true };
+          var existingAff = affMap[key];
+          // Priorite a l'affectation explicite existante, SAUF si c'est un jour ferie :
+          // la presence de l'employe dans l'equipe d'un rapport prouve qu'il a travaille,
+          // donc le rapport prime sur le ferie (demande metier). Les autres types
+          // (conge, maladie, panne...) restent prioritaires sur le rapport.
+          if (existingAff && existingAff.typeJour !== "ferie") return;
+          affMap[key] = { chantierId: chId, typeJour: "travail", auto: true, fromRapport: true };
         });
       });
 
@@ -14158,7 +14163,13 @@
               var siteChs = chantiers.filter(function(c) { return c.site && c.site === siteName; });
               for (var sci = 0; sci < siteChs.length; sci++) {
                 var saisieType = saisieTypeMap[String(siteChs[sci].id) + "-" + dateStr];
-                if (saisieType) return saisieType;
+                if (saisieType) {
+                  // Les affectations issues d'un rapport priment sur les jours feries :
+                  // si l'employe a travaille (present dans l'equipe d'un rapport ce jour),
+                  // on ignore un ferie pose au niveau du site. Panne/intemperies restent prioritaires.
+                  if (saisieType === "ferie" && entry.fromRapport) continue;
+                  return saisieType;
+                }
               }
             }
           }
