@@ -2956,7 +2956,8 @@
         // ── Temps restant + ETA avant chaque prochaine maintenance ──
         (function() {
           // Cadence horametre/jour basee sur les releves (30 derniers jours, ou tout l'historique si moins)
-          var cadence = null;
+          var cadence = null;         // par jour CALENDAIRE -> sert a l'ETA maintenance (projection en jours calendaires)
+          var cadenceTravail = null;  // par jour OUVRE (Lun-Jeu) -> affichage realiste ("la machine fait X h les jours ou elle tourne")
           if (releveAsc.length >= 2) {
             var last = releveAsc[releveAsc.length - 1];
             var firstIdx = 0;
@@ -2970,6 +2971,11 @@
             var d2 = new Date(last.Date + "T00:00:00");
             var deltaJours = Math.max(1, Math.round((d2 - d1) / 86400000));
             if (deltaH > 0 && deltaJours > 0) cadence = deltaH / deltaJours;
+            // Jours ouvres (Lun-Jeu) de la fenetre (hors le premier releve = baseline) :
+            // les heures se sont accumulees sur les jours travailles, pas les jours off.
+            var _jo = 0, _cur = new Date(d1.getTime() + 86400000);
+            while (_cur <= d2) { var _dw = _cur.getDay(); if (_dw >= 1 && _dw <= 4) _jo++; _cur = new Date(_cur.getTime() + 86400000); }
+            if (deltaH > 0 && _jo > 0) cadenceTravail = deltaH / _jo;
           }
           // Plans concernant cet equipement (par codes_equipements)
           var eqCode = String(eq.Title || "").toUpperCase().trim();
@@ -3006,7 +3012,7 @@
               h(IconText, { icon: "clock", size: 16, color: "#a78bfa" }, "Temps avant prochaine maintenance")
             ),
             cadence != null
-              ? h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 14 } }, "Cadence d'usage : " + cadence.toFixed(1) + " h/jour (moyenne 30j)")
+              ? h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 14 } }, "Cadence d'usage : " + (cadenceTravail != null ? (cadenceTravail.toFixed(1) + " h/jour travaille (Lun-Jeu) · " + cadence.toFixed(1) + " h/j calendaire") : (cadence.toFixed(1) + " h/jour (moyenne 30j)")))
               : h("div", { style: { fontSize: 11, color: "#fda4af", marginBottom: 14, fontStyle: "italic" } }, "Cadence inconnue - estimation basee sur 8 h/jour ouvre"),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 } },
               plansForEq.map(function(p) {
