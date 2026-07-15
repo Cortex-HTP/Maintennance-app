@@ -7825,8 +7825,6 @@
       var activeTab = _at[0]; var setActiveTab = _at[1];
       var _vm = useState("annuel");
       var viewMode = _vm[0]; var setViewMode = _vm[1];
-      var _stg = useState(false); // afficher les chantiers termines (masques par defaut)
-      var showTermines = _stg[0]; var setShowTermines = _stg[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
       var setDeclarations = ctx.setDbDeclarations;
@@ -8691,7 +8689,6 @@
 
         if (activeTab === "chantiers") {
           var chantsYear = chantiers.filter(function(ch) {
-            if (!showTermines && ch.statut === "Termine") return false;
             var debut = parseDate(ch.dateDebut);
             var fin = parseDate(ch.dateFin);
             return debut <= yearEnd && fin >= yearStart;
@@ -8703,8 +8700,8 @@
             var leftPct = dateToPct(debut);
             var rightPct = dateToPct(fin);
             var widthPct = Math.max(rightPct - leftPct, 1);
-            var barColor = ch.statut === "Termine" ? "#10b981" : ch.statut === "En cours" ? "#f59e0b" : "#71717a";
-            var barGradient = ch.statut === "Termine" ? "linear-gradient(135deg, #10b981, #059669)" : ch.statut === "En cours" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #94a3b8, #64748b)";
+            var barColor = ch.statut === "Termine" ? "#64748b" : ch.statut === "En cours" ? "#f59e0b" : "#71717a";
+            var barGradient = ch.statut === "Termine" ? "linear-gradient(135deg, #64748b, #475569)" : ch.statut === "En cours" ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #94a3b8, #64748b)";
             var bgColor = idx % 2 === 0 ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.035)";
             var isDragging = dragRef.current.dragging && dragRef.current.itemId === ch.id;
             rows.push(h("div", { key: "ar" + ch.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "rgba(129,140,248,0.15)" : bgColor, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
@@ -9024,15 +9021,6 @@
           ) : renderAnnuel()
         ),
         activeTab === "chantiers" && h("div", null,
-          (function() {
-            var _nbTerm = chantiers.filter(function(c) { return c.statut === "Termine"; }).length;
-            return _nbTerm > 0 ? h("div", { style: { marginBottom: 12, display: "flex", justifyContent: "flex-end" } },
-              h("button", { onClick: function() { setShowTermines(!showTermines); }, style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, background: showTermines ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)", border: "1px solid " + (showTermines ? "rgba(16,185,129,0.4)" : "rgba(255,255,255,0.1)"), color: showTermines ? "#6ee7b7" : "#a1a1aa" } },
-                h(Icon, { name: showTermines ? "eye" : "eye-off", size: 14, color: showTermines ? "#6ee7b7" : "#a1a1aa" }),
-                (showTermines ? "Masquer" : "Afficher") + " les termines (" + _nbTerm + ")"
-              )
-            ) : null;
-          }()),
           viewMode === "liste" ? (function() {
             // coutMetreFEC est calcule au niveau du composant (partage avec la marge globale).
             function renderChantierCard(chantier) {
@@ -9043,7 +9031,7 @@
                 : (coutMetreFEC > 0 ? coutMetreFEC * chantier.metrage : 0);
               var marge = ca - coutChantier;
               var margePercent = ca > 0 && coutChantier > 0 ? Math.round((marge / ca) * 100) : null;
-              var statusColor = chantier.statut === "Termine" ? "#059669" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
+              var statusColor = chantier.statut === "Termine" ? "#64748b" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
               var caJourInfo = computeCaJourChantier(chantier, ctx.dbRelevesJourn, ctx.dbSaisies);
               var caJourVal = caJourInfo.caJour;
               function fmtCaChant(v) {
@@ -9051,7 +9039,7 @@
                 if (v >= 1000) return Math.round(v / 1000) + " k";
                 return String(Math.round(v));
               }
-              return h(Card, { key: chantier.id, style: { borderLeft: "4px solid " + statusColor } },
+              return h(Card, { key: chantier.id, style: { borderLeft: "4px solid " + statusColor, opacity: chantier.statut === "Termine" ? 0.55 : 1 } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
                   h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, flex: 1 } }, chantier.titre),
                   h("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
@@ -9087,12 +9075,10 @@
                 )
               );
             }
-            // Terminés masqués par défaut (bouton bascule en haut de l'onglet).
-            var _visibleCh = chantiers.filter(function(c) { return showTermines || c.statut !== "Termine"; });
             var _gridCh = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 };
-            return _visibleCh.length > 0
-              ? h("div", { style: _gridCh }, _visibleCh.map(renderChantierCard))
-              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, showTermines ? "Aucun chantier" : "Aucun chantier en cours ou a venir");
+            return chantiers.length > 0
+              ? h("div", { style: _gridCh }, chantiers.map(renderChantierCard))
+              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier");
           }()) : renderAnnuel()
         ),
         activeTab === "maintenances" && (function() {
