@@ -28621,8 +28621,15 @@
           const toDelete = []; // ids d'interventions [Auto] Pas fait obsoletes
           equipements.forEach((eq) => {
             const eqCode = (eq.Title || "").toLowerCase();
-            const horam = parseFloat(eq.Horametre || 0);
-            const km = parseFloat(eq.KM || 0);
+            // Horametre/KM le plus a jour = max(champ machine, dernier releve), comme la fiche
+            // detail. Le champ eq.Horametre (horametre_actuel) n'est pas toujours synchronise
+            // avec les releves : sans ce max, le declenchement utilisait une valeur perimee
+            // (ex: 10100 au lieu de 10266) et ne se declenchait pas alors qu'on etait dans le seuil.
+            const _eqRel = (releves || []).filter((r) => r.EquipementId === eq.Id || r.Equipement === eq.Title);
+            const _maxRelH = _eqRel.reduce((mx, r) => Math.max(mx, parseFloat(r.Horametre) || 0), 0);
+            const _maxRelKM = _eqRel.reduce((mx, r) => Math.max(mx, parseFloat(r.KM) || 0), 0);
+            const horam = Math.max(parseFloat(eq.Horametre || 0), _maxRelH);
+            const km = Math.max(parseFloat(eq.KM || 0), _maxRelKM);
             const baseH = parseFloat(eq.DernierEntretienH || 0);
             const baseKM = parseFloat(eq.DernierEntretienKM || 0);
 
