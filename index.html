@@ -10081,8 +10081,10 @@
           justifyContent: "space-between",
           boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
           transition: "transform 0.2s, box-shadow 0.2s",
-          overflow: "hidden"
+          overflow: "hidden",
+          cursor: opts.onClick ? "pointer" : "default"
         },
+        onClick: opts.onClick,
         onMouseEnter: function(e) { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.28)"; },
         onMouseLeave: function(e) { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.18)"; },
         title: opts.tooltip || ""
@@ -11223,6 +11225,8 @@
       var expandedChantier = _exp[0]; var setExpandedChantier = _exp[1];
       var _showImport = useState(false);
       var showImport = _showImport[0]; var setShowImport = _showImport[1];
+      var _vp = useState(null); // id du chantier dont la fenetre "Vitesse - moyennes" est ouverte
+      var vitPopover = _vp[0]; var setVitPopover = _vp[1];
       // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
       var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
       // Helper de fetch meteo pour 1 chantier (idempotent : skip si deja en cache)
@@ -11837,6 +11841,43 @@
         return total;
       }
 
+      // Moyennes de vitesse d'un chantier sur plusieurs periodes (pour la fenetre "Vitesse").
+      // moyJour = metrage / jours travailles (v>0) ; moyHebdo = metrage / nb semaines.
+      // 14j = 14 derniers jours productifs Lun-Jeu (identique a la KPI headline).
+      function computeVitPeriodesChantier(chId) {
+        var ck = String(chId);
+        var dset = {};
+        if (relevesIdx[ck]) Object.keys(relevesIdx[ck]).forEach(function(d) { dset[d] = 1; });
+        if (saisies[chId]) Object.keys(saisies[chId]).forEach(function(d) { dset[d] = 1; });
+        var now = new Date(); now.setHours(0, 0, 0, 0); var nowMs = now.getTime();
+        var dates = Object.keys(dset).map(function(d) {
+          return { t: new Date(d + "T00:00:00").getTime(), v: getDailyMetrageChantier(chId, d) };
+        }).filter(function(x) { return !isNaN(x.t) && x.t <= nowMs && x.v > 0; });
+        function _iso(dd) { var y = dd.getFullYear(), m = dd.getMonth() + 1, j = dd.getDate(); return y + "-" + (m < 10 ? "0" : "") + m + "-" + (j < 10 ? "0" : "") + j; }
+        function calWindow(nbDays) {
+          var startMs = nowMs - (nbDays - 1) * 86400000;
+          var tot = 0, nb = 0;
+          dates.forEach(function(x) { if (x.t >= startMs) { tot += x.v; nb++; } });
+          return { moyJour: nb > 0 ? tot / nb : 0, moyHebdo: tot / (nbDays / 7) };
+        }
+        function complete() {
+          var tot = 0, nb = 0, minT = null;
+          dates.forEach(function(x) { tot += x.v; nb++; if (minT === null || x.t < minT) minT = x.t; });
+          var spanDays = minT != null ? (Math.round((nowMs - minT) / 86400000) + 1) : 1;
+          return { moyJour: nb > 0 ? tot / nb : 0, moyHebdo: tot / (Math.max(spanDays, 1) / 7) };
+        }
+        function prod14() {
+          var cur = new Date(nowMs), tot = 0, nb = 0, guard = 0;
+          while (nb < 14 && guard < 400) {
+            var dow = cur.getDay();
+            if (dow >= 1 && dow <= 4) { var v = getDailyMetrageChantier(chId, _iso(cur)); if (v > 0) { tot += v; nb++; } }
+            cur.setDate(cur.getDate() - 1); guard++;
+          }
+          return { moyJour: nb > 0 ? tot / nb : 0 };
+        }
+        return { p14: prod14(), p30: calWindow(30), p90: calWindow(90), p180: calWindow(180), pAll: complete() };
+      }
+
       var totalMetrageAll = activeChantiers.reduce(function(sum, c) { return sum + c.metrage; }, 0);
       var totalRealiseAll = 0;
       var totalCARealisedAll = 0;
@@ -12227,6 +12268,45 @@
           )
         }),
         showImport ? h(ImportRelevesModal, { onClose: function() { setShowImport(false); } }) : null,
+        vitPopover != null ? (function() {
+          var ch = (chantiers || []).find(function(c) { return String(c.id) === String(vitPopover); });
+          if (!ch) return null;
+          var r = computeVitPeriodesChantier(ch.id);
+          function _mj(v) { return fmtNum(Math.round(v)) + " m/j"; }
+          function _mh(v) { return fmtNum(Math.round(v)) + " m/sem"; }
+          var rowsJour = [["14 derniers jours", r.p14.moyJour], ["1 mois", r.p30.moyJour], ["3 mois", r.p90.moyJour], ["6 mois", r.p180.moyJour], ["Periode complete", r.pAll.moyJour]];
+          var rowsHebdo = [["1 mois", r.p30.moyHebdo], ["3 mois", r.p90.moyHebdo], ["6 mois", r.p180.moyHebdo], ["Periode complete", r.pAll.moyHebdo]];
+          function _rowsRender(rows, unitFn, accent) {
+            return rows.map(function(row, i) {
+              return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i < rows.length - 1 ? "1px solid rgba(255,255,255,0.06)" : "none" } },
+                h("span", { style: { fontSize: 12.5, color: "#cbd5e1" } }, row[0]),
+                h("span", { style: { fontSize: 14, fontWeight: 700, color: accent, fontFamily: "monospace" } }, unitFn(row[1]))
+              );
+            });
+          }
+          return h("div", { onClick: function() { setVitPopover(null); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300, padding: 16 } },
+            h("div", { onClick: function(e) { e.stopPropagation(); }, style: { background: "rgba(28,30,42,0.98)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: 22, maxWidth: 540, width: "100%", boxShadow: "0 24px 70px rgba(0,0,0,0.55)" } },
+              h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                  h(Icon, { name: "zap", size: 18, color: "#a5b4fc" }),
+                  h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fafafa" } }, "Vitesse - " + ch.titre)
+                ),
+                h("button", { onClick: function() { setVitPopover(null); }, style: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "inline-flex" } }, h(Icon, { name: "x", size: 18, color: "#a1a1aa" }))
+              ),
+              h("div", { style: { fontSize: 11.5, color: "#71717a", marginBottom: 18 } }, "Metrage realise / jours travailles (m/j) et / semaines (m/sem)."),
+              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 } },
+                h("div", null,
+                  h("div", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } }, "Moyenne / jour"),
+                  _rowsRender(rowsJour, _mj, "#c7d2fe")
+                ),
+                h("div", null,
+                  h("div", { style: { fontSize: 11, fontWeight: 700, color: "#6ee7b7", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } }, "Moyenne hebdomadaire"),
+                  _rowsRender(rowsHebdo, _mh, "#a7f3d0")
+                )
+              )
+            )
+          );
+        }()) : null,
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#a78bfa" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#059669" }), label: "Avancement global", value: avancementGlobal + "%", color: "#059669" }),
@@ -13112,7 +13192,8 @@
                             badge: "14 j",
                             badgeColor: "#a5b4fc",
                             badgeBg: "rgba(99,102,241,0.15)",
-                            sparkline: sparkPts
+                            sparkline: sparkPts,
+                            onClick: function() { setVitPopover(chantier.id); }
                           }),
                           cadenceRequise !== null ? KpiTile({
                             icon: "gauge", accent: "#fbbf24",
