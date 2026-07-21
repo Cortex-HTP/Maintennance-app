@@ -651,15 +651,57 @@
       return "normal";
     }
 
+    // ─── Resolution chantier d'un rapport (id explicite ou match par lieu) ────
+    // MEME algo que rapportsAsReleves : un rapport peut n'avoir pas de chantier_id
+    // et etre rattache au chantier par son libelle "lieu" (match approximatif).
+    // Indispensable pour que l'overlay non-productif colore le bon chantier.
+    function buildChantierBySite(dbChantiers) {
+      var chantierBySite = {};
+      (dbChantiers || []).forEach(function(c) {
+        if (c.site) {
+          var sk = String(c.site).toUpperCase().trim();
+          if (!chantierBySite[sk] || (c.dateDebut || "") > (chantierBySite[sk].dateDebut || "")) {
+            chantierBySite[sk] = c;
+          }
+        }
+      });
+      return chantierBySite;
+    }
+    function findChantierByLieuMap(lieu, chantierBySite) {
+      if (!lieu) return null;
+      var lk = String(lieu).toUpperCase().trim();
+      if (chantierBySite[lk]) return chantierBySite[lk];
+      var best = null; var bestLen = 0;
+      var keys = Object.keys(chantierBySite);
+      for (var i = 0; i < keys.length; i++) {
+        var sk = keys[i];
+        if (sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) {
+          var matchLen = Math.min(sk.length, lk.length);
+          if (matchLen > bestLen) { best = chantierBySite[sk]; bestLen = matchLen; }
+        }
+      }
+      return best;
+    }
+    function resolveRapportChantierId(r, chantierBySite) {
+      var chId = (r.chantier_id != null) ? r.chantier_id : null;
+      if (chId == null) {
+        var fb = findChantierByLieuMap(r.lieu, chantierBySite);
+        if (fb) chId = fb.id;
+      }
+      return chId;
+    }
+
     // ─── Overlay non-productif ────────────────────────────────────────────
     // Un rapport de forage marque "non productif" colore le jour du chantier
     // (comme un brush panne/intemperie sur la page Avancement) ET alimente les
     // primes avec la meme regle que panne/intemperies. Le motif dicte le type :
     //   panne -> "panne" (P) · intemperies -> "intemperies" (I) · sinon "non_productif" (NP).
+    // Le chantier est resolu par chantier_id OU par le libelle "lieu" (meme algo
+    // que rapportsAsReleves), sinon on ne peut pas colorer.
     // Idempotent : on retire d'abord les entrees derivees (_np) puis on re-derive
     // depuis les rapports courants. Une saisie manuelle (posee a la main sur la
     // grille) a toujours priorite et n'est jamais ecrasee.
-    function overlayNonProductifSaisies(base, rapports) {
+    function overlayNonProductifSaisies(base, rapports, dbChantiers) {
       var out = {};
       var keys = Object.keys(base || {});
       for (var i = 0; i < keys.length; i++) {
@@ -673,11 +715,12 @@
           out[ck][dk] = e;
         }
       }
+      var chantierBySite = buildChantierBySite(dbChantiers);
       (rapports || []).forEach(function(r) {
         if (!r || !r.non_productif) return;
-        var cid = r.chantier_id;
+        var cid = resolveRapportChantierId(r, chantierBySite);
         var d = r.date_rapport ? String(r.date_rapport).substring(0, 10) : null;
-        if (!cid || !d) return;
+        if (cid == null || !d) return;
         if (!out[cid]) out[cid] = {};
         // Une saisie manuelle (valeur ou statut pose a la main) gagne toujours.
         if (out[cid][d] !== undefined && out[cid][d] !== null) return;
@@ -29537,35 +29580,9 @@
           }
         } catch (e) {}
         // Map site (uppercase) -> chantier le plus recent
-        var chantierBySite = {};
-        (dbChantiers || []).forEach(function(c) {
-          if (c.site) {
-            var sk = String(c.site).toUpperCase().trim();
-            if (!chantierBySite[sk] || (c.dateDebut || "") > (chantierBySite[sk].dateDebut || "")) {
-              chantierBySite[sk] = c;
-            }
-          }
-        });
-        // Resolution chantier par lieu avec match approximatif (contains dans les 2 sens)
-        // Ex: lieu="KOPETO" matche site="Kopeto K" ou inverse.
-        function findChantierByLieu(lieu) {
-          if (!lieu) return null;
-          var lk = String(lieu).toUpperCase().trim();
-          // 1) Match exact
-          if (chantierBySite[lk]) return chantierBySite[lk];
-          // 2) Match approximatif : un contient l'autre (priorite au plus long contenu)
-          var best = null; var bestLen = 0;
-          var keys = Object.keys(chantierBySite);
-          for (var i = 0; i < keys.length; i++) {
-            var sk = keys[i];
-            // sk contient lk (ex: "KOPETO K" contient "KOPETO") OU lk contient sk (ex: "KOPETO NORD" contient "KOPETO")
-            if (sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) {
-              var matchLen = Math.min(sk.length, lk.length);
-              if (matchLen > bestLen) { best = chantierBySite[sk]; bestLen = matchLen; }
-            }
-          }
-          return best;
-        }
+        // (helper module-level, partage avec l'overlay non-productif pour garantir
+        //  la MEME resolution chantier partout).
+        var chantierBySite = buildChantierBySite(dbChantiers);
         // Map equipement_id -> equipement, et map code (immatriculation) -> equipement_id
         // pour normaliser les rapports importes en SQL (qui n'ont que sondeuse_code) avec
         // ceux soumis via l'app (qui ont equipement_id rempli). Cle de regroupement coherente.
@@ -29591,7 +29608,7 @@
           // Resolution chantier_id : explicite ou fallback approximatif par lieu/site
           var chId = r.chantier_id;
           if (chId == null) {
-            var fb = findChantierByLieu(r.lieu);
+            var fb = findChantierByLieuMap(r.lieu, chantierBySite);
             if (fb) chId = fb.id;
           }
           // Resolution sondeuse / equipement : on remplit les 2 champs pour cle de regroupement coherente
@@ -29662,8 +29679,8 @@
       // Saisies "effectives" : saisies manuelles + overlay derive des rapports non productifs
       // (colore la grille Avancement + alimente les primes comme panne/intemperies).
       const dbSaisiesEffective = useMemo(function() {
-        return overlayNonProductifSaisies(dbSaisies, dbRapportsForage);
-      }, [dbSaisies, dbRapportsForage]);
+        return overlayNonProductifSaisies(dbSaisies, dbRapportsForage, dbChantiers);
+      }, [dbSaisies, dbRapportsForage, dbChantiers]);
 
       const contextValue = {
         interventions, equipements, plans, pieces, releves, piecesEquipements, parametres, setParametres,
