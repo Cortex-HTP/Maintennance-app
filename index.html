@@ -20502,7 +20502,9 @@
           sondages: Array.isArray(rapport.sondages) ? deep(rapport.sondages) : [],
           activites: Array.isArray(rapport.activites) ? deep(rapport.activites) : [],
           consommables_perdus: Array.isArray(rapport.consommables_perdus) ? deep(rapport.consommables_perdus) : [],
-          horametre: Array.isArray(rapport.horametre) ? deep(rapport.horametre) : []
+          horametre: Array.isArray(rapport.horametre) ? deep(rapport.horametre) : [],
+          non_productif: !!rapport.non_productif,
+          motif_non_productif: rapport.motif_non_productif || ""
         };
       });
       var form = _form[0]; var setForm = _form[1];
@@ -20565,8 +20567,10 @@
           activites: form.activites || [],
           consommables_perdus: form.consommables_perdus || [],
           horametre: form.horametre || [],
-          total_metres: Math.round(totalMetres * 10) / 10,
-          total_heures: totalMinutes
+          total_metres: form.non_productif ? 0 : Math.round(totalMetres * 10) / 10,
+          total_heures: totalMinutes,
+          non_productif: !!form.non_productif,
+          motif_non_productif: form.non_productif ? (form.motif_non_productif || null) : null
         };
         supabase.from("rapports_forage").update(payload).eq("id", rapport.id).select().single().then(function(res) {
           setSaving(false);
@@ -20713,6 +20717,25 @@
           h("label", { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "#cbd5e1", marginTop: 6 } },
             h("input", { type: "checkbox", checked: form.controles_ok, onChange: function(e) { update("controles_ok", e.target.checked); }, style: { accentColor: "#818cf8" } }),
             "Controle des niveaux et maintenance journaliere effectues"
+          ),
+
+          // ── Journee non productive (modifiable par l'admin, comme cote sondeur) ──
+          h("div", { style: { marginTop: 10, padding: 12, background: form.non_productif ? "rgba(245,158,11,0.10)" : "rgba(0,0,0,0.20)", border: "1px solid " + (form.non_productif ? "rgba(245,158,11,0.35)" : "rgba(255,255,255,0.07)"), borderRadius: 8 } },
+            h("label", { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 700, color: form.non_productif ? "#fcd34d" : "#cbd5e1", cursor: "pointer" } },
+              h("input", { type: "checkbox", checked: form.non_productif, onChange: function(e) { update("non_productif", e.target.checked); }, style: { accentColor: "#f59e0b" } }),
+              "Journee non productive (0 m)"
+            ),
+            form.non_productif ? h("div", { style: { marginTop: 10, maxWidth: 260 } },
+              h("label", { style: labelStyleEdit }, "Motif",
+                h("select", { value: form.motif_non_productif || "", onChange: function(e) { update("motif_non_productif", e.target.value); }, style: inputStyleEdit },
+                  h("option", { value: "" }, "-- Choisir un motif --"),
+                  h("option", { value: "panne" }, "Panne"),
+                  h("option", { value: "intemperies" }, "Intemperie"),
+                  h("option", { value: "non_productif" }, "Non productif")
+                )
+              ),
+              h("div", { style: { fontSize: 11, color: "#fcd34d", marginTop: 6 } }, "Metrage force a 0 m a l'enregistrement.")
+            ) : null
           ),
 
           // ── Section Equipe ──
