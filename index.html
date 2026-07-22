@@ -12488,6 +12488,45 @@
             h("button", { onClick: function() { setCurrentMonth(addMonthsAv(currentMonth, 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" }))
           ),
           h("div", { style: { fontSize: 13, fontWeight: 700, color: "#d97706", marginBottom: 8, marginTop: 8 } }, "En cours"),
+          // ── KPI globale MARGE NETTE (portefeuille chantiers En cours) ──
+          // Base = cout complet FEC (net) : personnel + charges patronales + charges fixes
+          // + emprunts + carburant + primes + consommables. Contrat (previsionnel) + realise a date.
+          (function() {
+            var enCoursM = activeChantiers.filter(function(c) { return c.statut === "En cours"; });
+            var caC = 0, coutC = 0, caR = 0, coutR = 0, nbSansCout = 0;
+            enCoursM.forEach(function(c) {
+              var prix = parseFloat(c.prixMetre) || 0;
+              if (prix <= 0) return;
+              var obj = parseFloat(c.metrage) || 0;
+              var real = getRealise(c.id);
+              var cm = coutMetreChantier(c.id); // XPF/m COMPLET (net)
+              caC += obj * prix;
+              caR += real * prix;
+              if (cm > 0) { coutC += cm * obj; coutR += cm * real; }
+              else if (obj > 0) { nbSansCout++; }
+            });
+            var margeC = caC - coutC;
+            var pctC = (caC > 0 && coutC > 0) ? Math.round((margeC / caC) * 100) : null;
+            var margeR = caR - coutR;
+            var pctR = (caR > 0 && coutR > 0) ? Math.round((margeR / caR) * 100) : null;
+            function colM(p) { return p == null ? "#a1a1aa" : p >= 20 ? "#22c55e" : p >= 10 ? "#f59e0b" : "#ef4444"; }
+            function fmtMF(v) { var a = Math.abs(v); return (v < 0 ? "-" : "") + (a >= 1000000 ? (a / 1000000).toFixed(1) + " MF" : Math.round(a / 1000) + " k"); }
+            function panelM(titre, ic, pct, marge, ca, cout) {
+              return h("div", { style: { flex: "1 1 220px", minWidth: 200 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } },
+                  h(Icon, { name: ic, size: 14, color: colM(pct) }), titre),
+                h("div", { style: { fontSize: 26, fontWeight: 800, color: colM(pct), lineHeight: 1 } }, pct == null ? "—" : (pct + " %")),
+                h("div", { style: { fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginTop: 4 } }, pct == null ? "coût indisponible" : (fmtMF(marge) + " XPF")),
+                h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, "CA " + fmtMF(ca) + " − coût complet " + fmtMF(cout))
+              );
+            }
+            return h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch", padding: 16, marginBottom: 14, borderRadius: 14, background: "linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))", border: "1px solid rgba(34,197,94,0.20)" } },
+              panelM("Marge nette · contrat", "trending-up", pctC, margeC, caC, coutC),
+              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
+              panelM("Marge nette · réalisé à date", "wallet", pctR, margeR, caR, coutR),
+              nbSansCout > 0 ? h("div", { style: { flex: "1 1 100%", fontSize: 10.5, color: "#fbbf24", marginTop: 2 } }, nbSansCout + " chantier(s) sans coût FEC disponible (exclus du coût) — importe la compta pour affiner") : null
+            );
+          }()),
           (function() {
             var listEnCours = activeChantiers.filter(function(c) { return c.statut === "En cours"; });
             var groupsCT = {}; var orderCT = [];
@@ -13183,21 +13222,27 @@
                         decalageJ = sign * cnt;
                       } catch (e) {}
                     }
-                    // CA restant + marge prevue
+                    // CA restant + marge NETTE : base = cout complet FEC (personnel + charges
+                    // patronales + charges fixes + emprunts + carburant + primes + consommables)
+                    // en priorite -> marge nette garantie. Fallback "depenses prevues" saisies
+                    // uniquement si aucune donnee compta FEC n'est encore disponible.
                     var prixMetre = chantier.prixMetre || 0;
                     var caTotal = chantier.metrage * prixMetre;
                     var caRestant = metresRestants * prixMetre;
-                    var coutTotalPrevu = parseFloat(chantier.depensesPrevues) || 0;
-                    var coutSource = "Saisi dans le chantier (depenses prevues)";
                     var coutMChantier = coutMetreChantier(chantier.id);
                     var machineDom = chantierMachineDom[String(chantier.id)];
-                    if (coutTotalPrevu <= 0 && coutMChantier > 0) {
+                    var coutTotalPrevu = 0;
+                    var coutSource = "";
+                    if (coutMChantier > 0) {
                       coutTotalPrevu = coutMChantier * chantier.metrage;
                       coutSource = (machineDom && coutMetreParMachineAv[machineDom] && coutMetreParMachineAv[machineDom].coutMetre > 0)
-                        ? ("Cout/m de la machine " + machineDom + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m")
-                        : ("Estime via le cout/m global : " + fmtNum(Math.round(coutMChantier)) + " XPF/m");
-                    } else if (coutTotalPrevu <= 0) {
-                      coutSource = "Cout indisponible - renseigne 'depenses prevues' sur le chantier";
+                        ? ("Cout complet machine " + machineDom + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m (personnel + charges + emprunts + carburant + primes + conso)")
+                        : ("Cout complet FEC : " + fmtNum(Math.round(coutMChantier)) + " XPF/m (personnel + charges + emprunts + carburant + primes + conso)");
+                    } else if ((parseFloat(chantier.depensesPrevues) || 0) > 0) {
+                      coutTotalPrevu = parseFloat(chantier.depensesPrevues);
+                      coutSource = "Depenses prevues saisies (a defaut de donnees compta FEC)";
+                    } else {
+                      coutSource = "Cout indisponible - attends les donnees compta (FEC)";
                     }
                     var margeEstimee = caTotal - coutTotalPrevu;
                     var margePct = caTotal > 0 ? Math.round((margeEstimee / caTotal) * 100) : 0;
@@ -13417,7 +13462,7 @@
                           KpiTile({
                             icon: "trending-up",
                             accent: margePct >= 20 ? "#22c55e" : margePct >= 10 ? "#fbbf24" : "#f43f5e",
-                            label: "Marge",
+                            label: "Marge nette",
                             value: coutTotalPrevu > 0 ? (margeEstimee >= 1000000 ? (margeEstimee / 1000000).toFixed(1) + " MF" : fmtNum(Math.round(margeEstimee / 1000)) + " k") : "N/A",
                             valueColor: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af",
                             hint: coutTotalPrevu > 0 ? margePct + " %" : "renseigne dép.",
