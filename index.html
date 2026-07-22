@@ -1070,12 +1070,11 @@
     // Se base sur dbRelevesJourn (max par machine puis somme) et fallback sur
     // dbSaisies. Iteres jusqu'a 14 jours saisis (les seuls productifs
     // comptent - jours a 0 ou creux ignores).
-    function computeMetragePerJourChantier(chantier, dbRelevesJourn, dbSaisies, refDate) {
-      if (!chantier) return 0;
-      var today = refDate ? new Date(refDate.getTime()) : new Date();
-      today.setHours(0, 0, 0, 0);
-      // Metrage par jour de ce chantier (source relevés : max par machine puis somme)
+    // Metrage par jour d'un chantier : source relevés (max par machine puis somme),
+    // fallback saisies manuelles pour les jours sans relevé. Retourne { "YYYY-MM-DD": metres }.
+    function chantierMetrageByDate(chantier, dbRelevesJourn, dbSaisies) {
       var byDate = {};
+      if (!chantier) return byDate;
       var maxByDateMk = {};
       (dbRelevesJourn || []).forEach(function(r) {
         if (!r || String(r.chantierId) !== String(chantier.id) || !r.dateReleve) return;
@@ -1099,6 +1098,13 @@
           if (v > 0) byDate[d] = v;
         }
       });
+      return byDate;
+    }
+    function computeMetragePerJourChantier(chantier, dbRelevesJourn, dbSaisies, refDate) {
+      if (!chantier) return 0;
+      var today = refDate ? new Date(refDate.getTime()) : new Date();
+      today.setHours(0, 0, 0, 0);
+      var byDate = chantierMetrageByDate(chantier, dbRelevesJourn, dbSaisies);
       // Iterer 14 derniers jours productifs (Lun-Jeu) avec metrage > 0
       var tot = 0, nb = 0;
       var cur = new Date(today.getTime()); var safe = 0;
@@ -1113,6 +1119,61 @@
         safe++;
       }
       return nb > 0 ? tot / nb : 0;
+    }
+    // Metrage total realise d'un chantier (toutes dates connues confondues).
+    function computeRealiseChantier(chantier, dbRelevesJourn, dbSaisies) {
+      if (!chantier) return 0;
+      var byDate = chantierMetrageByDate(chantier, dbRelevesJourn, dbSaisies);
+      var tot = 0;
+      Object.keys(byDate).forEach(function(d) { tot += byDate[d] || 0; });
+      return tot;
+    }
+    // ─── Previsionnel : bascule vitesse mesuree <-> cadence objectif ──────────
+    // Un chantier trop jeune (peu de jours productifs) n'a pas de vitesse fiable :
+    // son metrage previsionnel doit alors etre derive de l'OBJECTIF contractuel du
+    // chantier (champ metrage) reparti sur les jours ouvres restants jusqu'a dateFin.
+    // Au-dela du seuil, on fait confiance a la vitesse reellement mesuree (rythme reel).
+    var FORECAST_SEUIL_JOURS_PRODUCTIFS = 5;
+    // Cadence objectif (m/jour ouvre) = metrage restant / jours ouvres (Lun-Jeu)
+    // restants jusqu'a dateFin. Retourne null si non derivable (pas d'objectif,
+    // pas de dateFin, date de fin passee, ou objectif deja atteint).
+    function computeCadenceObjectifChantier(chantier, dbRelevesJourn, dbSaisies, refDate) {
+      if (!chantier) return null;
+      var objectif = parseFloat(chantier.metrage) || 0;
+      if (objectif <= 0) return null;
+      if (!chantier.dateFin) return null;
+      var fin = new Date(String(chantier.dateFin).substring(0, 10) + "T00:00:00");
+      if (isNaN(fin.getTime())) return null;
+      var today = refDate ? new Date(refDate.getTime()) : new Date();
+      today.setHours(0, 0, 0, 0);
+      fin.setHours(0, 0, 0, 0);
+      if (fin.getTime() < today.getTime()) return null;
+      var restant = Math.max(0, objectif - computeRealiseChantier(chantier, dbRelevesJourn, dbSaisies));
+      if (restant <= 0) return null;
+      var jours = 0;
+      var cur = new Date(today.getTime());
+      cur.setDate(cur.getDate() + 1); // a partir de demain
+      var safe = 0;
+      while (cur.getTime() <= fin.getTime() && safe < 3000) {
+        var dow = cur.getDay();
+        if (dow >= 1 && dow <= 4) jours++;
+        cur.setDate(cur.getDate() + 1);
+        safe++;
+      }
+      if (jours <= 0) return null;
+      return restant / jours;
+    }
+    // Base previsionnelle d'un chantier : renvoie { vitesse, avgMachines } a passer a
+    // previsionnelBaseChantierDay. Chantier mature (>= seuil jours productifs) -> vitesse
+    // mesuree + machines historiques. Chantier jeune -> cadence objectif en mode legacy
+    // (avgMachines = null) pour que la cadence se projette meme sans planning machine futur.
+    function forecastBaseChantier(chantier, mesuree, nbJoursProductifs, avgMachinesHist, dbRelevesJourn, dbSaisies, refDate) {
+      if ((nbJoursProductifs || 0) >= FORECAST_SEUIL_JOURS_PRODUCTIFS) {
+        return { vitesse: mesuree, avgMachines: avgMachinesHist };
+      }
+      var cad = computeCadenceObjectifChantier(chantier, dbRelevesJourn, dbSaisies, refDate);
+      if (cad != null && cad > 0) return { vitesse: cad, avgMachines: null };
+      return { vitesse: mesuree, avgMachines: avgMachinesHist };
     }
     // CA/jour attendu = metrage moyen jour * prix/m du chantier
     // Reflete la RENTABILITE CONCRETE de chaque chantier : "combien ce chantier
@@ -12004,25 +12065,28 @@
           }
           pSafe++;
         }
-        return pNb > 0 ? pTot / pNb : 0;
+        return { vitesse: pNb > 0 ? pTot / pNb : 0, nb: pNb };
       }
 
       function buildChartData() {
         var pts = [];
         var bcToday = new Date(todayDate.getTime()); bcToday.setHours(0, 0, 0, 0);
         // Pre-calcule la vitesse quotidienne par chantier (pour previsions / fallback)
-        var vitesseParChantier = {};
-        activeChantiers.forEach(function(c) {
-          vitesseParChantier[c.id] = buildVitesseChantier(c);
-        });
         // Coef de dispo historique par chantier (aleas : pannes / intemperies /
         // maintenance / conges declares dans les saisies). Pre-calcule une fois par render
         // pour que le previsionnel jour par jour soit realiste.
+        // Vitesse previsionnelle : mesuree si assez d'historique, sinon cadence objectif
+        // (chantier jeune / qui vient de demarrer -> derive de l'objectif + dateFin).
+        var vitesseParChantier = {};
         var coefDispoParChantier = {};
         var avgMachinesParChantier = {};
         activeChantiers.forEach(function(c) {
+          var vinfo = buildVitesseChantier(c);
+          var avgM = computeAvgMachinesHistChantier(c, ctxAv.dbRelevesJourn, bcToday);
+          var eff = forecastBaseChantier(c, vinfo.vitesse, vinfo.nb, avgM, ctxAv.dbRelevesJourn, ctxAv.dbSaisies, bcToday);
+          vitesseParChantier[c.id] = eff.vitesse;
+          avgMachinesParChantier[c.id] = eff.avgMachines;
           coefDispoParChantier[c.id] = coefDispoChantierHist(c, ctxAv.dbSaisies, bcToday.getTime()).coef;
-          avgMachinesParChantier[c.id] = computeAvgMachinesHistChantier(c, ctxAv.dbRelevesJourn, bcToday);
         });
         // Index per-machine pour le previsionnel avec adaptation
         var metByMkBC = buildMetByMachine(ctxAv.dbRelevesJourn, ctxAv.equipements);
@@ -13406,6 +13470,9 @@
                     var pMoyMach = pNb > 0 ? (pSumMach / pNb) : 1;
                     var pVitParMach = pMoyMach > 0 ? (pVitesse / pMoyMach) : 0;
                     var pVitQuot = pVitParMach * pMoyMach;
+                    // Demarrage a froid : chantier jeune (< seuil jours productifs) -> cadence objectif.
+                    var pEff = forecastBaseChantier(chantier, pVitQuot, pNb, computeAvgMachinesHistChantier(chantier, ctxAv.dbRelevesJourn, bcToday), ctxAv.dbRelevesJourn, ctxAv.dbSaisies, bcToday);
+                    pVitQuot = pEff.vitesse;
                     // ─ Calcul previsions futures ajustees meteo ─
                     var meteoMapBC = meteoByChantier[chantier.id] || {};
                     var forecastVals = []; // { idx, val, isWE, intemp }
@@ -13427,7 +13494,9 @@
                       var fFactor = meteoMetrageFactor(fMeteo);
                       // Previsionnel base sur logique machine + nb machines planifiees ce jour
                       var metByMkFC = buildMetByMachine(ctxAv.dbRelevesJourn, ctxAv.equipements);
-                      var fAvgMach = computeAvgMachinesHistChantier(chantier, ctxAv.dbRelevesJourn, bcToday);
+                      // fAvgMach = null pour un chantier jeune en cadence objectif (mode legacy :
+                      // la cadence se projette meme sans planning machine futur saisi).
+                      var fAvgMach = pEff.avgMachines;
                       var fPrev = previsionnelBaseChantierDay(chantier.id, fIso, ctxAv.dbChantierEquipements, ctxAv.equipements, metByMkFC, pVitQuot, bcToday.getTime(), fAvgMach);
                       var fBase = fPrev.metrage; // 0 si aucune machine planifiee ce jour (mode par machine)
                       // Coef dispo historique (aleas : pannes / intemperies / maintenance / conges declares)
@@ -18453,6 +18522,7 @@
           });
         });
         var vitesseParChFc = {};
+        var avgMachParChFc = {};
         activeChForFc.forEach(function(c) {
           var pTot = 0, pNb = 0;
           var pCursor = new Date(bcToday.getTime()); var pSafe = 0;
@@ -18467,7 +18537,12 @@
             }
             pSafe++;
           }
-          vitesseParChFc[c.id] = pNb > 0 ? pTot / pNb : 0;
+          // Demarrage a froid : chantier jeune -> cadence objectif (objectif + dateFin).
+          var mesureeFc = pNb > 0 ? pTot / pNb : 0;
+          var avgMFc = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, bcToday);
+          var effFc = forecastBaseChantier(c, mesureeFc, pNb, avgMFc, ctx.dbRelevesJourn, ctx.dbSaisies, bcToday);
+          vitesseParChFc[c.id] = effFc.vitesse;
+          avgMachParChFc[c.id] = effFc.avgMachines;
         });
         var cur = new Date(startDate);
         cur.setHours(0, 0, 0, 0);
@@ -18489,7 +18564,8 @@
               var mDay = mMap ? mMap[dStr] : null;
               var fact = meteoMetrageFactor(mDay);
               // Previsionnel base sur logique machine + nb machines planifiees ce jour
-              var avgMachStat = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, bcToday);
+              // (avgMachines effectif : null pour un chantier jeune -> cadence objectif en mode legacy)
+              var avgMachStat = avgMachParChFc[c.id];
               var prev = previsionnelBaseChantierDay(c.id, dStr, ctx.dbChantierEquipements, ctx.equipements, metByMkStat, vQuot, bcToday.getTime(), avgMachStat);
               var baseMet = prev.metrage; // 0 si aucune machine planifiee ce jour
               // Coef dispo historique (aleas)
@@ -26193,6 +26269,9 @@
         return {
           dDeb: dDeb, dFin: dFin, realise: realise, metresRestants: metresRestants,
           vitesse14j: vitesse14j, vitesseParMachine: vitesseParMachine,
+          // Vitesse de projection : mesuree si assez d'historique, sinon cadence objectif
+          // (chantier jeune -> derive de l'objectif contractuel + dateFin).
+          vitesseForecast: forecastBaseChantier(chantier, vitesse14j, joursProductifsPasses, null, ctx.dbRelevesJourn, ctx.dbSaisies, today).vitesse,
           moyMachinesRecent: moyMachinesRecent, jSolo: jSolo,
           vitesseSolo: vitesseSolo, vitesseMulti: vitesseMulti,
           joursOuvresPasses: joursOuvresPasses, joursAbsentsPasses: joursAbsentsPasses,
@@ -26574,7 +26653,7 @@
                 return { date: dt, dow: dow, isWE: isWE, prec: prec, wind: wind, code: code, tMax: tMax, intemp: intemp };
               });
               var jourLabels = ["D", "L", "M", "M", "J", "V", "S"];
-              var metragePrev14j = nbProductifsMeteo * data.vitesse14j;
+              var metragePrev14j = nbProductifsMeteo * (data.vitesseForecast || data.vitesse14j);
               return h("div", null,
                 h("div", { style: { display: "grid", gridTemplateColumns: "repeat(14, 1fr)", gap: 4, marginBottom: 12 } },
                   weatherDays.map(function(w, i) {
@@ -26592,7 +26671,7 @@
                 ),
                 h("div", { style: lineStyle }, h("span", null, "Jours productifs prevus (Lun-Jeu sans intemperies)"), h("span", { style: { fontWeight: 600, color: "#86efac" } }, nbProductifsMeteo + " j")),
                 h("div", { style: lineStyle }, h("span", null, "Jours intemperies probables"), h("span", { style: { fontWeight: 600, color: "#93c5fd" } }, nbIntempProb + " j")),
-                h("div", { style: lineStyle }, h("span", null, "Metrage previsionnel 14 j (vitesse actuelle)"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(metragePrev14j)) + " m")),
+                h("div", { style: lineStyle }, h("span", null, "Metrage previsionnel 14 j"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(metragePrev14j)) + " m")),
                 h("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8, fontStyle: "italic" } }, "Definition 'intemperies' : > 15 mm/jour OU vent > 60 km/h OU orage. Configurable.")
               );
             }())
