@@ -12520,10 +12520,29 @@
                 h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, "CA " + fmtMF(ca) + " − coût complet " + fmtMF(cout))
               );
             }
+            // Marge tresorerie (cash) : (encaisse - decaisse) / encaisse sur l'annee en cours,
+            // direct depuis le grand livre (comptes 512 banque). debit = entree, credit = sortie.
+            var _yTreso = String(new Date().getFullYear());
+            var encY = 0, decY = 0;
+            (ctxAv.dbEcrCompta || []).forEach(function(e) {
+              if (!e || !e.compte_code || String(e.compte_code).substring(0, 3) !== "512") return;
+              if (!e.date_ecriture || String(e.date_ecriture).substring(0, 4) !== _yTreso) return;
+              encY += parseFloat(e.debit) || 0;
+              decY += parseFloat(e.credit) || 0;
+            });
+            var pctTreso = encY > 0 ? Math.round(((encY - decY) / encY) * 100) : null;
             return h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch", padding: 16, marginBottom: 14, borderRadius: 14, background: "linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))", border: "1px solid rgba(34,197,94,0.20)" } },
               panelM("Marge nette · contrat", "trending-up", pctC, margeC, caC, coutC),
               h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
               panelM("Marge nette · réalisé à date", "wallet", pctR, margeR, caR, coutR),
+              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
+              h("div", { style: { flex: "1 1 220px", minWidth: 200 }, title: "Marge tresorerie = (encaisse - decaisse) / encaisse sur l'annee, d'apres les mouvements bancaires reels (comptes 512). Inclut TOUS les flux : clients, fournisseurs, salaires, emprunts, investissements." },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } },
+                  h(Icon, { name: "banknote", size: 14, color: colM(pctTreso) }), "Marge trésorerie · année"),
+                h("div", { style: { fontSize: 26, fontWeight: 800, color: colM(pctTreso), lineHeight: 1 } }, pctTreso == null ? "—" : (pctTreso + " %")),
+                h("div", { style: { fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginTop: 4 } }, pctTreso == null ? "compta indisponible" : (fmtMF(encY - decY) + " XPF net")),
+                h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, pctTreso == null ? "importe la compta (grand livre)" : ("encaissé " + fmtMF(encY) + " − décaissé " + fmtMF(decY) + " · banque " + _yTreso))
+              ),
               nbSansCout > 0 ? h("div", { style: { flex: "1 1 100%", fontSize: 10.5, color: "#fbbf24", marginTop: 2 } }, nbSansCout + " chantier(s) sans coût FEC disponible (exclus du coût) — importe la compta pour affiner") : null
             );
           }()),
