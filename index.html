@@ -5549,6 +5549,25 @@
         return 175;
       })();
 
+      // Lien rapport : une saisie carburant admin/manuelle n'a pas de rapport_id.
+      // On la rapproche du rapport de forage de MEME machine + MEME date (identique a la
+      // logique des couts, cf. lieParDateSondeuse). Permet d'afficher le lien meme sans
+      // rapport_id stocke. { id, auto:true } = rapproche par machine+date (pas un lien dur).
+      var rapportsForageCarb = ctx.dbRapportsForage || [];
+      var rapportIdParMachineDate = {};
+      rapportsForageCarb.forEach(function(r) {
+        if (!r || !r.sondeuse_code || !r.date_rapport) return;
+        var k = String(r.sondeuse_code).toUpperCase().trim() + "|" + String(r.date_rapport).substring(0, 10);
+        if (!rapportIdParMachineDate[k]) rapportIdParMachineDate[k] = r.id;
+      });
+      function resolveCarbRapportId(c) {
+        if (c.rapport_id) return { id: c.rapport_id, auto: false };
+        if (!c.sondeuse_code || !c.date_consommation) return null;
+        var k = String(c.sondeuse_code).toUpperCase().trim() + "|" + String(c.date_consommation).substring(0, 10);
+        var rid = rapportIdParMachineDate[k];
+        return rid ? { id: rid, auto: true } : null;
+      }
+
       // Filtre + enrichissement
       var filtered = (carburants || []).filter(function(c) {
         var d = new Date(String(c.date_consommation || "").substring(0, 10));
@@ -5562,7 +5581,8 @@
         return Object.assign({}, c, {
           categorie: getCategorie(c.sondeuse_code),
           cout: (parseFloat(c.quantite_l) || 0) * prixMazout,
-          equipement: equipByImmat[String(c.sondeuse_code || "").toUpperCase().trim()] || null
+          equipement: equipByImmat[String(c.sondeuse_code || "").toUpperCase().trim()] || null,
+          rapportLien: resolveCarbRapportId(c)
         });
       });
 
@@ -5796,7 +5816,8 @@
                   h("td", { style: { padding: "7px 12px" } }, catBadge(c.categorie)),
                   h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, (parseFloat(c.quantite_l) || 0).toFixed(1) + " L"),
                   h("td", { style: { padding: "7px 12px", color: "#22c55e" } }, fmtMoney(c.cout)),
-                  h("td", { style: { padding: "7px 12px", color: c.rapport_id ? "#a5b4fc" : "#71717a" } }, c.rapport_id ? "Rapport #" + c.rapport_id : "(aucun)"),
+                  h("td", { style: { padding: "7px 12px", color: c.rapportLien ? "#a5b4fc" : "#71717a" }, title: c.rapportLien && c.rapportLien.auto ? "Rapproché automatiquement par machine + date (saisie manuelle)" : "" },
+                    c.rapportLien ? h("span", null, "Rapport #" + c.rapportLien.id, c.rapportLien.auto ? h("span", { style: { color: "#71717a", fontSize: 10, marginLeft: 4 } }, "· auto") : null) : "(aucun)"),
                   isAdmin ? h("td", { style: { padding: "7px 12px", whiteSpace: "nowrap" } },
                     h("button", { onClick: function() { setEditing(Object.assign({}, c)); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#a1a1aa", padding: 4, marginRight: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 14 })),
                     h("button", { onClick: function() { setToDelete(c); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14 }))
