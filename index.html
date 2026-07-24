@@ -21481,6 +21481,11 @@
       var _carbs = useState([]);      var carbs = _carbs[0];       var setCarbs = _carbs[1];
       var _expanded = useState(null); var expanded = _expanded[0]; var setExpanded = _expanded[1];
       var _filtStatut = useState("tous"); var filtStatut = _filtStatut[0]; var setFiltStatut = _filtStatut[1];
+      // Filtres additionnels de la liste des rapports de forage (vue liste)
+      var _filtMachineRap = useState("__all__"); var filtMachineRap = _filtMachineRap[0]; var setFiltMachineRap = _filtMachineRap[1];
+      var _filtLieuRap = useState("__all__"); var filtLieuRap = _filtLieuRap[0]; var setFiltLieuRap = _filtLieuRap[1];
+      var _filtChantierRap = useState("__all__"); var filtChantierRap = _filtChantierRap[0]; var setFiltChantierRap = _filtChantierRap[1];
+      var _filtEmployeRap = useState("__all__"); var filtEmployeRap = _filtEmployeRap[0]; var setFiltEmployeRap = _filtEmployeRap[1];
       var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
       var _editingRapportId = useState(null); var editingRapportId = _editingRapportId[0]; var setEditingRapportId = _editingRapportId[1];
       var _editingReleve = useState(null); var editingReleve = _editingReleve[0]; var setEditingReleve = _editingReleve[1];
@@ -22517,8 +22522,18 @@
 
       // ── Render onglet "Rapports" ──
       var renderRapports = function() {
-        var list = applyFilter(raps);
-        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage.");
+        var list = applyFilter(raps).filter(function(r) {
+          if (filtMachineRap !== "__all__" && String(r.sondeuse_code || "").toUpperCase().trim() !== filtMachineRap) return false;
+          if (filtLieuRap !== "__all__" && String(r.lieu || "").toUpperCase().trim() !== filtLieuRap) return false;
+          if (filtChantierRap !== "__all__" && String(r.chantier_id == null ? "" : r.chantier_id) !== filtChantierRap) return false;
+          if (filtEmployeRap !== "__all__") {
+            var eqR = Array.isArray(r.equipe) ? r.equipe : [];
+            var ok = eqR.some(function(m) { return m && String(m.nom || m.prenom || "").toUpperCase().trim() === filtEmployeRap; });
+            if (!ok) return false;
+          }
+          return true;
+        });
+        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage (filtres actifs ?).");
         return h("div", null, list.map(function(r) {
           var isExp = expanded === ("r-" + r.id);
           var sondages = Array.isArray(r.sondages) ? r.sondages : [];
@@ -23966,7 +23981,27 @@
                     style: { padding: "5px 11px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), background: active ? "rgba(99,102,241,0.18)" : "rgba(255,255,255,0.04)", color: active ? "#e0e7ff" : "#a1a1aa" } },
                     (s === "tous" ? "Tous" : (STATUT_LABEL[s] || s)) + " (" + count + ")");
                 })
-              ) : null
+              ) : null,
+              // Filtres additionnels (machine / lieu / chantier / employe) - vue liste des rapports
+              (tab === "soumissions_rapports" && rapportsView === "liste") ? (function() {
+                var uniqSort = function(arr) { var seen = {}, out = []; arr.forEach(function(v) { if (v && !seen[v]) { seen[v] = 1; out.push(v); } }); return out.sort(); };
+                var machines = uniqSort((raps || []).map(function(r) { return String(r.sondeuse_code || "").toUpperCase().trim(); }));
+                var lieux = uniqSort((raps || []).map(function(r) { return String(r.lieu || "").toUpperCase().trim(); }));
+                var chantierIds = uniqSort((raps || []).map(function(r) { return r.chantier_id == null ? "" : String(r.chantier_id); }));
+                var employes = uniqSort([].concat.apply([], (raps || []).map(function(r) { return (Array.isArray(r.equipe) ? r.equipe : []).map(function(m) { return m ? String(m.nom || m.prenom || "").toUpperCase().trim() : ""; }); })));
+                var selStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "5px 9px", color: "#e5e7eb", fontSize: 11.5, fontFamily: "inherit", cursor: "pointer", maxWidth: 170 };
+                var anyActive = filtMachineRap !== "__all__" || filtLieuRap !== "__all__" || filtChantierRap !== "__all__" || filtEmployeRap !== "__all__";
+                function optList(all, values, mapLabel) {
+                  return [h("option", { key: "__all__", value: "__all__" }, all)].concat(values.map(function(v) { return h("option", { key: v, value: v }, mapLabel ? mapLabel(v) : v); }));
+                }
+                return h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" } },
+                  h("select", { value: filtMachineRap, onChange: function(e) { setFiltMachineRap(e.target.value); }, style: selStyle }, optList("Toutes machines", machines)),
+                  h("select", { value: filtLieuRap, onChange: function(e) { setFiltLieuRap(e.target.value); }, style: selStyle }, optList("Tous lieux", lieux)),
+                  h("select", { value: filtChantierRap, onChange: function(e) { setFiltChantierRap(e.target.value); }, style: selStyle }, optList("Tous chantiers", chantierIds, function(cid) { return chantierLabel(parseInt(cid, 10)) || ("#" + cid); })),
+                  h("select", { value: filtEmployeRap, onChange: function(e) { setFiltEmployeRap(e.target.value); }, style: selStyle }, optList("Tous employes", employes)),
+                  anyActive ? h("button", { onClick: function() { setFiltMachineRap("__all__"); setFiltLieuRap("__all__"); setFiltChantierRap("__all__"); setFiltEmployeRap("__all__"); }, style: { padding: "5px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700, border: "1px solid rgba(244,63,94,0.35)", background: "rgba(244,63,94,0.12)", color: "#fda4af", cursor: "pointer" } }, "Reinitialiser") : null
+                );
+              }()) : null
             )
           ),
           loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } },
