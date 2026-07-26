@@ -2812,6 +2812,46 @@
           isAutoFromPlan ? h("div", { style: { fontSize: 11, color: "#a5b4fc", marginBottom: 10, padding: "6px 10px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 6 } }, h(IconText, { icon: "info", size: 11, color: "#a5b4fc" }, "Etapes 'PLAN' issues du plan \"" + f.Plan + "\" (libelles verrouilles). Vous pouvez cocher l'etat et ajouter des etapes custom.")) : null,
           h(GammeChecklist, { items: f.Gamme || [], onChange: function(items) { upd("Gamme", items); }, allowAddCustom: true })
         ),
+        // ─── Materiel necessaire (info) : references / consommables agreges depuis la gamme ───
+        (function() {
+          var gm = Array.isArray(f.Gamme) ? f.Gamme : [];
+          var agg = {};
+          gm.forEach(function(g) {
+            if (!g) return;
+            var hasP = g.pieceType || g.pieceRef || g.pieceLabel || g.pieceCategorie;
+            if (!hasP) return;
+            var isAuto = g.pieceType === "auto-categorie";
+            var ref = "", label = "", key = "";
+            if (isAuto) {
+              label = g.pieceCategorie || "?";
+              key = "cat:" + label;
+            } else if (g.pieceType === "piece" && g.pieceRef) {
+              var p = (pieces || []).find(function(x) { return String(x.Id) === String(g.pieceRef); });
+              ref = p ? (p.Reference || "") : "";
+              label = p ? (p.Designation || p.Reference || g.pieceLabel || "?") : (g.pieceLabel || "?");
+              key = "p:" + g.pieceRef + ":" + (g.unite || "");
+            } else {
+              label = g.pieceLabel || g.pieceRef || "?";
+              key = "c:" + label + ":" + (g.unite || "");
+            }
+            var qty = parseFloat(g.quantite) || 0;
+            if (!agg[key]) agg[key] = { ref: ref, label: label, qty: 0, unite: g.unite || "u", isAuto: isAuto, type: g.pieceType || "piece" };
+            agg[key].qty += qty;
+          });
+          var list = Object.keys(agg).map(function(k) { return agg[k]; });
+          if (list.length === 0) return null;
+          return h("div", { style: { marginTop: 14, padding: 14, background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.22)", borderRadius: 10 } },
+            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "package", size: 14, color: "#60a5fa" }), "Materiel necessaire (info)"),
+            h("div", { style: { fontSize: 11, color: "#94a3b8", marginBottom: 10 } }, "References et consommables prevus par la gamme. A titre indicatif (non decompte du stock)."),
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+              list.map(function(it, i) {
+                return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "7px 10px", background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8 } },
+                  h("div", { style: { minWidth: 0 } },
+                    h("div", { style: { fontSize: 13, fontWeight: 600, color: "#fafafa" } }, (it.isAuto ? "🔍 " : (it.type === "consommable" ? "🛢️ " : "📦 ")) + it.label),
+                    it.ref ? h("div", { style: { fontSize: 11, color: "#a1a1aa", fontFamily: "monospace" } }, "Ref : " + it.ref) : (it.isAuto ? h("div", { style: { fontSize: 11, color: "#a5b4fc" } }, "Categorie (piece resolue selon la machine)") : null)),
+                  h("span", { style: { fontSize: 12.5, fontWeight: 700, color: "#93c5fd", whiteSpace: "nowrap" } }, fmtGammeQty(it.qty, it.unite)));
+              })));
+        })(),
         h("div", { style: { display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end" } },
           h(Button, { variant: "secondary", onClick: () => { if (onDone) onDone(); }, disabled: saving }, "Annuler"),
           h(Button, { onClick: submit, disabled: saving }, saving ? "Enregistrement..." : (editItem ? h(IconText, { icon: "save", size: 14 }, "Modifier") : h(IconText, { icon: "save", size: 14 }, "Enregistrer")))));
@@ -2866,7 +2906,7 @@
 
     // ─── Ecran Equipements ──────────────────────────────────────────────
     function EcranEquipements({ onNavigate }) {
-      const { equipements, addEquipement, updateEquipement, deleteEquipement, plans, interventions } = useAppData();
+      const { equipements, addEquipement, updateEquipement, deleteEquipement, plans, interventions, pieces } = useAppData();
       const [search, setSearch] = useState("");
       const [showModal, setShowModal] = useState(false);
       const [editing, setEditing] = useState(null);
@@ -2883,11 +2923,69 @@
       const openNew = () => { setEditing(null); setShowModal(true); };
       const askDelete = (eq, e) => { e && e.stopPropagation(); setToDelete(eq); };
       const handleConfirmDelete = async () => { if (toDelete) { await deleteEquipement(toDelete.Id); setToDelete(null); } };
+      // Export Excel : liste de tous les travaux a faire (interventions non terminees)
+      // + consommables/references a acheter (agreges depuis les gammes, croises au stock).
+      const exportTravauxExcel = function() {
+        var travaux = (interventions || []).filter(function(i) { return computeIntervStatus(i) !== "Termine"; })
+          .slice().sort(function(a, b) { return String(a.Equipement || "").localeCompare(String(b.Equipement || "")) || String(a.Date_Intervention || "").localeCompare(String(b.Date_Intervention || "")); });
+        var aoa1 = [["Machine", "Intervention", "Type", "Statut", "Date", "Gamme", "Plan"]];
+        travaux.forEach(function(i) {
+          var prog = gammeProgress(i.Gamme);
+          aoa1.push([i.Equipement || "", i.Title || "", i.Type || "", computeIntervStatus(i), i.Date_Intervention || "", prog.total > 0 ? (prog.done + "/" + prog.total) : "-", i.Plan || ""]);
+        });
+        var consoAgg = {};
+        travaux.forEach(function(i) {
+          (Array.isArray(i.Gamme) ? i.Gamme : []).forEach(function(g) {
+            if (!g) return;
+            var hasP = g.pieceType || g.pieceRef || g.pieceLabel || g.pieceCategorie;
+            if (!hasP) return;
+            var isAuto = g.pieceType === "auto-categorie";
+            var ref = "", desig = "", stock = null, key = "";
+            if (isAuto) { desig = g.pieceCategorie || "?"; key = "cat:" + desig; }
+            else if (g.pieceType === "piece" && g.pieceRef) {
+              var p = (pieces || []).find(function(x) { return String(x.Id) === String(g.pieceRef); });
+              ref = p ? (p.Reference || "") : "";
+              desig = p ? (p.Designation || p.Reference || g.pieceLabel || "?") : (g.pieceLabel || "?");
+              stock = p ? (parseFloat(p.Stock) || 0) : null;
+              key = "p:" + g.pieceRef;
+            } else { desig = g.pieceLabel || g.pieceRef || "?"; key = "c:" + desig + ":" + (g.unite || ""); }
+            var qty = parseFloat(g.quantite) || 0;
+            if (!consoAgg[key]) consoAgg[key] = { ref: ref, designation: desig, qty: 0, unite: g.unite || "u", stock: stock };
+            consoAgg[key].qty += qty;
+          });
+        });
+        var aoa2 = [["Reference", "Designation", "Qte prevue", "Unite", "Stock actuel", "A acheter"]];
+        Object.keys(consoAgg).forEach(function(k) {
+          var c = consoAgg[k];
+          var aAcheter = c.stock != null ? Math.max(0, Math.round((c.qty - c.stock) * 100) / 100) : "";
+          aoa2.push([c.ref || "", c.designation || "", Math.round(c.qty * 100) / 100, c.unite || "", c.stock != null ? c.stock : "", aAcheter]);
+        });
+        var thin = { style: "thin", color: { rgb: "B7C4D1" } };
+        var bAll = { top: thin, bottom: thin, left: thin, right: thin };
+        function styleSheet(aoa, widths) {
+          var ws = XLSX.utils.aoa_to_sheet(aoa);
+          ws["!cols"] = (widths || []).map(function(w) { return { wch: w }; });
+          ws["!rows"] = [{ hpt: 26 }];
+          var nbc = aoa[0].length;
+          for (var c = 0; c < nbc; c++) { var rf = XLSX.utils.encode_cell({ r: 0, c: c }); if (!ws[rf]) ws[rf] = { t: "s", v: "" }; ws[rf].s = { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: "2E5E8C" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: bAll }; }
+          for (var r = 1; r < aoa.length; r++) { for (var c2 = 0; c2 < nbc; c2++) { var rf2 = XLSX.utils.encode_cell({ r: r, c: c2 }); if (!ws[rf2]) ws[rf2] = { t: "s", v: "" }; ws[rf2].s = { font: { sz: 10, name: "Arial" }, alignment: { vertical: "center" }, border: bAll }; } }
+          return ws;
+        }
+        if (typeof XLSX === "undefined") { alert("Librairie Excel non chargee, reessaie dans un instant."); return; }
+        var wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, styleSheet(aoa1, [14, 30, 12, 18, 12, 9, 20]), "Travaux a faire");
+        XLSX.utils.book_append_sheet(wb, styleSheet(aoa2, [16, 32, 11, 9, 12, 11]), "Consommables a acheter");
+        var d = new Date();
+        var iso = d.getFullYear() + "-" + (d.getMonth() + 1 < 10 ? "0" : "") + (d.getMonth() + 1) + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate();
+        XLSX.writeFile(wb, "travaux_a_faire_" + iso + ".xlsx");
+      };
       const nbEngins = equipements.filter((e) => e.Categorie === "Engin").length;
       const nbVL = equipements.filter((e) => e.Categorie === "Vehicule").length;
       const tabStyle = (active) => ({ padding: "10px 20px", background: active ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: active ? "#ffffff" : "#a78bfa", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 14, border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.08)"), boxShadow: active ? "0 8px 20px rgba(99,102,241,0.3), inset 0 1px 0 rgba(255,255,255,0.1)" : "none", transition: "all 0.2s", backdropFilter: active ? "none" : "blur(10px)" });
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "settings", size: 20 }, "Equipements"), subtitle: equipements.length + " equipements (" + nbEngins + " engins / " + nbVL + " vehicules)", action: h(Button, { onClick: openNew }, "+ Nouvel equipement") }),
+        h(PageHeader, { title: h(IconText, { icon: "settings", size: 20 }, "Equipements"), subtitle: equipements.length + " equipements (" + nbEngins + " engins / " + nbVL + " vehicules)", action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h(Button, { variant: "secondary", onClick: exportTravauxExcel, title: "Exporter tous les travaux a faire + les consommables a acheter en Excel" }, h(IconText, { icon: "file-down", size: 14 }, "Export travaux (Excel)")),
+          h(Button, { onClick: openNew }, "+ Nouvel equipement")) }),
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16 } },
           h("button", { onClick: () => setOnglet("Engin"), style: tabStyle(onglet === "Engin") }, h(IconText, { icon: "hard-hat", size: 14 }, "Engins (" + nbEngins + ")")),
           h("button", { onClick: () => setOnglet("Vehicule"), style: tabStyle(onglet === "Vehicule") }, h(IconText, { icon: "car", size: 14 }, "Vehicules (" + nbVL + ")"))),
