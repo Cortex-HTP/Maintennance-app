@@ -32,7 +32,8 @@
   <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- xlsx-js-style : fork de SheetJS 0.18 compatible API + styles cellules (bordures/fonds/gras) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
@@ -23717,18 +23718,54 @@
 
           var ws = XLSX.utils.aoa_to_sheet(aoa);
           var nbCols = header.length;
-          // Titre + sous-titre fusionnes sur toute la largeur
+          var headerRowIdx = 3;               // titre(0) sous-titre(1) vide(2) header(3)
+          var firstDataRow = 4;
+          var lastRowIdx = aoa.length - 1;    // ligne "Total Facturable"
+
+          // ── Fusions titre + sous-titre sur toute la largeur ──
           ws["!merges"] = [
             { s: { r: 0, c: 0 }, e: { r: 0, c: Math.max(1, nbCols - 1) } },
             { s: { r: 1, c: 0 }, e: { r: 1, c: Math.max(1, nbCols - 1) } }
           ];
-          // Largeur colonnes
+          // ── Largeurs colonnes ──
           var cols = [{ wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 11 }, { wch: 12 }, { wch: 26 }, { wch: 18 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 11 }];
           actColsList.forEach(function() { cols.push({ wch: 13 }); });
           ws["!cols"] = cols;
-          // Formats numeriques : metrage 1 decimale, heures 2 decimales (data + total)
-          var firstDataRow = 4; // titre(0) sous-titre(1) vide(2) header(3) -> data des la ligne 4
-          for (var rr = firstDataRow; rr < aoa.length; rr++) {
+          // ── Hauteurs de lignes (titre + en-tete plus hauts) ──
+          var rowsH = [];
+          rowsH[0] = { hpt: 28 }; rowsH[1] = { hpt: 16 }; rowsH[headerRowIdx] = { hpt: 32 };
+          ws["!rows"] = rowsH;
+
+          // ── Styles (xlsx-js-style) ──
+          var C_TITLE = "1E3A5F", C_HEAD = "2E5E8C", C_ZEBRA = "EEF3F8", C_TOTAL = "D9E6F2", C_BORDER = "B7C4D1";
+          var thin = { style: "thin", color: { rgb: C_BORDER } };
+          var borderAll = { top: thin, bottom: thin, left: thin, right: thin };
+          function setSt(rIdx, cIdx, st) { var ref = XLSX.utils.encode_cell({ r: rIdx, c: cIdx }); if (!ws[ref]) ws[ref] = { t: "s", v: "" }; ws[ref].s = st; }
+          function dataAlign(c) { if (c >= 7) return "right"; if (c === 0 || c === 1 || c === 6) return "left"; return "center"; }
+
+          // Titre
+          setSt(0, 0, { font: { bold: true, sz: 15, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          // Sous-titre (periode / filtres)
+          setSt(1, 0, { font: { italic: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          // En-tete colonnes
+          for (var hc = 0; hc < nbCols; hc++) {
+            setSt(headerRowIdx, hc, { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_HEAD } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: borderAll });
+          }
+          // Lignes de donnees (zebrage 1 sur 2 + bordures)
+          for (var drr = firstDataRow; drr < lastRowIdx; drr++) {
+            var zebra = (((drr - firstDataRow) % 2) === 1);
+            for (var dcc = 0; dcc < nbCols; dcc++) {
+              var st = { font: { sz: 10, name: "Arial" }, alignment: { horizontal: dataAlign(dcc), vertical: "center" }, border: borderAll };
+              if (zebra) st.fill = { fgColor: { rgb: C_ZEBRA } };
+              setSt(drr, dcc, st);
+            }
+          }
+          // Ligne total (gras + fond + bordure haute epaisse)
+          for (var tcc = 0; tcc < nbCols; tcc++) {
+            setSt(lastRowIdx, tcc, { font: { bold: true, sz: 10, name: "Arial" }, fill: { fgColor: { rgb: C_TOTAL } }, alignment: { horizontal: tcc >= 5 ? "right" : "left", vertical: "center" }, border: { top: { style: "medium", color: { rgb: C_HEAD } }, bottom: thin, left: thin, right: thin } });
+          }
+          // ── Formats numeriques : metrage 1 decimale, heures/activites 2 decimales ──
+          for (var rr = firstDataRow; rr <= lastRowIdx; rr++) {
             [7, 8, 9].forEach(function(cc) { var rf = XLSX.utils.encode_cell({ r: rr, c: cc }); if (ws[rf] && typeof ws[rf].v === "number") ws[rf].z = "0.0"; });
             for (var cc2 = 10; cc2 < nbCols; cc2++) { var rf2 = XLSX.utils.encode_cell({ r: rr, c: cc2 }); if (ws[rf2] && typeof ws[rf2].v === "number") ws[rf2].z = "0.00"; }
           }
