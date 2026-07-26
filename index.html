@@ -314,15 +314,27 @@
     function equipementFromDb(r) {
       var extra = {};
       try { if (r.notes) extra = JSON.parse(r.notes); } catch(e) { extra = { _text: r.notes }; }
-      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), Notes: extra._text || "" };
+      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), ProchainControleTechnique: extra.prochainControleTechnique || "", Notes: extra._text || "" };
     }
     function equipementToDb(e) {
       var notesObj = {};
       if (e.DernierEntretienH) notesObj.dernierEntretienH = parseFloat(e.DernierEntretienH) || 0;
       if (e.DernierEntretienKM) notesObj.dernierEntretienKM = parseFloat(e.DernierEntretienKM) || 0;
+      if (e.ProchainControleTechnique) notesObj.prochainControleTechnique = String(e.ProchainControleTechnique).substring(0, 10);
       if (e.Notes) notesObj._text = e.Notes;
       var notesStr = Object.keys(notesObj).length > 0 ? JSON.stringify(notesObj) : null;
       return { immatriculation: e.Title, nom: e.Nom, type: e.Type, categorie: e.Categorie === "Vehicule" ? "vl" : "engin", localisation: e.Localisation, horametre_actuel: parseFloat(e.Horametre) || 0, km_actuel: parseFloat(e.KM) || 0, statut: STATUT_EQ_TO_DB[e.Statut] || "actif", date_mise_en_service: e.DateMiseEnService || null, marque: e.Marque || null, modele: e.Modele || null, numero_serie: e.NumeroSerie || null, annee: e.Annee ? parseInt(e.Annee) : null, notes: notesStr };
+    }
+
+    // Statut du controle technique d'un vehicule (echeance annuelle par date).
+    // Retourne { date, diffJours, level: 'ok'|'soon'|'overdue' } ou null si pas de date.
+    function controleTechniqueStatus(dateStr) {
+      if (!dateStr) return null;
+      var d = new Date(String(dateStr).substring(0, 10) + "T00:00:00");
+      if (isNaN(d.getTime())) return null;
+      var now = new Date(); now.setHours(0, 0, 0, 0);
+      var diff = Math.round((d.getTime() - now.getTime()) / 86400000);
+      return { date: dateStr, diffJours: diff, level: diff < 0 ? "overdue" : (diff <= 30 ? "soon" : "ok") };
     }
     // Helper : parse une description Supabase qui peut contenir du JSON ou du texte brut
     function parseDescExtra(raw) {
@@ -2500,7 +2512,9 @@
           // 'termine' en DB des qu'on ouvrait+enregistrait une intervention dont la
           // gamme PLAN etait deja toute cochee - meme sans intention.
           var finalForm = Object.assign({}, f, { Statut_Intervention: f.Statut_Intervention });
-          if (editItem) await updateIntervention(finalForm); else await addIntervention(finalForm);
+          // Update seulement si on edite un enregistrement EXISTANT (avec un vrai Id).
+          // Un pre-remplissage (ex: depuis une fiche equipement) n'a pas d'Id -> insert.
+          if (finalForm.Id) await updateIntervention(finalForm); else await addIntervention(finalForm);
           if (f.Horametre || f.KM) {
             await addReleve({ Equipement: f.Equipement, Date: f.Date_Intervention, Horametre: f.Horametre || "0", KM: f.KM || "0", Technicien: f.Technicien || "" });
           }

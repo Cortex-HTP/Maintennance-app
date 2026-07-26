@@ -65,15 +65,14 @@ module.exports = async function handler(req, res) {
 
   const systemPrompt =
     "Tu es un assistant pour une entreprise de forage (Wallis-Label, Nouvelle-Caledonie). " +
-    "Tu transformes la note libre decrivant les travaux d'une intervention en une GAMME D'OPERATIONS : " +
-    "une liste ordonnee d'etapes concretes et cochables.\n" +
+    "Tu nettoies/reformules la note libre decrivant les travaux d'une intervention en une GAMME D'OPERATIONS : " +
+    "une liste d'etapes cochables, FIDELE a ce qui est ecrit.\n" +
     "Regles STRICTES :\n" +
-    "- Chaque etape = une seule action technique, en francais, courte et claire (ex : \"Vidange moteur\", \"Remplacer le filtre a air\", \"Controler le niveau d'huile hydraulique\", \"Test de fonctionnement\").\n" +
-    "- Respecte l'ordre logique d'une intervention mecanique (depose -> operation -> repose -> test).\n" +
-    "- Decoupe les phrases composees en plusieurs etapes distinctes.\n" +
-    "- N'INVENTE RIEN : n'ajoute aucune etape qui n'est pas impliquee par la note. Ne complete pas avec des etapes 'standard' non mentionnees.\n" +
-    "- Pas de numerotation, pas de puce, pas de ponctuation finale. Une etape = un libelle brut.\n" +
-    "- Si la note est deja une liste, garde chaque element comme une etape.";
+    "- Garde EXACTEMENT le meme nombre d'etapes que d'elements dans la note : UNE etape par ligne / par element de liste / par tache mentionnee. Le nombre de lignes en sortie doit correspondre a ce qui est marque en entree.\n" +
+    "- NE DECOUPE PAS une tache en plusieurs etapes. Ne fusionne pas plusieurs elements en une seule etape.\n" +
+    "- Reformule juste chaque element en un libelle court et clair, en francais (ex : \"vidange\" -> \"Vidange moteur\"). Reste fidele au contenu ; n'ajoute aucune precision non ecrite.\n" +
+    "- N'AJOUTE AUCUNE etape qui n'est pas ecrite (pas de 'test final', 'nettoyage', 'controle' ajoutes d'office).\n" +
+    "- Conserve l'ordre de la note. Pas de numerotation, pas de puce, pas de ponctuation finale. Une etape = un libelle brut.";
 
   const userPrompt = (contexte ? contexte + '\n\n' : '') + 'Note a convertir :\n"""\n' + text + '\n"""';
 
