@@ -23539,7 +23539,8 @@
               if (a && a.libelle) activitesCols[String(a.libelle).toUpperCase()] = true;
             });
           });
-          var actColsList = Object.keys(activitesCols).sort();
+          // Facturation : on ne garde QUE les activites marquees facturables.
+          var actColsList = Object.keys(activitesCols).filter(function(a) { return isFacturable(a); }).sort();
 
           // Index : key = sondeuse_code|date -> rapport (1 par jour-machine attendu)
           var rapByKey = {};
@@ -23575,33 +23576,21 @@
           // la liste de jours avec un fallback "sondeuse en activite ce jour-la" :
           //   - Si filtre sondeuse : 1 ligne par jour calendaire (vide si pas de rapport)
           //   - Sinon : 1 ligne par jour x rapports trouves ce jour-la (jour vide si aucun)
+          // Facturation : UNE ligne par (jour x rapport reel). Aucun jour vide.
           var dataRows = [];
-          if (recapSondeuse !== "__all__") {
-            // Format ressemblant a l'exemple : 1 ligne par jour, soneduse choisie
-            allDays.forEach(function(d) {
-              var dStr = isoDate(d);
-              var r = rapByKey[recapSondeuse + "|" + dStr];
-              dataRows.push(buildRowForDay(d, r, actColsList));
+          allDays.forEach(function(d) {
+            var dStr = isoDate(d);
+            var sndList = recapSondeuse !== "__all__" ? [recapSondeuse] : sondeusesOptions;
+            sndList.forEach(function(snd) {
+              var r = rapByKey[snd + "|" + dStr];
+              if (r) dataRows.push(buildRowForDay(d, r, actColsList));
             });
-          } else {
-            // 1 ligne par jour calendaire ; cellule sondeuse = celle qui a un rapport ce jour-la
-            // (s'il y en a plusieurs, on duplique la ligne par sondeuse)
-            allDays.forEach(function(d) {
-              var dStr = isoDate(d);
-              var found = false;
-              sondeusesOptions.forEach(function(snd) {
-                var r = rapByKey[snd + "|" + dStr];
-                if (r) {
-                  dataRows.push(buildRowForDay(d, r, actColsList));
-                  found = true;
-                }
-              });
-              if (!found) {
-                // Jour vide
-                dataRows.push(buildRowForDay(d, null, actColsList));
-              }
-            });
-          }
+          });
+          // Retire les lignes sans contenu facturable (0 m facturable ET aucune activite facturable)
+          dataRows = dataRows.filter(function(row) {
+            if ((row.metrage || 0) > 0) return true;
+            return actColsList.some(function(a) { return (row.actHours[a] || 0) > 0; });
+          });
 
           function sumSondagesByType(r, typeFilter) {
             if (!r || !Array.isArray(r.sondages)) return 0;
@@ -23643,7 +23632,17 @@
                 return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0));
               });
               row.sondeur = upN(sondeurMember ? (sondeurMember.nom || "") : (equipe[0] && equipe[0].nom ? equipe[0].nom : ""));
-              row.metrage = parseFloat(r.total_metres) || 0;
+              // Metrage FACTURABLE = total - sondages marques "non facturable"
+              var totMR = parseFloat(r.total_metres) || 0;
+              var nonFactMR = 0;
+              (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+                if (estCommNonFact(s.commentaire)) {
+                  var deN = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+                  var aN = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+                  nonFactMR += Math.max(0, aN - deN);
+                }
+              });
+              row.metrage = Math.max(0, totMR - nonFactMR);
               row.aircore = sumSondagesByType(r, "AIRCORE");
               row.mft = sumSondagesByType(r, "MFT");
               row.hmo = ((parseFloat(r.total_heures) || 0) / 60); // total_heures en minutes -> heures decimales
@@ -23667,12 +23666,14 @@
 
           // Construction du AOA
           var aoa = [];
-          // Bandeau titre + periode
-          var titreCell = "RELEVE DES RAPPORTS";
-          var periodeCell = fmtFr(startStr) + " - " + fmtFr(endStr);
-          aoa.push(["", "", titreCell, "", "", "", "", "", "", "", "", "", periodeCell]);
+          // Titre + sous-titre (periode + filtres), fusionnes plus bas sur toute la largeur
+          aoa.push(["RELEVE DES RAPPORTS DE FORAGE - FACTURATION"]);
+          aoa.push(["Periode : " + fmtFr(startStr) + " au " + fmtFr(endStr)
+            + (recapSite !== "__all__" ? "     Site : " + recapSite : "")
+            + (recapSondeuse !== "__all__" ? "     Sondeuse : " + recapSondeuse : "")]);
+          aoa.push([]);
           // Header colonnes
-          var header = ["Client", "Site", "Sondeuse", "Semaine", "Jour", "DATE", "Sondeur", "Metrage", "AIRCORE Metrage", "MFT Metrage", "HMO", "HM"];
+          var header = ["Client", "Site", "Sondeuse", "Semaine", "Jour", "Date", "Sondeur", "Metrage facturable (m)", "AIRCORE (m)", "MFT (m)", "H. machine", "H. foration"];
           actColsList.forEach(function(a) { header.push(a); });
           aoa.push(header);
           // Lignes
@@ -23693,10 +23694,22 @@
           aoa.push(totalLine);
 
           var ws = XLSX.utils.aoa_to_sheet(aoa);
+          var nbCols = header.length;
+          // Titre + sous-titre fusionnes sur toute la largeur
+          ws["!merges"] = [
+            { s: { r: 0, c: 0 }, e: { r: 0, c: Math.max(1, nbCols - 1) } },
+            { s: { r: 1, c: 0 }, e: { r: 1, c: Math.max(1, nbCols - 1) } }
+          ];
           // Largeur colonnes
-          var cols = [{ wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 26 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 8 }];
+          var cols = [{ wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 11 }, { wch: 12 }, { wch: 26 }, { wch: 18 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 11 }];
           actColsList.forEach(function() { cols.push({ wch: 13 }); });
           ws["!cols"] = cols;
+          // Formats numeriques : metrage 1 decimale, heures 2 decimales (data + total)
+          var firstDataRow = 4; // titre(0) sous-titre(1) vide(2) header(3) -> data des la ligne 4
+          for (var rr = firstDataRow; rr < aoa.length; rr++) {
+            [7, 8, 9].forEach(function(cc) { var rf = XLSX.utils.encode_cell({ r: rr, c: cc }); if (ws[rf] && typeof ws[rf].v === "number") ws[rf].z = "0.0"; });
+            for (var cc2 = 10; cc2 < nbCols; cc2++) { var rf2 = XLSX.utils.encode_cell({ r: rr, c: cc2 }); if (ws[rf2] && typeof ws[rf2].v === "number") ws[rf2].z = "0.00"; }
+          }
           var wb = XLSX.utils.book_new();
           XLSX.utils.book_append_sheet(wb, ws, "Billing report");
           // Nom du fichier
