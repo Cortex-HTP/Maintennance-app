@@ -2531,7 +2531,7 @@
               }())
             })),
             h("div", { style: { gridColumn: "1 / -1" } },
-              h(FormField, { label: "Travaux effectues" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Decrivez les travaux..." })))),
+              h(FormField, { label: "Commentaire" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Commentaire / travaux..." })))),
           // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
           (f.MecanicienCode || isSourceMec) ? h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 12 } },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } },
@@ -21353,10 +21353,10 @@
             h("label", { style: labelS }, "Temps d'arret (h)"),
             h("input", { type: "text", style: inputS, value: form.Temps_Arret || "", onChange: function(e) { upd("Temps_Arret", e.target.value); }, placeholder: "Ex: 2h ou 24h" })
           ),
-          // Travaux / description (full width)
+          // Commentaire / travaux (full width)
           h("div", { style: { gridColumn: "1 / -1" } },
-            h("label", { style: labelS }, "Travaux a effectuer / description"),
-            h("textarea", { rows: 4, style: Object.assign({}, inputS, { resize: "vertical", fontFamily: "inherit" }), value: form.Travaux_Effectues || "", onChange: function(e) { upd("Travaux_Effectues", e.target.value); }, placeholder: "Description detaillee des travaux..." })
+            h("label", { style: labelS }, "Commentaire"),
+            h("textarea", { rows: 4, style: Object.assign({}, inputS, { resize: "vertical", fontFamily: "inherit" }), value: form.Travaux_Effectues || "", onChange: function(e) { upd("Travaux_Effectues", e.target.value); }, placeholder: "Commentaire / description detaillee des travaux..." })
           )
         ),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.07)" } },
@@ -23586,9 +23586,11 @@
               if (r) dataRows.push(buildRowForDay(d, r, actColsList));
             });
           });
-          // Retire les lignes sans contenu facturable (0 m facturable ET aucune activite facturable)
+          // Retire les lignes sans contenu facturable. On GARDE toute ligne qui a
+          // du metrage facturable OU une activite facturable (ex: attente), meme a 0h.
           dataRows = dataRows.filter(function(row) {
             if ((row.metrage || 0) > 0) return true;
+            if (row.hasFactActivite) return true;
             return actColsList.some(function(a) { return (row.actHours[a] || 0) > 0; });
           });
 
@@ -23623,7 +23625,8 @@
               mft: 0,
               hmo: 0,
               hm: 0,
-              actHours: {}
+              actHours: {},
+              hasFactActivite: false
             };
             if (r) {
               // Sondeur principal (premier membre avec role sondeur ou nom dispo)
@@ -23660,6 +23663,11 @@
                 var lib = String(a.libelle || "").toUpperCase();
                 row.actHours[lib] = (row.actHours[lib] || 0) + (durBtw(a.debut, a.fin) / 60);
               });
+              // Presence d'au moins une activite FACTURABLE (meme a 0h, ex: attente)
+              // -> on garde la ligne dans la facturation.
+              (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+                if (a && isFacturable(String(a.libelle || "").toUpperCase())) row.hasFactActivite = true;
+              });
             }
             return row;
           }
@@ -23679,7 +23687,7 @@
           // Lignes
           dataRows.forEach(function(row) {
             var line = [row.client, row.site, row.sondeuse, row.semaine, row.jour, row.date, row.sondeur, row.metrage || "", row.aircore || "", row.mft || "", row.hmo ? Math.round(row.hmo * 100) / 100 : "", row.hm ? Math.round(row.hm * 100) / 100 : ""];
-            actColsList.forEach(function(a) { var v = row.actHours[a] || 0; line.push(v ? Math.round(v * 100) / 100 : ""); });
+            actColsList.forEach(function(a) { var v = row.actHours[a] || 0; line.push(Math.round(v * 100) / 100); });
             aoa.push(line);
           });
           // Ligne total facturable
