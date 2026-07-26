@@ -2361,10 +2361,10 @@
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // Genere la gamme d'operations a partir du Commentaire (ou de la description)
       // via l'IA Claude (endpoint serveur /api/gamme-from-text). Reception d'une demande.
-      async function genererGammeIA() {
+      async function genererGammeIA(silent) {
         var text = String(f.Travaux_Effectues || f.DescriptionProbleme || "").trim();
-        if (!text) { alert("Ecris d'abord un commentaire (ou une description) a convertir en gamme."); return; }
-        if (Array.isArray(f.Gamme) && f.Gamme.length > 0 && !window.confirm("Remplacer la gamme actuelle (" + f.Gamme.length + " etape(s)) par celle generee par l'IA ?")) return;
+        if (!text) { if (!silent) alert("Ecris d'abord un commentaire (ou une description) a convertir en gamme."); return; }
+        if (!silent && Array.isArray(f.Gamme) && f.Gamme.length > 0 && !window.confirm("Remplacer la gamme actuelle (" + f.Gamme.length + " etape(s)) par celle generee par l'IA ?")) return;
         setIaGammeLoading(true);
         try {
           var tok = "";
@@ -2381,11 +2381,21 @@
           var steps = etapes.map(function(lbl, i) { return { id: "ia-" + Date.now() + "-" + i, label: String(lbl), done: false, fromPlan: false }; });
           upd("Gamme", steps);
         } catch (e) {
-          alert("Generation IA impossible : " + ((e && e.message) || "erreur"));
+          if (!silent) alert("Generation IA impossible : " + ((e && e.message) || "erreur"));
         } finally {
           setIaGammeLoading(false);
         }
       }
+      // AUTO : a la reception d'une demande venant de l'app employe (source mecanicien)
+      // qui a un commentaire/description mais pas encore de gamme -> on genere la gamme
+      // automatiquement (en silencieux). L'admin peut ensuite la modifier ou la relancer.
+      React.useEffect(function() {
+        var _t = String(f.Travaux_Effectues || f.DescriptionProbleme || "").trim();
+        // Pas si un plan est lie (la gamme vient alors du plan de maintenance).
+        if (f.Source === "mecanicien" && !f.Plan && _t && (!Array.isArray(f.Gamme) || f.Gamme.length === 0)) {
+          genererGammeIA(true);
+        }
+      }, []);
       // Detection : intervention auto liee a un plan
       const isAutoFromPlan = !!(f.Title && f.Title.toLowerCase().indexOf("[auto]") === 0 && f.Plan);
       // Pre-remplissage de la gamme depuis le plan si pas encore d'items "fromPlan"
@@ -2563,10 +2573,10 @@
               h(FormField, { label: "Commentaire" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Commentaire / travaux..." })))),
           // ─── IA : convertit le Commentaire (ou la description) en gamme d'operations ───
           h("div", { style: { margin: "2px 0 10px" } },
-            h("button", { type: "button", disabled: iaGammeLoading, onClick: genererGammeIA, style: { padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: iaGammeLoading ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
+            h("button", { type: "button", disabled: iaGammeLoading, onClick: function() { genererGammeIA(false); }, style: { padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: iaGammeLoading ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
               h(Icon, { name: "sparkles", size: 14, color: "#c4b5fd" }),
-              iaGammeLoading ? "Generation en cours..." : "Generer la gamme avec l'IA"),
-            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Transforme le commentaire en etapes de gamme cochables (visibles plus bas). Tu peux les ajuster ensuite.")),
+              iaGammeLoading ? "Generation en cours..." : "Regenerer la gamme avec l'IA"),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "La gamme est generee automatiquement a la reception d'une demande employe. Bouton = relancer. Etapes modifiables plus bas.")),
           // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
           (f.MecanicienCode || isSourceMec) ? h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 12 } },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } },
