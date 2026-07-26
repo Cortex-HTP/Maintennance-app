@@ -2108,6 +2108,31 @@
           ),
           h("div", { style: { fontSize: 12, fontWeight: 600, color: "#67e8f9" } }, "Voir > ")
         ) : null,
+        (function() {
+          // Controles techniques des vehicules a echeance (< 30 j) ou en retard.
+          var ctList = (equipements || []).filter(function(e) { return e.Categorie === "Vehicule"; }).map(function(e) {
+            var s = controleTechniqueStatus(e.ProchainControleTechnique);
+            return s ? { eq: e, s: s } : null;
+          }).filter(function(x) { return x && (x.s.level === "overdue" || x.s.level === "soon"); });
+          if (ctList.length === 0) return null;
+          ctList.sort(function(a, b) { return a.s.diffJours - b.s.diffJours; });
+          var nbRetard = ctList.filter(function(x) { return x.s.level === "overdue"; }).length;
+          return h("div", { style: { marginBottom: 18, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(245, 158, 11, 0.13), rgba(245, 158, 11, 0.04))", border: "1px solid rgba(245, 158, 11, 0.35)" } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 8 } },
+              h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(245, 158, 11, 0.22)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "shield-alert", size: 18, color: "#fbbf24" })),
+              h("div", { style: { flex: 1, minWidth: 0 } },
+                h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa" } }, ctList.length + " controle" + (ctList.length > 1 ? "s" : "") + " technique" + (ctList.length > 1 ? "s" : "") + " a faire" + (nbRetard > 0 ? " (dont " + nbRetard + " en retard)" : "")),
+                h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, "Echeance annuelle des vehicules. Clique un vehicule pour ouvrir sa fiche."))),
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+              ctList.slice(0, 8).map(function(x) {
+                var over = x.s.level === "overdue";
+                var dstr = String(x.s.date).substring(0, 10).split("-").reverse().join("/");
+                return h("div", { key: x.eq.Id, onClick: function() { onNavigate("fiche-equipement", x.eq); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (over ? "rgba(244,63,94,0.30)" : "rgba(245,158,11,0.25)"), borderRadius: 8, cursor: "pointer" } },
+                  h("div", { style: { fontWeight: 600, fontSize: 13, color: "#fafafa" } }, (x.eq.Title || "") + (x.eq.Nom ? " · " + x.eq.Nom : "")),
+                  h("span", { style: { fontSize: 12, fontWeight: 700, color: over ? "#fda4af" : "#fde68a", whiteSpace: "nowrap" } }, over ? ("En retard depuis " + dstr) : ("Le " + dstr + " (dans " + x.s.diffJours + " j)")));
+              }))
+          );
+        })(),
         h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "truck", size: 22, color: "#ffffff" }), label: "Equipements", value: fmtNum(totalEquip), color: "#818cf8", onClick: () => onNavigate("equipements") }),
           h(KPICard, { icon: h(Icon, { name: "calendar", size: 22, color: "#ffffff" }), label: "Planifiees", value: fmtNum(planifiees), color: "#60a5fa", onClick: () => onNavigate("interventions") }),
@@ -2831,7 +2856,8 @@
           h(FormField, { label: "Marque" }, h("input", { type: "text", style: inputStyle, value: f.Marque || "", onChange: (e) => upd("Marque", e.target.value), placeholder: "Ex: Atlas Copco" })),
           h(FormField, { label: "Modele" }, h("input", { type: "text", style: inputStyle, value: f.Modele || "", onChange: (e) => upd("Modele", e.target.value), placeholder: "Ex: D7" })),
           h(FormField, { label: "Numero de serie" }, h("input", { type: "text", style: inputStyle, value: f.NumeroSerie || "", onChange: (e) => upd("NumeroSerie", e.target.value), placeholder: "Ex: SN-12345-AB" })),
-          h(FormField, { label: "Annee" }, h("input", { type: "number", min: 1900, max: 2100, style: inputStyle, value: f.Annee || "", onChange: (e) => upd("Annee", e.target.value), placeholder: "Ex: 2024" }))),
+          h(FormField, { label: "Annee" }, h("input", { type: "number", min: 1900, max: 2100, style: inputStyle, value: f.Annee || "", onChange: (e) => upd("Annee", e.target.value), placeholder: "Ex: 2024" })),
+          (f.Categorie === "Vehicule" ? h(FormField, { label: "Prochain controle technique" }, h("input", { type: "date", style: inputStyle, value: f.ProchainControleTechnique || "", onChange: (e) => upd("ProchainControleTechnique", e.target.value) })) : null)),
         !horametreEditable && h("p", { style: { fontSize: 12, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } }, h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "lock", size: 12, color: "#a1a1aa" }), "Les champs Horametre et Kilometrage sont modifiables uniquement par l'admin. Utilisez la fonction \"+ Releve H/KM\" pour enregistrer une nouvelle valeur.")),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 } },
           h(Button, { variant: "secondary", onClick: onCancel, disabled: saving }, "Annuler"),
@@ -2910,7 +2936,7 @@
 
     // ─── Ecran Fiche Equipement ─────────────────────────────────────────
     function EcranFicheEquipement({ onNavigate, equipement }) {
-      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin, dbRapportsForage, deleteIntervention } = useAppData();
+      const { interventions, releves, addReleve, deleteReleve, plans, pieces, piecesEquipements, linkPieceEquipement, unlinkPieceEquipement, isAdmin, dbRapportsForage, deleteIntervention, updateEquipement } = useAppData();
       const eq = equipement;
       if (!eq) return h("div", null, h(Button, { variant: "secondary", onClick: () => onNavigate("equipements") }, h(IconText, { icon: "arrow-left", size: 14 }, "Retour")));
       const eqInterventions = interventions.filter((i) => i.EquipementId === eq.Id || i.Equipement === eq.Title);
@@ -2930,6 +2956,7 @@
       const [newReleve, setNewReleve] = useState({ Date: new Date().toISOString().split("T")[0], Horametre: "", KM: "", Technicien: "" });
       const [saving, setSaving] = useState(false);
       const [releveToDelete, setReleveToDelete] = useState(null);
+      const [ctDateLocal, setCtDateLocal] = useState(eq.ProchainControleTechnique || "");
 
       const submitReleve = async () => {
         if (!newReleve.Horametre && !newReleve.KM) return alert("Renseignez au moins l'horametre ou le kilometrage");
@@ -3019,6 +3046,28 @@
             alertesAnticipees.map(function(a, idx) {
               return h("div", { key: idx, style: { fontSize: 14 } }, a.plan + " : " + a.reste + a.unite + (a.unite === "km" ? " restant" : " restantes") + " (prochain a " + fmtNum(a.prochainSeuil) + a.unite + ")");
             }))),
+        // ─── Controle technique (vehicules) : echeance annuelle par date ───
+        eq.Categorie === "Vehicule" ? (function() {
+          var ct = controleTechniqueStatus(ctDateLocal);
+          var dstr = ct ? String(ct.date).substring(0, 10).split("-").reverse().join("/") : "";
+          var reporterPlusUnAn = function() {
+            var nd = new Date(); nd.setHours(0, 0, 0, 0); nd.setFullYear(nd.getFullYear() + 1);
+            var mm = nd.getMonth() + 1, dd = nd.getDate();
+            var iso = nd.getFullYear() + "-" + (mm < 10 ? "0" : "") + mm + "-" + (dd < 10 ? "0" : "") + dd;
+            setCtDateLocal(iso);
+            if (updateEquipement) updateEquipement(Object.assign({}, eq, { ProchainControleTechnique: iso }));
+          };
+          var bg, br, col, ico, txt;
+          if (!ct) { bg = "rgba(113,113,122,0.10)"; br = "rgba(113,113,122,0.30)"; col = "#a1a1aa"; ico = "shield"; txt = "Controle technique : date non renseignee (modifie la fiche pour l'ajouter)"; }
+          else if (ct.level === "overdue") { bg = "rgba(244,63,94,0.12)"; br = "rgba(244,63,94,0.40)"; col = "#fda4af"; ico = "shield-alert"; txt = "Controle technique EN RETARD depuis le " + dstr + " (" + Math.abs(ct.diffJours) + " j)"; }
+          else if (ct.level === "soon") { bg = "rgba(251,191,36,0.12)"; br = "rgba(251,191,36,0.40)"; col = "#fde68a"; ico = "shield-alert"; txt = "Controle technique a faire — echeance le " + dstr + " (dans " + ct.diffJours + " j)"; }
+          else { bg = "rgba(34,197,94,0.10)"; br = "rgba(34,197,94,0.30)"; col = "#86efac"; ico = "shield-check"; txt = "Controle technique valide jusqu'au " + dstr + " (dans " + ct.diffJours + " j)"; }
+          return h("div", { style: { background: bg, border: "1px solid " + br, color: col, padding: "12px 16px", borderRadius: 10, marginBottom: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+            h(Icon, { name: ico, size: 20, color: col }),
+            h("span", { style: { flex: 1, minWidth: 180 } }, txt),
+            (isAdmin && ct) ? h("button", { onClick: reporterPlusUnAn, style: { padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.06)", color: "#e5e7eb" }, title: "Le CT vient d'etre refait : reporter l'echeance a dans 1 an" }, "CT fait -> +1 an") : null
+          );
+        }()) : null,
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20, marginBottom: 24 } },
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, "Informations generales"),
