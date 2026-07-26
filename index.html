@@ -2357,7 +2357,35 @@
       var tauxNum = parseFloat(f.TauxHoraireApplique) || (selectedMec ? parseFloat(selectedMec.tauxHoraire) || 0 : 0);
       var facturable = dureeNum * tauxNum;
       const [saving, setSaving] = useState(false);
+      const [iaGammeLoading, setIaGammeLoading] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
+      // Genere la gamme d'operations a partir du Commentaire (ou de la description)
+      // via l'IA Claude (endpoint serveur /api/gamme-from-text). Reception d'une demande.
+      async function genererGammeIA() {
+        var text = String(f.Travaux_Effectues || f.DescriptionProbleme || "").trim();
+        if (!text) { alert("Ecris d'abord un commentaire (ou une description) a convertir en gamme."); return; }
+        if (Array.isArray(f.Gamme) && f.Gamme.length > 0 && !window.confirm("Remplacer la gamme actuelle (" + f.Gamme.length + " etape(s)) par celle generee par l'IA ?")) return;
+        setIaGammeLoading(true);
+        try {
+          var tok = "";
+          try { var sess = await supabase.auth.getSession(); tok = (sess && sess.data && sess.data.session && sess.data.session.access_token) || ""; } catch (e) {}
+          var r = await fetch("/api/gamme-from-text", {
+            method: "POST",
+            headers: Object.assign({ "Content-Type": "application/json" }, tok ? { Authorization: "Bearer " + tok } : {}),
+            body: JSON.stringify({ text: text, machine: f.Equipement || "", typePanne: f.Type || "" })
+          });
+          var data = await r.json().catch(function() { return {}; });
+          var etapes = Array.isArray(data.etapes) ? data.etapes : null;
+          if (!r.ok && !etapes) throw new Error(data.error || ("HTTP " + r.status));
+          if (!etapes || etapes.length === 0) throw new Error("Aucune etape generee");
+          var steps = etapes.map(function(lbl, i) { return { id: "ia-" + Date.now() + "-" + i, label: String(lbl), done: false, fromPlan: false }; });
+          upd("Gamme", steps);
+        } catch (e) {
+          alert("Generation IA impossible : " + ((e && e.message) || "erreur"));
+        } finally {
+          setIaGammeLoading(false);
+        }
+      }
       // Detection : intervention auto liee a un plan
       const isAutoFromPlan = !!(f.Title && f.Title.toLowerCase().indexOf("[auto]") === 0 && f.Plan);
       // Pre-remplissage de la gamme depuis le plan si pas encore d'items "fromPlan"
@@ -2533,6 +2561,12 @@
             })),
             h("div", { style: { gridColumn: "1 / -1" } },
               h(FormField, { label: "Commentaire" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Commentaire / travaux..." })))),
+          // ─── IA : convertit le Commentaire (ou la description) en gamme d'operations ───
+          h("div", { style: { margin: "2px 0 10px" } },
+            h("button", { type: "button", disabled: iaGammeLoading, onClick: genererGammeIA, style: { padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: iaGammeLoading ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
+              h(Icon, { name: "sparkles", size: 14, color: "#c4b5fd" }),
+              iaGammeLoading ? "Generation en cours..." : "Generer la gamme avec l'IA"),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Transforme le commentaire en etapes de gamme cochables (visibles plus bas). Tu peux les ajuster ensuite.")),
           // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
           (f.MecanicienCode || isSourceMec) ? h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 12 } },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } },
@@ -2934,9 +2968,22 @@
       const dataKM = releveAsc.filter((r) => r.KM && r.KM !== "" && r.KM !== "0").map((r) => ({ date: r.Date, value: parseFloat(r.KM) }));
 
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "clipboard-list", size: 20 }, eq.Title), subtitle: "Details et historique", action: h("div", { style: { display: "flex", gap: 8 } },
+        h(PageHeader, { title: h(IconText, { icon: "clipboard-list", size: 20 }, eq.Title), subtitle: "Details et historique", action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
           h(Button, { variant: "secondary", onClick: () => onNavigate("equipements") }, h(IconText, { icon: "arrow-left", size: 14 }, "Retour")),
-          h(Button, { onClick: () => setShowReleveModal(true) }, "+ Releve H/KM")) }),
+          h(Button, { onClick: function() {
+            // Ouvre le formulaire d'intervention pre-rempli avec CET equipement,
+            // et revient a la fiche apres validation (_returnTo).
+            onNavigate("interventions", {
+              Title: "", Equipement: eq.Title, EquipementId: eq.Id,
+              Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "",
+              Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "",
+              Plan: "", Horametre: hmActuel ? String(hmActuel) : "", KM: kmActuel ? String(kmActuel) : "",
+              Type: "Curative", Gamme: [], Source: "admin", MecanicienCode: "", DescriptionProbleme: "",
+              DureeHeures: "", Urgence: "normale", TauxHoraireApplique: 0, PiecesUtilisees: [], Photos: [],
+              _returnTo: eq
+            });
+          } }, h(IconText, { icon: "wrench", size: 14 }, "Nouvelle intervention")),
+          h(Button, { variant: "secondary", onClick: () => setShowReleveModal(true) }, "+ Releve H/KM")) }),
         visitesDues > 0 && h("div", { style: { background: "rgba(244, 63, 94, 0.10)", border: "1px solid rgba(244, 63, 94, 0.3)", color: "#fda4af", padding: "12px 16px", borderRadius: 10, marginBottom: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 10 } },
           h(Icon, { name: "bell-ring", size: 20, color: "#fda4af" }),
           visitesDues + " visite" + (visitesDues > 1 ? "s" : "") + " preventive" + (visitesDues > 1 ? "s" : "") + " a declencher sur cet equipement"),
