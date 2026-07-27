@@ -1463,6 +1463,76 @@
     }
     function newGammeId() { return "g" + Date.now() + "_" + Math.floor(Math.random() * 1000); }
 
+    // Export Excel des travaux a faire (feuille 1) + consommables a acheter (feuille 2).
+    // opts.eq (objet equipement) => filtre sur une seule machine (sinon toutes).
+    // Colonne "Travaux a faire" = detail de la gamme (1 ligne / etape) ou, si pas de gamme, le commentaire.
+    function exporterTravauxExcel(allInterventions, allPieces, opts) {
+      opts = opts || {};
+      var eq = opts.eq || null;
+      if (typeof XLSX === "undefined") { alert("Librairie Excel non chargee, reessaie dans un instant."); return; }
+      var pieces = allPieces || [];
+      var travaux = (allInterventions || []).filter(function(i) {
+        if (computeIntervStatus(i) === "Termine") return false;
+        if (eq) return String(i.EquipementId || "") === String(eq.Id) || String(i.Equipement || "") === String(eq.Title || eq.Code || "");
+        return true;
+      }).slice().sort(function(a, b) { return String(a.Equipement || "").localeCompare(String(b.Equipement || "")) || String(a.Date_Intervention || "").localeCompare(String(b.Date_Intervention || "")); });
+      // Detail de la ligne : la gamme en clair (1 ligne / etape), sinon le commentaire libre.
+      function detailTravaux(i) {
+        var g = Array.isArray(i.Gamme) ? i.Gamme.filter(function(s) { return s && s.label; }) : [];
+        if (g.length > 0) return g.map(function(s) { return "- " + s.label + (s.done ? " (fait)" : ""); }).join("\n");
+        return String(i.Travaux_Effectues || i.DescriptionProbleme || "").trim();
+      }
+      var aoa1 = [["Machine", "Intervention", "Type", "Statut", "Date", "Travaux a faire (gamme / commentaire)", "Plan"]];
+      travaux.forEach(function(i) {
+        aoa1.push([i.Equipement || "", i.Title || "", i.Type || "", computeIntervStatus(i), i.Date_Intervention || "", detailTravaux(i), i.Plan || ""]);
+      });
+      var consoAgg = {};
+      travaux.forEach(function(i) {
+        (Array.isArray(i.Gamme) ? i.Gamme : []).forEach(function(g) {
+          if (!g) return;
+          var hasP = g.pieceType || g.pieceRef || g.pieceLabel || g.pieceCategorie;
+          if (!hasP) return;
+          var isAuto = g.pieceType === "auto-categorie";
+          var ref = "", desig = "", stock = null, key = "";
+          if (isAuto) { desig = g.pieceCategorie || "?"; key = "cat:" + desig; }
+          else if (g.pieceType === "piece" && g.pieceRef) {
+            var p = pieces.find(function(x) { return String(x.Id) === String(g.pieceRef); });
+            ref = p ? (p.Reference || "") : "";
+            desig = p ? (p.Designation || p.Reference || g.pieceLabel || "?") : (g.pieceLabel || "?");
+            stock = p ? (parseFloat(p.Stock) || 0) : null;
+            key = "p:" + g.pieceRef;
+          } else { desig = g.pieceLabel || g.pieceRef || "?"; key = "c:" + desig + ":" + (g.unite || ""); }
+          var qty = parseFloat(g.quantite) || 0;
+          if (!consoAgg[key]) consoAgg[key] = { ref: ref, designation: desig, qty: 0, unite: g.unite || "u", stock: stock };
+          consoAgg[key].qty += qty;
+        });
+      });
+      var aoa2 = [["Reference", "Designation", "Qte prevue", "Unite", "Stock actuel", "A acheter"]];
+      Object.keys(consoAgg).forEach(function(k) {
+        var c = consoAgg[k];
+        var aAcheter = c.stock != null ? Math.max(0, Math.round((c.qty - c.stock) * 100) / 100) : "";
+        aoa2.push([c.ref || "", c.designation || "", Math.round(c.qty * 100) / 100, c.unite || "", c.stock != null ? c.stock : "", aAcheter]);
+      });
+      var thin = { style: "thin", color: { rgb: "B7C4D1" } };
+      var bAll = { top: thin, bottom: thin, left: thin, right: thin };
+      function styleSheet(aoa, widths, wrapCols) {
+        var ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"] = (widths || []).map(function(w) { return { wch: w }; });
+        ws["!rows"] = [{ hpt: 26 }];
+        var nbc = aoa[0].length;
+        for (var c = 0; c < nbc; c++) { var rf = XLSX.utils.encode_cell({ r: 0, c: c }); if (!ws[rf]) ws[rf] = { t: "s", v: "" }; ws[rf].s = { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: "2E5E8C" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: bAll }; }
+        for (var r = 1; r < aoa.length; r++) { for (var c2 = 0; c2 < nbc; c2++) { var rf2 = XLSX.utils.encode_cell({ r: r, c: c2 }); if (!ws[rf2]) ws[rf2] = { t: "s", v: "" }; var wrap = !!(wrapCols && wrapCols.indexOf(c2) !== -1); ws[rf2].s = { font: { sz: 10, name: "Arial" }, alignment: { vertical: "top", wrapText: wrap }, border: bAll }; } }
+        return ws;
+      }
+      var wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, styleSheet(aoa1, [14, 30, 12, 18, 12, 50, 20], [5]), "Travaux a faire");
+      XLSX.utils.book_append_sheet(wb, styleSheet(aoa2, [16, 32, 11, 9, 12, 11], []), "Consommables a acheter");
+      var d = new Date();
+      var iso = d.getFullYear() + "-" + (d.getMonth() + 1 < 10 ? "0" : "") + (d.getMonth() + 1) + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate();
+      var suffix = eq ? ("_" + String(eq.Title || eq.Code || "machine").replace(/[^a-zA-Z0-9]+/g, "-")) : "";
+      XLSX.writeFile(wb, "travaux_a_faire" + suffix + "_" + iso + ".xlsx");
+    }
+
     // Editeur de gamme (libellés modifiables, sans cases à cocher).
     // Utilisé dans PlanForm. `readOnly` désactive l'édition (non-admin).
     function GammeEditor({ items, onChange, readOnly, emptyHint }) {
@@ -2925,60 +2995,7 @@
       const handleConfirmDelete = async () => { if (toDelete) { await deleteEquipement(toDelete.Id); setToDelete(null); } };
       // Export Excel : liste de tous les travaux a faire (interventions non terminees)
       // + consommables/references a acheter (agreges depuis les gammes, croises au stock).
-      const exportTravauxExcel = function() {
-        var travaux = (interventions || []).filter(function(i) { return computeIntervStatus(i) !== "Termine"; })
-          .slice().sort(function(a, b) { return String(a.Equipement || "").localeCompare(String(b.Equipement || "")) || String(a.Date_Intervention || "").localeCompare(String(b.Date_Intervention || "")); });
-        var aoa1 = [["Machine", "Intervention", "Type", "Statut", "Date", "Gamme", "Plan"]];
-        travaux.forEach(function(i) {
-          var prog = gammeProgress(i.Gamme);
-          aoa1.push([i.Equipement || "", i.Title || "", i.Type || "", computeIntervStatus(i), i.Date_Intervention || "", prog.total > 0 ? (prog.done + "/" + prog.total) : "-", i.Plan || ""]);
-        });
-        var consoAgg = {};
-        travaux.forEach(function(i) {
-          (Array.isArray(i.Gamme) ? i.Gamme : []).forEach(function(g) {
-            if (!g) return;
-            var hasP = g.pieceType || g.pieceRef || g.pieceLabel || g.pieceCategorie;
-            if (!hasP) return;
-            var isAuto = g.pieceType === "auto-categorie";
-            var ref = "", desig = "", stock = null, key = "";
-            if (isAuto) { desig = g.pieceCategorie || "?"; key = "cat:" + desig; }
-            else if (g.pieceType === "piece" && g.pieceRef) {
-              var p = (pieces || []).find(function(x) { return String(x.Id) === String(g.pieceRef); });
-              ref = p ? (p.Reference || "") : "";
-              desig = p ? (p.Designation || p.Reference || g.pieceLabel || "?") : (g.pieceLabel || "?");
-              stock = p ? (parseFloat(p.Stock) || 0) : null;
-              key = "p:" + g.pieceRef;
-            } else { desig = g.pieceLabel || g.pieceRef || "?"; key = "c:" + desig + ":" + (g.unite || ""); }
-            var qty = parseFloat(g.quantite) || 0;
-            if (!consoAgg[key]) consoAgg[key] = { ref: ref, designation: desig, qty: 0, unite: g.unite || "u", stock: stock };
-            consoAgg[key].qty += qty;
-          });
-        });
-        var aoa2 = [["Reference", "Designation", "Qte prevue", "Unite", "Stock actuel", "A acheter"]];
-        Object.keys(consoAgg).forEach(function(k) {
-          var c = consoAgg[k];
-          var aAcheter = c.stock != null ? Math.max(0, Math.round((c.qty - c.stock) * 100) / 100) : "";
-          aoa2.push([c.ref || "", c.designation || "", Math.round(c.qty * 100) / 100, c.unite || "", c.stock != null ? c.stock : "", aAcheter]);
-        });
-        var thin = { style: "thin", color: { rgb: "B7C4D1" } };
-        var bAll = { top: thin, bottom: thin, left: thin, right: thin };
-        function styleSheet(aoa, widths) {
-          var ws = XLSX.utils.aoa_to_sheet(aoa);
-          ws["!cols"] = (widths || []).map(function(w) { return { wch: w }; });
-          ws["!rows"] = [{ hpt: 26 }];
-          var nbc = aoa[0].length;
-          for (var c = 0; c < nbc; c++) { var rf = XLSX.utils.encode_cell({ r: 0, c: c }); if (!ws[rf]) ws[rf] = { t: "s", v: "" }; ws[rf].s = { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: "2E5E8C" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: bAll }; }
-          for (var r = 1; r < aoa.length; r++) { for (var c2 = 0; c2 < nbc; c2++) { var rf2 = XLSX.utils.encode_cell({ r: r, c: c2 }); if (!ws[rf2]) ws[rf2] = { t: "s", v: "" }; ws[rf2].s = { font: { sz: 10, name: "Arial" }, alignment: { vertical: "center" }, border: bAll }; } }
-          return ws;
-        }
-        if (typeof XLSX === "undefined") { alert("Librairie Excel non chargee, reessaie dans un instant."); return; }
-        var wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, styleSheet(aoa1, [14, 30, 12, 18, 12, 9, 20]), "Travaux a faire");
-        XLSX.utils.book_append_sheet(wb, styleSheet(aoa2, [16, 32, 11, 9, 12, 11]), "Consommables a acheter");
-        var d = new Date();
-        var iso = d.getFullYear() + "-" + (d.getMonth() + 1 < 10 ? "0" : "") + (d.getMonth() + 1) + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate();
-        XLSX.writeFile(wb, "travaux_a_faire_" + iso + ".xlsx");
-      };
+      const exportTravauxExcel = function() { exporterTravauxExcel(interventions, pieces, {}); };
       const nbEngins = equipements.filter((e) => e.Categorie === "Engin").length;
       const nbVL = equipements.filter((e) => e.Categorie === "Vehicule").length;
       const tabStyle = (active) => ({ padding: "10px 20px", background: active ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: active ? "#ffffff" : "#a78bfa", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 14, border: "1px solid " + (active ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.08)"), boxShadow: active ? "0 8px 20px rgba(99,102,241,0.3), inset 0 1px 0 rgba(255,255,255,0.1)" : "none", transition: "all 0.2s", backdropFilter: active ? "none" : "blur(10px)" });
@@ -3132,6 +3149,7 @@
               _returnTo: eq
             });
           } }, h(IconText, { icon: "wrench", size: 14 }, "Nouvelle intervention")),
+          h(Button, { variant: "secondary", onClick: function() { exporterTravauxExcel(interventions, pieces, { eq: eq }); }, title: "Exporter les travaux a faire de cette machine + les consommables a acheter (Excel)" }, h(IconText, { icon: "file-down", size: 14 }, "Export (Excel)")),
           h(Button, { variant: "secondary", onClick: () => setShowReleveModal(true) }, "+ Releve H/KM")) }),
         visitesDues > 0 && h("div", { style: { background: "rgba(244, 63, 94, 0.10)", border: "1px solid rgba(244, 63, 94, 0.3)", color: "#fda4af", padding: "12px 16px", borderRadius: 10, marginBottom: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 10 } },
           h(Icon, { name: "bell-ring", size: 20, color: "#fda4af" }),
