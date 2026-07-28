@@ -19497,7 +19497,18 @@
         while (d.getMonth() === now.getMonth()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
         return jo;
       })();
-      var coutTresoMetre = (decaissTresoPeriode != null && metrageRealiseMois > 0) ? (decaissTresoPeriode / metrageRealiseMois) : null;
+      // PRORATA aux jours ouvres deja ecoules : on compare le metrage REALISE a ce jour a l'objectif
+      // cash PRORATISE au meme nombre de jours -> un mois en cours n'est plus fausse-ment rouge (ni vert).
+      var joursOuvresEcoules = (function() {
+        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
+        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        while (d.getTime() <= today.getTime()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
+        return jo;
+      })();
+      var ratioMois = joursOuvresMoisEnCours > 0 ? Math.min(1, joursOuvresEcoules / joursOuvresMoisEnCours) : 1;
+      var decaissObjectifAceJour = decaissTresoPeriode != null ? decaissTresoPeriode * ratioMois : null;
+      var seuilTresoAceJour = (decaissObjectifAceJour != null && prixMetreEffectif > 0) ? (decaissObjectifAceJour / prixMetreEffectif) : null;
+      var coutTresoMetre = (decaissObjectifAceJour != null && metrageRealiseMois > 0) ? (decaissObjectifAceJour / metrageRealiseMois) : null;
       var seuilTresoMois = (decaissTresoPeriode != null && prixMetreEffectif > 0) ? (decaissTresoPeriode / prixMetreEffectif) : null;
       var seuilTresoJour = (seuilTresoMois != null && joursOuvresMoisEnCours > 0) ? (seuilTresoMois / joursOuvresMoisEnCours) : null;
       var decaissTresoJour = (decaissTresoPeriode != null && joursOuvresMoisEnCours > 0) ? (decaissTresoPeriode / joursOuvresMoisEnCours) : null;
@@ -19874,7 +19885,8 @@
                 ) : null,
                 seuilTresoMois != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, lineHeight: 1.2, marginTop: 1 } },
                   "realise ce mois : " + Math.round(metrageRealiseMois).toLocaleString("fr-FR") + " m ",
-                  h("span", { style: { color: (metrageRealiseMois >= seuilTresoMois ? "#86efac" : "#fda4af"), fontWeight: 700 } }, metrageRealiseMois >= seuilTresoMois ? "(objectif atteint)" : "(manque " + Math.round(seuilTresoMois - metrageRealiseMois) + " m)")
+                  seuilTresoAceJour != null ? h("span", { style: { color: (metrageRealiseMois >= seuilTresoAceJour ? "#86efac" : "#fda4af"), fontWeight: 700 } }, metrageRealiseMois >= seuilTresoAceJour ? "(dans les clous)" : "(retard " + Math.round(seuilTresoAceJour - metrageRealiseMois) + " m)") : null,
+                  h("span", { style: { color: "#71717a", fontWeight: 500, marginLeft: 5 } }, "/ obj. mois " + Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m")
                 ) : null
               )
             ),
@@ -19919,7 +19931,7 @@
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = OBJECTIF = decaissement PREVISIONNEL du mois en cours (comme le previ tresorerie : max(moyenne reelle des mois clotures, theorique) ; 512 hors virements internes SG<->BCI) rapporte au METRAGE REALISE du mois en cours. Couleur = ce metrage couvre-t-il deja le cash objectif (vert oui, rouge non). Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = OBJECTIF = decaissement PREVISIONNEL du mois en cours (comme le previ tresorerie : max(moyenne reelle des mois clotures, theorique) ; 512 hors virements internes SG<->BCI) rapporte au METRAGE REALISE du mois en cours, l'objectif etant PRORATISE aux jours ouvres deja ecoules (pour comparer a armes egales un mois en cours). Couleur = le metrage tient-il le rythme de l'objectif (vert oui, rouge retard). Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
