@@ -19429,26 +19429,21 @@
       // Seuil atteint si on a fait au moins le seuil_metres OU si cout/metre < prix
       var seuilDepasse = seuilMois > 0 && totalMetresAll >= seuilMois;
 
-      // ── Version TRESO : cash reellement decaisse (512 hors virements internes SG<->BCI) ──
-      // sur la MEME periode. Permet le couple comptable (charges) vs treso (cash reel) demande.
-      var decaissTresoAll = (function() {
-        if (!periodStart || !dbEcrCompta || dbEcrCompta.length === 0) return null;
-        var ps = new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate()).getTime();
-        var peD = periodEnd || now;
-        var pe = new Date(peD.getFullYear(), peD.getMonth(), peD.getDate()).getTime() + 86400000;
+      // ── Version TRESO : MOYENNE DES DERNIERS MOIS, meme logique que le previsionnel tresorerie ──
+      // Decaissements reels = credits 512 hors virements internes 512<->512 (SG<->BCI), par ecriture.
+      // On ne garde que les MOIS FIABLES : mois entierement passes (echus) avec des ecritures 512,
+      // sur les 12 derniers mois -> moyenne mensuelle representative (cf. decaissMoyenReel du previ).
+      var tresoInfo = (function() {
+        if (!dbEcrCompta || dbEcrCompta.length === 0) return null;
         var grp = {};
         dbEcrCompta.forEach(function(e) {
           if (!e.date_ecriture) return;
-          var t = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00").getTime();
-          if (isNaN(t) || t < ps || t >= pe) return;
           var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + String(e.date_ecriture).substring(0, 10);
           if (!grp[cle]) grp[cle] = [];
           grp[cle].push(e);
         });
-        var keys = Object.keys(grp);
-        if (keys.length === 0) return null;
-        var tot = 0;
-        keys.forEach(function(cle) {
+        var decaissParMois = {};
+        Object.keys(grp).forEach(function(cle) {
           var lignes = grp[cle];
           var jc0 = String(lignes[0].journal_code || "").toUpperCase();
           var deb512 = 0, cred512 = 0;
@@ -19456,14 +19451,33 @@
             if (String(e.compte_code || "").substring(0, 3) !== "512") return;
             deb512 += parseFloat(e.debit) || 0; cred512 += parseFloat(e.credit) || 0;
           });
+          if (deb512 === 0 && cred512 === 0) return;
+          var mk = String(lignes[0].date_ecriture).substring(0, 7);
           var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
-          tot += (cred512 - circ);
+          decaissParMois[mk] = (decaissParMois[mk] || 0) + (cred512 - circ);
         });
-        return tot > 0 ? tot : null;
+        var minWindow = now.getTime() - 370 * 86400000;
+        var moisFiables = Object.keys(decaissParMois).filter(function(mk) {
+          var y = parseInt(mk.substring(0, 4)), m = parseInt(mk.substring(5, 7)) - 1;
+          var finMois = new Date(y, m + 1, 0).getTime();
+          return finMois < now.getTime() && finMois >= minWindow && decaissParMois[mk] > 0;
+        });
+        if (moisFiables.length === 0) return null;
+        var totDecaiss = moisFiables.reduce(function(s, mk) { return s + decaissParMois[mk]; }, 0);
+        // metrage sur les MEMES mois fiables
+        var metresParMois = {};
+        (rapports || []).forEach(function(r) {
+          if (!r || !r.date_rapport) return;
+          var mk = String(r.date_rapport).substring(0, 7);
+          metresParMois[mk] = (metresParMois[mk] || 0) + (parseFloat(r.total_metres) || 0);
+        });
+        var totMetres = moisFiables.reduce(function(s, mk) { return s + (metresParMois[mk] || 0); }, 0);
+        return { totDecaiss: totDecaiss, nbMois: moisFiables.length, metres: totMetres, mois: moisFiables.sort() };
       })();
-      var coutTresoMetre = (decaissTresoAll != null && totalMetresAll > 0) ? decaissTresoAll / totalMetresAll : null;
-      var seuilTresoMois = (decaissTresoAll != null && prixMetreEffectif > 0) ? decaissTresoAll / prixMetreEffectif : null;
-      var gainTresoMetre = (coutTresoMetre != null) ? prixMetreEffectif - coutTresoMetre : null;
+      var decaissTresoMensuel = tresoInfo ? (tresoInfo.totDecaiss / tresoInfo.nbMois) : null;
+      var coutTresoMetre = (tresoInfo && tresoInfo.metres > 0) ? (tresoInfo.totDecaiss / tresoInfo.metres) : null;
+      var seuilTresoMois = (decaissTresoMensuel != null && prixMetreEffectif > 0) ? (decaissTresoMensuel / prixMetreEffectif) : null;
+      var gainTresoMetre = (coutTresoMetre != null) ? (prixMetreEffectif - coutTresoMetre) : null;
       var gainTresoPct = (gainTresoMetre != null && prixMetreEffectif > 0) ? (gainTresoMetre / prixMetreEffectif) * 100 : null;
 
       // ── KPIs TEMPS REEL : ramene les couts au prorata des jours reellement travailles ──
@@ -19813,15 +19827,19 @@
               h(Icon, { name: "target", size: 18, color: "#fde68a" }),
               h("div", { style: { flex: 1 } },
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Seuil rentabilite"),
-                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a", lineHeight: 1.3 } },
+                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a", lineHeight: 1.25 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
                   Math.round(seuilMois).toLocaleString("fr-FR") + " m",
-                  h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(totalCoutsAll) + " XPF)")
+                  joursOuvres > 0 ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + seuilJour.toFixed(1) + " m/jour)") : null
                 ),
-                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.3, marginTop: 2 } },
+                h("div", { style: { fontSize: 11, color: "#fde68a", fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
+                  fmtCaCompact(totalCoutsAll) + " XPF",
+                  joursOuvres > 0 ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(totalCoutsAll / joursOuvres) + "/jour)") : null
+                ),
+                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.25, marginTop: 3 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
-                  seuilTresoMois != null ? (Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m") : "—",
-                  seuilTresoMois != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoAll) + " XPF)") : null
+                  seuilTresoMois != null ? (Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m/mois") : "—",
+                  seuilTresoMois != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoMensuel) + " XPF/mois)") : null
                 )
               )
             ),
@@ -19833,10 +19851,12 @@
                 h(Icon, { name: col.icon, size: 18, color: col.txt }),
                 h("div", { style: { flex: 1 } },
                   h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Cout au metre"),
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: col.txt, lineHeight: 1.3 } },
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: col.txt, lineHeight: 1.25 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
-                    fmtXPF(Math.round(coutParMetreGlobal)) + " /m"),
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.3, marginTop: 2 } },
+                    fmtXPF(Math.round(coutParMetreGlobal)) + " /m",
+                    h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } },
+                      seuilDepasse ? "(+" + Math.round(totalMetresAll - seuilMois) + " m)" : "(manque " + Math.round(seuilMois - totalMetresAll) + " m)")),
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.25, marginTop: 3 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                     coutTresoMetre != null ? (fmtXPF(Math.round(coutTresoMetre)) + " /m") : "—")
                 )
@@ -19864,7 +19884,7 @@
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode. TRESO = cash reellement decaisse (512 hors virements internes SG<->BCI) sur la periode. Ecart normal : la treso inclut le capital des emprunts, la compta non.")
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, (tresoInfo ? "TRESO = moyenne mensuelle sur " + tresoInfo.nbMois + " mois compta clotures (" + tresoInfo.mois[0] + " -> " + tresoInfo.mois[tresoInfo.mois.length - 1] + "). " : "TRESO indisponible (aucun mois compta cloture). ") + "COMPTA = charges (compte de resultat) sur la periode affichee ; TRESO = cash reellement decaisse (512 hors virements internes SG<->BCI). Ecart normal : la treso inclut le capital des emprunts, pas la compta.")
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
