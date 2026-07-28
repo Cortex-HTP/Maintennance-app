@@ -20303,6 +20303,19 @@
               // Chantiers EN COURS : demarrer le cursor a today
               var startCursorMs = dDeb.getTime() > now2.getTime() ? dDeb.getTime() : now2.getTime();
               var cursor = new Date(startCursorMs);
+              // Cadence objectif (chantiers SANS historique) : repartir le metrage RESTANT sur les
+              // JOURS OUVRES restants (lun-jeu) jusqu'a la fin de chantier. Avant, un facteur 4/7
+              // superflu (cumule au filtre jours ouvres de la boucle) divisait la projection par ~3.
+              var joursOuvresRestants = 0;
+              if (fallbackLineaire) {
+                var dCntF = new Date(startCursorMs); var safeCnt = 0;
+                while (dCntF.getTime() <= effectiveEnd && safeCnt < 500) {
+                  var dowCnt = dCntF.getDay();
+                  if (dowCnt >= 1 && dowCnt <= 4) joursOuvresRestants++;
+                  dCntF.setDate(dCntF.getDate() + 1); safeCnt++;
+                }
+              }
+              var cadenceObjectif = joursOuvresRestants > 0 ? (restant / joursOuvresRestants) : 0;
               var totalProj = 0, safeF = 0;
               while (cursor.getTime() <= effectiveEnd && safeF < 500 && totalProj < restant) {
                 var dow = cursor.getDay();
@@ -20310,9 +20323,8 @@
                   var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
                   var dayMet;
                   if (fallbackLineaire) {
-                    // Ratio lineaire : restant / jours ouvres restants total
-                    var dureeChantier = Math.max(1, (dFin.getTime() - dDeb.getTime()) / 86400000);
-                    dayMet = (metrage / dureeChantier) * (4/7); // approx jours ouvres
+                    // Cadence objectif = metrage restant / jours ouvres restants (repartition uniforme).
+                    dayMet = cadenceObjectif;
                   } else {
                     // Mode legacy (sans avgMachHist) : on retombe sur vitesse chantier
                     // meme quand aucune machine planifiee ce jour (utile car les plannings
