@@ -18219,7 +18219,7 @@
           var from = 0;
           while (all.length < 50000) {
             var res = await supabase.from("ecritures_compta")
-              .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
+              .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
               .in("exercice", [yearNow - 1, yearNow])
               .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
               .range(from, from + pageSize - 1);
@@ -20175,27 +20175,49 @@
             var soldeInitParamVal = soldeInitParam ? (parseFloat(soldeInitParam.valeur) || 0) : 0;
             // soldeInit et soldeSource sont determines plus bas (passe 2)
 
-            // ── Mouvements bancaires reels PASSES par mois (via 512*) ──
-            // Encaissements = debits (argent entre), Decaissements = credits (argent sort).
-            // Detection des flux de FINANCEMENT (a distinguer de l'exploitation) :
-            // remboursements d'emprunts (capital+interets) + allers-retours de tresorerie
-            // (SG MANAGEMENT / KMS). Ils gonflent la banque sans etre des ventes/charges.
+            // ── Mouvements bancaires reels PASSES par mois (via 512*), regroupes par ECRITURE ──
+            // Encaissements = debits 512 (argent entre), Decaissements = credits 512 (argent sort).
+            // 1) VIREMENTS INTERNES 512<->512 (compte a compte, ex SG 512130 <-> BCI 512160) :
+            //    une meme ecriture (journal+piece+date, hors report a nouveau) a un debit 512
+            //    ET un credit 512 -> le "circulant" (min des deux) n'est PAS un vrai flux :
+            //    retire des encaissements ET des decaissements (il s'annule au solde de toute facon).
+            // 2) FINANCEMENT (emprunts, compte courant associe type KMS) : vrai flux bancaire,
+            //    garde mais isole via le libelle de la ligne 512 (EMPRUNT / KMS).
             var estFluxFinancement = function(lib) {
               var L = String(lib || "").toUpperCase();
-              return L.indexOf("EMPRUNT") !== -1 || L.indexOf("SOCIETE GENERALE MANAGEMENT") !== -1 || L.indexOf("SG1") !== -1 || L.indexOf("KMS") !== -1;
+              return L.indexOf("EMPRUNT") !== -1 || L.indexOf("KMS") !== -1;
             };
-            var mvtsBanqueParMois = {}; // key "YYYY-MM" -> { in, out, inFin, outFin } (Fin = flux financement, inclus dans in/out)
+            var ecrituresTr = {};
             (dbEcrCompta || []).forEach(function(e) {
-              if (!e.compte_code || String(e.compte_code).substring(0,3) !== "512") return;
               if (!e.date_ecriture) return;
-              var d = new Date(String(e.date_ecriture).substring(0,10) + "T00:00:00");
-              if (isNaN(d.getTime())) return;
-              var k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-              if (!mvtsBanqueParMois[k]) mvtsBanqueParMois[k] = { in: 0, out: 0, inFin: 0, outFin: 0 };
-              var deb = parseFloat(e.debit) || 0, cred = parseFloat(e.credit) || 0;
-              mvtsBanqueParMois[k].in += deb;
-              mvtsBanqueParMois[k].out += cred;
-              if (estFluxFinancement(e.libelle)) { mvtsBanqueParMois[k].inFin += deb; mvtsBanqueParMois[k].outFin += cred; }
+              var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + String(e.date_ecriture).substring(0, 10);
+              if (!ecrituresTr[cle]) ecrituresTr[cle] = [];
+              ecrituresTr[cle].push(e);
+            });
+            var mvtsBanqueParMois = {}; // "YYYY-MM" -> { in, out, inFin, outFin, interne }
+            Object.keys(ecrituresTr).forEach(function(cle) {
+              var lignes = ecrituresTr[cle];
+              var d0 = new Date(String(lignes[0].date_ecriture).substring(0, 10) + "T00:00:00");
+              if (isNaN(d0.getTime())) return;
+              var k = d0.getFullYear() + "-" + String(d0.getMonth() + 1).padStart(2, "0");
+              var jc0 = String(lignes[0].journal_code || "").toUpperCase();
+              var deb512 = 0, cred512 = 0, estFin = false;
+              lignes.forEach(function(e) {
+                if (String(e.compte_code || "").substring(0, 3) !== "512") return;
+                deb512 += parseFloat(e.debit) || 0;
+                cred512 += parseFloat(e.credit) || 0;
+                if (estFluxFinancement(e.libelle)) estFin = true;
+              });
+              // Report a nouveau (RAN) = soldes d'ouverture, pas un virement -> ne pas neutraliser.
+              var circulant = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
+              var inReel = deb512 - circulant;
+              var outReel = cred512 - circulant;
+              if (inReel === 0 && outReel === 0 && circulant === 0) return;
+              if (!mvtsBanqueParMois[k]) mvtsBanqueParMois[k] = { in: 0, out: 0, inFin: 0, outFin: 0, interne: 0 };
+              mvtsBanqueParMois[k].in += inReel;
+              mvtsBanqueParMois[k].out += outReel;
+              mvtsBanqueParMois[k].interne += circulant;
+              if (estFin) { mvtsBanqueParMois[k].inFin += inReel; mvtsBanqueParMois[k].outFin += outReel; }
             });
 
             // ── Factures fournisseurs FUTURES : lignes 401* non lettrees ──
@@ -20453,7 +20475,7 @@
                 decaiss = mvtReel.out;
                 source = "reel";
                 caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; // pour info
-                monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, reelInFin: mvtReel.inFin || 0, reelOutFin: mvtReel.outFin || 0, caTerrain: caChantiersRealMi + caActivitesRealMi };
+                monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, reelInFin: mvtReel.inFin || 0, reelOutFin: mvtReel.outFin || 0, reelInterne: mvtReel.interne || 0, caTerrain: caChantiersRealMi + caActivitesRealMi };
               } else {
                 // Mois pas encore fiable cote compta OU mois futur : ESTIMATION
                 // ── ENCAISSEMENTS : on se cale sur le CA REEL des rapports sondeurs ──
@@ -20728,7 +20750,7 @@
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelIn - (det.reelInFin || 0)))
                                 ),
                                 det.reelInFin > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", opacity: 0.8, fontSize: 11, color: "#a5b4fc" } },
-                                  h("span", null, "dont financement (SG, KMS)"),
+                                  h("span", null, "dont financement (emprunts, associes)"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelInFin))
                                 ) : null,
                                 det.caTerrain > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", opacity: 0.7, fontSize: 11 } },
@@ -20763,8 +20785,12 @@
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.reelOut - (det.reelOutFin || 0)))
                                 ),
                                 det.reelOutFin > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", opacity: 0.8, fontSize: 11, color: "#a5b4fc" } },
-                                  h("span", null, "dont financement (emprunts, SG, KMS)"),
+                                  h("span", null, "dont financement (emprunts, associes)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.reelOutFin))
+                                ) : null,
+                                det.reelInterne > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", opacity: 0.55, fontSize: 10.5, fontStyle: "italic" } },
+                                  h("span", null, "Virements internes SG<->BCI (neutralises)"),
+                                  h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelInterne))
                                 ) : null
                               ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
