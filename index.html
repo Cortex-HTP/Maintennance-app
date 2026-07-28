@@ -19429,14 +19429,24 @@
       // Seuil atteint si on a fait au moins le seuil_metres OU si cout/metre < prix
       var seuilDepasse = seuilMois > 0 && totalMetresAll >= seuilMois;
 
-      // ── Version TRESO : le MOIS PRECEDENT cloture donne les OBJECTIFS du mois en cours ──
-      // Cash reel decaisse (512 hors virements internes SG<->BCI) du dernier mois entierement
-      // passe qui a des ecritures bancaires -> reel realise de CE mois (pas une moyenne).
-      // OBJECTIF = decaissement PREVISIONNEL du MOIS EN COURS (meme calcul que le previ tresorerie,
-      // qui projette jusqu'a fin d'annee) : max(moyenne reelle des mois clotures, theorique).
+      // ── Version TRESO : MIROIR du COMPTA (meme periode affichee, meme metrage totalMetresAll,
+      // memes jours ouvres joursOuvres) mais avec le CASH au lieu des charges. Decaissement sur la
+      // periode = somme MOIS PAR MOIS : REEL 512 (hors virements internes SG<->BCI) pour les mois
+      // CLOTURES, sinon OBJECTIF previsionnel (max moyenne reelle / theorique), le mois EN COURS
+      // etant prorata aux jours ouvres deja ecoules -> mois complet et mois en cours comparables.
+      var joursOuvresMoisEnCours = (function() {
+        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
+        while (d.getMonth() === now.getMonth()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
+        return jo;
+      })();
+      var joursOuvresEcoules = (function() {
+        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        while (d.getTime() <= today.getTime()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
+        return jo;
+      })();
+      var ratioMois = joursOuvresMoisEnCours > 0 ? Math.min(1, joursOuvresEcoules / joursOuvresMoisEnCours) : 1;
       var decaissTresoPeriode = (function() {
-        if (!dbEcrCompta || dbEcrCompta.length === 0) return null;
-        // (a) moyenne mensuelle reelle (512 hors virements internes) sur les mois clotures de l'annee
+        if (!periodStart || !dbEcrCompta || dbEcrCompta.length === 0) return null;
         var grp = {};
         dbEcrCompta.forEach(function(e) {
           if (!e.date_ecriture) return;
@@ -19444,7 +19454,7 @@
           if (!grp[cle]) grp[cle] = [];
           grp[cle].push(e);
         });
-        var decaissParMois = {};
+        var reelParMois = {};
         Object.keys(grp).forEach(function(cle) {
           var lignes = grp[cle];
           var jc0 = String(lignes[0].journal_code || "").toUpperCase();
@@ -19456,62 +19466,48 @@
           if (deb512 === 0 && cred512 === 0) return;
           var mkk = String(lignes[0].date_ecriture).substring(0, 7);
           var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
-          decaissParMois[mkk] = (decaissParMois[mkk] || 0) + (cred512 - circ);
+          reelParMois[mkk] = (reelParMois[mkk] || 0) + (cred512 - circ);
         });
-        var curY = now.getFullYear();
-        var moisFiables = Object.keys(decaissParMois).filter(function(mkk) {
-          var y = parseInt(mkk.substring(0, 4)), m = parseInt(mkk.substring(5, 7)) - 1;
-          return y === curY && new Date(y, m + 1, 0).getTime() < now.getTime() && decaissParMois[mkk] > 0;
-        });
-        var decaissMoyenReel = moisFiables.length > 0 ? (moisFiables.reduce(function(s, mkk) { return s + decaissParMois[mkk]; }, 0) / moisFiables.length) : null;
-        // (b) theorique = salaires x1.4 + charges fixes structure + emprunts + fournisseurs 401 (echeance ce mois)
-        var mkNow = curY + "-" + String(now.getMonth() + 1).padStart(2, "0");
-        var factFrsMi = 0;
+        var factFrsParMois = {};
         dbEcrCompta.forEach(function(e) {
           if (!e.compte_code || String(e.compte_code).substring(0, 3) !== "401" || e.lettrage || !e.date_ecriture) return;
           var d0 = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
           if (isNaN(d0.getTime())) return;
           var ech = new Date(d0.getTime() + 30 * 86400000);
-          if (ech.getTime() < now.getTime()) return;
-          if ((ech.getFullYear() + "-" + String(ech.getMonth() + 1).padStart(2, "0")) !== mkNow) return;
           var mtNet = (parseFloat(e.credit) || 0) - (parseFloat(e.debit) || 0);
-          if (mtNet > 0) factFrsMi += mtNet;
+          if (mtNet <= 0) return;
+          var mke = ech.getFullYear() + "-" + String(ech.getMonth() + 1).padStart(2, "0");
+          factFrsParMois[mke] = (factFrsParMois[mke] || 0) + mtNet;
         });
-        var salairesMens = (masseSalarialeMensuelle || 0) * 1.40;
-        var chargesFixesMens = (fgInfo && fgInfo.aDonnees) ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles;
-        var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
-        var decaissTheorique = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
-        var objectif = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheorique) : decaissTheorique;
-        return objectif > 0 ? objectif : null;
-      })(); // objectif cash previsionnel du mois en cours
-      var metrageRealiseMois = (function() {
-        var mkNow = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
-        var tot = 0;
-        (rapports || []).forEach(function(r) {
-          if (r && r.date_rapport && String(r.date_rapport).substring(0, 7) === mkNow) tot += parseFloat(r.total_metres) || 0;
+        var curY = now.getFullYear();
+        var moisFiables = Object.keys(reelParMois).filter(function(mkk) {
+          var y = parseInt(mkk.substring(0, 4)), m = parseInt(mkk.substring(5, 7)) - 1;
+          return y === curY && new Date(y, m + 1, 0).getTime() < now.getTime() && reelParMois[mkk] > 0;
         });
-        return tot;
+        var decaissMoyenReel = moisFiables.length > 0 ? (moisFiables.reduce(function(s, mkk) { return s + reelParMois[mkk]; }, 0) / moisFiables.length) : 0;
+        var baseTheo = (masseSalarialeMensuelle || 0) * 1.40 + ((fgInfo && fgInfo.aDonnees) ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles) + (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+        var mkNow = curY + "-" + String(now.getMonth() + 1).padStart(2, "0");
+        var pEndRef = periodEnd || now;
+        var total = 0, any = false, cur = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1), lastM = new Date(pEndRef.getFullYear(), pEndRef.getMonth(), 1).getTime(), safe = 0;
+        while (cur.getTime() <= lastM && safe < 36) {
+          var mkk = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0");
+          var finMois = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getTime();
+          var val;
+          if (finMois < now.getTime() && reelParMois[mkk] > 0) {
+            val = reelParMois[mkk]; // mois cloture avec compta -> reel decaisse
+          } else {
+            val = Math.max(decaissMoyenReel, baseTheo + (factFrsParMois[mkk] || 0)); // objectif previsionnel
+            if (mkk === mkNow) val *= ratioMois; // mois en cours -> prorata jours ouvres ecoules
+          }
+          if (val > 0) { total += val; any = true; }
+          cur.setMonth(cur.getMonth() + 1); safe++;
+        }
+        return any && total > 0 ? total : null;
       })();
-      var joursOuvresMoisEnCours = (function() {
-        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
-        while (d.getMonth() === now.getMonth()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
-        return jo;
-      })();
-      // PRORATA aux jours ouvres deja ecoules : on compare le metrage REALISE a ce jour a l'objectif
-      // cash PRORATISE au meme nombre de jours -> un mois en cours n'est plus fausse-ment rouge (ni vert).
-      var joursOuvresEcoules = (function() {
-        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
-        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        while (d.getTime() <= today.getTime()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
-        return jo;
-      })();
-      var ratioMois = joursOuvresMoisEnCours > 0 ? Math.min(1, joursOuvresEcoules / joursOuvresMoisEnCours) : 1;
-      var decaissObjectifAceJour = decaissTresoPeriode != null ? decaissTresoPeriode * ratioMois : null;
-      var seuilTresoAceJour = (decaissObjectifAceJour != null && prixMetreEffectif > 0) ? (decaissObjectifAceJour / prixMetreEffectif) : null;
-      var coutTresoMetre = (decaissObjectifAceJour != null && metrageRealiseMois > 0) ? (decaissObjectifAceJour / metrageRealiseMois) : null;
+      var coutTresoMetre = (decaissTresoPeriode != null && totalMetresAll > 0) ? (decaissTresoPeriode / totalMetresAll) : null;
       var seuilTresoMois = (decaissTresoPeriode != null && prixMetreEffectif > 0) ? (decaissTresoPeriode / prixMetreEffectif) : null;
-      var seuilTresoJour = (seuilTresoMois != null && joursOuvresMoisEnCours > 0) ? (seuilTresoMois / joursOuvresMoisEnCours) : null;
-      var decaissTresoJour = (decaissTresoPeriode != null && joursOuvresMoisEnCours > 0) ? (decaissTresoPeriode / joursOuvresMoisEnCours) : null;
+      var seuilTresoJour = (seuilTresoMois != null && joursOuvres > 0) ? (seuilTresoMois / joursOuvres) : null;
+      var decaissTresoJour = (decaissTresoPeriode != null && joursOuvres > 0) ? (decaissTresoPeriode / joursOuvres) : null;
       var gainTresoMetre = (coutTresoMetre != null) ? (prixMetreEffectif - coutTresoMetre) : null;
       var gainTresoPct = (gainTresoMetre != null && prixMetreEffectif > 0) ? (gainTresoMetre / prixMetreEffectif) * 100 : null;
       // Couleur verdict TRESO : vert = rentable (marge >= 5%), jaune = a peine rentable /
@@ -19882,11 +19878,6 @@
                 seuilTresoMois != null ? h("div", { style: { fontSize: 11, color: tresoColor, fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
                   fmtCaCompact(decaissTresoPeriode) + " XPF",
                   decaissTresoJour != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoJour) + "/jour)") : null
-                ) : null,
-                seuilTresoMois != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, lineHeight: 1.2, marginTop: 1 } },
-                  "realise ce mois : " + Math.round(metrageRealiseMois).toLocaleString("fr-FR") + " m ",
-                  seuilTresoAceJour != null ? h("span", { style: { color: (metrageRealiseMois >= seuilTresoAceJour ? "#86efac" : "#fda4af"), fontWeight: 700 } }, metrageRealiseMois >= seuilTresoAceJour ? "(dans les clous)" : "(retard " + Math.round(seuilTresoAceJour - metrageRealiseMois) + " m)") : null,
-                  h("span", { style: { color: "#71717a", fontWeight: 500, marginLeft: 5 } }, "/ obj. mois " + Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m")
                 ) : null
               )
             ),
@@ -19931,7 +19922,7 @@
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = OBJECTIF = decaissement PREVISIONNEL du mois en cours (comme le previ tresorerie : max(moyenne reelle des mois clotures, theorique) ; 512 hors virements internes SG<->BCI) rapporte au METRAGE REALISE du mois en cours, l'objectif etant PRORATISE aux jours ouvres deja ecoules (pour comparer a armes egales un mois en cours). Couleur = le metrage tient-il le rythme de l'objectif (vert oui, rouge retard). Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = cash decaisse sur la MEME periode et le MEME metrage (512 hors virements internes SG<->BCI) : reel pour les mois CLOTURES, objectif previsionnel (max moyenne reelle / theorique) pour le mois en cours (prorata aux jours ouvres ecoules). Un mois complet et un mois en cours sont donc comparables. Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
