@@ -19474,7 +19474,19 @@
           metresParMois[mk] = (metresParMois[mk] || 0) + (parseFloat(r.total_metres) || 0);
         });
         var totMetres = moisFiables.reduce(function(s, mk) { return s + (metresParMois[mk] || 0); }, 0);
-        return { totDecaiss: totDecaiss, nbMois: moisFiables.length, metres: totMetres, mois: moisFiables.sort() };
+        // Jours ouvres (Lun-Ven, comme la version compta) moyens par mois fiable -> pour le "/jour"
+        var joursOuvresTot = 0;
+        moisFiables.forEach(function(mk) {
+          var y = parseInt(mk.substring(0, 4)), m = parseInt(mk.substring(5, 7)) - 1;
+          var d = new Date(y, m, 1);
+          while (d.getMonth() === m) {
+            var dow = d.getDay();
+            if (dow >= 1 && dow <= 5) joursOuvresTot++;
+            d.setDate(d.getDate() + 1);
+          }
+        });
+        var joursOuvresMois = moisFiables.length > 0 ? joursOuvresTot / moisFiables.length : 0;
+        return { totDecaiss: totDecaiss, nbMois: moisFiables.length, metres: totMetres, mois: moisFiables.sort(), joursOuvresMois: joursOuvresMois };
       })();
       var decaissTresoMensuel = tresoInfo ? (tresoInfo.totDecaiss / tresoInfo.nbMois) : null;
       var coutTresoMetre = (tresoInfo && tresoInfo.metres > 0) ? (tresoInfo.totDecaiss / tresoInfo.metres) : null;
@@ -19484,6 +19496,8 @@
       // Couleur verdict TRESO : vert = rentable (marge >= 5%), jaune = a peine rentable /
       // legerement negative (-5% a 5%), rouge = pas rentable (marge < -5%).
       var tresoColor = gainTresoPct == null ? "#67e8f9" : (gainTresoPct >= 5 ? "#86efac" : (gainTresoPct >= -5 ? "#fcd34d" : "#fda4af"));
+      var seuilTresoJour = (seuilTresoMois != null && tresoInfo && tresoInfo.joursOuvresMois > 0) ? (seuilTresoMois / tresoInfo.joursOuvresMois) : null;
+      var decaissTresoJour = (decaissTresoMensuel != null && tresoInfo && tresoInfo.joursOuvresMois > 0) ? (decaissTresoMensuel / tresoInfo.joursOuvresMois) : null;
 
       // ── KPIs TEMPS REEL : ramene les couts au prorata des jours reellement travailles ──
       // Modele : si la machine a tourne 2 j sur 18 jours ouvres, elle a "consomme" 2/18 du
@@ -19843,9 +19857,13 @@
                 ),
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
-                  seuilTresoMois != null ? (Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m/mois") : "—",
-                  seuilTresoMois != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoMensuel) + " XPF/mois)") : null
-                )
+                  seuilTresoMois != null ? Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m" : "—",
+                  seuilTresoJour != null ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + seuilTresoJour.toFixed(1) + " m/jour)") : null
+                ),
+                seuilTresoMois != null ? h("div", { style: { fontSize: 11, color: tresoColor, fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
+                  fmtCaCompact(decaissTresoMensuel) + " XPF",
+                  decaissTresoJour != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoJour) + "/jour)") : null
+                ) : null
               )
             ),
             // Cout au metre (compact, colorise)
