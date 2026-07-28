@@ -20449,6 +20449,20 @@
             var decaissMoyenReel = nbMoisReel > 0 ? (totalOutReel / nbMoisReel) : null;
 
             // ── PASSE 1 : calcul des nets mensuels (encaiss - decaiss) sans solde cumule ──
+            // Valeur des TRAVAUX par mois (rapports reels si dispo, sinon forecast chantiers/machines).
+            // Sert au DECALAGE d'encaissement : le cash d'un mois = les travaux du mois precedent (~30j fin de mois).
+            var caTravailChParMois = new Array(12).fill(0);
+            var caTravailAcParMois = new Array(12).fill(0);
+            for (var mt = 0; mt < 12; mt++) {
+              var dMtEnd = new Date(currentYear, mt + 1, 0);
+              var estPasseMt = dMtEnd < now2;
+              var estCourantMt = mt === now2.getMonth();
+              var realChMt = caChantiersRealiseParMois[mt] || 0;
+              var realAcMt = caActivitesRealiseParMois[mt] || 0;
+              if (estPasseMt) { caTravailChParMois[mt] = realChMt; caTravailAcParMois[mt] = realAcMt; }
+              else if (estCourantMt) { caTravailChParMois[mt] = realChMt + (caChantiersParMois[mt] || 0); caTravailAcParMois[mt] = Math.max(realAcMt, caActivitesMens); }
+              else { caTravailChParMois[mt] = caChantiersParMois[mt] || 0; caTravailAcParMois[mt] = caActivitesMens; }
+            }
             var trMoisRaw = [];
             for (var mi2 = 0; mi2 < 12; mi2++) {
               var dM = new Date(currentYear, mi2, 1);
@@ -20482,10 +20496,16 @@
                 //   Passe : CA facture reel (rapports du mois)
                 //   Courant : reel du mois (1er->aujourd'hui via rapports) + forecast (aujourd'hui->fin)
                 //   Futur : forecast pur (planning chantiers/machines)
-                if (estPasse) { caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; }
-                else if (estCourant) { caChantiersMi = caChantiersRealMi + caChantiersForecastMi; caActivitesMi = Math.max(caActivitesRealMi, caActivitesMens); }
-                else { caChantiersMi = caChantiersForecastMi; caActivitesMi = caActivitesMens; }
-                // Encaissements = CA reel/forecast EXACT (pas de moyenne : on sait ce qu'on facture)
+                // Encaissements = TRAVAUX du mois PRECEDENT (delai de paiement client ~30j fin de mois).
+                // Ex : forage de juin -> encaisse en juillet. Source = rapports reels sinon forecast.
+                var moisTravailEnc = mi2 - 1;
+                if (moisTravailEnc >= 0) {
+                  caChantiersMi = caTravailChParMois[moisTravailEnc];
+                  caActivitesMi = caTravailAcParMois[moisTravailEnc];
+                } else {
+                  // Janvier : travaux de decembre N-1 hors perimetre -> pas d'estimation d'encaissement
+                  caChantiersMi = 0; caActivitesMi = 0;
+                }
                 encaiss = caChantiersMi + caActivitesMi;
                 // ── DECAISSEMENTS : on ne projette jamais MOINS que le rythme reel observe ──
                 //   La moyenne reelle des mois deja saisis (hors virements internes) est le
@@ -20760,6 +20780,7 @@
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caTerrain))
                                 ) : null
                               ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
+                                h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginBottom: 4 } }, "Travaux du mois precedent (encaisses ~30j apres, fin de mois)"),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
                                   h("span", null, "CA chantiers " + (x.estPasse ? "(rapports sondeurs)" : x.estCourant ? "(rapports + prev)" : "(prev jour x jour)")),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caChantiers))
