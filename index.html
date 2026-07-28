@@ -19456,11 +19456,13 @@
           var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
           decaissParMois[mk] = (decaissParMois[mk] || 0) + (cred512 - circ);
         });
-        var minWindow = now.getTime() - 370 * 86400000;
+        // Mois fiables = MEME definition que le previsionnel tresorerie : mois de l'annee
+        // courante, entierement echus, avec des ecritures 512 -> reflete decaissMoyenReel.
+        var curYear = now.getFullYear();
         var moisFiables = Object.keys(decaissParMois).filter(function(mk) {
           var y = parseInt(mk.substring(0, 4)), m = parseInt(mk.substring(5, 7)) - 1;
           var finMois = new Date(y, m + 1, 0).getTime();
-          return finMois < now.getTime() && finMois >= minWindow && decaissParMois[mk] > 0;
+          return y === curYear && finMois < now.getTime() && decaissParMois[mk] > 0;
         });
         if (moisFiables.length === 0) return null;
         var totDecaiss = moisFiables.reduce(function(s, mk) { return s + decaissParMois[mk]; }, 0);
@@ -19479,6 +19481,9 @@
       var seuilTresoMois = (decaissTresoMensuel != null && prixMetreEffectif > 0) ? (decaissTresoMensuel / prixMetreEffectif) : null;
       var gainTresoMetre = (coutTresoMetre != null) ? (prixMetreEffectif - coutTresoMetre) : null;
       var gainTresoPct = (gainTresoMetre != null && prixMetreEffectif > 0) ? (gainTresoMetre / prixMetreEffectif) * 100 : null;
+      // Couleur verdict TRESO : vert = rentable (marge >= 5%), jaune = a peine rentable /
+      // legerement negative (-5% a 5%), rouge = pas rentable (marge < -5%).
+      var tresoColor = gainTresoPct == null ? "#67e8f9" : (gainTresoPct >= 5 ? "#86efac" : (gainTresoPct >= -5 ? "#fcd34d" : "#fda4af"));
 
       // ── KPIs TEMPS REEL : ramene les couts au prorata des jours reellement travailles ──
       // Modele : si la machine a tourne 2 j sur 18 jours ouvres, elle a "consomme" 2/18 du
@@ -19836,7 +19841,7 @@
                   fmtCaCompact(totalCoutsAll) + " XPF",
                   joursOuvres > 0 ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(totalCoutsAll / joursOuvres) + "/jour)") : null
                 ),
-                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.25, marginTop: 3 } },
+                h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                   seuilTresoMois != null ? (Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m/mois") : "—",
                   seuilTresoMois != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoMensuel) + " XPF/mois)") : null
@@ -19856,7 +19861,7 @@
                     fmtXPF(Math.round(coutParMetreGlobal)) + " /m",
                     h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } },
                       seuilDepasse ? "(+" + Math.round(totalMetresAll - seuilMois) + " m)" : "(manque " + Math.round(seuilMois - totalMetresAll) + " m)")),
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.25, marginTop: 3 } },
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                     coutTresoMetre != null ? (fmtXPF(Math.round(coutTresoMetre)) + " /m") : "—")
                 )
@@ -19877,7 +19882,7 @@
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
                     (positif ? "+" : "") + fmtXPF(Math.round(gainMetre)) + " /m",
                     h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + (positif ? "+" : "") + margePct.toFixed(1) + "%)")),
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: "#67e8f9", lineHeight: 1.3, marginTop: 2 } },
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.3, marginTop: 2 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                     gainTresoMetre != null ? ((gainTresoMetre >= 0 ? "+" : "") + fmtXPF(Math.round(gainTresoMetre)) + " /m") : "—",
                     gainTresoPct != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + (gainTresoPct >= 0 ? "+" : "") + gainTresoPct.toFixed(1) + "%)") : null)
