@@ -19471,11 +19471,26 @@
         while (d.getMonth() === m) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
         return { decaiss: decaissParMois[mk], metres: metres, joursOuvres: jo, mk: mk };
       })();
-      var decaissTresoPeriode = tresoMoisPrec ? tresoMoisPrec.decaiss : null;
-      var coutTresoMetre = (tresoMoisPrec && tresoMoisPrec.metres > 0) ? (tresoMoisPrec.decaiss / tresoMoisPrec.metres) : null;
-      var seuilTresoMois = (tresoMoisPrec && prixMetreEffectif > 0) ? (tresoMoisPrec.decaiss / prixMetreEffectif) : null;
-      var seuilTresoJour = (seuilTresoMois != null && tresoMoisPrec && tresoMoisPrec.joursOuvres > 0) ? (seuilTresoMois / tresoMoisPrec.joursOuvres) : null;
-      var decaissTresoJour = (tresoMoisPrec && tresoMoisPrec.joursOuvres > 0) ? (tresoMoisPrec.decaiss / tresoMoisPrec.joursOuvres) : null;
+      // OBJECTIF = cash decaisse du mois precedent cloture (mois -1) ; REALISE = metrage du MOIS EN COURS.
+      // coutTreso/m et gainTreso/m = cash(mois-1) rapporte au metrage reellement fait ce mois-ci.
+      var decaissTresoPeriode = tresoMoisPrec ? tresoMoisPrec.decaiss : null; // objectif cash (mois -1)
+      var metrageRealiseMois = (function() {
+        var mkNow = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+        var tot = 0;
+        (rapports || []).forEach(function(r) {
+          if (r && r.date_rapport && String(r.date_rapport).substring(0, 7) === mkNow) tot += parseFloat(r.total_metres) || 0;
+        });
+        return tot;
+      })();
+      var joursOuvresMoisEnCours = (function() {
+        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
+        while (d.getMonth() === now.getMonth()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
+        return jo;
+      })();
+      var coutTresoMetre = (decaissTresoPeriode != null && metrageRealiseMois > 0) ? (decaissTresoPeriode / metrageRealiseMois) : null;
+      var seuilTresoMois = (decaissTresoPeriode != null && prixMetreEffectif > 0) ? (decaissTresoPeriode / prixMetreEffectif) : null;
+      var seuilTresoJour = (seuilTresoMois != null && joursOuvresMoisEnCours > 0) ? (seuilTresoMois / joursOuvresMoisEnCours) : null;
+      var decaissTresoJour = (decaissTresoPeriode != null && joursOuvresMoisEnCours > 0) ? (decaissTresoPeriode / joursOuvresMoisEnCours) : null;
       var gainTresoMetre = (coutTresoMetre != null) ? (prixMetreEffectif - coutTresoMetre) : null;
       var gainTresoPct = (gainTresoMetre != null && prixMetreEffectif > 0) ? (gainTresoMetre / prixMetreEffectif) * 100 : null;
       // Couleur verdict TRESO : vert = rentable (marge >= 5%), jaune = a peine rentable /
@@ -19847,6 +19862,10 @@
                 seuilTresoMois != null ? h("div", { style: { fontSize: 11, color: tresoColor, fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
                   fmtCaCompact(decaissTresoPeriode) + " XPF",
                   decaissTresoJour != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoJour) + "/jour)") : null
+                ) : null,
+                seuilTresoMois != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, lineHeight: 1.2, marginTop: 1 } },
+                  "realise ce mois : " + Math.round(metrageRealiseMois).toLocaleString("fr-FR") + " m ",
+                  h("span", { style: { color: (metrageRealiseMois >= seuilTresoMois ? "#86efac" : "#fda4af"), fontWeight: 700 } }, metrageRealiseMois >= seuilTresoMois ? "(objectif atteint)" : "(manque " + Math.round(seuilTresoMois - metrageRealiseMois) + " m)")
                 ) : null
               )
             ),
@@ -19891,7 +19910,7 @@
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = OBJECTIF du mois en cours = reel realise (cash decaisse, 512 hors virements internes SG<->BCI) du dernier mois cloture" + (tresoMoisPrecLabel ? " (" + tresoMoisPrecLabel + ")" : " (indisponible : aucun mois compta cloture -> reimporter le FEC)") + ". Ecart normal : la treso inclut le capital des emprunts, pas la compta.")
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = OBJECTIF (cash decaisse du dernier mois cloture" + (tresoMoisPrecLabel ? " " + tresoMoisPrecLabel : "") + ", 512 hors virements internes SG<->BCI) rapporte au METRAGE REALISE du mois en cours. Couleur = ce metrage couvre-t-il le cash objectif (vert oui, rouge non). Ecart compta/treso normal : la treso inclut le capital des emprunts." + (tresoMoisPrecLabel ? "" : " TRESO indisponible : aucun mois compta cloture -> reimporter le FEC."))
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
