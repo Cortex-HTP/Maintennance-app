@@ -29201,7 +29201,15 @@
         supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
         const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
           if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
-          setSession(sess);
+          // Ne re-render l'app QUE si l'utilisateur change (login/logout), PAS a chaque refresh
+          // de token / retour d'onglet : sinon tous les effets [session] (realtime, fetch) se
+          // relancent -> "rechargement" permanent. Les appels API lisent un token frais via
+          // getSession()/refreshSession(), donc figer ce state ne casse rien.
+          setSession(function(prev) {
+            var prevId = prev && prev.user ? prev.user.id : null;
+            var newId = sess && sess.user ? sess.user.id : null;
+            return prevId === newId ? prev : sess;
+          });
         });
         return () => sub.subscription.unsubscribe();
       }, []);
