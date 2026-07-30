@@ -22034,6 +22034,8 @@
       var _filtLieuRap = useState("__all__"); var filtLieuRap = _filtLieuRap[0]; var setFiltLieuRap = _filtLieuRap[1];
       var _filtChantierRap = useState("__all__"); var filtChantierRap = _filtChantierRap[0]; var setFiltChantierRap = _filtChantierRap[1];
       var _filtEmployeRap = useState("__all__"); var filtEmployeRap = _filtEmployeRap[0]; var setFiltEmployeRap = _filtEmployeRap[1];
+      // Filtre employe pour la vue liste des Releves d'heures (par ligne : personnel_id)
+      var _filtEmployeRel = useState("__all__"); var filtEmployeRel = _filtEmployeRel[0]; var setFiltEmployeRel = _filtEmployeRel[1];
       var _refresh = useState(0);     var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
       var _editingRapportId = useState(null); var editingRapportId = _editingRapportId[0]; var setEditingRapportId = _editingRapportId[1];
       var _editingReleve = useState(null); var editingReleve = _editingReleve[0]; var setEditingReleve = _editingReleve[1];
@@ -22146,7 +22148,10 @@
       // ── Chargement des 4 tables ──
       useEffect(function() {
         var cancelled = false;
-        setLoading(true);
+        // Spinner UNIQUEMENT au tout premier chargement de l'ecran. Les refresh suivants
+        // (realtime + filet de securite) sont SILENCIEUX : la liste se met a jour en place,
+        // sans repasser par l'ecran "Chargement..." (source du "rechargement" visible).
+        if (refreshFlag === 0) setLoading(true);
         // Cols light : on exclut les signatures base64 (lourdes) du fetch en boucle.
         // Elles sont charges a la demande quand l'utilisateur expand une ligne (cf. fetchSignatures()).
         // statut + valide_at sont des colonnes ajoutees post-deploiement par migration SQL.
@@ -22252,11 +22257,33 @@
         setExpanded(isExp ? null : key);
       };
 
-      // ── Auto-refresh toutes les 60 secondes (pause pendant l'edition d'un rapport) ──
+      // ── Realtime + filet de securite (en pause pendant l'edition d'un rapport) ──
+      // Realtime : des qu'une des tables surveillees change (nouveau rapport, releve,
+      // demande...), on rafraichit SILENCIEUSEMENT (setLoading gate ci-dessus). Plus besoin
+      // d'attendre le poll : l'ecran est live. Le filet 2 min couvre une eventuelle
+      // coupure de la connexion realtime.
       useEffect(function() {
         if (editingRapportId != null) return; // pas de refresh pendant l'edition
-        var timer = setInterval(function() { setRefreshFlag(function(f) { return f + 1; }); }, 60000);
-        return function() { clearInterval(timer); };
+        var pending = null;
+        var bump = function() {
+          if (pending) return;
+          pending = setTimeout(function() { pending = null; setRefreshFlag(function(f) { return f + 1; }); }, 400);
+        };
+        var tables = ["releves_heures", "demandes_conge", "bons_commande", "demandes_intervention", "rapports_forage", "consommations_carburant", "commandes_materiel_mec"];
+        var channel = null;
+        try {
+          channel = supabase.channel("soumissions_live");
+          tables.forEach(function(tbl) {
+            channel.on("postgres_changes", { event: "*", schema: "public", table: tbl }, bump);
+          });
+          channel.subscribe();
+        } catch (e) { console.warn("[soumissions realtime]", e); }
+        var timer = setInterval(function() { setRefreshFlag(function(f) { return f + 1; }); }, 120000);
+        return function() {
+          if (pending) clearTimeout(pending);
+          clearInterval(timer);
+          if (channel) { try { supabase.removeChannel(channel); } catch (e) {} }
+        };
       }, [editingRapportId]);
 
       // ── Helpers UI ──
@@ -22722,6 +22749,10 @@
         //  2) Si pas de rapport : la ligne dont fonction = "Sondeur" (regle metier post-migration)
         //  3) Fallback : 1er releve par id du groupe
         var rawList = applyFilter(rels);
+        // Filtre employe (par ligne : personnel_id) pour voir individuellement ce qu'un gars a fait
+        if (filtEmployeRel !== "__all__") {
+          rawList = rawList.filter(function(r) { return String(personnelLabel(r.personnel_id) || "").toUpperCase().trim() === filtEmployeRel; });
+        }
         var responsableByGroup = {}; // key = "date|sondeuse_code" -> personnel_id
         // 1) Index des rapports par (date, sondeuse)
         var rapByGroup = {};
@@ -24608,6 +24639,18 @@
                   h("select", { value: filtChantierRap, onChange: function(e) { setFiltChantierRap(e.target.value); }, style: selStyle }, optList("Tous chantiers", chantierIds, function(cid) { return chantierLabel(parseInt(cid, 10)) || ("#" + cid); })),
                   h("select", { value: filtEmployeRap, onChange: function(e) { setFiltEmployeRap(e.target.value); }, style: selStyle }, optList("Tous employes", employes)),
                   anyActive ? h("button", { onClick: function() { setFiltMachineRap("__all__"); setFiltLieuRap("__all__"); setFiltChantierRap("__all__"); setFiltEmployeRap("__all__"); }, style: { padding: "5px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700, border: "1px solid rgba(244,63,94,0.35)", background: "rgba(244,63,94,0.12)", color: "#fda4af", cursor: "pointer" } }, "Reinitialiser") : null
+                );
+              }()) : null,
+              // Filtre employe pour la vue liste des Releves d'heures
+              (tab === "soumissions_releves" && relevesView === "liste") ? (function() {
+                var uniqSort = function(arr) { var seen = {}, out = []; arr.forEach(function(v) { if (v && !seen[v]) { seen[v] = 1; out.push(v); } }); return out.sort(); };
+                var employesRel = uniqSort((rels || []).map(function(r) { return String(personnelLabel(r.personnel_id) || "").toUpperCase().trim(); }));
+                var selStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "5px 9px", color: "#e5e7eb", fontSize: 11.5, fontFamily: "inherit", cursor: "pointer", maxWidth: 200 };
+                return h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" } },
+                  h("select", { value: filtEmployeRel, onChange: function(e) { setFiltEmployeRel(e.target.value); }, style: selStyle },
+                    [h("option", { key: "__all__", value: "__all__" }, "Tous employes")].concat(employesRel.map(function(v) { return h("option", { key: v, value: v }, v); }))
+                  ),
+                  filtEmployeRel !== "__all__" ? h("button", { onClick: function() { setFiltEmployeRel("__all__"); }, style: { padding: "5px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700, border: "1px solid rgba(244,63,94,0.35)", background: "rgba(244,63,94,0.12)", color: "#fda4af", cursor: "pointer" } }, "Reinitialiser") : null
                 );
               }()) : null
             )
@@ -29563,7 +29606,17 @@
         }
         fetchCounts();
         var timer = setInterval(fetchCounts, 60000);
-        return () => clearInterval(timer);
+        // Realtime : le badge sidebar se met a jour instantanement des qu'une soumission
+        // arrive/change (plus besoin d'attendre le poll 60s). Le poll reste en filet.
+        var channel = null;
+        try {
+          channel = supabase.channel("counts_badges_live");
+          ["releves_heures", "demandes_intervention", "bons_commande", "demandes_conge", "rapports_forage", "pieces"].forEach(function(tbl) {
+            channel.on("postgres_changes", { event: "*", schema: "public", table: tbl }, function() { fetchCounts(); });
+          });
+          channel.subscribe();
+        } catch (e) { console.warn("[counts realtime]", e); }
+        return () => { clearInterval(timer); if (channel) { try { supabase.removeChannel(channel); } catch (e) {} } };
       }, [session]);
 
       // ── Fetch leger releves_heures pour la fenetre [1er juin -> hier]
@@ -29584,7 +29637,14 @@
         }
         fetchRecent();
         var t = setInterval(fetchRecent, 60000);
-        return function() { clearInterval(t); };
+        // Realtime : recalcul des alertes saisies des qu'un releve d'heures bouge.
+        var channel = null;
+        try {
+          channel = supabase.channel("recent_relheures_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "releves_heures" }, function() { fetchRecent(); })
+            .subscribe();
+        } catch (e) { console.warn("[recent relheures realtime]", e); }
+        return function() { clearInterval(t); if (channel) { try { supabase.removeChannel(channel); } catch (e) {} } };
       }, [session]);
 
       // ── Calcul memo des alertes de saisies manquantes ──
@@ -30206,7 +30266,13 @@
         }
         refresh();
         var tid = setInterval(refresh, 60000);
-        return function() { stop = true; clearInterval(tid); };
+        var channel = null;
+        try {
+          channel = supabase.channel("rh_signatures_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "rh_documents" }, function() { refresh(); })
+            .subscribe();
+        } catch (e) { console.warn("[rh-signatures realtime]", e); }
+        return function() { stop = true; clearInterval(tid); if (channel) { try { supabase.removeChannel(channel); } catch (e) {} } };
       }, [session, isRH, parametres]);
       // ── Compta : factures en attente de validation (poll 60s) ─────────
       useEffect(function() {
@@ -30221,7 +30287,13 @@
         }
         refresh();
         var tid = setInterval(refresh, 60000);
-        return function() { stop = true; clearInterval(tid); };
+        var channel = null;
+        try {
+          channel = supabase.channel("compta_pending_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "factures_compta" }, function() { refresh(); })
+            .subscribe();
+        } catch (e) { console.warn("[compta-pending realtime]", e); }
+        return function() { stop = true; clearInterval(tid); if (channel) { try { supabase.removeChannel(channel); } catch (e) {} } };
       }, [session]);
 
       // ── Tickets support : count des tickets non resolus (poll 30s + realtime) ──
