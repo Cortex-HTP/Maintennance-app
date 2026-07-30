@@ -483,7 +483,8 @@
         DateDemande: r.date_demande || "",
         ValidePar: r.valide_par || "",
         ValideLe: r.valide_le || "",
-        RejeteMotif: r.rejete_motif || ""
+        RejeteMotif: r.rejete_motif || "",
+        CreePar: r.cree_par || ""
       };
     }
     function interventionToDb(i, equipementIdByCode) {
@@ -3916,6 +3917,7 @@
                     h("span", null, h(IconText, { icon: "hard-hat", size: 12, color: "#a1a1aa" }, item.Equipement)),
                     h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, item.Date_Intervention)),
                     item.Technicien && h("span", null, h(IconText, { icon: "user", size: 12, color: "#a1a1aa" }, item.Technicien)),
+                    item.CreePar ? h("span", { style: { color: "#93c5fd" } }, h(IconText, { icon: "user-plus", size: 12, color: "#93c5fd" }, "Cree par " + String(item.CreePar).split("@")[0])) : null,
                     mecLabel ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 12, color: "#fde68a" }, mecLabel)) : null,
                     item.Horametre && h("span", null, h(IconText, { icon: "timer", size: 12, color: "#a1a1aa" }, fmtNum(item.Horametre) + " h")),
                     item.DureeHeures && h("span", null, h(IconText, { icon: "clock", size: 12, color: "#a5b4fc" }, item.DureeHeures + " h")),
@@ -29970,6 +29972,11 @@
         const payload = interventionToDb(item, eqIdByCode);
         const { data, error } = await supabase.from("interventions").insert(payload).select().single();
         if (error) { showToast(error.message, "error"); throw error; }
+        // Enregistre le createur (best-effort : n'echoue pas si la colonne cree_par n'existe pas encore)
+        var _creePar = session && session.user ? session.user.email : "";
+        if (_creePar && data && data.id) {
+          try { await supabase.from("interventions").update({ cree_par: _creePar }).eq("id", data.id); data.cree_par = _creePar; } catch (e) {}
+        }
         const eqCodeById = {}; equipements.forEach((e) => { eqCodeById[e.Id] = e.Title; });
         const newInt = interventionFromDb({ ...data, _equipement_code: eqCodeById[data.equipement_id] });
         setInterventions((p) => [newInt, ...p]);
