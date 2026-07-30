@@ -22846,7 +22846,9 @@
               name: name + " - " + sondLabel,
               sub: iaPrefix + (c.fonction ? c.fonction + " - " : "") + (heureRange || "Heures non renseignees") + " (" + totalStr + ")" + (c.absence_type ? " - " + c.absence_type : ""),
               sender: responsableLabel(c),
-              right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : fmtDate(c.date_releve),
+              // Date REELLE du travail (date_releve), pas la date d'envoi (created_at).
+              // L'envoi reste visible dans le detail ("Envoye le").
+              right: c.date_releve ? "Travail du " + fmtDate(c.date_releve) : (c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "-"),
               statut: statut,
               isExpanded: isExp,
               onClick: function() { toggleExpand("h", c.id); }
@@ -22855,6 +22857,7 @@
               detailGrid([
                 { label: "Employe", value: name },
                 { label: "Date du releve", value: fmtDate(c.date_releve) },
+                { label: "Envoye le", value: c.created_at ? fmtDateTime(c.created_at) : "-" },
                 { label: "Sondeuse", value: sondLabel },
                 { label: "Fonction", value: c.fonction },
                 { label: "Heure debut", value: c.heure_debut },
@@ -23631,23 +23634,33 @@
           }
         });
 
-        // Export Excel format Timesheet
+        // Export Excel format Timesheet - style aligne sur l'export des rapports de forage
+        // (titre bandeau, en-tetes bleus, zebrage, bordures, totaux surlignes).
+        // NB : le nom d'ONGLET ne doit contenir aucun "/" (interdit par Excel -> l'export
+        // levait une exception silencieuse et le bouton semblait "ne pas fonctionner").
         function exportTimesheet() {
           if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
-          var aoa = [];
-          aoa.push(["Timesheet " + fmtFr(startStr) + " - " + fmtFr(endStr)]);
-          aoa.push([]);
-          aoa.push([
+          var HEADERS = [
             "Employé","Sondeuse","Nbre de poste","Nbre de poste dimanche",
             "Heure Route chauffeur","Heures route passager","Heures normale","Heures dimanche",
-            "Nbre totale d'heures effectives","Heure de pause","Total Hors paus",
+            "Nbre totale d'heures effectives","Heure de pause","Total Hors pause",
             "Nbre Total prime panier","Poste sondeur","Poste aide sondeur",
             "CP","CP V","CSS","Maladie","AI","FERIE","DELEGATION","REUNION","ELOIGNEMENT"
-          ]);
+          ];
+          var nbCols = HEADERS.length;
+          var sousTitre = "Periode : " + fmtFr(startStr) + " au " + fmtFr(endStr)
+            + (recapSondeuse !== "__all__" ? "     Sondeuse : " + recapSondeuse : "")
+            + (filtEmployeRel !== "__all__" ? "     Employe : " + filtEmployeRel : "");
+          var aoa = [];
+          aoa.push(["TIMESHEET - RELEVES D'HEURES"]);
+          aoa.push([sousTitre]);
+          aoa.push(HEADERS);
+          var totalRowIdxs = [];
           lignes.forEach(function(l) {
             var d = l.data;
             var emp = l.kind === "total" ? (l.emp + " Total") : l.emp;
             var sond = l.kind === "total" ? null : l.sond;
+            if (l.kind === "total") totalRowIdxs.push(aoa.length);
             aoa.push([
               emp, sond, d.nbPoste, d.nbPosteDim,
               num(d.routeChauf), num(d.routePass), num(d.heuresNorm), num(d.heuresDim),
@@ -23659,11 +23672,40 @@
           });
           var ws = XLSX.utils.aoa_to_sheet(aoa);
           ws["!cols"] = [{wch:24},{wch:14},{wch:13},{wch:18},{wch:18},{wch:18},{wch:14},{wch:14},{wch:24},{wch:12},{wch:14},{wch:18},{wch:13},{wch:16},{wch:7},{wch:7},{wch:7},{wch:9},{wch:7},{wch:7},{wch:12},{wch:10},{wch:13}];
+          ws["!merges"] = [
+            { s: { r: 0, c: 0 }, e: { r: 0, c: nbCols - 1 } },
+            { s: { r: 1, c: 0 }, e: { r: 1, c: nbCols - 1 } }
+          ];
+          ws["!rows"] = [{ hpt: 26 }, { hpt: 16 }, { hpt: 30 }];
+          // ── Styles (memes couleurs que l'export Billing des rapports) ──
+          var C_TITLE = "1E3A5F", C_HEAD = "2E5E8C", C_ZEBRA = "EEF3F8", C_TOTAL = "D9E6F2", C_BORDER = "B7C4D1";
+          var thin = { style: "thin", color: { rgb: C_BORDER } };
+          var borderAll = { top: thin, bottom: thin, left: thin, right: thin };
+          function setSt(rIdx, cIdx, st) { var ref = XLSX.utils.encode_cell({ r: rIdx, c: cIdx }); if (!ws[ref]) ws[ref] = { t: "s", v: "" }; ws[ref].s = st; }
+          setSt(0, 0, { font: { bold: true, sz: 15, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          setSt(1, 0, { font: { italic: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          for (var hc = 0; hc < nbCols; hc++) setSt(2, hc, { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_HEAD } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: borderAll });
+          for (var rr = 3; rr < aoa.length; rr++) {
+            var isTot = totalRowIdxs.indexOf(rr) !== -1;
+            var zebra = ((rr - 3) % 2) === 1;
+            for (var cc = 0; cc < nbCols; cc++) {
+              var st;
+              if (isTot) {
+                st = { font: { bold: true, sz: 10, name: "Arial" }, fill: { fgColor: { rgb: C_TOTAL } }, alignment: { horizontal: cc < 2 ? "left" : "center", vertical: "center" }, border: { top: { style: "medium", color: { rgb: C_HEAD } }, bottom: thin, left: thin, right: thin } };
+              } else {
+                st = { font: { sz: 10, name: "Arial" }, alignment: { horizontal: cc < 2 ? "left" : "center", vertical: "center" }, border: borderAll };
+                if (zebra) st.fill = { fgColor: { rgb: C_ZEBRA } };
+              }
+              setSt(rr, cc, st);
+            }
+            // Heures en 2 decimales (colonnes Rte chauf. -> Hors pause)
+            for (var fc = 4; fc <= 10; fc++) { var rf = XLSX.utils.encode_cell({ r: rr, c: fc }); if (ws[rf] && typeof ws[rf].v === "number") ws[rf].z = "0.00"; }
+          }
           var wb = XLSX.utils.book_new();
-          var sname = "Timesheet " + fmtFr(startStr) + " - " + fmtFr(endStr);
-          if (sname.length > 31) sname = sname.substring(0, 31);
-          XLSX.utils.book_append_sheet(wb, ws, sname);
-          XLSX.writeFile(wb, "timesheet_" + startStr + "_au_" + endStr + ".xlsx");
+          XLSX.utils.book_append_sheet(wb, ws, "Timesheet");
+          var sndPart = recapSondeuse !== "__all__" ? "_" + recapSondeuse : "";
+          var empPart = filtEmployeRel !== "__all__" ? "_" + String(filtEmployeRel).replace(/\s+/g, "_") : "";
+          XLSX.writeFile(wb, "timesheet" + sndPart + empPart + "_" + startStr + "_au_" + endStr + ".xlsx");
         }
 
         // ── Detail par jour : 1 ligne par (date, employe, sondeuse) ──
@@ -23708,18 +23750,24 @@
           return a.sond.localeCompare(b.sond);
         });
 
-        // Export detail jour
+        // Export detail jour - meme style que l'export Billing des rapports de forage.
+        // NB : nom d'onglet SANS "/" (interdit par Excel, causait l'echec silencieux).
         function exportDetailJour() {
           if (typeof XLSX === "undefined") { alert("La librairie d'export n'est pas chargee. Recharge la page."); return; }
-          var aoa = [];
-          aoa.push(["Detail par jour " + fmtFr(startStr) + " - " + fmtFr(endStr)]);
-          aoa.push([]);
-          aoa.push([
+          var HEADERS = [
             "Date","Jour","Employé","Sondeuse","Fonction","Debut","Fin",
             "Nb post.","Nb dim.","Rte chauf.","Rte pass.","H. norm.","H. dim.",
             "H. effect.","H. pause","Hors pause","Panier","Sondeur","Aide sond.",
             "CP","CP V","CSS","Maladie","AI","FERIE","DELEGATION","REUNION","ELOIGN."
-          ]);
+          ];
+          var nbCols = HEADERS.length;
+          var sousTitre = "Periode : " + fmtFr(startStr) + " au " + fmtFr(endStr)
+            + (recapSondeuse !== "__all__" ? "     Sondeuse : " + recapSondeuse : "")
+            + (filtEmployeRel !== "__all__" ? "     Employe : " + filtEmployeRel : "");
+          var aoa = [];
+          aoa.push(["DETAIL PAR JOUR - RELEVES D'HEURES"]);
+          aoa.push([sousTitre]);
+          aoa.push(HEADERS);
           var jourLabels = ["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"];
           detailRows.forEach(function(d) {
             var dt = new Date(d.date);
@@ -23738,11 +23786,36 @@
           });
           var ws = XLSX.utils.aoa_to_sheet(aoa);
           ws["!cols"] = [{wch:12},{wch:6},{wch:24},{wch:14},{wch:14},{wch:8},{wch:8},{wch:9},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10},{wch:12},{wch:10},{wch:12},{wch:8},{wch:9},{wch:11},{wch:6},{wch:7},{wch:6},{wch:8},{wch:6},{wch:7},{wch:11},{wch:9},{wch:9}];
+          ws["!merges"] = [
+            { s: { r: 0, c: 0 }, e: { r: 0, c: nbCols - 1 } },
+            { s: { r: 1, c: 0 }, e: { r: 1, c: nbCols - 1 } }
+          ];
+          ws["!rows"] = [{ hpt: 26 }, { hpt: 16 }, { hpt: 30 }];
+          var C_TITLE = "1E3A5F", C_HEAD = "2E5E8C", C_ZEBRA = "EEF3F8", C_BORDER = "B7C4D1";
+          var thin = { style: "thin", color: { rgb: C_BORDER } };
+          var borderAll = { top: thin, bottom: thin, left: thin, right: thin };
+          function setSt(rIdx, cIdx, st) { var ref = XLSX.utils.encode_cell({ r: rIdx, c: cIdx }); if (!ws[ref]) ws[ref] = { t: "s", v: "" }; ws[ref].s = st; }
+          setSt(0, 0, { font: { bold: true, sz: 15, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          setSt(1, 0, { font: { italic: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_TITLE } }, alignment: { horizontal: "center", vertical: "center" } });
+          for (var hc = 0; hc < nbCols; hc++) setSt(2, hc, { font: { bold: true, sz: 10, color: { rgb: "FFFFFF" }, name: "Arial" }, fill: { fgColor: { rgb: C_HEAD } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: borderAll });
+          // Zebrage par CHANGEMENT DE DATE (comme le tableau a l'ecran)
+          var lastDate = null, alt = false;
+          for (var rr = 3; rr < aoa.length; rr++) {
+            var rowDate = aoa[rr][0];
+            if (rowDate !== lastDate) { alt = !alt; lastDate = rowDate; }
+            for (var cc = 0; cc < nbCols; cc++) {
+              var st = { font: { sz: 10, name: "Arial" }, alignment: { horizontal: cc < 5 ? "left" : "center", vertical: "center" }, border: borderAll };
+              if (alt) st.fill = { fgColor: { rgb: C_ZEBRA } };
+              setSt(rr, cc, st);
+            }
+            // Heures en 2 decimales (colonnes Rte chauf. -> Hors pause)
+            for (var fc = 9; fc <= 15; fc++) { var rf = XLSX.utils.encode_cell({ r: rr, c: fc }); if (ws[rf] && typeof ws[rf].v === "number") ws[rf].z = "0.00"; }
+          }
           var wb = XLSX.utils.book_new();
-          var sname = "Detail jour " + fmtFr(startStr) + " - " + fmtFr(endStr);
-          if (sname.length > 31) sname = sname.substring(0, 31);
-          XLSX.utils.book_append_sheet(wb, ws, sname);
-          XLSX.writeFile(wb, "timesheet_detail_jour_" + startStr + "_au_" + endStr + ".xlsx");
+          XLSX.utils.book_append_sheet(wb, ws, "Detail par jour");
+          var sndPart = recapSondeuse !== "__all__" ? "_" + recapSondeuse : "";
+          var empPart = filtEmployeRel !== "__all__" ? "_" + String(filtEmployeRel).replace(/\s+/g, "_") : "";
+          XLSX.writeFile(wb, "timesheet_detail_jour" + sndPart + empPart + "_" + startStr + "_au_" + endStr + ".xlsx");
         }
 
         // Styles tableau
