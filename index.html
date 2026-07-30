@@ -22749,10 +22749,6 @@
         //  2) Si pas de rapport : la ligne dont fonction = "Sondeur" (regle metier post-migration)
         //  3) Fallback : 1er releve par id du groupe
         var rawList = applyFilter(rels);
-        // Filtre employe (par ligne : personnel_id) pour voir individuellement ce qu'un gars a fait
-        if (filtEmployeRel !== "__all__") {
-          rawList = rawList.filter(function(r) { return String(personnelLabel(r.personnel_id) || "").toUpperCase().trim() === filtEmployeRel; });
-        }
         var responsableByGroup = {}; // key = "date|sondeuse_code" -> personnel_id
         // 1) Index des rapports par (date, sondeuse)
         var rapByGroup = {};
@@ -22794,6 +22790,13 @@
           var k = String(r.date_releve || "").substring(0,10) + "|" + String(r.sondeuse_code || "");
           var pid = responsableByGroup[k];
           return pid ? personnelLabel(pid) : "-";
+        }
+
+        // Filtre employe (par ligne : personnel_id) pour voir individuellement ce qu'un gars
+        // a fait. Applique APRES le calcul des responsables : les groupes date+sondeuse
+        // doivent voir l'equipe COMPLETE pour identifier correctement le sondeur responsable.
+        if (filtEmployeRel !== "__all__") {
+          rawList = rawList.filter(function(r) { return String(personnelLabel(r.personnel_id) || "").toUpperCase().trim() === filtEmployeRel; });
         }
 
         // Tri : date_releve desc, puis par responsable de l'equipe asc
@@ -23500,8 +23503,23 @@
           if (r.sondeuse_code) distinctSond[String(r.sondeuse_code).toUpperCase()] = true;
         });
         var sondeusesOpts = Object.keys(distinctSond).sort();
-        var filteredRels = periodRels.filter(function(r) {
+        // Employes distincts dans la periode (pour le filtre dropdown employe)
+        var distinctEmp = {};
+        periodRels.forEach(function(r) {
+          var n = String(personnelLabel(r.personnel_id) || "").toUpperCase().trim();
+          if (n && n.charAt(0) !== "#") distinctEmp[n] = true;
+        });
+        var employesOpts = Object.keys(distinctEmp).sort();
+        // Filtre sondeuse seul (equipes COMPLETES) : sert au calcul des responsables
+        // Sondeur/Aide (les groupes date+sondeuse doivent voir toute l'equipe).
+        var relsEquipe = periodRels.filter(function(r) {
           if (recapSondeuse !== "__all__" && String(r.sondeuse_code || "").toUpperCase() !== recapSondeuse) return false;
+          return true;
+        });
+        // Filtre employe en plus : s'applique a TOUT le recap (KPIs, synthese,
+        // detail jour, exports Excel) puisque tout derive de filteredRels.
+        var filteredRels = relsEquipe.filter(function(r) {
+          if (filtEmployeRel !== "__all__" && String(personnelLabel(r.personnel_id) || "").toUpperCase().trim() !== filtEmployeRel) return false;
           return true;
         });
 
@@ -23515,7 +23533,7 @@
         });
         var respByGroup = {};
         var groups = {};
-        filteredRels.forEach(function(r) {
+        relsEquipe.forEach(function(r) {
           var k = String(r.date_releve || "").substring(0,10) + "|" + String(r.sondeuse_code || "").toUpperCase().trim();
           if (!groups[k]) groups[k] = [];
           groups[k].push(r);
@@ -23752,6 +23770,11 @@
             h("select", { value: recapSondeuse, onChange: function(e) { setRecapSondeuse(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" } },
               h("option", { value: "__all__" }, "Toutes sondeuses"),
               sondeusesOpts.map(function(s) { return h("option", { key: s, value: s }, s); })
+            ),
+            // Filtre employe (partage avec la vue liste : filtEmployeRel)
+            h("select", { value: filtEmployeRel, onChange: function(e) { setFiltEmployeRel(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer", maxWidth: 200 } },
+              h("option", { value: "__all__" }, "Tous employes"),
+              employesOpts.map(function(s) { return h("option", { key: s, value: s }, s); })
             ),
             // Switch Synthese / Detail jour
             h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2 } },
