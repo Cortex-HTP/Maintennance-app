@@ -228,6 +228,115 @@
       } catch (err) { alert("Erreur telechargement PDF : " + (err && err.message || err)); }
     }
 
+    // Telecharge un rapport de forage en PDF (client-side jsPDF) : entete + infos +
+    // activites + sondages + equipe + horametre + remarques. Multi-pages auto.
+    function telechargerRapportPDF(r) {
+      try {
+        if (!r) return;
+        var jsPDFctor = window.jspdf && window.jspdf.jsPDF;
+        if (!jsPDFctor) { alert("Librairie PDF non chargee, reessaie dans un instant."); return; }
+        var doc = new jsPDFctor({ unit: "pt", format: "a4" });
+        var pageW = doc.internal.pageSize.getWidth();
+        var pageH = doc.internal.pageSize.getHeight();
+        var margin = 40, y = margin;
+        function ensureSpace(hh) { if (y + hh > pageH - margin) { doc.addPage(); y = margin; } }
+        function hhmmToMin(s) { if (s == null || s === "") return null; var p = String(s).split(":"); return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0); }
+        function durStr(deb, fin) { var a = hhmmToMin(deb), b = hhmmToMin(fin); if (a == null || b == null) return "-"; var d = Math.max(0, b - a); return Math.floor(d / 60) + "h" + ("0" + (d % 60)).slice(-2); }
+        function frDate(s) { if (!s) return "-"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
+        // Entete
+        doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.setTextColor(30, 30, 30);
+        doc.text("WALLIS LABEL", margin, y);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(120, 120, 120);
+        doc.text("Rapport de forage", pageW - margin, y, { align: "right" });
+        y += 20;
+        doc.setDrawColor(46, 94, 140); doc.setLineWidth(1.2); doc.line(margin, y, pageW - margin, y); y += 18;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(30, 30, 30);
+        doc.text("Rapport du " + frDate(r.date_rapport) + "   -   " + (r.sondeuse_code || "-"), margin, y); y += 20;
+        function infoLine(label, value) {
+          ensureSpace(16);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(110, 110, 110);
+          doc.text(String(label).toUpperCase(), margin, y);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(20, 20, 20);
+          doc.text(String(value == null || value === "" ? "-" : value), margin + 120, y);
+          y += 16;
+        }
+        infoLine("Sondeuse", r.sondeuse_code);
+        infoLine("Client", r.client);
+        infoLine("Lieu", r.lieu);
+        infoLine("Quart", r.quart);
+        infoLine("Total metres", ((parseFloat(r.total_metres) || 0).toFixed(1)) + " m");
+        var th = parseInt(r.total_heures) || 0;
+        infoLine("Total heures", r.total_heures ? (Math.floor(th / 60) + "h" + ("0" + (th % 60)).slice(-2)) : "-");
+        y += 6;
+        function sectionTitle(t) {
+          ensureSpace(26);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(46, 94, 140);
+          doc.text(t, margin, y); y += 5;
+          doc.setDrawColor(200, 210, 220); doc.setLineWidth(0.6); doc.line(margin, y, pageW - margin, y); y += 13;
+        }
+        function row3(c1, c2, c3) {
+          ensureSpace(15);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+          doc.text(String(c1 == null ? "" : c1), margin, y);
+          if (c2 != null) doc.text(String(c2), pageW - margin - 140, y);
+          if (c3 != null) { doc.setFont("helvetica", "bold"); doc.text(String(c3), pageW - margin, y, { align: "right" }); }
+          y += 15;
+        }
+        var activites = Array.isArray(r.activites) ? r.activites : [];
+        if (activites.length > 0) {
+          sectionTitle("Activites (" + activites.length + ")");
+          activites.forEach(function(a) { row3(a.libelle || "-", (a.debut || "--:--") + " -> " + (a.fin || "--:--"), durStr(a.debut, a.fin)); });
+          y += 6;
+        }
+        var sondages = Array.isArray(r.sondages) ? r.sondages : [];
+        if (sondages.length > 0) {
+          sectionTitle("Sondages (" + sondages.length + ")");
+          sondages.forEach(function(s, i) {
+            var de = (s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0));
+            var a = (s.metresA != null ? s.metresA : (s.a != null ? s.a : 0));
+            var total = Math.max(0, (parseFloat(a) || 0) - (parseFloat(de) || 0));
+            var nom = (s.nom || s.num || ("S" + (i + 1))) + (s.type ? " (" + s.type + ")" : "");
+            row3(nom, de + " - " + a + " m", total.toFixed(1) + " m");
+            if (s.commentaire) { ensureSpace(13); doc.setFont("helvetica", "italic"); doc.setFontSize(9); doc.setTextColor(150, 120, 0); doc.text("  \"" + s.commentaire + "\"", margin, y); y += 13; }
+          });
+          y += 6;
+        }
+        var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+        if (equipe.length > 0) {
+          sectionTitle("Equipe (" + equipe.length + ")");
+          equipe.forEach(function(m) { row3((m.nom || m.prenom || "-") + (m.role ? " (" + m.role + ")" : ""), null, m.hours ? String(m.hours) : null); });
+          y += 6;
+        }
+        var horametres = Array.isArray(r.horametre) ? r.horametre : [];
+        if (horametres.length > 0) {
+          sectionTitle("Horametre machine");
+          horametres.forEach(function(hm) {
+            var deb = parseFloat(hm.debut), fin = parseFloat(hm.fin);
+            var totalH = (!isNaN(deb) && !isNaN(fin)) ? (Math.max(0, fin - deb).toFixed(1) + " h") : null;
+            row3("Debut " + (hm.debut != null && hm.debut !== "" ? hm.debut : "-") + "    Fin " + (hm.fin != null && hm.fin !== "" ? hm.fin : "-"), null, totalH);
+          });
+          y += 6;
+        }
+        if (r.remarques) {
+          sectionTitle("Remarques");
+          doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+          var lines = doc.splitTextToSize(String(r.remarques), pageW - 2 * margin);
+          lines.forEach(function(ln) { ensureSpace(13); doc.text(ln, margin, y); y += 13; });
+        }
+        // Pied de page sur chaque page
+        var nbPages = doc.internal.getNumberOfPages();
+        var todayIso = new Date().toISOString();
+        for (var pg = 1; pg <= nbPages; pg++) {
+          doc.setPage(pg);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150, 150, 150);
+          doc.text("Wallis Label - genere le " + frDate(todayIso), margin, pageH - 20);
+          doc.text("Page " + pg + " / " + nbPages, pageW - margin, pageH - 20, { align: "right" });
+        }
+        var fname = ("rapport_" + (r.sondeuse_code || "forage") + "_" + String(r.date_rapport || "").substring(0, 10) + ".pdf").replace(/[^a-zA-Z0-9_.\-]/g, "_");
+        doc.save(fname);
+      } catch (err) { alert("Erreur PDF rapport : " + (err && err.message || err)); }
+    }
+
     // Email admin : seul ce compte peut modifier l'horametre et supprimer des releves
     const ADMIN_EMAIL = "tom.wallislabel@gmail.com";
 
@@ -7784,6 +7893,9 @@
         }
 
         return h(Modal, { title: "Rapport du " + fmtFrDate(r.date_rapport) + " - " + (r.sondeuse_code || "-"), onClose: function() { setFicheRapportDetail(null); }, size: 720 },
+          h("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 } },
+            h("button", { onClick: function() { telechargerRapportPDF(r); }, title: "Telecharger ce rapport en PDF", style: { padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid rgba(129,140,248,0.4)", background: "rgba(99,102,241,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
+              h(Icon, { name: "file-down", size: 14, color: "#c4b5fd" }), "Exporter PDF")),
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 12 } },
             infoCell("Sondeuse", r.sondeuse_code),
             infoCell("Client", r.client),
