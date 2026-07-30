@@ -226,6 +226,53 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // 2bis. Verification DETERMINISTE des dates : un employe ne peut PAS avoir
+    // plus d'un releve pour un meme jour. Si un autre releve existe deja pour
+    // (personnel_id, date_releve), verdict "alert" impose SANS appel IA :
+    // la regle est absolue, et surtout on ne laisse JAMAIS l'auto-validation
+    // "ok" passer sur un doublon (cas terrain : sondeur qui rattrape plusieurs
+    // jours d'un coup sans changer "Jour concerne" -> tout date du jour d'envoi).
+    if (releve.personnel_id != null && releve.date_releve) {
+      const dupResp = await fetch(
+        SUPABASE_URL + '/rest/v1/releves_heures?personnel_id=eq.' + releve.personnel_id +
+        '&date_releve=eq.' + encodeURIComponent(String(releve.date_releve).substring(0, 10)) +
+        '&id=neq.' + releveId + '&select=id,sondeuse_code,heure_debut,heure_fin,statut',
+        { headers: { apikey: SERVICE_KEY, Authorization: 'Bearer ' + SERVICE_KEY } }
+      );
+      const dups = await dupResp.json();
+      if (Array.isArray(dups) && dups.length > 0) {
+        const dateFr = String(releve.date_releve).substring(0, 10).split('-').reverse().join('/');
+        const triagePayload = {
+          verdict: 'alert',
+          confidence: 1.0,
+          summary: (dups.length + 1) + ' releves le ' + dateFr + ' pour cet employe (1 seul autorise)',
+          flags: [{
+            type: 'date_dupliquee',
+            description: 'Autres releves du meme employe le ' + dateFr + ' : ' +
+              dups.map(function(d) { return '#' + d.id + ' (' + (d.heure_debut || '?') + '-' + (d.heure_fin || '?') + (d.sondeuse_code ? ', ' + d.sondeuse_code : '') + ', ' + (d.statut || 'en_attente') + ')'; }).join(' ; ') +
+              '. La date d\'ENVOI a probablement ete utilisee a la place du jour reellement travaille : corriger la date de chaque releve.'
+          }],
+          analyzed_at: new Date().toISOString(),
+          model: 'regle-deterministe-dates'
+        };
+        const upDup = await fetch(SUPABASE_URL + '/rest/v1/releves_heures?id=eq.' + releveId, {
+          method: 'PATCH',
+          headers: {
+            apikey: SERVICE_KEY,
+            Authorization: 'Bearer ' + SERVICE_KEY,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify({ ia_triage: triagePayload })
+        });
+        if (!upDup.ok) {
+          const upDupErr = await upDup.text();
+          return res.status(500).json({ error: 'Erreur sauvegarde Supabase', detail: upDupErr.slice(0, 500) });
+        }
+        return res.status(200).json({ ok: true, releve_id: releveId, triage: triagePayload });
+      }
+    }
+
     // Contexte additionnel : chantier, sondeur
     const contexte = {};
     if (releve.chantier_id) {
