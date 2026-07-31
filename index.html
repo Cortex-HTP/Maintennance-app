@@ -22839,14 +22839,19 @@
         var aVerifierRubrique = (function() {
           try {
             var todayIso = (function() { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+            // Remise a zero : seuls les releves dates >= RELEVES_ALERTES_DEPUIS
+            // sont controles (l'historique anterieur est ignore).
+            var relsAlerte = (rels || []).filter(function(r) {
+              return r.date_releve && String(r.date_releve).substring(0, 10) >= RELEVES_ALERTES_DEPUIS;
+            });
             var dupCount = {}; // "pid|date" -> nb releves
-            (rels || []).forEach(function(r) {
-              if (r.personnel_id == null || !r.date_releve) return;
+            relsAlerte.forEach(function(r) {
+              if (r.personnel_id == null) return;
               var k = String(r.personnel_id) + "|" + String(r.date_releve).substring(0, 10);
               dupCount[k] = (dupCount[k] || 0) + 1;
             });
             var issues = []; // { r, badges }
-            (rels || []).forEach(function(r) {
+            relsAlerte.forEach(function(r) {
               var badges = [];
               var k = String(r.personnel_id) + "|" + String(r.date_releve || "").substring(0, 10);
               // Doublon / date future : erreurs de DONNEES -> affichees quel que soit
@@ -22891,8 +22896,14 @@
                     it.badges.map(function(b, j) {
                       return h("span", { key: j, style: { padding: "2px 9px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.3, color: b.color, background: b.bg, border: "1px solid " + b.border } }, b.label);
                     }),
-                    canEditSoumissions ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#a5b4fc", fontWeight: 700 } },
-                      h(Icon, { name: "edit-3", size: 12, color: "#a5b4fc" }), "Modifier") : null
+                    canEditSoumissions ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 } },
+                      h("span", { style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#a5b4fc", fontWeight: 700 } },
+                        h(Icon, { name: "edit-3", size: 12, color: "#a5b4fc" }), "Modifier"),
+                      h("span", {
+                        onClick: function(ev) { ev.stopPropagation(); deleteReleveHeures(r); },
+                        style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#fda4af", fontWeight: 700, padding: "3px 9px", borderRadius: 6, border: "1px solid rgba(244,63,94,0.35)", background: "rgba(244,63,94,0.10)", cursor: "pointer" }
+                      }, h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }), "Supprimer")
+                    ) : null
                   );
                 })
               )
@@ -22910,6 +22921,8 @@
             var start = new Date(today); start.setDate(start.getDate() - 14);
             var hier = new Date(today); hier.setDate(hier.getDate() - 1);
             var iso = function(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+            // Remise a zero : la fenetre ne remonte jamais avant la date de reset
+            if (iso(start) < RELEVES_ALERTES_DEPUIS) start = new Date(RELEVES_ALERTES_DEPUIS + "T00:00:00");
             var startStr14 = iso(start);
             var datesByEmp = {}; // pid -> { dates: {}, minAll, inWindow }
             (rels || []).forEach(function(r) {
@@ -24804,20 +24817,29 @@
       }
 
       var currentStatuts = STATUTS_BY_TAB[tab] || ["tous"];
+      // Remise a zero des alertes releves (decision du 31/07/2026) : les controles
+      // (doublons, dates futures, badges IA, releves manquants) ne s'appliquent
+      // qu'aux releves dont la date est >= cette date. L'historique anterieur
+      // (ex. doublons du 22/07) est ignore pour repartir sur des alertes claires.
+      var RELEVES_ALERTES_DEPUIS = "2026-07-31";
+
       // Nb de releves a probleme (doublon de date / date future / IA en attente)
       // pour le compteur du bouton de vue "A verifier".
       var nbRelevesAVerifier = (function() {
         try {
+          var relsAlerte = (rels || []).filter(function(r) {
+            return r.date_releve && String(r.date_releve).substring(0, 10) >= RELEVES_ALERTES_DEPUIS;
+          });
           var dc = {};
-          (rels || []).forEach(function(r) {
-            if (r.personnel_id == null || !r.date_releve) return;
+          relsAlerte.forEach(function(r) {
+            if (r.personnel_id == null) return;
             var k = String(r.personnel_id) + "|" + String(r.date_releve).substring(0, 10);
             dc[k] = (dc[k] || 0) + 1;
           });
           var t = new Date();
           var todayIso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
           var n = 0;
-          (rels || []).forEach(function(r) {
+          relsAlerte.forEach(function(r) {
             var k = String(r.personnel_id) + "|" + String(r.date_releve || "").substring(0, 10);
             var iaPb = (r.statut || "en_attente") === "en_attente" && r.ia_triage && (r.ia_triage.verdict === "alert" || r.ia_triage.verdict === "review");
             if (dc[k] >= 2 || (r.date_releve && String(r.date_releve).substring(0, 10) > todayIso) || iaPb) n++;
