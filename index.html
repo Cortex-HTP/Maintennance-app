@@ -22828,7 +22828,105 @@
           iaOk.length > 0 ? h("span", { style: { color: "#86efac", fontWeight: 700 } }, "✓ " + iaOk.length + " valide" + (iaOk.length > 1 ? "s" : "") + " auto") : null,
           nbAnalyzing > 0 ? h("span", { style: { color: "#94a3b8", fontStyle: "italic" } }, "⏳ " + nbAnalyzing + " en cours d'analyse") : null
         ) : null;
-        return h("div", null, iaBandeau, list.map(function(c) {
+
+        // ── Bandeau DETERMINISTE "dates incoherentes" : plusieurs releves le meme
+        // jour pour un meme employe (regle absolue : 1 seul autorise). Calcule sur
+        // TOUS les releves charges (pas seulement la liste filtree), donc detecte
+        // aussi les doublons deja auto-valides ou deja analyses par l'IA.
+        var doublonsBanner = (function() {
+          try {
+            var byKey = {}; // "pid|date" -> nb releves
+            (rels || []).forEach(function(r) {
+              if (r.personnel_id == null || !r.date_releve) return;
+              var k = String(r.personnel_id) + "|" + String(r.date_releve).substring(0, 10);
+              byKey[k] = (byKey[k] || 0) + 1;
+            });
+            var byEmp = {}; // pid -> [{date, n}]
+            Object.keys(byKey).forEach(function(k) {
+              if (byKey[k] < 2) return;
+              var parts = k.split("|");
+              if (!byEmp[parts[0]]) byEmp[parts[0]] = [];
+              byEmp[parts[0]].push({ date: parts[1], n: byKey[k] });
+            });
+            var empIds = Object.keys(byEmp);
+            if (empIds.length === 0) return null;
+            var fmtD = function(ds) { return ds.substring(8, 10) + "/" + ds.substring(5, 7) + "/" + ds.substring(0, 4); };
+            return h("div", { style: { marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.40)", fontSize: 12.5 } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
+                h(Icon, { name: "alert-octagon", size: 14, color: "#fda4af" }),
+                h("strong", { style: { color: "#fda4af" } }, "Dates incoherentes : plusieurs releves le meme jour (1 seul autorise par employe)")
+              ),
+              empIds.map(function(pid, i) {
+                var det = byEmp[pid].sort(function(a, b) { return a.date < b.date ? -1 : 1; })
+                  .map(function(x) { return x.n + " releves le " + fmtD(x.date); }).join(" · ");
+                return h("div", { key: i, style: { color: "#e5e7eb", padding: "2px 0" } },
+                  h("strong", null, personnelLabel(pid)), " : ",
+                  h("span", { style: { color: "#fda4af", fontWeight: 700 } }, det));
+              }),
+              h("div", { style: { color: "#a1a1aa", marginTop: 4 } }, "La date d'ENVOI a probablement ete utilisee a la place du jour travaille : corriger la date de chaque releve via Edition complete.")
+            );
+          } catch (e) { return null; }
+        })();
+
+        // ── Bandeau "releves manquants" : jours ouvres (Lun-Jeu) sans releve sur les
+        // 14 derniers jours, pour chaque employe actif sur la fenetre. Borne par le
+        // 1er releve connu de l'employe (pas d'alerte avant son arrivee) et par sa
+        // fin de contrat eventuelle.
+        var manquantsBanner = (function() {
+          try {
+            var today = new Date(); today.setHours(0, 0, 0, 0);
+            var start = new Date(today); start.setDate(start.getDate() - 14);
+            var hier = new Date(today); hier.setDate(hier.getDate() - 1);
+            var iso = function(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+            var startStr14 = iso(start);
+            var datesByEmp = {}; // pid -> { dates: {}, minAll, inWindow }
+            (rels || []).forEach(function(r) {
+              if (r.personnel_id == null || !r.date_releve) return;
+              var pid = String(r.personnel_id);
+              var d = String(r.date_releve).substring(0, 10);
+              if (!datesByEmp[pid]) datesByEmp[pid] = { dates: {}, minAll: d, inWindow: false };
+              var e = datesByEmp[pid];
+              e.dates[d] = true;
+              if (d < e.minAll) e.minAll = d;
+              if (d >= startStr14) e.inWindow = true;
+            });
+            var manques = [];
+            Object.keys(datesByEmp).forEach(function(pid) {
+              var e = datesByEmp[pid];
+              if (!e.inWindow) return; // inactif sur la fenetre : pas d'alerte
+              var p = resolvePersonnel(pid);
+              var finContrat = (p && p.dateFinContrat) ? String(p.dateFinContrat).substring(0, 10) : null;
+              var missing = [];
+              var cur = new Date(start);
+              while (cur.getTime() <= hier.getTime()) {
+                var dow = cur.getDay();
+                var ds = iso(cur);
+                if (dow >= 1 && dow <= 4 && ds >= e.minAll && (!finContrat || ds <= finContrat) && !e.dates[ds]) missing.push(ds);
+                cur.setDate(cur.getDate() + 1);
+              }
+              if (missing.length > 0) manques.push({ pid: pid, nom: personnelLabel(pid), missing: missing });
+            });
+            if (manques.length === 0) return null;
+            manques.sort(function(a, b) { return b.missing.length - a.missing.length; });
+            var joursCourts = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+            var fmtJ = function(ds) { var dt = new Date(ds + "T00:00:00"); return joursCourts[dt.getDay()] + " " + ds.substring(8, 10) + "/" + ds.substring(5, 7); };
+            var shown = manques.slice(0, 8);
+            return h("div", { style: { marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.35)", fontSize: 12.5 } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
+                h(Icon, { name: "calendar-x", size: 14, color: "#fde68a" }),
+                h("strong", { style: { color: "#fde68a" } }, "Releves manquants (jours ouvres Lun-Jeu, 14 derniers jours)")
+              ),
+              shown.map(function(mq, i) {
+                return h("div", { key: i, style: { color: "#e5e7eb", padding: "2px 0" } },
+                  h("strong", null, mq.nom), " : ",
+                  h("span", { style: { color: "#fbbf24" } }, mq.missing.map(fmtJ).join(", ")));
+              }),
+              manques.length > shown.length ? h("div", { style: { color: "#a1a1aa", marginTop: 4 } }, "+ " + (manques.length - shown.length) + " autre(s) employe(s)") : null
+            );
+          } catch (e) { return null; }
+        })();
+
+        return h("div", null, doublonsBanner, manquantsBanner, iaBandeau, list.map(function(c) {
           var isExp = expanded === ("h-" + c.id);
           var name = personnelLabel(c.personnel_id);
           var totalStr = minToHHMM(c.total_minutes || 0);

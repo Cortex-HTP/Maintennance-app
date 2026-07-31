@@ -226,6 +226,42 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // 2bis-a. Date FUTURE = impossible (on ne pointe pas un jour pas encore
+    // travaille). Fuseau Noumea = UTC+11 : on compare a la date calendaire NC.
+    if (releve.date_releve) {
+      const todayNC = new Date(Date.now() + 11 * 3600 * 1000).toISOString().slice(0, 10);
+      const dStr = String(releve.date_releve).substring(0, 10);
+      if (dStr > todayNC) {
+        const dateFrFut = dStr.split('-').reverse().join('/');
+        const triageFutur = {
+          verdict: 'alert',
+          confidence: 1.0,
+          summary: 'Releve date au ' + dateFrFut + ' (date FUTURE, impossible)',
+          flags: [{
+            type: 'date_future',
+            description: 'La date du releve (' + dateFrFut + ') est posterieure a aujourd\'hui (Noumea : ' + todayNC.split('-').reverse().join('/') + '). Corriger la date du releve.'
+          }],
+          analyzed_at: new Date().toISOString(),
+          model: 'regle-deterministe-dates'
+        };
+        const upFut = await fetch(SUPABASE_URL + '/rest/v1/releves_heures?id=eq.' + releveId, {
+          method: 'PATCH',
+          headers: {
+            apikey: SERVICE_KEY,
+            Authorization: 'Bearer ' + SERVICE_KEY,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify({ ia_triage: triageFutur })
+        });
+        if (!upFut.ok) {
+          const upFutErr = await upFut.text();
+          return res.status(500).json({ error: 'Erreur sauvegarde Supabase', detail: upFutErr.slice(0, 500) });
+        }
+        return res.status(200).json({ ok: true, releve_id: releveId, triage: triageFutur });
+      }
+    }
+
     // 2bis. Verification DETERMINISTE des dates : un employe ne peut PAS avoir
     // plus d'un releve pour un meme jour. Si un autre releve existe deja pour
     // (personnel_id, date_releve), verdict "alert" impose SANS appel IA :
