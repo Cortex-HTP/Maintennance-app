@@ -22829,41 +22829,72 @@
           nbAnalyzing > 0 ? h("span", { style: { color: "#94a3b8", fontStyle: "italic" } }, "⏳ " + nbAnalyzing + " en cours d'analyse") : null
         ) : null;
 
-        // ── Bandeau DETERMINISTE "dates incoherentes" : plusieurs releves le meme
-        // jour pour un meme employe (regle absolue : 1 seul autorise). Calcule sur
-        // TOUS les releves charges (pas seulement la liste filtree), donc detecte
-        // aussi les doublons deja auto-valides ou deja analyses par l'IA.
-        var doublonsBanner = (function() {
+        // ── Rubrique "Releves a verifier" : chaque releve a probleme, avec badges
+        // colores par type d'alerte (rouge = doublon de date, violet = date future,
+        // orange = alerte IA, jaune = a verifier IA). Un CLIC sur la ligne ouvre
+        // directement l'Edition complete du releve (modification integrale).
+        // Calcule sur TOUS les releves charges (detecte aussi les doublons deja
+        // auto-valides ou deja analyses par l'IA).
+        var aVerifierRubrique = (function() {
           try {
-            var byKey = {}; // "pid|date" -> nb releves
+            var todayIso = (function() { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+            var dupCount = {}; // "pid|date" -> nb releves
             (rels || []).forEach(function(r) {
               if (r.personnel_id == null || !r.date_releve) return;
               var k = String(r.personnel_id) + "|" + String(r.date_releve).substring(0, 10);
-              byKey[k] = (byKey[k] || 0) + 1;
+              dupCount[k] = (dupCount[k] || 0) + 1;
             });
-            var byEmp = {}; // pid -> [{date, n}]
-            Object.keys(byKey).forEach(function(k) {
-              if (byKey[k] < 2) return;
-              var parts = k.split("|");
-              if (!byEmp[parts[0]]) byEmp[parts[0]] = [];
-              byEmp[parts[0]].push({ date: parts[1], n: byKey[k] });
+            var issues = []; // { r, badges }
+            (rels || []).forEach(function(r) {
+              var badges = [];
+              var k = String(r.personnel_id) + "|" + String(r.date_releve || "").substring(0, 10);
+              // Doublon / date future : erreurs de DONNEES -> affichees quel que soit
+              // le statut (meme un releve deja valide doit etre corrige).
+              if (dupCount[k] >= 2) badges.push({ label: "Doublon de date (" + dupCount[k] + ")", color: "#fda4af", bg: "rgba(244,63,94,0.15)", border: "rgba(244,63,94,0.45)" });
+              if (r.date_releve && String(r.date_releve).substring(0, 10) > todayIso) badges.push({ label: "Date future", color: "#d8b4fe", bg: "rgba(168,85,247,0.15)", border: "rgba(168,85,247,0.45)" });
+              // Badges IA : seulement pour les releves ENCORE en attente (un releve
+              // deja tranche par l'admin n'a plus rien "a verifier").
+              var enAttente = (r.statut || "en_attente") === "en_attente";
+              if (enAttente && r.ia_triage && r.ia_triage.verdict === "alert") badges.push({ label: "Alerte IA", color: "#fdba74", bg: "rgba(249,115,22,0.15)", border: "rgba(249,115,22,0.45)" });
+              else if (enAttente && r.ia_triage && r.ia_triage.verdict === "review") badges.push({ label: "A verifier IA", color: "#fde68a", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.45)" });
+              if (badges.length > 0) issues.push({ r: r, badges: badges });
             });
-            var empIds = Object.keys(byEmp);
-            if (empIds.length === 0) return null;
-            var fmtD = function(ds) { return ds.substring(8, 10) + "/" + ds.substring(5, 7) + "/" + ds.substring(0, 4); };
-            return h("div", { style: { marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.40)", fontSize: 12.5 } },
-              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
-                h(Icon, { name: "alert-octagon", size: 14, color: "#fda4af" }),
-                h("strong", { style: { color: "#fda4af" } }, "Dates incoherentes : plusieurs releves le meme jour (1 seul autorise par employe)")
+            if (issues.length === 0) return null;
+            // Tri : doublons d'abord (les plus graves), puis date desc, puis nom
+            issues.sort(function(a, b) {
+              var pa = a.badges[0].label.indexOf("Doublon") === 0 ? 0 : 1;
+              var pb = b.badges[0].label.indexOf("Doublon") === 0 ? 0 : 1;
+              if (pa !== pb) return pa - pb;
+              var da = String(a.r.date_releve || ""), db2 = String(b.r.date_releve || "");
+              if (da !== db2) return da > db2 ? -1 : 1;
+              return String(personnelLabel(a.r.personnel_id)).localeCompare(String(personnelLabel(b.r.personnel_id)));
+            });
+            return h("div", { style: { marginBottom: 14, border: "1px solid rgba(244,63,94,0.35)", borderRadius: 12, overflow: "hidden" } },
+              h("div", { style: { padding: "10px 14px", background: "rgba(244,63,94,0.10)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                h(Icon, { name: "shield-alert", size: 15, color: "#fda4af" }),
+                h("strong", { style: { color: "#fda4af", fontSize: 13 } }, "Releves a verifier (" + issues.length + ")"),
+                canEditSoumissions ? h("span", { style: { color: "#a1a1aa", fontSize: 11.5 } }, "Clique sur une ligne pour ouvrir le releve et le modifier en entier") : null
               ),
-              empIds.map(function(pid, i) {
-                var det = byEmp[pid].sort(function(a, b) { return a.date < b.date ? -1 : 1; })
-                  .map(function(x) { return x.n + " releves le " + fmtD(x.date); }).join(" · ");
-                return h("div", { key: i, style: { color: "#e5e7eb", padding: "2px 0" } },
-                  h("strong", null, personnelLabel(pid)), " : ",
-                  h("span", { style: { color: "#fda4af", fontWeight: 700 } }, det));
-              }),
-              h("div", { style: { color: "#a1a1aa", marginTop: 4 } }, "La date d'ENVOI a probablement ete utilisee a la place du jour travaille : corriger la date de chaque releve via Edition complete.")
+              h("div", { style: { padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 } },
+                issues.map(function(it) {
+                  var r = it.r;
+                  return h("div", {
+                    key: "av-" + r.id,
+                    onClick: canEditSoumissions ? function() { setEditingReleve(r); } : undefined,
+                    title: (r.ia_triage && r.ia_triage.summary) || "",
+                    style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", cursor: canEditSoumissions ? "pointer" : "default" }
+                  },
+                    h("strong", { style: { fontSize: 12.5, color: "#e5e7eb" } }, personnelLabel(r.personnel_id)),
+                    h("span", { style: { fontSize: 12, color: "#a5b4fc", fontWeight: 700 } }, r.date_releve ? String(r.date_releve).substring(0, 10).split("-").reverse().join("/") : "-"),
+                    h("span", { style: { fontSize: 11.5, color: "#a1a1aa" } }, (r.sondeuse_code || "-") + (r.heure_debut ? " · " + r.heure_debut + (r.heure_fin ? "-" + r.heure_fin : "") : "")),
+                    it.badges.map(function(b, j) {
+                      return h("span", { key: j, style: { padding: "2px 9px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.3, color: b.color, background: b.bg, border: "1px solid " + b.border } }, b.label);
+                    }),
+                    canEditSoumissions ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#a5b4fc", fontWeight: 700 } },
+                      h(Icon, { name: "edit-3", size: 12, color: "#a5b4fc" }), "Modifier") : null
+                  );
+                })
+              )
             );
           } catch (e) { return null; }
         })();
@@ -22926,7 +22957,7 @@
           } catch (e) { return null; }
         })();
 
-        return h("div", null, doublonsBanner, manquantsBanner, iaBandeau, list.map(function(c) {
+        return h("div", null, aVerifierRubrique, manquantsBanner, iaBandeau, list.map(function(c) {
           var isExp = expanded === ("h-" + c.id);
           var name = personnelLabel(c.personnel_id);
           var totalStr = minToHHMM(c.total_minutes || 0);
