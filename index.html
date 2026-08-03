@@ -557,12 +557,25 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
       var lon = c.longitude !== "" && c.longitude !== null && c.longitude !== undefined ? parseFloat(c.longitude) : null;
-      return { titre: c.titre, date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
+      return { titre: c.titre, client: (c.client || "").trim() || null, date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
+    }
+    // Petit badge "client" affiche a cote du nom d'un chantier (Avancement,
+    // Previsionnel, Planning, cartes...). Retourne null si pas de client.
+    function chantierClientBadge(ch, extraStyle) {
+      var cl = ch && ch.client ? String(ch.client).trim() : "";
+      if (!cl) return null;
+      return h("span", { style: Object.assign({ fontSize: 10.5, fontWeight: 700, color: "#7dd3fc", background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", borderRadius: 999, padding: "1px 8px", marginLeft: 8, whiteSpace: "nowrap", verticalAlign: "middle", letterSpacing: 0.3 }, extraStyle || {}) }, cl);
+    }
+    // Variante texte pour les <option> de <select> (pas de style possible dedans)
+    function chantierOptionLabel(c) {
+      if (!c) return "";
+      var base = c.titre || c.nom || ("Chantier #" + c.id);
+      return base + (c.client ? " — " + c.client : "");
     }
     function declarationFromDb(r) {
       return { id: r.id, titre: r.titre || "", montant: r.montant || 0, recurrence: r.recurrence || "Mensuel", status: r.status || "A venir", dateFait: r.date_fait || null, dateDebutPeriode: r.date_debut_periode || null, dateFinPeriode: r.date_fin_periode || null };
@@ -6443,7 +6456,7 @@
                     isChantier
                       ? h("select", { style: inputSm, value: g.scope_id || "", onChange: function(e) { updateGroup(g, { scope_id: parseInt(e.target.value) || null }); } },
                           h("option", { value: "" }, "-- Choisir --"),
-                          dbChantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre || c.nom || ("Chantier #" + c.id)); })
+                          dbChantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, chantierOptionLabel(c)); })
                         )
                       : h("span", { style: { color: "#71717a", fontStyle: "italic", fontSize: 11 } }, "N/A")
                   ),
@@ -8417,7 +8430,7 @@
       };
 
       // ── CRUD Chantiers ──
-      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
+      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
@@ -9217,7 +9230,7 @@
             var isDragging = dragRef.current.dragging && dragRef.current.itemId === ch.id;
             rows.push(h("div", { key: "ar" + ch.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "rgba(129,140,248,0.15)" : bgColor, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
               h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid rgba(255,255,255,0.06)" } },
-                h("div", null, ch.titre),
+                h("div", null, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
                 h("div", { style: { fontSize: 11, fontWeight: 400, color: "#71717a", marginTop: 2 } }, formatDateFr(ch.dateDebut) + " - " + formatDateFr(ch.dateFin))
               ),
               h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
@@ -9257,7 +9270,7 @@
               var isDragging = dragRef.current.dragging && dragRef.current.itemId === ch.id;
               rows.push(h("div", { key: "mc" + ch.id, "data-annuel-row": true, style: { display: "flex", alignItems: "center", height: rowHeight, background: isDragging ? "rgba(129,140,248,0.15)" : bgColor, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
                 h("div", { style: { width: 180, flexShrink: 0, padding: "0 12px", fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRight: "1px solid rgba(255,255,255,0.06)" } },
-                  h("div", null, ch.titre),
+                  h("div", null, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
                   h("div", { style: { fontSize: 11, fontWeight: 400, color: "#71717a", marginTop: 2 } }, formatDateFr(ch.dateDebut) + " - " + formatDateFr(ch.dateFin))
                 ),
                 h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
@@ -9421,7 +9434,10 @@
         if (f._type === "chant") {
           var caPreview = (f.metrage || 0) * (f.prixMetre || 0);
           return h(Modal, { title: f.id ? "Modifier le chantier" : "Nouveau chantier", onClose: closeModal, size: 650 },
-            h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+              h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
+              h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
+            ),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut || "", onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin || "", onChange: function(e) { upd("dateFin", e.target.value); } }))
@@ -9553,7 +9569,7 @@
               }
               return h(Card, { key: chantier.id, style: { borderLeft: "4px solid " + statusColor, opacity: chantier.statut === "Termine" ? 0.55 : 1 } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
-                  h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, flex: 1 } }, chantier.titre),
+                  h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0, flex: 1 } }, chantier.titre, chantierClientBadge(chantier)),
                   h("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
                     h("button", { onClick: function() { openEditChant(chantier); }, style: actionBtnStyle, title: "Modifier" }, h(Icon, { name: "pencil", size: 14, color: "#a1a1aa" })),
                     h("button", { onClick: function() { setToDelete({ type: "chant", id: chantier.id, titre: chantier.titre }); }, style: actionBtnStyle, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#dc2626" }))
@@ -9750,7 +9766,7 @@
                         // En-tete chantier
                         h("div", { style: { display: "flex", alignItems: "center", background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
                           h("div", { style: { width: 240, flexShrink: 0, padding: "8px 12px", boxSizing: "border-box" } },
-                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, ch.titre),
+                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
                             h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin))
                           ),
                           h("div", { style: { position: "relative", flex: 1, height: 22 } },
@@ -12266,7 +12282,7 @@
 
       // CRUD handlers
       var openNewChantier = function() {
-        setEditing({ id: null, titre: "", dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
+        setEditing({ id: null, titre: "", client: "", dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
         setShowModal(true);
       };
       var openEditChantier = function(c) {
@@ -12770,7 +12786,10 @@
 
         return h(Modal, { onClose: closeModalAv, title: f.id ? "Modifier le chantier" : "Nouveau chantier" },
           h("div", { style: { display: "grid", gap: 12 } },
-            h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+              h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
+              h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
+            ),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut, onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin, onChange: function(e) { upd("dateFin", e.target.value); } }))
@@ -12838,7 +12857,7 @@
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
                 h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   h(Icon, { name: "zap", size: 18, color: "#a5b4fc" }),
-                  h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fafafa" } }, "Vitesse - " + ch.titre)
+                  h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fafafa" } }, "Vitesse - " + ch.titre, chantierClientBadge(ch))
                 ),
                 h("button", { onClick: function() { setVitPopover(null); }, style: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "inline-flex" } }, h(Icon, { name: "x", size: 18, color: "#a1a1aa" }))
               ),
@@ -13230,7 +13249,7 @@
                 h("div", { onClick: function() { setExpandedChantier(isExpanded ? null : chantier.id); }, style: { cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 } },
                   h("div", { style: { flex: 1 } },
                     h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
-                      h("h3", { style: { fontSize: 16, fontWeight: 700, margin: 0 } }, chantier.titre),
+                      h("h3", { style: { fontSize: 16, fontWeight: 700, margin: 0 } }, chantier.titre, chantierClientBadge(chantier)),
                       h("button", { onClick: function(e) { e.stopPropagation(); openEditChantier(chantier); }, style: actionBtnStyleAv, title: "Modifier" }, h(Icon, { name: "pencil", size: 14, color: "#a1a1aa" })),
                       h("button", { onClick: function(e) { e.stopPropagation(); setToDelete({ id: chantier.id, titre: chantier.titre }); }, style: actionBtnStyleAv, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#ef4444" }))
                     ),
@@ -14324,7 +14343,7 @@
                   var ca = real * (c.prixMetre || 0);
                   return h(Card, { key: c.id, style: { borderLeft: "4px solid #059669" } },
                     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-                      h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0 } }, c.titre),
+                      h("h3", { style: { fontSize: 15, fontWeight: 700, margin: 0 } }, c.titre, chantierClientBadge(c)),
                       h("span", { style: { fontSize: 11, fontWeight: 700, color: "#6ee7b7", background: "rgba(16,185,129,0.15)", padding: "3px 10px", borderRadius: 999 } }, "Termine")
                     ),
                     h("div", { style: { fontSize: 12, color: "#a1a1aa", marginBottom: 8 } }, _fdate(c.dateDebut) + " - " + _fdate(c.dateFin)),
@@ -14599,7 +14618,7 @@
                   h("div", { style: { flex: 1, minWidth: 0 } },
                     h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" } },
                       h(Icon, { name: "hard-hat", size: 18, color: "#a5b4fc" }),
-                      h("h3", { style: { fontSize: 16, fontWeight: 800, margin: 0, color: "#fafafa" } }, chantier.titre),
+                      h("h3", { style: { fontSize: 16, fontWeight: 800, margin: 0, color: "#fafafa" } }, chantier.titre, chantierClientBadge(chantier)),
                       chantier.site ? h("span", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", display: "inline-flex", alignItems: "center", gap: 4 } }, h(Icon, { name: "map-pin", size: 12, color: "#a5b4fc" }), chantier.site) : null
                     ),
                     h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 } },
@@ -17838,7 +17857,7 @@
           h(FormField, { label: "Chantier lie (optionnel)" },
             h("select", { style: selectStyle, value: f.chantierId || "", onChange: (e) => upd("chantierId", e.target.value ? parseInt(e.target.value) : null) },
               h("option", { value: "" }, "-- Aucun --"),
-              (chantiers || []).map((c) => h("option", { key: c.id, value: c.id }, c.titre)))),
+              (chantiers || []).map((c) => h("option", { key: c.id, value: c.id }, chantierOptionLabel(c))))),
           h(FormField, { label: "Intervention liee (optionnel)" },
             h("select", { style: selectStyle, value: f.interventionId || "", onChange: (e) => upd("interventionId", e.target.value || null) },
               h("option", { value: "" }, "-- Aucune --"),
@@ -17977,7 +17996,7 @@
                 h("span", null, h(IconText, { icon: "wallet", size: 12, color: "#a1a1aa" }, fmtMoney(d.montantDemande))),
                 d.statut === "approuvee" && d.montantApprouve != null ? h("span", { style: { color: "#6ee7b7" } }, h(IconText, { icon: "check", size: 12, color: "#6ee7b7" }, "Approuve : " + fmtMoney(d.montantApprouve))) : null,
                 eq ? h("span", null, h(IconText, { icon: "truck", size: 12, color: "#a1a1aa" }, eq.Title)) : null,
-                ch ? h("span", null, h(IconText, { icon: "briefcase", size: 12, color: "#a1a1aa" }, ch.titre)) : null,
+                ch ? h("span", null, h(IconText, { icon: "briefcase", size: 12, color: "#a1a1aa" }, ch.titre + (ch.client ? " — " + ch.client : ""))) : null,
                 d.dateSouhaitee ? h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, "Souhaite : " + d.dateSouhaitee)) : null
               ),
               d.commentaireDecideur ? h("div", { style: { marginTop: 8, padding: "6px 10px", fontSize: 12, color: "#cbd5e1", background: "rgba(99,102,241,0.08)", borderLeft: "3px solid #818cf8", borderRadius: 4 } }, h(IconText, { icon: "message-circle", size: 11, color: "#a5b4fc" }, "Decideur : " + d.commentaireDecideur)) : null
@@ -19863,7 +19882,7 @@
           h("span", { style: lblStyle }, "Chantier"),
           h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: ddStyle },
             h("option", { value: "all" }, "Tous chantiers"),
-            (dbChantiers || []).map(function(c) { return h("option", { key: c.id, value: String(c.id) }, c.titre || c.nom || ("Chantier #" + c.id)); })
+            (dbChantiers || []).map(function(c) { return h("option", { key: c.id, value: String(c.id) }, chantierOptionLabel(c)); })
           ),
           h("span", { style: lblStyle }, "Sondeuse"),
           h("select", { value: sondeuseF, onChange: function(e) { setSondeuseF(e.target.value); }, style: ddStyle },
@@ -27525,7 +27544,7 @@
             onChange: function(e) { setSelectedId(e.target.value); },
             style: { padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.10)", fontSize: 13.5, fontFamily: "inherit", minWidth: 260, fontWeight: 600 }
           },
-            chantiersActifs.map(function(c) { return h("option", { key: c.id, value: c.id }, c.titre + " (" + c.statut + ")"); })
+            chantiersActifs.map(function(c) { return h("option", { key: c.id, value: c.id }, chantierOptionLabel(c) + " (" + c.statut + ")"); })
           )
         ),
 
@@ -27567,7 +27586,7 @@
                   h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 } },
                     h(Icon, { name: "hard-hat", size: 11, color: "#a1a1aa" }), "Chantier"
                   ),
-                  h("h3", { style: { fontSize: 18, fontWeight: 700, color: "#fafafa", margin: 0, marginBottom: 6, letterSpacing: "-0.01em", lineHeight: 1.2 } }, chantier.titre),
+                  h("h3", { style: { fontSize: 18, fontWeight: 700, color: "#fafafa", margin: 0, marginBottom: 6, letterSpacing: "-0.01em", lineHeight: 1.2 } }, chantier.titre, chantierClientBadge(chantier)),
                   h("div", { style: { fontSize: 12, color: "#a1a1aa", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" } },
                     h("span", { style: { fontWeight: 600 } }, (chantier.dateDebut ? new Date(chantier.dateDebut).toLocaleDateString("fr-FR") : "?") + " → " + (chantier.dateFin ? new Date(chantier.dateFin).toLocaleDateString("fr-FR") : "?")),
                     h("span", { style: { fontSize: 11, fontWeight: 600, color: chantier.statut === "Termine" ? "#86efac" : chantier.statut === "A venir" ? "#a5b4fc" : "#fde68a", background: chantier.statut === "Termine" ? "rgba(34,197,94,0.15)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.15)" : "rgba(251,191,36,0.15)", padding: "2px 8px", borderRadius: 3, border: "1px solid " + (chantier.statut === "Termine" ? "rgba(34,197,94,0.3)" : chantier.statut === "A venir" ? "rgba(99,102,241,0.3)" : "rgba(251,191,36,0.3)") } }, chantier.statut),
