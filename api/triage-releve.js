@@ -262,6 +262,51 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // 2bis-b. Releve date du JOUR D'ENVOI mais envoye AVANT la fin de journee
+    // declaree : la journee ne pouvait pas etre terminee -> c'est tres
+    // probablement le travail de la VEILLE date par erreur du jour d'envoi.
+    // Regle demandee : alerte systematique (pas d'auto-validation possible).
+    if (releve.date_releve && releve.created_at) {
+      const createdNC = new Date(new Date(releve.created_at).getTime() + 11 * 3600 * 1000);
+      const createdDateNC = createdNC.toISOString().slice(0, 10);
+      const createdTimeNC = createdNC.toISOString().slice(11, 16); // "HH:MM" heure Noumea
+      const dRel2 = String(releve.date_releve).substring(0, 10);
+      const hFin = String(releve.heure_fin || '').substring(0, 5);
+      const hDeb = String(releve.heure_debut || '').substring(0, 5);
+      // Quarts de nuit (fin < debut) exclus ; sans heure de fin exploitable : seuil 11h
+      const finJournee = (hFin && (!hDeb || hFin > hDeb)) ? hFin : '11:00';
+      if (dRel2 === createdDateNC && createdTimeNC < finJournee) {
+        const dateFrNF = dRel2.split('-').reverse().join('/');
+        const triageNF = {
+          verdict: 'alert',
+          confidence: 1.0,
+          summary: 'Envoye a ' + createdTimeNC + ' pour le ' + dateFrNF + ' (journee pas finie) : date suspecte',
+          flags: [{
+            type: 'date_journee_non_finie',
+            description: 'Releve date du ' + dateFrNF + ' envoye a ' + createdTimeNC + (hFin ? ' alors que la fin declaree est ' + hFin : ' (avant 11h)') +
+              ' : la journee ne pouvait pas etre terminee. C\'est probablement le travail de la VEILLE - verifier la date aupres du sondeur et la corriger.'
+          }],
+          analyzed_at: new Date().toISOString(),
+          model: 'regle-deterministe-dates'
+        };
+        const upNF = await fetch(SUPABASE_URL + '/rest/v1/releves_heures?id=eq.' + releveId, {
+          method: 'PATCH',
+          headers: {
+            apikey: SERVICE_KEY,
+            Authorization: 'Bearer ' + SERVICE_KEY,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify({ ia_triage: triageNF })
+        });
+        if (!upNF.ok) {
+          const upNFErr = await upNF.text();
+          return res.status(500).json({ error: 'Erreur sauvegarde Supabase', detail: upNFErr.slice(0, 500) });
+        }
+        return res.status(200).json({ ok: true, releve_id: releveId, triage: triageNF });
+      }
+    }
+
     // 2bis. Verification DETERMINISTE des dates : un employe ne peut PAS avoir
     // plus d'un releve pour un meme jour. Si un autre releve existe deja pour
     // (personnel_id, date_releve), verdict "alert" impose SANS appel IA :
