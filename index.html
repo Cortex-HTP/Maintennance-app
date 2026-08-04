@@ -24423,6 +24423,34 @@
         var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
         return { lignes: lignes, totaux: totaux, signataires: signataires, signatairesSansEmail: Object.keys(sigSansMail) };
       };
+      // Emails de signataire DEJA CONNUS en base pour ce chantier (tous rapports
+      // charges, meme hors periode), puis pour la MEME personne vue ailleurs.
+      // Evite de redemander une saisie manuelle quand l'adresse existe deja.
+      var histoEmailsChantier = function(c, nomsSansEmail) {
+        var siteUp = String(c.site || "").toUpperCase().trim();
+        var titreUp = String(c.titre || "").toUpperCase().trim();
+        var out = [], seen = {};
+        var push = function(e) {
+          var m = String(e || "").trim().toLowerCase();
+          if (m && m.indexOf("@") > 0 && !seen[m]) { seen[m] = 1; out.push(m); }
+        };
+        var sorted = (raps || []).slice().sort(function(a, b) {
+          return String(b.date_rapport || "").localeCompare(String(a.date_rapport || ""));
+        });
+        sorted.forEach(function(r) {
+          if (!r.client_signataire_email) return;
+          var match = r.chantier_id != null ? String(r.chantier_id) === String(c.id)
+            : (function() { var lu = String(r.lieu || "").toUpperCase().trim(); return !!lu && (lu === siteUp || lu === titreUp); })();
+          if (match) push(r.client_signataire_email);
+        });
+        if (!out.length && nomsSansEmail && nomsSansEmail.length) {
+          sorted.forEach(function(r) {
+            if (!r.client_signataire_email || !r.client_signataire_nom) return;
+            if (nomsSansEmail.indexOf(String(r.client_signataire_nom).trim()) >= 0) push(r.client_signataire_email);
+          });
+        }
+        return out.slice(0, 3);
+      };
       var envoyerValidation = function(chantierId, mois, perDebut) {
         var key = chantierId + "|" + perDebut;
         setSendingValId(key);
@@ -24497,17 +24525,20 @@
             else {
               var sigs = (snap && snap.signataires) || [];
               var sigsNoMail = (snap && snap.signatairesSansEmail) || [];
+              var histo = sigs.length ? [] : histoEmailsChantier(c, sigsNoMail);
               if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
+              // Email deja present en base sur des rapports signes anterieurement
+              else if (histo.length) { destAffiche = histo.join(", ") + " (deja en base)"; destOk = true; }
               else if (c.emailContact && String(c.emailContact).trim()) { destAffiche = c.emailContact + " (secours fiche)"; destOk = true; }
               else if (sigsNoMail.length) {
-                // Cas frequent : le client a signe les rapports mais SANS renseigner
-                // son email (champ optionnel a la signature) -> on nomme la personne.
+                // Le client a signe les rapports mais SANS renseigner son email
+                // (champ optionnel) et aucune adresse connue ailleurs en base.
                 destAffiche = "signataire " + sigsNoMail.join(", ") + " (sans email)";
                 destOk = false;
-                destAide = "Ce chantier a bien un signataire (" + sigsNoMail.join(", ") + ") mais aucun email n'a ete saisi lors de la signature des rapports : renseigner l'email contact dans la fiche chantier (Avancement > Modifier).";
+                destAide = "Ce chantier a bien un signataire (" + sigsNoMail.join(", ") + ") mais aucun email n'est connu en base pour lui : renseigner l'email contact dans la fiche chantier (Avancement > Modifier).";
               }
               else if (nbJours === 0) { destAffiche = "aucun rapport sur la periode"; destOk = false; }
-              else { destAffiche = "aucun signataire ni email contact"; destOk = false; destAide = "Aucun rapport de la periode n'a ete signe par le client : renseigner l'email contact dans la fiche chantier en secours."; }
+              else { destAffiche = "aucun signataire ni email contact"; destOk = false; destAide = "Aucun rapport signe ni email connu en base pour ce chantier : renseigner l'email contact dans la fiche chantier."; }
             }
             var pill;
             if (statut === "valide") pill = h("span", { style: pillStyle("rgba(34,197,94,0.15)", "rgba(34,197,94,0.40)", "#86efac") }, "Valide par " + (v.validataire_nom || "client") + " le " + fmtD(v.validated_at));
