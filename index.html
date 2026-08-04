@@ -557,12 +557,12 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
       var lon = c.longitude !== "" && c.longitude !== null && c.longitude !== undefined ? parseFloat(c.longitude) : null;
-      return { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
+      return { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, jour_cloture_facturation: Math.min(Math.max(parseInt(c.jourCloture) || 25, 1), 31), date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
     }
     // Petit badge "client" affiche a cote du nom d'un chantier (Avancement,
     // Previsionnel, Planning, cartes...). Retourne null si pas de client.
@@ -8430,7 +8430,7 @@
       };
 
       // ── CRUD Chantiers ──
-      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
+      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
@@ -9438,7 +9438,10 @@
               h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
               h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
             ),
-            h(FormField, { label: "Email contact client (validation du releve mensuel)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
+            h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
+              h(FormField, { label: "Email contact client (secours - les signataires des rapports sont prioritaires)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
+              h(FormField, { label: "Jour de cloture facturation" }, h("input", { type: "number", min: 1, max: 31, style: inputStyle, value: f.jourCloture != null ? f.jourCloture : 25, onChange: function(e) { upd("jourCloture", parseInt(e.target.value) || 25); } }))
+            ),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut || "", onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin || "", onChange: function(e) { upd("dateFin", e.target.value); } }))
@@ -12283,7 +12286,7 @@
 
       // CRUD handlers
       var openNewChantier = function() {
-        setEditing({ id: null, titre: "", client: "", emailContact: "", dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
+        setEditing({ id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
         setShowModal(true);
       };
       var openEditChantier = function(c) {
@@ -12791,7 +12794,10 @@
               h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
               h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
             ),
-            h(FormField, { label: "Email contact client (validation du releve mensuel)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
+            h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
+              h(FormField, { label: "Email contact client (secours - les signataires des rapports sont prioritaires)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
+              h(FormField, { label: "Jour de cloture facturation" }, h("input", { type: "number", min: 1, max: 31, style: inputStyle, value: f.jourCloture != null ? f.jourCloture : 25, onChange: function(e) { upd("jourCloture", parseInt(e.target.value) || 25); } }))
+            ),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut, onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin, onChange: function(e) { upd("dateFin", e.target.value); } }))
@@ -24289,25 +24295,42 @@
       // envoye au contact du chantier (email + lien signe) ; a la validation le
       // statut passe "valide" et la facturation peut partir (Cortex-Facturation).
       var EMPLOYES_API_BASE = "https://employes-psi.vercel.app";
-      var periodesCloses26 = (function() {
-        var p2 = function(n) { return (n < 10 ? "0" : "") + n; };
+      // Periodes PARAMETRABLES par chantier : jour de cloture dans la fiche
+      // chantier (defaut 25 -> du 26 au 25 ; 31 = mois calendaire, clampe).
+      // Le selecteur choisit un MOIS ; chaque chantier calcule SA periode.
+      var p2Val = function(n) { return (n < 10 ? "0" : "") + n; };
+      var lastDayVal = function(y, m) { return new Date(y, m, 0).getDate(); };
+      var finPeriodeMoisVal = function(y, m, jc) { return y + "-" + p2Val(m) + "-" + p2Val(Math.min(jc, lastDayVal(y, m))); };
+      var periodePourMoisVal = function(mois, jourCloture) {
+        var jc = Math.min(Math.max(parseInt(jourCloture) || 25, 1), 31);
+        var y = parseInt(String(mois).substring(0, 4), 10);
+        var m = parseInt(String(mois).substring(5, 7), 10);
+        if (!y || !m) return null;
+        var fin = finPeriodeMoisVal(y, m, jc);
+        var py = y, pm = m - 1;
+        if (pm < 1) { pm = 12; py--; }
+        var prevFin = finPeriodeMoisVal(py, pm, jc);
+        var dDeb = new Date(prevFin + "T00:00:00");
+        dDeb.setDate(dDeb.getDate() + 1);
+        var debut = dDeb.getFullYear() + "-" + p2Val(dDeb.getMonth() + 1) + "-" + p2Val(dDeb.getDate());
+        var fmtP = function(s) { return s.substring(8, 10) + "/" + s.substring(5, 7) + "/" + s.substring(0, 4); };
+        return { debut: debut, fin: fin, label: "Du " + fmtP(debut) + " au " + fmtP(fin) };
+      };
+      var MOIS_FR_VAL = ["Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin", "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre"];
+      var moisRecentsVal = (function() {
         var out = [];
         var now = new Date();
-        var y = now.getFullYear(), m = now.getMonth() + 1, day = now.getDate();
-        var finY = y, finM = m;
-        if (day < 26) { finM = m - 1; if (finM < 1) { finM = 12; finY--; } }
         for (var i = 0; i < 6; i++) {
-          var fy = finY, fm = finM - i;
-          while (fm < 1) { fm += 12; fy--; }
-          var dy = fy, dm = fm - 1;
-          if (dm < 1) { dm = 12; dy--; }
-          out.push({
-            debut: dy + "-" + p2(dm) + "-26",
-            fin: fy + "-" + p2(fm) + "-25",
-            label: "Du 26/" + p2(dm) + "/" + dy + " au 25/" + p2(fm) + "/" + fy
-          });
+          var y = now.getFullYear(), m = now.getMonth() + 1 - i;
+          while (m < 1) { m += 12; y--; }
+          out.push({ mois: y + "-" + p2Val(m), label: MOIS_FR_VAL[m - 1] + " " + y });
         }
         return out;
+      })();
+      var moisDefautVal = (function() {
+        // Par defaut : le dernier mois dont la periode standard (cloture 25) est close
+        var now = new Date();
+        return (now.getDate() > 25 || !moisRecentsVal[1]) ? moisRecentsVal[0].mois : moisRecentsVal[1].mois;
       })();
       var nbValRefus = (vals || []).filter(function(v) { return v.statut === "refuse"; }).length;
       // Miroir JS du snapshot serveur : detail par jour depuis les rapports charges
@@ -24324,12 +24347,15 @@
           } catch (e) { return 0; }
         };
         var byDay = {};
+        var sigMap = {};
         (raps || []).forEach(function(r) {
           var d = String(r.date_rapport || "").substring(0, 10);
           if (!d || d < debut || d > fin) return;
           var match = r.chantier_id != null ? String(r.chantier_id) === String(chantier.id)
             : (function() { var lu = String(r.lieu || "").toUpperCase().trim(); return !!lu && (lu === siteUp || lu === titreUp); })();
           if (!match) return;
+          var se = String(r.client_signataire_email || "").trim().toLowerCase();
+          if (se) sigMap[se] = r.client_signataire_nom || sigMap[se] || "";
           if (!byDay[d]) byDay[d] = { date: d, machines: {}, metrage: 0, heures: 0, attente: 0 };
           var e = byDay[d];
           if (r.sondeuse_code) e.machines[String(r.sondeuse_code).toUpperCase()] = true;
@@ -24348,10 +24374,11 @@
         totaux.metrage = Math.round(totaux.metrage * 10) / 10;
         totaux.heures = Math.round(totaux.heures * 10) / 10;
         totaux.attente = Math.round(totaux.attente * 10) / 10;
-        return { lignes: lignes, totaux: totaux };
+        var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
+        return { lignes: lignes, totaux: totaux, signataires: signataires };
       };
-      var envoyerValidation = function(chantierId, periode) {
-        var key = chantierId + "|" + periode.debut;
+      var envoyerValidation = function(chantierId, mois, perDebut) {
+        var key = chantierId + "|" + perDebut;
         setSendingValId(key);
         supabase.auth.getSession().then(function(s) {
           var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
@@ -24359,7 +24386,7 @@
           fetch(EMPLOYES_API_BASE + "/api/send-validation-recap", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
-            body: JSON.stringify({ chantier_id: chantierId, periode_debut: periode.debut, periode_fin: periode.fin })
+            body: JSON.stringify({ chantier_id: chantierId, mois: mois })
           }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
             .then(function(out) {
               setSendingValId(null);
@@ -24371,21 +24398,18 @@
         });
       };
       var renderValidationClient = function() {
-        var periode = periodesCloses26[0];
-        for (var i = 0; i < periodesCloses26.length; i++) {
-          if (periodesCloses26[i].debut === valPeriode) { periode = periodesCloses26[i]; break; }
-        }
-        var valByChantier = {};
-        (vals || []).forEach(function(v) {
-          if (String(v.periode_debut).substring(0, 10) === periode.debut) valByChantier[String(v.chantier_id)] = v;
-        });
-        // Chantiers affiches : actifs + ceux ayant une ligne pour la periode
+        var moisSel = valPeriode || moisDefautVal;
+        var moisObj = moisRecentsVal.find(function(x) { return x.mois === moisSel; }) || moisRecentsVal[0];
+        var todayIsoVal = (function() { var d = new Date(); return d.getFullYear() + "-" + p2Val(d.getMonth() + 1) + "-" + p2Val(d.getDate()); })();
+        // Chantiers affiches : actifs + ceux ayant une validation dont la fin
+        // de periode tombe dans le mois selectionne
         var chMap = {};
         (dbChantiers || []).forEach(function(c) { if (c.statut !== "Termine") chMap[String(c.id)] = c; });
-        Object.keys(valByChantier).forEach(function(cid) {
-          if (!chMap[cid]) {
-            var c2 = (dbChantiers || []).find(function(c) { return String(c.id) === cid; });
-            if (c2) chMap[cid] = c2;
+        (vals || []).forEach(function(x) {
+          if (String(x.periode_fin || "").substring(0, 7) !== moisSel) return;
+          if (!chMap[String(x.chantier_id)]) {
+            var c2 = (dbChantiers || []).find(function(cc) { return String(cc.id) === String(x.chantier_id); });
+            if (c2) chMap[String(c2.id)] = c2;
           }
         });
         var chList = Object.keys(chMap).map(function(k) { return chMap[k]; })
@@ -24395,40 +24419,55 @@
         };
         var fmtD = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[2] + "/" + s[1] + "/" + s[0] : "-"; };
         return h("div", null,
-          // Barre periode + explication
+          // Barre mois + explication
           h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 } },
-            h("label", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Periode"),
-            h("select", { value: periode.debut, onChange: function(e) { setValPeriode(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" } },
-              periodesCloses26.map(function(p) { return h("option", { key: p.debut, value: p.debut }, p.label); })
+            h("label", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Mois de facturation"),
+            h("select", { value: moisSel, onChange: function(e) { setValPeriode(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" } },
+              moisRecentsVal.map(function(p) { return h("option", { key: p.mois, value: p.mois }, p.label); })
             ),
-            h("span", { style: { fontSize: 11.5, color: "#71717a" } }, "Envoi automatique a chaque contact renseigne le 26 du mois - relance et envoi manuel possibles ici")
+            h("span", { style: { fontSize: 11.5, color: "#71717a" } }, "Periode calculee par chantier selon son jour de cloture (fiche chantier, defaut 25) - envoi auto a la cloture aux SIGNATAIRES des rapports, relance manuelle ici")
           ),
           // Lignes chantiers
           chList.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun chantier actif.") :
           chList.map(function(c) {
-            var v = valByChantier[String(c.id)] || null;
+            // Periode PROPRE a ce chantier (jour de cloture de la fiche, defaut 25)
+            var per = periodePourMoisVal(moisSel, c.jourCloture);
+            if (!per) return null;
+            var enCours = per.fin >= todayIsoVal; // pas encore cloturee
+            var v = (vals || []).find(function(x) { return String(x.chantier_id) === String(c.id) && String(x.periode_debut).substring(0, 10) === per.debut; }) || null;
             var statut = v ? v.statut : "brouillon";
             // Snapshot GELE uniquement pour envoye/valide/facture. Apres un REFUS
             // (ou en brouillon) on recalcule en live : l'admin corrige les rapports
             // puis renvoie -> les chiffres affiches/confirmes = ceux qui partiront.
             var snap = (v && v.snapshot && (statut === "envoye" || statut === "valide" || statut === "facture"))
               ? v.snapshot
-              : computeSnapshotPreview(c, periode.debut, periode.fin);
+              : computeSnapshotPreview(c, per.debut, per.fin);
             var tot = (snap && snap.totaux) || { metrage: 0, heures: 0, attente: 0 };
             var nbJours = (snap && snap.lignes ? snap.lignes.length : 0);
+            // Destinataires : SIGNATAIRES des rapports de la periode ;
+            // email contact de la fiche chantier en secours seulement.
+            var destAffiche, destOk;
+            if (v && v.destinataire_email) { destAffiche = v.destinataire_email; destOk = true; }
+            else {
+              var sigs = (snap && snap.signataires) || [];
+              if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
+              else if (c.emailContact && String(c.emailContact).trim()) { destAffiche = c.emailContact + " (secours fiche)"; destOk = true; }
+              else { destAffiche = "aucun signataire ni email contact"; destOk = false; }
+            }
             var pill;
             if (statut === "valide") pill = h("span", { style: pillStyle("rgba(34,197,94,0.15)", "rgba(34,197,94,0.40)", "#86efac") }, "Valide par " + (v.validataire_nom || "client") + " le " + fmtD(v.validated_at));
             else if (statut === "facture") pill = h("span", { style: pillStyle("rgba(6,182,212,0.15)", "rgba(6,182,212,0.40)", "#67e8f9") }, "Facture");
             else if (statut === "refuse") pill = h("span", { style: pillStyle("rgba(244,63,94,0.15)", "rgba(244,63,94,0.45)", "#fda4af") }, "Refuse - voir commentaire");
             else if (statut === "envoye") pill = h("span", { style: pillStyle("rgba(245,158,11,0.15)", "rgba(245,158,11,0.40)", "#fde68a") }, "Envoye le " + fmtD(v.sent_at) + (v.relance_at ? " (relance " + fmtD(v.relance_at) + ")" : ""));
+            else if (enCours) pill = h("span", { style: pillStyle("rgba(99,102,241,0.12)", "rgba(99,102,241,0.35)", "#a5b4fc") }, "Periode en cours - cloture le " + fmtD(per.fin));
             else pill = h("span", { style: pillStyle("rgba(148,163,184,0.12)", "rgba(148,163,184,0.35)", "#cbd5e1") }, "Brouillon");
-            var sending = sendingValId === (c.id + "|" + periode.debut);
-            var peutEnvoyer = statut === "brouillon" || statut === "refuse" || statut === "envoye";
-            var emailOk = !!(c.emailContact && String(c.emailContact).trim());
+            var sending = sendingValId === (c.id + "|" + per.debut);
+            var peutEnvoyer = (statut === "brouillon" || statut === "refuse" || statut === "envoye") && !enCours;
             return h("div", { key: "vc-" + c.id, style: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px", marginBottom: 8, background: "rgba(0,0,0,0.20)" } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
                 h("strong", { style: { fontSize: 13.5, color: "#e5e7eb" } }, c.titre, chantierClientBadge(c)),
-                h("span", { style: { fontSize: 11.5, color: "#a1a1aa" } }, emailOk ? c.emailContact : "email contact manquant"),
+                h("span", { style: { fontSize: 11, color: "#818cf8", fontWeight: 700, whiteSpace: "nowrap" } }, per.label + " (cloture " + (c.jourCloture || 25) + ")"),
+                h("span", { style: { fontSize: 11.5, color: destOk ? "#a1a1aa" : "#fbbf24" } }, destAffiche),
                 h("span", { style: { fontSize: 12, color: "#a5b4fc", fontWeight: 700, marginLeft: "auto" } },
                   nbJours + " j - " + tot.metrage.toLocaleString("fr-FR") + " m - " + tot.heures.toLocaleString("fr-FR") + " h" + (tot.attente ? " - attente " + tot.attente.toLocaleString("fr-FR") + " h" : "")),
                 pill
@@ -24453,7 +24492,7 @@
               ) : null,
               h("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
                 h(Button, { variant: "secondary", onClick: function() {
-                  setApercuVal({ chantier: c, periode: periode, snapshot: snap, statut: statut, v: v });
+                  setApercuVal({ chantier: c, periode: per, snapshot: snap, statut: statut, v: v });
                   // Signature chargee a la demande (exclue du fetch en boucle)
                   if (v && statut === "valide" && !v.signature_png) {
                     supabase.from("validations_recap_mensuel").select("id,signature_png").eq("id", v.id).single().then(function(res) {
@@ -24467,15 +24506,15 @@
                   }
                 } }, h(IconText, { icon: "eye", size: 13 }, "Apercu du detail")),
                 canEditSoumissions && peutEnvoyer ? h(Button, {
-                  disabled: sending || !emailOk || nbJours === 0,
+                  disabled: sending || !destOk || nbJours === 0,
                   onClick: function() {
                     var verb = statut === "envoye" ? "Relancer" : "Envoyer";
-                    if (!confirm(verb + " la demande de validation a " + c.emailContact + " ?\n\n" + c.titre + " - " + periode.label + "\n" + nbJours + " jour(s), " + tot.metrage + " m, " + tot.heures + " h")) return;
-                    envoyerValidation(c.id, periode);
+                    if (!confirm(verb + " la demande de validation a " + destAffiche + " ?\n\n" + c.titre + " - " + per.label + "\n" + nbJours + " jour(s), " + tot.metrage + " m, " + tot.heures + " h")) return;
+                    envoyerValidation(c.id, moisSel, per.debut);
                   }
                 }, h(IconText, { icon: "send", size: 13 }, sending ? "Envoi..." : (statut === "envoye" ? "Relancer" : "Envoyer au client"))) : null,
-                !emailOk ? h("span", { style: { fontSize: 11.5, color: "#fbbf24", alignSelf: "center" } }, "Renseigner l'email contact dans la fiche chantier (Avancement > Modifier)") : null,
-                emailOk && nbJours === 0 && statut === "brouillon" ? h("span", { style: { fontSize: 11.5, color: "#71717a", alignSelf: "center" } }, "Aucun rapport sur la periode") : null
+                !destOk && !enCours ? h("span", { style: { fontSize: 11.5, color: "#fbbf24", alignSelf: "center" } }, "Aucun signataire sur les rapports de la periode : renseigner l'email contact dans la fiche chantier en secours") : null,
+                destOk && nbJours === 0 && statut === "brouillon" && !enCours ? h("span", { style: { fontSize: 11.5, color: "#71717a", alignSelf: "center" } }, "Aucun rapport sur la periode") : null
               )
             );
           }),

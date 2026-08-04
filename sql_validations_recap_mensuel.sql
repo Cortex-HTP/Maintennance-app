@@ -13,8 +13,12 @@
 --    l'anonyme n'a AUCUN acces direct a la table.
 -- ============================================================================
 
--- ─── 1. Email du contact client par chantier ───
+-- ─── 1. Email du contact client (secours) + jour de cloture par chantier ───
+-- Destinataires reels = SIGNATAIRES des rapports de la periode ; email_contact
+-- ne sert que si aucun signataire. Le jour de cloture (defaut 25 = periode du
+-- 26 au 25) est parametrable par chantier (31 = mois calendaire, clampe).
 alter table public.chantiers add column if not exists email_contact text;
+alter table public.chantiers add column if not exists jour_cloture_facturation int default 25;
 
 -- ─── 2. Table des validations mensuelles ───
 create table if not exists public.validations_recap_mensuel (
