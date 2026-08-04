@@ -22200,7 +22200,7 @@
           // Validations client du releve mensuel (onglet Validation client des rapports).
           // Colonnes light : signature_png (lourde) et token (sensible) exclus du
           // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
-          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,facture_envoyee_at,created_at").order("periode_debut", { ascending: false })
+          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,facture_envoyee_at,created_at").order("periode_debut", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -24435,6 +24435,22 @@
               ),
               statut === "refuse" && v && v.commentaire_refus ? h("div", { style: { marginTop: 8, padding: "8px 12px", borderRadius: 8, background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.30)", fontSize: 12.5, color: "#fecaca" } },
                 h("strong", null, (v.validataire_nom || "Client") + " : "), v.commentaire_refus) : null,
+              // Registre des corrections proposees par le client : une entree par
+              // valeur modifiee (date + champ + avant barre -> apres + justification).
+              // L'admin corrige les rapports a la source puis renvoie la version corrigee.
+              statut === "refuse" && v && Array.isArray(v.corrections) && v.corrections.length ? h("div", { style: { marginTop: 6 } },
+                v.corrections.map(function(cor, ci) {
+                  var lblCh = cor.champ === "metrage" ? "Metrage" : cor.champ === "heures" ? "Heures" : "Attente";
+                  return h("div", { key: ci, style: { borderLeft: "3px solid #d97706", background: "rgba(245,158,11,0.06)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" } },
+                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#fbbf24", whiteSpace: "nowrap" } }, "Correction — " + lblCh + " — " + fmtD(cor.date)),
+                    h("span", null,
+                      cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, String(cor.avant)) : null,
+                      h("span", { style: { color: "#4ade80", fontWeight: 800 } }, String(cor.apres))),
+                    h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, "« " + String(cor.commentaire || "") + " »"),
+                    h("span", { style: { fontSize: 10.5, color: "#71717a" } }, v.validataire_nom || "Client")
+                  );
+                })
+              ) : null,
               h("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
                 h(Button, { variant: "secondary", onClick: function() {
                   setApercuVal({ chantier: c, periode: periode, snapshot: snap, statut: statut, v: v });

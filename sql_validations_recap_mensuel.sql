@@ -35,10 +35,16 @@ create table if not exists public.validations_recap_mensuel (
   validataire_email text,
   signature_png text,
   commentaire_refus text,
+  -- Corrections proposees par le client, UNE entree PAR VALEUR modifiee :
+  -- [{date, champ (metrage|heures|attente), avant, apres, commentaire}]
+  corrections jsonb,
   facture_envoyee_at timestamptz,
   created_at timestamptz not null default now(),
   unique (chantier_id, periode_debut)
 );
+
+-- Si la table existait deja (re-execution) : ajout idempotent de la colonne
+alter table public.validations_recap_mensuel add column if not exists corrections jsonb;
 
 create index if not exists idx_vrm_token on public.validations_recap_mensuel (token);
 create index if not exists idx_vrm_statut on public.validations_recap_mensuel (statut);
