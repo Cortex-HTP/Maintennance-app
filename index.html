@@ -19651,6 +19651,28 @@
       var decaissTresoJour = (decaissTresoPeriode != null && joursOuvres > 0) ? (decaissTresoPeriode / joursOuvres) : null;
       var gainTresoMetre = (coutTresoMetre != null) ? (prixMetreEffectif - coutTresoMetre) : null;
       var gainTresoPct = (gainTresoMetre != null && prixMetreEffectif > 0) ? (gainTresoMetre / prixMetreEffectif) * 100 : null;
+      // ── Projection MOIS COMPLET du seuil (lisibilite en debut de mois) ──
+      // Le seuil "a date" (charges courues / prix) demarre tout petit le 1er du
+      // mois et grossit chaque jour : deroutant. Quand la periode affichee est le
+      // mois EN COURS, on projette le seuil sur le mois entier (seuil/jour x jours
+      // ouvres Lun-Jeu du mois) et on garde le "a date" en sous-ligne.
+      var joursOuvresMoisCompletLJ = (function() {
+        var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1);
+        while (d.getMonth() === now.getMonth()) { var dow = d.getDay(); if (dow >= 1 && dow <= 4) jo++; d.setDate(d.getDate() + 1); }
+        return jo;
+      })();
+      var periodeEstMoisEnCours = (function() {
+        if (!periodStart) return false;
+        if (periodStart.getFullYear() !== now.getFullYear() || periodStart.getMonth() !== now.getMonth()) return false;
+        if (periodEnd) {
+          var pe = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate());
+          var td = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          if (pe.getTime() < td.getTime()) return false;
+        }
+        return true;
+      })();
+      var seuilMoisProjete = (periodeEstMoisEnCours && joursOuvres > 0 && seuilJour > 0) ? seuilJour * joursOuvresMoisCompletLJ : null;
+      var seuilTresoProjete = (periodeEstMoisEnCours && seuilTresoJour != null && seuilTresoJour > 0) ? seuilTresoJour * joursOuvresMoisCompletLJ : null;
       // Couleur verdict TRESO : vert = rentable (marge >= 5%), jaune = a peine rentable /
       // legerement negative (-5% a 5%), rouge = pas rentable (marge < -5%).
       var tresoColor = gainTresoPct == null ? "#67e8f9" : (gainTresoPct >= 5 ? "#86efac" : (gainTresoPct >= -5 ? "#fcd34d" : "#fda4af"));
@@ -19951,14 +19973,16 @@
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
                     "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA/jour - couts DIRECTS/jour (conso + personnel equipe + charges patronales, ÷ jours travailles) - couts INDIRECTS/jour (emprunts + charges fixes + hors-equipe, au prorata metres ÷ jours ouvrables du mois). Cette separation evite d'ecraser les charges fixes du mois entier sur quelques jours travailles."),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA/jour - couts DIRECTS/jour (conso + personnel equipe + charges patronales, ÷ jours travailles) - couts INDIRECTS/jour (emprunts + charges fixes + hors-equipe, au prorata metres ÷ jours ouvrables du mois). La marge TRESO utilise le CASH decaisse (cout treso/m x metres/jour) au lieu des charges comptables."),
                   hiddenInactive > 0 ? h("div", { style: { fontSize: 10.5, color: "#fdba74", marginTop: 4, fontStyle: "italic" } }, hiddenInactive + " machine" + (hiddenInactive > 1 ? "s" : "") + " masquee" + (hiddenInactive > 1 ? "s" : "") + " (inactive" + (hiddenInactive > 1 ? "s" : "") + " depuis plus de 7 jours)") : null
                 )
               ),
               withMarge.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucune machine avec CA sur cette periode.") :
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 10 } },
                 withMarge.map(function(x, i) {
                   var st = rankColSt(i, withMarge.length);
+                  // Marge TRESO/jour : CA/jour - cout CASH impute (cout treso au metre x m/j)
+                  var margeTresoJour = coutTresoMetre != null ? (x.caJour - coutTresoMetre * x.metresJour) : null;
                   return h("div", { key: x.code, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "12px 14px" } },
                     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 } },
                       h("div", { style: { fontWeight: 800, fontSize: 15, color: "#fafafa", fontFamily: "monospace" } }, x.code),
@@ -19975,9 +19999,9 @@
                         h("div", { style: { fontWeight: 800, color: "#fda4af", fontFamily: "monospace", fontSize: 13 } }, fmtCaShort(x.coutJour) + " /j")
                       )
                     ),
-                    // 2 marges cote a cote : OPERATIONNELLE (CA - directs propres a la machine)
-                    // + NETTE (CA - directs - indirects ventiles).
-                    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 } },
+                    // 3 marges cote a cote : OPERATIONNELLE (CA - directs propres a la machine)
+                    // + NETTE (CA - directs - indirects ventiles) + TRESO (CA - cash decaisse impute).
+                    h("div", { style: { display: "grid", gridTemplateColumns: margeTresoJour != null ? "1fr 1fr 1fr" : "1fr 1fr", gap: 6 } },
                       // Marge OP : perf intrinseque de la machine
                       h("div", { style: { padding: "8px 10px", background: x.margeOpJour >= 0 ? "rgba(34,197,94,0.14)" : "rgba(251,146,60,0.14)", border: "1px solid " + (x.margeOpJour >= 0 ? "rgba(34,197,94,0.40)" : "rgba(251,146,60,0.40)"), borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge OPERATIONNELLE = CA - couts DIRECTS de la machine (conso + personnel equipe + charges patronales)\n\nCA total : " + fmtNum(Math.round(x.caTotal)) + " XPF\nConso reelle : " + fmtNum(Math.round(x.coutConso)) + " XPF\nPersonnel equipe : " + fmtNum(Math.round(x.coutPersonnel)) + " XPF\nCharges patronales (40%) : " + fmtNum(Math.round(x.coutCharges)) + " XPF\n─────────\nMarge op periode : " + fmtNum(Math.round(x.caTotal - x.coutConso - x.coutPersonnel - x.coutCharges)) + " XPF\n÷ " + x.nbJoursTravailles + " jours travailles\n= " + fmtNum(Math.round(x.margeOpJour)) + " XPF/jour\n\nReflete la perf intrinseque de la machine + son equipe, sans quote-part des charges globales." },
                         h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge op/jour"),
@@ -19987,7 +20011,12 @@
                       h("div", { style: { padding: "8px 10px", background: st.bg, border: "1px solid " + st.color, borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge NETTE = marge op - part des couts INDIRECTS (emprunts + charges fixes + hors-equipe, au prorata metres)\n\nMarge op : " + fmtNum(Math.round(x.caTotal - x.coutConso - x.coutPersonnel - x.coutCharges)) + " XPF\nEmprunts machine : -" + fmtNum(Math.round(x.coutEmprunt)) + " XPF\nCharges indirectes (prorata metrage) : -" + fmtNum(Math.round(x.coutIndirect)) + " XPF\n─────────\nMarge nette periode : " + fmtNum(Math.round(x.caTotal - x.coutTotal)) + " XPF\n\nDirects ÷ " + x.nbJoursTravailles + " j travailles\nIndirects ÷ " + x.joursOuvrables + " j ouvrables Lun-Ven du mois\n= " + fmtNum(Math.round(x.margeJour)) + " XPF/jour\n\nReflete la contribution de la machine a couvrir toutes les charges de l'entreprise." },
                         h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge nette/jour"),
                         h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(x.margeJour) + " /j")
-                      )
+                      ),
+                      // Marge TRESO : vision CASH (ce que la machine laisse en tresorerie)
+                      margeTresoJour != null ? h("div", { style: { padding: "8px 10px", background: margeTresoJour >= 0 ? "rgba(6,182,212,0.12)" : "rgba(244,63,94,0.12)", border: "1px solid " + (margeTresoJour >= 0 ? "rgba(6,182,212,0.40)" : "rgba(244,63,94,0.40)"), borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge TRESO = CA/jour - cout CASH impute a la machine\n\nCout treso global : " + fmtNum(Math.round(coutTresoMetre)) + " XPF/m (decaissements de la periode ÷ metrage total)\nx " + Math.round(x.metresJour) + " m/j = " + fmtNum(Math.round(coutTresoMetre * x.metresJour)) + " XPF/jour\n\nCA/jour : " + fmtNum(Math.round(x.caJour)) + " XPF\n─────────\nMarge treso : " + fmtNum(Math.round(margeTresoJour)) + " XPF/jour\n\nVision CASH : ce que la machine laisse (ou coute) en tresorerie par jour travaille, emprunts et virements internes traites comme dans le previsionnel treso." },
+                        h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge treso/jour"),
+                        h("div", { style: { fontWeight: 900, color: margeTresoJour >= 0 ? "#67e8f9" : "#fda4af", fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(margeTresoJour) + " /j")
+                      ) : null
                     )
                   );
                 })
@@ -20001,24 +20030,30 @@
             h("div", { style: { flex: "1 1 220px", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.30)", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 } },
               h(Icon, { name: "target", size: 18, color: "#fde68a" }),
               h("div", { style: { flex: 1 } },
-                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Seuil rentabilite"),
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Seuil rentabilite" + (seuilMoisProjete != null ? " - mois complet (projete)" : "")),
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a", lineHeight: 1.25 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
-                  Math.round(seuilMois).toLocaleString("fr-FR") + " m",
+                  Math.round(seuilMoisProjete != null ? seuilMoisProjete : seuilMois).toLocaleString("fr-FR") + " m",
                   joursOuvres > 0 ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + seuilJour.toFixed(1) + " m/jour)") : null
                 ),
                 h("div", { style: { fontSize: 11, color: "#fde68a", fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
-                  fmtCaCompact(totalCoutsAll) + " XPF",
+                  fmtCaCompact(seuilMoisProjete != null && joursOuvres > 0 ? (totalCoutsAll / joursOuvres) * joursOuvresMoisCompletLJ : totalCoutsAll) + " XPF",
                   joursOuvres > 0 ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(totalCoutsAll / joursOuvres) + "/jour)") : null
                 ),
+                seuilMoisProjete != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, margin: "1px 0 2px" } },
+                  "A date (" + joursOuvres + " j ouvres) : " + Math.round(seuilMois).toLocaleString("fr-FR") + " m · realise " + Math.round(totalMetresAll).toLocaleString("fr-FR") + " m · " + (totalMetresAll >= seuilMois ? "+" + Math.round(totalMetresAll - seuilMois).toLocaleString("fr-FR") + " m" : "reste " + Math.round(seuilMois - totalMetresAll).toLocaleString("fr-FR") + " m")
+                ) : null,
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                   h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
-                  seuilTresoMois != null ? Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m" : "—",
+                  (seuilTresoProjete != null ? Math.round(seuilTresoProjete).toLocaleString("fr-FR") + " m" : (seuilTresoMois != null ? Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m" : "—")),
                   seuilTresoJour != null ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + seuilTresoJour.toFixed(1) + " m/jour)") : null
                 ),
                 seuilTresoMois != null ? h("div", { style: { fontSize: 11, color: tresoColor, fontWeight: 700, opacity: 0.85, lineHeight: 1.2 } },
-                  fmtCaCompact(decaissTresoPeriode) + " XPF",
+                  fmtCaCompact(seuilTresoProjete != null && decaissTresoJour != null ? decaissTresoJour * joursOuvresMoisCompletLJ : decaissTresoPeriode) + " XPF",
                   decaissTresoJour != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + fmtCaCompact(decaissTresoJour) + "/jour)") : null
+                ) : null,
+                seuilTresoProjete != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } },
+                  "A date : " + Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m · " + (totalMetresAll >= seuilTresoMois ? "+" + Math.round(totalMetresAll - seuilTresoMois).toLocaleString("fr-FR") + " m" : "reste " + Math.round(seuilTresoMois - totalMetresAll).toLocaleString("fr-FR") + " m")
                 ) : null
               )
             ),
@@ -20034,7 +20069,7 @@
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
                     fmtXPF(Math.round(coutParMetreGlobal)) + " /m",
                     h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } },
-                      seuilDepasse ? "(+" + Math.round(totalMetresAll - seuilMois) + " m)" : "(manque " + Math.round(seuilMois - totalMetresAll) + " m)")),
+                      seuilDepasse ? "(+" + Math.round(totalMetresAll - seuilMois) + " m a date)" : "(manque " + Math.round(seuilMois - totalMetresAll) + " m a date)")),
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                     coutTresoMetre != null ? (fmtXPF(Math.round(coutTresoMetre)) + " /m") : "—")
@@ -20190,7 +20225,8 @@
                     var barH = maxDay > 0 ? (d.value / maxDay) * (chartH - topPad) : 0;
                     var fcH = maxDay > 0 ? ((d.forecast || 0) / maxDay) * (chartH - topPad) : 0;
                     var x = paddingLR + idx * (barW + gap);
-                    var seuilForBar = isMonthlyView ? seuilMois : seuilJour;
+                    // Seuil indexe sur la TRESO (cash), repli compta si indisponible
+                    var seuilForBar = isMonthlyView ? (seuilTresoMois != null ? seuilTresoMois : seuilMois) : (seuilTresoJour != null ? seuilTresoJour : seuilJour);
                     var canCompare = seuilForBar > 0 && d.value > 0 && (isMonthlyView || !d.isWE);
                     var barColor;
                     if (canCompare) {
@@ -20233,16 +20269,20 @@
                   h("line", { x1: paddingLR - 2, x2: totalW - paddingLR + 2, y1: chartH, y2: chartH, stroke: "rgba(255,255,255,0.1)", strokeWidth: 1 }),
                   // Trait horizontal SEUIL RENTABILITE (design epure)
                   (function() {
-                    var seuilValeur = isMonthlyView ? seuilMois : seuilJour;
+                    // Trait seuil indexe sur la TRESO (cash decaisse), repli compta
+                    var sMois = seuilTresoMois != null ? seuilTresoMois : seuilMois;
+                    var sJour = seuilTresoJour != null ? seuilTresoJour : seuilJour;
+                    var estTreso = seuilTresoMois != null;
+                    var seuilValeur = isMonthlyView ? sMois : sJour;
                     if (!seuilValeur || seuilValeur <= 0 || !maxDay) return null;
                     if (seuilValeur > maxDay * 1.5) return null; // hors graphique, on cache
                     var seuilY = chartH - (seuilValeur / maxDay) * (chartH - topPad);
                     if (seuilY < topPad || seuilY > chartH) return null;
-                    var coul = seuilDepasse ? "#86efac" : "#fda4af";
-                    var tipText = isMonthlyView
-                      ? ("Seuil : " + Math.round(seuilValeur) + " m/mois")
-                      : ("Seuil : " + seuilValeur.toFixed(1) + " m/jour (" + Math.round(seuilMois) + " m/mois)");
-                    var labelText = "SEUIL " + (isMonthlyView ? Math.round(seuilValeur).toLocaleString("fr-FR") + " m" : seuilValeur.toFixed(1) + " m/j");
+                    var coul = totalMetresAll >= sMois ? "#86efac" : "#fda4af";
+                    var tipText = (estTreso ? "Seuil TRESO" : "Seuil compta") + " : " + (isMonthlyView
+                      ? (Math.round(seuilValeur) + " m/mois")
+                      : (seuilValeur.toFixed(1) + " m/jour (" + Math.round(sMois) + " m/mois)"));
+                    var labelText = "SEUIL" + (estTreso ? " TRESO " : " ") + (isMonthlyView ? Math.round(seuilValeur).toLocaleString("fr-FR") + " m" : seuilValeur.toFixed(1) + " m/j");
                     var labelW = labelText.length * 5.4 + 12;
                     return h("g", null,
                       // ligne fine pointillee, opacite plus douce
