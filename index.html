@@ -22197,8 +22197,10 @@
           supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }),
           // Commandes materiel des mecaniciens - fusionnees a l'onglet "Commandes" comme une source unifiee.
           supabase.from("commandes_materiel_mec").select("id,intervention_id,mecanicien_code,mecanicien_nom,description,urgence,photos,lignes,statut,notes_admin,date_creation,date_traitement").order("date_creation", { ascending: false }),
-          // Validations client du releve mensuel (onglet Validation client des rapports)
-          supabase.from("validations_recap_mensuel").select("*").order("periode_debut", { ascending: false })
+          // Validations client du releve mensuel (onglet Validation client des rapports).
+          // Colonnes light : signature_png (lourde) et token (sensible) exclus du
+          // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
+          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,facture_envoyee_at,created_at").order("periode_debut", { ascending: false })
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -24405,10 +24407,15 @@
           chList.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun chantier actif.") :
           chList.map(function(c) {
             var v = valByChantier[String(c.id)] || null;
-            var snap = v && v.snapshot ? v.snapshot : computeSnapshotPreview(c, periode.debut, periode.fin);
+            var statut = v ? v.statut : "brouillon";
+            // Snapshot GELE uniquement pour envoye/valide/facture. Apres un REFUS
+            // (ou en brouillon) on recalcule en live : l'admin corrige les rapports
+            // puis renvoie -> les chiffres affiches/confirmes = ceux qui partiront.
+            var snap = (v && v.snapshot && (statut === "envoye" || statut === "valide" || statut === "facture"))
+              ? v.snapshot
+              : computeSnapshotPreview(c, periode.debut, periode.fin);
             var tot = (snap && snap.totaux) || { metrage: 0, heures: 0, attente: 0 };
             var nbJours = (snap && snap.lignes ? snap.lignes.length : 0);
-            var statut = v ? v.statut : "brouillon";
             var pill;
             if (statut === "valide") pill = h("span", { style: pillStyle("rgba(34,197,94,0.15)", "rgba(34,197,94,0.40)", "#86efac") }, "Valide par " + (v.validataire_nom || "client") + " le " + fmtD(v.validated_at));
             else if (statut === "facture") pill = h("span", { style: pillStyle("rgba(6,182,212,0.15)", "rgba(6,182,212,0.40)", "#67e8f9") }, "Facture");
@@ -24429,7 +24436,20 @@
               statut === "refuse" && v && v.commentaire_refus ? h("div", { style: { marginTop: 8, padding: "8px 12px", borderRadius: 8, background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.30)", fontSize: 12.5, color: "#fecaca" } },
                 h("strong", null, (v.validataire_nom || "Client") + " : "), v.commentaire_refus) : null,
               h("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
-                h(Button, { variant: "secondary", onClick: function() { setApercuVal({ chantier: c, periode: periode, snapshot: snap, statut: statut, v: v }); } }, h(IconText, { icon: "eye", size: 13 }, "Apercu du detail")),
+                h(Button, { variant: "secondary", onClick: function() {
+                  setApercuVal({ chantier: c, periode: periode, snapshot: snap, statut: statut, v: v });
+                  // Signature chargee a la demande (exclue du fetch en boucle)
+                  if (v && statut === "valide" && !v.signature_png) {
+                    supabase.from("validations_recap_mensuel").select("id,signature_png").eq("id", v.id).single().then(function(res) {
+                      if (res.data && res.data.signature_png) {
+                        setApercuVal(function(prev) {
+                          if (!prev || !prev.v || prev.v.id !== v.id) return prev;
+                          return Object.assign({}, prev, { v: Object.assign({}, prev.v, { signature_png: res.data.signature_png }) });
+                        });
+                      }
+                    });
+                  }
+                } }, h(IconText, { icon: "eye", size: 13 }, "Apercu du detail")),
                 canEditSoumissions && peutEnvoyer ? h(Button, {
                   disabled: sending || !emailOk || nbJours === 0,
                   onClick: function() {

@@ -44,20 +44,20 @@ create index if not exists idx_vrm_token on public.validations_recap_mensuel (to
 create index if not exists idx_vrm_statut on public.validations_recap_mensuel (statut);
 
 -- ─── 3. RLS ───
+-- LECTURE SEULE pour les utilisateurs de l'app : cette table est la PREUVE qui
+-- debloque la facturation. Toutes les ECRITURES passent par les endpoints
+-- Vercel en service role (send-validation-recap / validation-recap / cron),
+-- jamais par le front. Aucune policy anon (table invisible aux non-connectes).
 alter table public.validations_recap_mensuel enable row level security;
 
 drop policy if exists "vrm_app_users_all" on public.validations_recap_mensuel;
-create policy "vrm_app_users_all" on public.validations_recap_mensuel
-  for all to authenticated
+drop policy if exists "vrm_app_users_select" on public.validations_recap_mensuel;
+create policy "vrm_app_users_select" on public.validations_recap_mensuel
+  for select to authenticated
   using (exists (
     select 1 from public.app_users u
     where lower(u.email) = lower(coalesce(auth.jwt() ->> 'email', ''))
-  ))
-  with check (exists (
-    select 1 from public.app_users u
-    where lower(u.email) = lower(coalesce(auth.jwt() ->> 'email', ''))
   ));
--- (aucune policy anon : la table est invisible pour les non-connectes)
 
 -- ─── 4. Realtime (l'onglet admin se met a jour tout seul) ───
 do $$
