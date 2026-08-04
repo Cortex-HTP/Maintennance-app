@@ -14861,6 +14861,86 @@
       (personnel || []).forEach(function(p) {
         if (p && p.code && p.id != null) codeToPidPe[String(p.code)] = p.id;
       });
+
+      // ── Conges lus DIRECTEMENT depuis les demandes (source de verite) ──
+      // On ne depend plus du report dans "affectations" : un conge approuve
+      // apparait meme si le report automatique n'a pas tourne (ex. conge valide
+      // avant la mise en place du report). Les demandes EN ATTENTE sont aussi
+      // affichees (en pointille) pour ne pas planifier quelqu'un qui sera absent.
+      var _congesPe = useState([]);
+      var congesPe = _congesPe[0]; var setCongesPe = _congesPe[1];
+      useEffect(function() {
+        var cancelled = false;
+        function loadConges() {
+          supabase.from("demandes_conge")
+            .select("id,demandeur_id,type_conge,nombre_jours,date_debut,date_reprise,statut")
+            .in("statut", ["en_attente", "approuvee"])
+            .then(function(res) {
+              if (cancelled) return;
+              if (res.error) { console.warn("[planning-conges]", res.error.message); return; }
+              setCongesPe(res.data || []);
+            });
+        }
+        loadConges();
+        var ch = null;
+        try {
+          ch = supabase.channel("planning_conges_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "demandes_conge" }, loadConges)
+            .subscribe();
+        } catch (e) { console.warn("[planning-conges realtime]", e); }
+        return function() { cancelled = true; if (ch) { try { supabase.removeChannel(ch); } catch (e) {} } };
+      }, []);
+
+      // Index : personnel_id -> { "AAAA-MM-JJ": { statut, type } }
+      // Le demandeur_id des demandes est un hash bigint du code personnel : on
+      // resout via le meme hash que partout ailleurs, avec repli sur l'id direct.
+      var congesParEmpPe = (function() {
+        var out = {};
+        var pidByHash = {};
+        (personnel || []).forEach(function(p) {
+          if (!p || p.id == null) return;
+          if (p.code) pidByHash[String(_strToBigintPe(p.code))] = p.id;
+          pidByHash[String(p.id)] = p.id;
+        });
+        (congesPe || []).forEach(function(cg) {
+          var pid = pidByHash[String(cg.demandeur_id)];
+          if (pid == null) return;
+          var deb = String(cg.date_debut || "").substring(0, 10);
+          if (!deb) return;
+          var dCur = new Date(deb + "T00:00:00");
+          if (isNaN(dCur.getTime())) return;
+          // Fin = veille de la reprise ; sans reprise, on deroule nombre_jours ouvres
+          var fin = null;
+          if (cg.date_reprise) {
+            fin = new Date(String(cg.date_reprise).substring(0, 10) + "T00:00:00");
+            fin.setDate(fin.getDate() - 1);
+          }
+          var restants = parseInt(cg.nombre_jours) || 1;
+          var safe = 0;
+          while (safe < 120) {
+            if (fin !== null) { if (dCur.getTime() > fin.getTime()) break; }
+            else if (restants <= 0) break;
+            var dow = dCur.getDay();
+            // Week-ends ignores (pas de conge pose un samedi/dimanche)
+            if (dow !== 0 && dow !== 6) {
+              var ds = dCur.getFullYear() + "-" + String(dCur.getMonth() + 1).padStart(2, "0") + "-" + String(dCur.getDate()).padStart(2, "0");
+              if (!out[pid]) out[pid] = {};
+              // Un conge APPROUVE prime sur une demande en attente le meme jour
+              if (!out[pid][ds] || cg.statut === "approuvee") {
+                out[pid][ds] = { statut: cg.statut, type: cg.type_conge || "conge" };
+              }
+              if (fin === null) restants--;
+            }
+            dCur.setDate(dCur.getDate() + 1);
+            safe++;
+          }
+        });
+        return out;
+      })();
+      function getCongePe(empId, dateStr) {
+        var m = congesParEmpPe[empId];
+        return m ? (m[dateStr] || null) : null;
+      }
       function siteToChantierPe(lieu) {
         if (!lieu) return null;
         var lk = String(lieu).toUpperCase().trim();
@@ -15000,6 +15080,25 @@
         return d.getFullYear() === year && d.getMonth() === monthIdx;
       }).length;
 
+      // Conflits du mois affiche : jours ou un employe est planifie sur un
+      // chantier ALORS QU'il a une demande de conge en attente ce jour-la.
+      var conflitsMoisPe = (function() {
+        var jours = 0, emps = {}, nbAttente = 0;
+        var nbJoursMois = new Date(year, monthIdx + 1, 0).getDate();
+        (personnel || []).forEach(function(emp) {
+          for (var dd = 1; dd <= nbJoursMois; dd++) {
+            var ds = year + "-" + String(monthIdx + 1).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+            var cg = getCongePe(emp.id, ds);
+            if (!cg || cg.statut !== "en_attente") continue;
+            nbAttente++;
+            if (getAffectation(emp.id, ds) && getAffectationType(emp.id, ds) === "travail") {
+              jours++; emps[emp.id] = 1;
+            }
+          }
+        });
+        return { jours: jours, employes: Object.keys(emps).length, joursAttente: nbAttente };
+      })();
+
       return h("div", {
         onMouseUp: function() { setPainting(false); },
         onMouseLeave: function() { setPainting(false); },
@@ -15014,6 +15113,24 @@
           h(KPICard, { icon: h(Icon, { name: "users", size: 32, color: "#a78bfa" }), label: "Employes", value: String(personnel.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#059669" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "calendar-check", size: 32, color: "#d97706" }), label: "Affectations ce mois", value: String(totalAffectations), color: "#d97706" })
+        ),
+        // Alerte conflits : planifie sur un chantier alors qu'un conge est demande
+        conflitsMoisPe.jours > 0 ? h("div", { style: { background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.38)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12.5, color: "#fde68a", display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" } },
+          h(Icon, { name: "alert-triangle", size: 15, color: "#fde68a" }),
+          h("strong", null, conflitsMoisPe.jours + " jour" + (conflitsMoisPe.jours > 1 ? "s" : "") + " planifie" + (conflitsMoisPe.jours > 1 ? "s" : "") + " en conflit"),
+          h("span", null, "avec des demandes de conge en attente - " + conflitsMoisPe.employes + " employe" + (conflitsMoisPe.employes > 1 ? "s" : "") + " concerne" + (conflitsMoisPe.employes > 1 ? "s" : "") + ". Traiter les demandes (Soumissions > Conges) avant de figer le planning.")
+        ) : (conflitsMoisPe.joursAttente > 0 ? h("div", { style: { background: "rgba(6,182,212,0.07)", border: "1px solid rgba(6,182,212,0.30)", borderRadius: 10, padding: "9px 14px", marginBottom: 12, fontSize: 12.5, color: "#67e8f9", display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" } },
+          h(Icon, { name: "info", size: 15, color: "#67e8f9" }),
+          h("span", null, conflitsMoisPe.joursAttente + " jour(s) de conge DEMANDE (en attente) ce mois - affiches en pointille dans le calendrier.")
+        ) : null),
+        // Legende conges (les chantiers ont deja leur palette juste en dessous)
+        h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", fontSize: 11, color: "#94a3b8", marginBottom: 12 } },
+          h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "#06b6d4", display: "inline-block" } }), "Conge approuve"),
+          h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "rgba(6,182,212,0.16)", border: "1.5px dashed #06b6d4", display: "inline-block" } }), "Conge demande (en attente)"),
+          h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "#7c3aed", border: "1.5px dashed #f59e0b", display: "inline-block" } }), "Conflit : planifie + conge demande")
         ),
         // Brush selector (chantier palette)
         h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", padding: 16, marginBottom: 16, boxShadow: "var(--shadow-sm)" } },
@@ -15159,6 +15276,42 @@
                     var evtInfo = isEvt ? PERSONNEL_EVENTS.find(function(e) { return e.key === currentType; }) : null;
                     var cellColor = isEvt && evtInfo ? evtInfo.color : currentVal ? getChantierColor(currentVal) : null;
                     var initial = isEvt && evtInfo ? evtInfo.initial : currentVal ? getChantierInitial(currentVal) : "";
+                    // ── Conges issus des DEMANDES (approuvees + en attente) ──
+                    var cgInfo = getCongePe(emp.id, dateStr);
+                    var cgApprouve = cgInfo && cgInfo.statut === "approuvee";
+                    var cgAttente = cgInfo && cgInfo.statut === "en_attente";
+                    var cgColor = (cgInfo && String(cgInfo.type || "").toLowerCase().indexOf("maladie") >= 0) ? "#ef4444" : "#06b6d4";
+                    // Approuve : s'affiche meme si le report en "affectations" n'a pas eu lieu
+                    if (cgApprouve && !isEvt) { cellColor = cgColor; initial = "C"; }
+                    // En attente + deja planifie sur un chantier = CONFLIT a trancher
+                    var enConflit = !!(cgAttente && currentVal && !isEvt);
+                    var cellStyle = {
+                      width: 30, height: 28, borderRadius: 5, margin: "0 auto", position: "relative",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: isEvt || cgApprouve ? 9 : 11, fontWeight: 700, color: "white",
+                      background: cellColor || (isWeekend ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.04)"),
+                      transition: "all 0.1s",
+                      opacity: cellColor ? 1 : 0.5,
+                      boxShadow: cellColor ? "0 1px 3px " + cellColor + "40" : "none"
+                    };
+                    var contenu = cellColor ? initial : "";
+                    var tip = "";
+                    if (cgAttente && !enConflit) {
+                      // Demande non validee : pointille, ne remplace pas une affectation
+                      cellStyle.background = "rgba(6,182,212,0.16)";
+                      cellStyle.border = "1.5px dashed " + cgColor;
+                      cellStyle.color = "#67e8f9";
+                      cellStyle.opacity = 1;
+                      cellStyle.fontSize = 9;
+                      contenu = "C?";
+                      tip = "Conge DEMANDE (en attente de validation)";
+                    } else if (enConflit) {
+                      cellStyle.border = "1.5px dashed #f59e0b";
+                      cellStyle.boxShadow = "inset 0 0 0 1px rgba(245,158,11,0.55)";
+                      tip = "CONFLIT : planifie sur un chantier ET conge demande (en attente)";
+                    } else if (cgApprouve) {
+                      tip = "Conge approuve";
+                    }
 
                     return h("td", {
                       key: d,
@@ -15173,15 +15326,10 @@
                         background: isWeekend ? "rgba(255,255,255,0.03)" : "transparent"
                       }
                     },
-                      h("div", { style: {
-                        width: 30, height: 28, borderRadius: 5, margin: "0 auto",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: isEvt ? 9 : 11, fontWeight: 700, color: "white",
-                        background: cellColor || (isWeekend ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.04)"),
-                        transition: "all 0.1s",
-                        opacity: cellColor ? 1 : 0.5,
-                        boxShadow: cellColor ? "0 1px 3px " + cellColor + "40" : "none"
-                      } }, cellColor ? initial : "")
+                      h("div", { style: cellStyle, title: tip },
+                        contenu,
+                        enConflit ? h("span", { style: { position: "absolute", top: -4, right: -3, width: 12, height: 12, borderRadius: "50%", background: "#f59e0b", color: "#111827", fontSize: 9, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 } }, "!") : null
+                      )
                     );
                   })
                 );
@@ -23245,12 +23393,51 @@
       var renderConges = function() {
         var list = applyFilter(conges);
         if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune demande de conge.");
-        return h("div", null, list.map(function(c) {
+        // ── Echeance de chaque demande : jours avant le debut du conge ──
+        // Sert a reperer d'un coup d'oeil ce qui demarre bientot et n'est pas
+        // encore traite (risque d'oubli au planning).
+        var _t0 = new Date(); _t0.setHours(0, 0, 0, 0);
+        var joursAvant = function(c) {
+          var d = new Date(String(c.date_debut || "").substring(0, 10) + "T00:00:00");
+          if (isNaN(d.getTime())) return null;
+          return Math.round((d.getTime() - _t0.getTime()) / 86400000);
+        };
+        var finApres = function(c) {
+          var f = c.date_reprise ? new Date(String(c.date_reprise).substring(0, 10) + "T00:00:00") : null;
+          if (!f || isNaN(f.getTime())) return null;
+          return Math.round((f.getTime() - _t0.getTime()) / 86400000);
+        };
+        var pillEch = function(c) {
+          var j = joursAvant(c), fa = finApres(c);
+          if (j == null) return null;
+          var st = function(bg, br, col, txt) {
+            return h("span", { style: { display: "inline-block", padding: "2px 10px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: bg, border: "1px solid " + br, color: col, marginRight: 6, whiteSpace: "nowrap" } }, txt);
+          };
+          if (j > 0 && j <= 7) return st("rgba(244,63,94,0.15)", "rgba(244,63,94,0.45)", "#fda4af", "Dans " + j + " jour" + (j > 1 ? "s" : ""));
+          if (j > 7) return st("rgba(6,182,212,0.15)", "rgba(6,182,212,0.40)", "#67e8f9", "Dans " + j + " jours");
+          if (j === 0) return st("rgba(167,139,250,0.18)", "rgba(167,139,250,0.45)", "#c4b5fd", "Commence aujourd'hui");
+          if (fa != null && fa > 0) return st("rgba(167,139,250,0.15)", "rgba(167,139,250,0.40)", "#c4b5fd", "En cours");
+          return st("rgba(148,163,184,0.12)", "rgba(148,163,184,0.30)", "#cbd5e1", "Termine");
+        };
+        // Bandeau : demandes NON TRAITEES qui demarrent dans moins de 7 jours
+        var imminentes = list.filter(function(c) {
+          var j = joursAvant(c);
+          return (c.statut === "en_attente") && j != null && j >= 0 && j <= 7;
+        });
+        var bandeauImminent = imminentes.length > 0 ? h("div", { style: { marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.38)", display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 12.5, color: "#fde68a" } },
+          h(Icon, { name: "clock", size: 15, color: "#fde68a" }),
+          h("strong", null, imminentes.length + " demande" + (imminentes.length > 1 ? "s" : "") + " non traitee" + (imminentes.length > 1 ? "s" : "") + " demarre" + (imminentes.length > 1 ? "nt" : "") + " dans moins de 7 jours :"),
+          h("span", null, imminentes.map(function(c) {
+            var j = joursAvant(c);
+            return personnelLabel(c.demandeur_id) + " (" + (j === 0 ? "aujourd'hui" : "dans " + j + " j") + ")";
+          }).join(" · "))
+        ) : null;
+        return h("div", null, bandeauImminent, list.map(function(c) {
           var isExp = expanded === ("c-" + c.id);
           var name = personnelLabel(c.demandeur_id);
           return h(React.Fragment, { key: "c-" + c.id },
             rowHeader({
-              name: name + (c.lieu ? " - " + c.lieu : ""),
+              name: h("span", null, pillEch(c), name + (c.lieu ? " - " + c.lieu : "")),
               sub: (c.type_conge || "conge") + " - " + c.nombre_jours + " jour" + (c.nombre_jours > 1 ? "s" : "") + " du " + fmtDate(c.date_debut) + " au " + fmtDate(c.date_reprise),
               sender: personnelLabel(c.envoye_par_id || c.demandeur_id),
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
