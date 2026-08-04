@@ -22118,6 +22118,7 @@
       var _valPeriode = useState(null); var valPeriode = _valPeriode[0]; var setValPeriode = _valPeriode[1];
       var _apercuVal = useState(null); var apercuVal = _apercuVal[0]; var setApercuVal = _apercuVal[1];
       var _sendingValId = useState(null); var sendingValId = _sendingValId[0]; var setSendingValId = _sendingValId[1];
+      var _destChantier = useState([]); var destChantier = _destChantier[0]; var setDestChantier = _destChantier[1];
       // Dans le recap mensuel : "synthese" (par employe x sondeuse) ou "detail_jour" (1 ligne par date/employe)
       var _relevesRecapMode = useState("synthese"); var relevesRecapMode = _relevesRecapMode[0]; var setRelevesRecapMode = _relevesRecapMode[1];
       var _recapStart = useState(function() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -22247,7 +22248,11 @@
           // Validations client du releve mensuel (onglet Validation client des rapports).
           // Colonnes light : signature_png (lourde) et token (sensible) exclus du
           // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
-          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,facture_envoyee_at,created_at").order("periode_debut", { ascending: false })
+          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }),
+          // Destinataires clients configures PAR CHANTIER (Administration >
+          // Destinataires emails) : source prioritaire pour la validation client.
+          // Le scope "global" est volontairement exclu (adresses internes Wallis).
+          supabase.from("destinataires_emails").select("email,role,scope_id").eq("type_doc", "rapport_forage").eq("actif", true).eq("scope_type", "chantier")
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -22291,6 +22296,8 @@
           setCarbs((results[5] && results[5].data) || []);
           if (results[7] && results[7].error) console.warn("[soumissions] validations:", results[7].error.message);
           setVals((results[7] && results[7].data) || []);
+          if (results[8] && results[8].error) console.warn("[soumissions] destinataires:", results[8].error.message);
+          setDestChantier((results[8] && results[8].data) || []);
           setLoading(false);
         }).catch(function(err) {
           if (cancelled) return;
@@ -24525,8 +24532,17 @@
             else {
               var sigs = (snap && snap.signataires) || [];
               var sigsNoMail = (snap && snap.signatairesSansEmail) || [];
-              var histo = sigs.length ? [] : histoEmailsChantier(c, sigsNoMail);
+              // Destinataires deja configures pour CE chantier (Administration >
+              // Destinataires emails). Scope global exclu : ce sont les adresses
+              // internes Wallis, jamais le client.
+              var destsCfg = (destChantier || [])
+                .filter(function(d) { return String(d.scope_id) === String(c.id) && d.role !== "cc" && d.email; })
+                .map(function(d) { return String(d.email).trim().toLowerCase(); })
+                .filter(function(e, i, a) { return a.indexOf(e) === i; });
+              var histo = (sigs.length || destsCfg.length) ? [] : histoEmailsChantier(c, sigsNoMail);
               if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
+              // Emails clients deja parametres pour ce chantier
+              else if (destsCfg.length) { destAffiche = destsCfg.slice(0, 3).join(", ") + " (destinataires chantier)"; destOk = true; }
               // Email deja present en base sur des rapports signes anterieurement
               else if (histo.length) { destAffiche = histo.join(", ") + " (deja en base)"; destOk = true; }
               else if (c.emailContact && String(c.emailContact).trim()) { destAffiche = c.emailContact + " (secours fiche)"; destOk = true; }
