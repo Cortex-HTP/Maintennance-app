@@ -24389,6 +24389,7 @@
         };
         var byDay = {};
         var sigMap = {};
+        var sigSansMail = {};
         (raps || []).forEach(function(r) {
           var d = String(r.date_rapport || "").substring(0, 10);
           if (!d || d < debut || d > fin) return;
@@ -24397,11 +24398,15 @@
           if (!match) return;
           var se = String(r.client_signataire_email || "").trim().toLowerCase();
           if (se) sigMap[se] = r.client_signataire_nom || sigMap[se] || "";
+          // Signataire ayant signe SANS renseigner d'email (champ optionnel) :
+          // on le remonte pour afficher un message utile plutot que "aucun signataire".
+          else if (r.client_signataire_nom) sigSansMail[String(r.client_signataire_nom).trim()] = true;
           if (!byDay[d]) byDay[d] = { date: d, machines: {}, metrage: 0, heures: 0, attente: 0 };
           var e = byDay[d];
           if (r.sondeuse_code) e.machines[String(r.sondeuse_code).toUpperCase()] = true;
           e.metrage += parseFloat(r.total_metres) || 0;
-          e.heures += parseFloat(r.total_heures) || 0;
+          // total_heures est en MINUTES en base (cf. insertRapportForage) -> /60
+          e.heures += (parseFloat(r.total_heures) || 0) / 60;
           (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
             if (String((a && a.libelle) || "").toUpperCase().indexOf("ATTENTE") >= 0) e.attente += dureeH(a);
           });
@@ -24416,7 +24421,7 @@
         totaux.heures = Math.round(totaux.heures * 10) / 10;
         totaux.attente = Math.round(totaux.attente * 10) / 10;
         var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
-        return { lignes: lignes, totaux: totaux, signataires: signataires };
+        return { lignes: lignes, totaux: totaux, signataires: signataires, signatairesSansEmail: Object.keys(sigSansMail) };
       };
       var envoyerValidation = function(chantierId, mois, perDebut) {
         var key = chantierId + "|" + perDebut;
@@ -24487,13 +24492,22 @@
             var nbJours = (snap && snap.lignes ? snap.lignes.length : 0);
             // Destinataires : SIGNATAIRES des rapports de la periode ;
             // email contact de la fiche chantier en secours seulement.
-            var destAffiche, destOk;
+            var destAffiche, destOk, destAide;
             if (v && v.destinataire_email) { destAffiche = v.destinataire_email; destOk = true; }
             else {
               var sigs = (snap && snap.signataires) || [];
+              var sigsNoMail = (snap && snap.signatairesSansEmail) || [];
               if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
               else if (c.emailContact && String(c.emailContact).trim()) { destAffiche = c.emailContact + " (secours fiche)"; destOk = true; }
-              else { destAffiche = "aucun signataire ni email contact"; destOk = false; }
+              else if (sigsNoMail.length) {
+                // Cas frequent : le client a signe les rapports mais SANS renseigner
+                // son email (champ optionnel a la signature) -> on nomme la personne.
+                destAffiche = "signataire " + sigsNoMail.join(", ") + " (sans email)";
+                destOk = false;
+                destAide = "Ce chantier a bien un signataire (" + sigsNoMail.join(", ") + ") mais aucun email n'a ete saisi lors de la signature des rapports : renseigner l'email contact dans la fiche chantier (Avancement > Modifier).";
+              }
+              else if (nbJours === 0) { destAffiche = "aucun rapport sur la periode"; destOk = false; }
+              else { destAffiche = "aucun signataire ni email contact"; destOk = false; destAide = "Aucun rapport de la periode n'a ete signe par le client : renseigner l'email contact dans la fiche chantier en secours."; }
             }
             var pill;
             if (statut === "valide") pill = h("span", { style: pillStyle("rgba(34,197,94,0.15)", "rgba(34,197,94,0.40)", "#86efac") }, "Valide par " + (v.validataire_nom || "client") + " le " + fmtD(v.validated_at));
@@ -24554,7 +24568,7 @@
                     envoyerValidation(c.id, moisSel, per.debut);
                   }
                 }, h(IconText, { icon: "send", size: 13 }, sending ? "Envoi..." : (statut === "envoye" ? "Relancer" : "Envoyer au client"))) : null,
-                !destOk && !enCours ? h("span", { style: { fontSize: 11.5, color: "#fbbf24", alignSelf: "center" } }, "Aucun signataire sur les rapports de la periode : renseigner l'email contact dans la fiche chantier en secours") : null,
+                !destOk && !enCours && destAide ? h("span", { style: { fontSize: 11.5, color: "#fbbf24", alignSelf: "center" } }, destAide) : null,
                 destOk && nbJours === 0 && statut === "brouillon" && !enCours ? h("span", { style: { fontSize: 11.5, color: "#71717a", alignSelf: "center" } }, "Aucun rapport sur la periode") : null
               )
             );
