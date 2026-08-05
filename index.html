@@ -1375,13 +1375,15 @@
         return { nextDue: nextDue, isDue: currentVal > nextDue, atThreshold: currentVal === nextDue };
       }
       if (baseVal > 0) {
-        // Prochain seuil = base + N*freq (intervalle COMPLET depuis le dernier entretien),
-        // coherent avec la fiche detail. Avant: (floor(base/freq)+1)*freq donnait un intervalle
-        // < freq quand base n'est pas un multiple (ex base 10050 -> 10250 au lieu de 10300),
-        // ce qui contredisait l'affichage et faussait le declenchement.
-        var nCyc = Math.ceil((currentVal - baseVal) / freqVal);
-        if (nCyc < 1) nCyc = 1;
-        var nextDue2 = baseVal + nCyc * freqVal;
+        // Prochain seuil = base + freq : le premier entretien COMPLET apres le
+        // dernier fait. S'il est DEPASSE, la visite reste DUE tant qu'elle n'est
+        // pas faite. (L'ancien calcul en ceil() arrondissait toujours au-dessus
+        // du compteur actuel : des qu'un seuil etait franchi sans entretien,
+        // l'alerte sautait silencieusement au seuil suivant et une visite en
+        // retard ne se declenchait JAMAIS — ex. 431 442 NC a 155 555 km avec
+        // entretien base 140 000 et plan 10 000 km : le seuil 150 000 depasse
+        // etait ignore, prochain affiche 160 000.)
+        var nextDue2 = baseVal + freqVal;
         return { nextDue: nextDue2, isDue: currentVal > nextDue2, atThreshold: currentVal === nextDue2 };
       }
       // Aucun historique : considerer tout comme fait
@@ -27989,8 +27991,11 @@
           personnelCode: selectedPersonnel.code,
           personnelNom: ((selectedPersonnel.prenom || "") + " " + (selectedPersonnel.nom || "")).trim(),
           uploaderEmail: userEmail,
-          // Responsables possibles = employes actifs ayant acces a l'app terrain
-          appUsers: (personnelList || []).filter(function(p) { return p.accesAppEmploye && p.code; }).map(function(p) {
+          // Responsables possibles = employes ACTIFS (ou embauche a venir) ayant
+          // acces a l'app terrain — un ex-employe au flag oublie n'apparait pas
+          appUsers: (personnelList || []).filter(function(p) {
+            return p.accesAppEmploye && p.code && (isActiveEmploye(p) || isFuturEmploye(p));
+          }).map(function(p) {
             return { code: p.code, nom: ((p.prenom || "") + " " + (p.nom || "")).trim() };
           }),
           onClose: function() { setShowUploadModal(false); },
