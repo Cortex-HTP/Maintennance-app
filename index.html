@@ -18792,6 +18792,29 @@
       else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
       // "all" => null (tout l'historique)
 
+      // ── BARRIERE "journee non terminee" ──────────────────────────────────
+      // Une journee n'est comptabilisee qu'a partir de 17h. Avant, le jour en
+      // cours n'a que des rapports PARTIELS (metrage et CA incomplets) alors
+      // qu'il compterait comme un jour PLEIN dans le diviseur des couts/jour :
+      // le cout/jour et le cout au metre en sortaient fausses (dilues le matin,
+      // puis se corrigeant en fin de journee). On arrete donc la periode a la
+      // veille tant que la journee n'est pas "close".
+      var HEURE_CLOTURE_JOUR = 17; // heure locale (l'app tourne en NC)
+      var jourEnCoursClos = now.getHours() >= HEURE_CLOTURE_JOUR;
+      var borneFinJour = jourEnCoursClos
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59)
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59);
+      if (!periodEnd || periodEnd.getTime() > borneFinJour.getTime()) periodEnd = borneFinJour;
+      // Garde-fou : un 1er du mois avant 17h, la periode serait VIDE (fin < debut)
+      // -> on retombe sur le jour en cours pour ne pas afficher un ecran vide.
+      var periodeVideParBarriere = false;
+      if (periodStart && periodEnd.getTime() < periodStart.getTime()) {
+        periodEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+        periodeVideParBarriere = true;
+      }
+      // Info affichee a l'utilisateur (transparence sur ce qui est compte)
+      var barriereJourActive = !jourEnCoursClos && !periodeVideParBarriere;
+
       // Resolution chantier_id par lieu (fallback pour les rapports SQL importes avec chantier_id=null)
       var statsChantierBySite = {};
       (dbChantiers || []).forEach(function(c) {
@@ -19231,7 +19254,10 @@
           var isWorkday = iter.getDay() !== 0; // dim exclu
           if (isWorkday) {
             workdaysTotal++;
-            if (iter <= now) workdaysElapsed++;
+            // Borne = periodEnd (et non "now") : la journee en cours non close
+            // est exclue du CA realise, elle doit l'etre aussi du diviseur,
+            // sinon la projection annuelle est sous-estimee chaque matin.
+            if (iter <= periodEnd) workdaysElapsed++;
           }
           iter.setDate(iter.getDate() + 1);
         }
@@ -20253,6 +20279,11 @@
             h("option", { value: "1an" }, "1 an"),
             h("option", { value: "all" }, "Tout l'historique")
           ),
+          // Barriere journee : on dit CLAIREMENT jusqu'ou vont les chiffres
+          barriereJourActive ? h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", color: "#7dd3fc", fontSize: 11, fontWeight: 700 }, title: "La journee en cours n'est comptabilisee qu'a partir de " + HEURE_CLOTURE_JOUR + "h : avant, elle n'a que des rapports partiels et faussait le cout/jour et le cout au metre." },
+            h(Icon, { name: "clock", size: 12, color: "#7dd3fc" }),
+            "Arrete au " + String(periodEnd.getDate()).padStart(2, "0") + "/" + String(periodEnd.getMonth() + 1).padStart(2, "0") + " (journee en cours non close)"
+          ) : null,
           h("span", { style: lblStyle }, "Chantier"),
           h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: ddStyle },
             h("option", { value: "all" }, "Tous chantiers"),
