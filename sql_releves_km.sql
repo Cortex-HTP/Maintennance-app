@@ -59,10 +59,16 @@ begin
       from public.releves_km
      where upper(trim(vehicule_code)) = v_code;
     if coalesce(v_max, 0) > 0 then
+      -- Criteres ALIGNES sur l'app employes :
+      --  * "vehicule" = categorie 'vl' OU type qui matche vehicule/vl/camion
+      --  * le code envoye est l'immatriculation, avec repli sur le nom
+      --    (certains VL n'ont pas d'immatriculation en base)
       update public.equipements e
          set km_actuel = v_max
-       where upper(trim(coalesce(e.immatriculation, ''))) = v_code
-         and lower(coalesce(e.categorie, '')) = 'vl'
+       where (upper(trim(coalesce(e.immatriculation, ''))) = v_code
+              or upper(trim(coalesce(e.nom, ''))) = v_code)
+         and (lower(coalesce(e.categorie, '')) = 'vl'
+              or coalesce(e.type, '') ~* 'vehicule|vl|camion')
          and coalesce(e.km_actuel, 0) <> v_max;
     end if;
   exception when others then
