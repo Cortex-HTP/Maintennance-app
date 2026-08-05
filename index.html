@@ -7325,7 +7325,10 @@
           });
           if (pinConflict) { alert("Ce PIN est deja utilise par " + pinConflict.prenom + " " + pinConflict.nom + ". Genere un autre PIN."); return; }
         }
-        onSave({
+        // Object.assign sur editItem : les champs non geres par le formulaire
+        // (contratsHistorique, dateReembauche, ...) sont PRESERVES au lieu
+        // d'etre silencieusement effaces a chaque enregistrement de la fiche
+        onSave(Object.assign({}, editItem || {}, {
           id: editItem ? editItem.id : Date.now(),
           code: _code[0] || ("p" + Date.now()),
           nom: _nom[0].trim().toUpperCase(),
@@ -7348,7 +7351,7 @@
           }).map(function(t) {
             return { label: String(t.label).trim(), taux: parseFloat(t.taux) || 0 };
           })
-        });
+        }));
       }
 
       var ROLES = ["Sondeur", "Aide sondeur", "Chauffeur", "Mecanicien", "Atelier", "Bureau", "Autre"];
@@ -7390,6 +7393,22 @@
             " A partir de cette date, l'employe sera retire des calculs de masse salariale, primes et plannings."
           ) : null
         ),
+        // ── Historique des contrats precedents (alimente par la re-embauche) ──
+        (editItem && editItem.contratsHistorique && editItem.contratsHistorique.length > 0) ? h("div", { style: { marginTop: 20, padding: 16, background: "rgba(56,189,248,0.05)", border: "1px solid rgba(56,189,248,0.25)", borderRadius: 12 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } },
+            h(Icon, { name: "history", size: 18, color: "#7dd3fc" }),
+            h("div", { style: { fontSize: 14, fontWeight: 800, color: "#7dd3fc" } }, "Historique des contrats (" + editItem.contratsHistorique.length + ")"),
+            h("span", { style: { fontSize: 10.5, color: "#94a3b8" } }, "conserve automatiquement a chaque re-embauche")
+          ),
+          editItem.contratsHistorique.slice().reverse().map(function(ct, ci) {
+            var fmtH = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "?"; };
+            return h("div", { key: ci, style: { padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, marginBottom: 6, fontSize: 12.5, color: "#d4d4d8", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+              h("span", { style: { padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: (ct.typeContrat || "CDI") === "CDI" ? "rgba(34,197,94,0.15)" : "rgba(251,191,36,0.15)", color: (ct.typeContrat || "CDI") === "CDI" ? "#86efac" : "#fde68a" } }, ct.typeContrat || "CDI"),
+              h("span", null, "du " + fmtH(ct.dateEmbauche) + " au " + fmtH(ct.dateFinContrat)),
+              ct.motifFin ? h("span", { style: { color: "#a1a1aa" } }, "· " + ct.motifFin) : null
+            );
+          })
+        ) : null,
         // Section dediee acces app Employes
         h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(167,139,250,0.08), rgba(167,139,250,0.02))", border: "1px solid rgba(167,139,250,0.30)", borderRadius: 12 } },
           h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } },
@@ -7649,14 +7668,43 @@
         return (emp.nom + " " + emp.prenom).toLowerCase().indexOf(s) !== -1 || (emp.lieuContrat || "").toLowerCase().indexOf(s) !== -1;
       });
 
-      // Re-embauche : clear dateFinContrat + motifFin pour reactiver
-      function handleReembauche(emp) {
+      // ── Re-embauche : ARCHIVE l'ancien contrat dans contratsHistorique puis
+      //    ouvre une NOUVELLE ligne de contrat (nouvelles dates, memes infos).
+      //    L'id et le code ne changent pas -> releves d'heures, plannings,
+      //    coffre RH et primes restent lies a la meme personne. ──
+      var _reembauche = useState(null); // { emp, date, typeContrat, dateFinPrevue }
+      var reembauche = _reembauche[0], setReembauche = _reembauche[1];
+      function openReembauche(emp) {
+        // Date locale (PAS toISOString : avant 11h a Noumea ce serait "hier")
+        var t = new Date();
+        var iso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+        setReembauche({ emp: emp, date: iso, typeContrat: emp.typeContrat === "CDD" ? "CDD" : "CDI", dateFinPrevue: "" });
+      }
+      function confirmReembauche() {
+        if (!reembauche || !reembauche.date) { alert("Date d'embauche requise"); return; }
+        var emp = reembauche.emp;
         setPersonnel(function(p) {
           return p.map(function(x) {
             if (x.id !== emp.id) return x;
-            return Object.assign({}, x, { dateFinContrat: "", motifFin: "", dateReembauche: new Date().toISOString().substring(0, 10) });
+            // 1. L'ancien contrat part dans l'historique (jamais ecrase)
+            var histo = (x.contratsHistorique || []).concat([{
+              dateEmbauche: x.dateEmbauche || "",
+              dateFinContrat: x.dateFinContrat || "",
+              motifFin: x.motifFin || "",
+              typeContrat: x.typeContrat || "CDI"
+            }]);
+            // 2. Nouvelle ligne de contrat : nouvelles dates, memes infos
+            return Object.assign({}, x, {
+              contratsHistorique: histo,
+              dateEmbauche: reembauche.date,
+              dateFinContrat: (reembauche.typeContrat === "CDD" && reembauche.dateFinPrevue) ? reembauche.dateFinPrevue : "",
+              motifFin: "",
+              typeContrat: reembauche.typeContrat,
+              dateReembauche: reembauche.date
+            });
           });
         });
+        setReembauche(null);
       }
 
       function formatDate(d) { if (!d) return "-"; var parts = d.split("-"); return parts.length === 3 ? parts[2] + "/" + parts[1] + "/" + parts[0] : d; }
@@ -8099,10 +8147,14 @@
                     h("td", { style: { padding: "10px 12px", fontWeight: 600, color: actif ? "#059669" : "#71717a" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
                     h("td", { style: { padding: "10px 12px" } },
                       actif
-                        ? h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.30)" } }, "Actif")
+                        ? h("div", null,
+                            h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.30)" } }, "Actif"),
+                            (emp.contratsHistorique || []).length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, (emp.contratsHistorique.length + 1) + "e contrat depuis le " + formatDate(emp.dateEmbauche)) : null
+                          )
                         : h("div", null,
                             h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(244,63,94,0.15)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.30)" } }, "Parti " + formatDate(emp.dateFinContrat)),
-                            emp.motifFin ? h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 3 } }, emp.motifFin) : null
+                            emp.motifFin ? h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 3 } }, emp.motifFin) : null,
+                            (emp.contratsHistorique || []).length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, emp.contratsHistorique.length + " contrat" + (emp.contratsHistorique.length > 1 ? "s" : "") + " precedent" + (emp.contratsHistorique.length > 1 ? "s" : "")) : null
                           )
                     ),
                     h("td", { style: { padding: "10px 12px", textAlign: "center" } },
@@ -8114,7 +8166,7 @@
                       actif && emp.accesAppEmploye && emp.pin ? emp.pin : "-"
                     ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
-                      !actif ? h("button", { onClick: function() { if (confirm("Reembaucher " + emp.prenom + " " + emp.nom + " ? Cela efface la date de fin de contrat.")) handleReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
+                      !actif ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher : nouvelle ligne de contrat, ancien contrat conserve en historique" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
                       h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer definitivement" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
                     )
@@ -8127,6 +8179,22 @@
         showModal && h(Modal, { title: editing ? "Modifier l'employe" : "Nouvel employe", onClose: function() { setShowModal(false); setEditing(null); } },
           h(PersonnelForm, { onSave: handleSave, onCancel: function() { setShowModal(false); setEditing(null); }, editItem: editing, allPersonnel: personnel })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'employe ?", message: "Confirmer la suppression de \"" + toDelete.prenom + " " + toDelete.nom + "\" ?", onConfirm: function() { handleDelete(toDelete.id); }, onCancel: function() { setToDelete(null); } }),
+        // Modal re-embauche : nouvelle ligne de contrat, historique conserve
+        reembauche && h(Modal, { title: "Reembaucher " + reembauche.emp.prenom + " " + reembauche.emp.nom, onClose: function() { setReembauche(null); }, size: 480 },
+          h("div", { style: { display: "grid", gap: 14 } },
+            h("div", { style: { padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.25)", fontSize: 12.5, color: "#cbd5e1", lineHeight: 1.5 } },
+              "Une nouvelle ligne de contrat sera ouverte en gardant toutes les informations (poste, salaire, PIN, coffre RH...). L'ancien contrat ",
+              h("strong", { style: { color: "#7dd3fc" } }, "du " + formatDate(reembauche.emp.dateEmbauche) + " au " + formatDate(reembauche.emp.dateFinContrat)),
+              " reste conserve dans l'historique de la fiche."),
+            h(FormField, { label: "Date de la nouvelle embauche" }, h("input", { type: "date", style: inputStyle, value: reembauche.date, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { date: e.target.value })); } })),
+            h(FormField, { label: "Type de contrat" }, h("select", { style: selectStyle, value: reembauche.typeContrat, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { typeContrat: e.target.value })); } },
+              ["CDI", "CDD"].map(function(t) { return h("option", { key: t, value: t }, t); }))),
+            reembauche.typeContrat === "CDD" ? h(FormField, { label: "Fin prevue du CDD (optionnel, modifiable ensuite)" }, h("input", { type: "date", style: inputStyle, value: reembauche.dateFinPrevue, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { dateFinPrevue: e.target.value })); } })) : null,
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end" } },
+              h(Button, { variant: "secondary", onClick: function() { setReembauche(null); } }, "Annuler"),
+              h(Button, { onClick: confirmReembauche }, h(IconText, { icon: "user-check", size: 14 }, "Reembaucher")))
+          )
+        ),
         viewFiche && renderFiche(viewFiche),
         ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
