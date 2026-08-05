@@ -7153,6 +7153,28 @@
       return true;
     }
 
+    // Employe "A VENIR" : contrat signe mais embauche APRES refDate (ex. CDD
+    // qui commence le 17/08 alors qu'on est le 05/08). Pas "actif" pour les
+    // calculs (masse salariale, primes...), mais il doit s'afficher AVEC les
+    // actifs dans l'ecran Personnel — pas dans les anciens employes.
+    function isFuturEmploye(p, refDate) {
+      if (!p || !p.dateEmbauche) return false;
+      var ref = refDate || new Date();
+      var refDay = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
+      try {
+        var dEmb = new Date(String(p.dateEmbauche).substring(0, 10) + "T00:00:00");
+        if (isNaN(dEmb.getTime()) || dEmb.getTime() <= refDay) return false;
+      } catch (e) { return false; }
+      // Fin de contrat deja passee (dates incoherentes) -> ancien, pas futur
+      if (p.dateFinContrat) {
+        try {
+          var dFin = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
+          if (!isNaN(dFin.getTime()) && dFin.getTime() <= refDay) return false;
+        } catch (e) { /* ignore */ }
+      }
+      return true;
+    }
+
     function loadPersonnelFromParametres(parametres) {
       var row = parametres.find(function(p) { return p.categorie === PERSONNEL_STORAGE_KEY; });
       if (row && row.valeur) {
@@ -7635,8 +7657,10 @@
       var sousTraitantsList = personnel.filter(function(emp) { return !!emp.roleMecanicien; });
       var employesList = personnel.filter(function(emp) { return !emp.roleMecanicien; });
       var actifsList = employesList.filter(function(emp) { return isActiveEmploye(emp, nowTodayP); });
+      var futursList = employesList.filter(function(emp) { return isFuturEmploye(emp, nowTodayP); });
       var nbActifs = actifsList.length;
-      var nbAnciens = employesList.length - nbActifs;
+      var nbFuturs = futursList.length;
+      var nbAnciens = employesList.length - nbActifs - nbFuturs;
       var nbSousTraitants = sousTraitantsList.length;
       var nbCDI = actifsList.filter(function(e) { return (e.typeContrat || "CDI") === "CDI"; }).length;
       var nbCDD = actifsList.filter(function(e) { return e.typeContrat === "CDD"; }).length;
@@ -7659,8 +7683,10 @@
           if (!isMec) return false;
         } else {
           if (isMec) return false;  // sous-traitants exclus des onglets Actifs/Anciens
-          if (viewTab === "actifs" && !actif) return false;
-          if (viewTab === "anciens" && actif) return false;
+          // Les employes A VENIR (embauche future) restent dans l'onglet Actifs
+          var futurTab = isFuturEmploye(emp, nowTodayP);
+          if (viewTab === "actifs" && !actif && !futurTab) return false;
+          if (viewTab === "anciens" && (actif || futurTab)) return false;
         }
         if (viewTab !== "soustraitants" && typeFilter !== "all" && (emp.typeContrat || "CDI") !== typeFilter) return false;
         if (!search) return true;
@@ -8100,7 +8126,7 @@
         ),
         // Onglets vue
         h("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
-          tabBtnView("actifs", "Actifs", nbActifs, "#22c55e"),
+          tabBtnView("actifs", "Actifs" + (nbFuturs > 0 ? " + a venir" : ""), nbActifs + nbFuturs, "#22c55e"),
           tabBtnView("anciens", "Anciens employes", nbAnciens, "#f43f5e"),
           tabBtnView("soustraitants", "🔧 Sous-traitants", nbSousTraitants, "#fbbf24"),
           tabBtnView("tous", "Tous", personnel.length, "#a78bfa")
@@ -8128,12 +8154,16 @@
                 sortByField(filtered, "nom").map(function(emp) {
                   var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
                   var actif = isActiveEmploye(emp, nowTodayP);
-                  return h("tr", { key: emp.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", opacity: actif ? 1 : 0.65 }, onClick: function() { setViewFiche(emp); } },
+                  // Employe a venir (embauche future) : affiche comme un actif,
+                  // avec un badge "Arrive le ..." au lieu de "Parti ..."
+                  var futur = isFuturEmploye(emp, nowTodayP);
+                  var presentable = actif || futur;
+                  return h("tr", { key: emp.id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", opacity: presentable ? 1 : 0.65 }, onClick: function() { setViewFiche(emp); } },
                     h("td", { style: { padding: "10px 12px" } },
-                      h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: actif ? avatarColor : "rgba(255,255,255,0.10)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, filter: actif ? "" : "grayscale(0.5)" } }, getInitials(emp))
+                      h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: presentable ? avatarColor : "rgba(255,255,255,0.10)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, filter: presentable ? "" : "grayscale(0.5)" } }, getInitials(emp))
                     ),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: actif ? "none" : "line-through" } }, emp.nom),
-                    h("td", { style: { padding: "10px 12px", textDecoration: actif ? "none" : "line-through" } }, emp.prenom),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: presentable ? "none" : "line-through" } }, emp.nom),
+                    h("td", { style: { padding: "10px 12px", textDecoration: presentable ? "none" : "line-through" } }, emp.prenom),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } },
                       h("div", { style: { display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" } },
                         emp.role
@@ -8151,6 +8181,12 @@
                             h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.30)" } }, "Actif"),
                             (emp.contratsHistorique || []).length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, (emp.contratsHistorique.length + 1) + "e contrat depuis le " + formatDate(emp.dateEmbauche)) : null
                           )
+                        : futur
+                        ? h("div", null,
+                            h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(56,189,248,0.15)", color: "#7dd3fc", border: "1px solid rgba(56,189,248,0.35)" } }, "Arrive le " + formatDate(emp.dateEmbauche)),
+                            emp.dateFinContrat ? h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 3 } }, "Fin prevue " + formatDate(emp.dateFinContrat)) : null,
+                            (emp.contratsHistorique || []).length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, (emp.contratsHistorique.length + 1) + "e contrat") : null
+                          )
                         : h("div", null,
                             h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(244,63,94,0.15)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.30)" } }, "Parti " + formatDate(emp.dateFinContrat)),
                             emp.motifFin ? h("div", { style: { fontSize: 10, color: "#94a3b8", marginTop: 3 } }, emp.motifFin) : null,
@@ -8158,15 +8194,15 @@
                           )
                     ),
                     h("td", { style: { padding: "10px 12px", textAlign: "center" } },
-                      actif && emp.accesAppEmploye
+                      presentable && emp.accesAppEmploye
                         ? h(Icon, { name: "check-circle", size: 16, color: "#86efac" })
                         : h(Icon, { name: "x-circle", size: 16, color: "#71717a" })
                     ),
-                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: actif && emp.accesAppEmploye && emp.pin ? "#c4b5fd" : "#71717a", letterSpacing: 1 } },
-                      actif && emp.accesAppEmploye && emp.pin ? emp.pin : "-"
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: presentable && emp.accesAppEmploye && emp.pin ? "#c4b5fd" : "#71717a", letterSpacing: 1 } },
+                      presentable && emp.accesAppEmploye && emp.pin ? emp.pin : "-"
                     ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
-                      !actif ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher : nouvelle ligne de contrat, ancien contrat conserve en historique" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
+                      (!actif && !futur) ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher : nouvelle ligne de contrat, ancien contrat conserve en historique" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
                       h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer definitivement" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
                     )
