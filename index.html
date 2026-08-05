@@ -27483,8 +27483,11 @@
       return await blob.arrayBuffer();
     }
 
-    function RhDocUploadModal({ personnelCode, personnelNom, uploaderEmail, onClose, onUploaded }) {
+    function RhDocUploadModal({ personnelCode, personnelNom, uploaderEmail, appUsers, onClose, onUploaded }) {
       var _type = useState("contrat"); var typeDoc = _type[0]; var setTypeDoc = _type[1];
+      // Appareil sur lequel la signature aura lieu : "" = l'app de l'employe
+      // lui-meme, sinon code d'un responsable (sa tablette recevra le doc)
+      var _remisVia = useState(""); var remisVia = _remisVia[0]; var setRemisVia = _remisVia[1];
       var _files = useState([]); var files = _files[0]; var setFiles = _files[1];
       var _combining = useState(false); var combining = _combining[0]; var setCombining = _combining[1];
       var _emission = useState(""); var dateEmission = _emission[0]; var setDateEmission = _emission[1];
@@ -27561,7 +27564,9 @@
             status: needsSignature ? "pending_signature" : "active",
             needs_signature: needsSignature,
             uploaded_by: uploaderEmail || null,
-            deadline_at: needsSignature && deadline ? new Date(deadline).toISOString() : null
+            deadline_at: needsSignature && deadline ? new Date(deadline).toISOString() : null,
+            // Tablette du responsable qui fera signer (null = app de l'employe)
+            remis_via: needsSignature && remisVia ? remisVia : null
           };
           var ins = await supabase.from("rh_documents").insert(row).select("*").single();
           if (ins.error) {
@@ -27628,7 +27633,17 @@
                 h("div", { style: { fontSize: 11.5, color: "#94a3b8", marginTop: 2 } }, "L'employe verra le document en attente de signature dans son espace.")
               )
             ),
-            needsSignature ? h("div", { style: { marginTop: 10 } },
+            needsSignature ? h("div", { style: { marginTop: 10, display: "grid", gap: 10 } },
+              h(FormField, { label: "Faire signer sur l'appareil de" },
+                h("select", { value: remisVia, onChange: function(e) { setRemisVia(e.target.value); }, style: selectStyle },
+                  h("option", { value: "" }, personnelNom + " (son propre telephone)"),
+                  (appUsers || []).filter(function(u) { return u.code !== personnelCode; }).map(function(u) {
+                    return h("option", { key: u.code, value: u.code }, "Tablette de " + u.nom);
+                  })
+                )
+              ),
+              remisVia ? h("div", { style: { fontSize: 11.5, color: "#7dd3fc", padding: "6px 10px", background: "rgba(56,189,248,0.08)", borderRadius: 6 } },
+                "Le document apparaitra sur la tablette du responsable choisi ; c'est " + personnelNom + " qui lira et signera dessus.") : null,
               h(FormField, { label: "Echeance signature (optionnel)" }, h("input", { type: "date", value: deadline, onChange: function(e) { setDeadline(e.target.value); }, style: inputStyle }))
             ) : null
           ),
@@ -27955,6 +27970,12 @@
                     d.status === "pending_signature" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(251,191,36,0.18)", color: "#fde68a", fontSize: 11, fontWeight: 700, textAlign: "center" } },
                       canSignThis ? "✍️ Cliquer pour signer" : "✍️ En attente de signature"
                     ) : null,
+                    d.status === "pending_signature" && d.remis_via ? h("div", { style: { marginTop: 4, fontSize: 10.5, color: "#7dd3fc", textAlign: "center", fontWeight: 700 } },
+                      "via la tablette de " + (function() {
+                        var u = (personnelList || []).find(function(p) { return p.code === d.remis_via; });
+                        return u ? ((u.prenom || "") + " " + (u.nom || "")).trim() : d.remis_via;
+                      }())
+                    ) : null,
                     d.status === "signed" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(34,197,94,0.15)", color: "#86efac", fontSize: 11, fontWeight: 700, textAlign: "center" } }, "✓ Signe le " + new Date(d.signed_at).toLocaleDateString("fr-FR")) : null,
                     d.status === "refused" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(244,63,94,0.15)", color: "#fda4af", fontSize: 11, fontWeight: 700, textAlign: "center" } }, "✗ Refus de signature") : null
                   );
@@ -27968,6 +27989,10 @@
           personnelCode: selectedPersonnel.code,
           personnelNom: ((selectedPersonnel.prenom || "") + " " + (selectedPersonnel.nom || "")).trim(),
           uploaderEmail: userEmail,
+          // Responsables possibles = employes actifs ayant acces a l'app terrain
+          appUsers: (personnelList || []).filter(function(p) { return p.accesAppEmploye && p.code; }).map(function(p) {
+            return { code: p.code, nom: ((p.prenom || "") + " " + (p.nom || "")).trim() };
+          }),
           onClose: function() { setShowUploadModal(false); },
           onUploaded: function() { setShowUploadModal(false); fetchDocs(); }
         }) : null,
