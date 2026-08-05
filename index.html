@@ -15096,6 +15096,16 @@
         var m = congesParEmpPe[empId];
         return m ? (m[dateStr] || null) : null;
       }
+
+      // ── Fenetre de contrat : AVANT la date d'embauche (ou apres la fin de
+      //    contrat), l'employe apparait "non productif" au calendrier et ses
+      //    cases ne sont pas peignables (il n'est pas encore/plus sous contrat).
+      function horsContratPe(emp, dateStr) {
+        if (!emp) return null;
+        if (emp.dateEmbauche && dateStr < String(emp.dateEmbauche).substring(0, 10)) return "avant";
+        if (emp.dateFinContrat && dateStr >= String(emp.dateFinContrat).substring(0, 10)) return "apres";
+        return null;
+      }
       function siteToChantierPe(lieu) {
         if (!lieu) return null;
         var lk = String(lieu).toUpperCase().trim();
@@ -15209,6 +15219,14 @@
         return b === "ferie" || b === "maladie" || b === "conge" || b === "chomage" || b === "non_productif" || b === "arret";
       }
       function handleCellClick(empId, dateStr) {
+        // Pas de peinture hors periode de contrat (avant embauche / apres fin)
+        var empHC = (personnel || []).find(function(p) { return p.id === empId; });
+        var hc = empHC ? horsContratPe(empHC, dateStr) : null;
+        if (hc && brush !== "eraser") {
+          alert((empHC.prenom || "") + " " + (empHC.nom || "") + " n'est pas sous contrat a cette date (" +
+            (hc === "avant" ? "arrive le " + String(empHC.dateEmbauche).substring(0, 10).split("-").reverse().join("/") : "contrat termine le " + String(empHC.dateFinContrat).substring(0, 10).split("-").reverse().join("/")) + ").");
+          return;
+        }
         if (brush === "eraser") {
           setAffectation(empId, dateStr, "", "travail");
         } else if (isPersonnelEvent(brush)) {
@@ -15219,6 +15237,11 @@
       }
       function handleCellEnter(empId, dateStr) {
         if (painting && brush) {
+          // Balayage : on saute silencieusement les jours hors contrat
+          if (brush !== "eraser") {
+            var empHC2 = (personnel || []).find(function(p) { return p.id === empId; });
+            if (empHC2 && horsContratPe(empHC2, dateStr)) return;
+          }
           if (brush === "eraser") {
             setAffectation(empId, dateStr, "", "travail");
           } else if (isPersonnelEvent(brush)) {
@@ -15285,7 +15308,9 @@
           h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
             h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "rgba(6,182,212,0.16)", border: "1.5px dashed #06b6d4", display: "inline-block" } }), "Conge demande (en attente)"),
           h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
-            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "#7c3aed", border: "1.5px dashed #f59e0b", display: "inline-block" } }), "Conflit : planifie + conge demande")
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "#7c3aed", border: "1.5px dashed #f59e0b", display: "inline-block" } }), "Conflit : planifie + conge demande"),
+          h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "rgba(120,113,108,0.45)", display: "inline-block" } }), "Hors contrat (avant embauche / apres fin)")
         ),
         // Brush selector (chantier palette)
         h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", padding: 16, marginBottom: 16, boxShadow: "var(--shadow-sm)" } },
@@ -15466,6 +15491,19 @@
                       tip = "CONFLIT : planifie sur un chantier ET conge demande (en attente)";
                     } else if (cgApprouve) {
                       tip = "Conge approuve";
+                    }
+                    // ── Hors periode de contrat : "non productif" automatique ──
+                    // (embauche future ou contrat termine, case vide uniquement)
+                    var hcPe = (!cellColor && !cgInfo) ? horsContratPe(emp, dateStr) : null;
+                    if (hcPe) {
+                      cellStyle.background = "rgba(120,113,108,0.45)";
+                      cellStyle.opacity = 0.85;
+                      cellStyle.fontSize = 9;
+                      cellStyle.color = "#d6d3d1";
+                      contenu = "NP";
+                      tip = hcPe === "avant"
+                        ? "Pas encore embauche - arrive le " + String(emp.dateEmbauche).substring(0, 10).split("-").reverse().join("/")
+                        : "Contrat termine le " + String(emp.dateFinContrat).substring(0, 10).split("-").reverse().join("/");
                     }
 
                     return h("td", {
