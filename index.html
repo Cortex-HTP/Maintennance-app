@@ -3196,6 +3196,32 @@
       const [releveToDelete, setReleveToDelete] = useState(null);
       const [ctDateLocal, setCtDateLocal] = useState(eq.ProchainControleTechnique || "");
 
+      // ── Releves KM saisis par les EMPLOYES (rubrique "Kilometrage vehicule"
+      //    de l'app terrain, table releves_km) : fusionnes dans l'historique de
+      //    la fiche au meme titre que les releves admin. ──
+      const [relevesKmTerrain, setRelevesKmTerrain] = useState([]);
+      useEffect(function() {
+        var cancelled = false;
+        if (eq.Categorie !== "Vehicule") { setRelevesKmTerrain([]); return; }
+        // vehicule_code cote employes = immatriculation, repli nom, repli #id
+        var codes = [String(eq.Title || "").trim(), String(eq.Nom || "").trim()]
+          .filter(function(x, i, a) { return !!x && a.indexOf(x) === i; });
+        if (codes.length === 0) codes = ["#" + eq.Id];
+        supabase.from("releves_km").select("*").in("vehicule_code", codes)
+          .order("date_releve", { ascending: false }).limit(200)
+          .then(function(res) {
+            if (cancelled) return;
+            if (res.error) { console.warn("[fiche releves_km]", res.error.message); return; }
+            setRelevesKmTerrain(res.data || []);
+          });
+        return function() { cancelled = true; };
+      }, [eq.Id]);
+      const relevesTerrainMapped = relevesKmTerrain.map(function(r) {
+        return { Id: "kmterr-" + r.id, Date: String(r.date_releve || "").substring(0, 10), Horametre: "", KM: String(r.kilometrage || ""), Technicien: r.sondeur_nom || "", _terrain: true, _rawId: r.id };
+      });
+      // Historique AFFICHE = releves admin + releves terrain, du plus recent au plus ancien
+      const histReleves = eqReleves.concat(relevesTerrainMapped).sort(function(a, b) { return String(b.Date || "").localeCompare(String(a.Date || "")); });
+
       const submitReleve = async () => {
         if (!newReleve.Horametre && !newReleve.KM) return alert("Renseignez au moins l'horametre ou le kilometrage");
         setSaving(true);
@@ -3254,7 +3280,10 @@
 
       // Donnees pour les graphiques
       const dataHor = releveAsc.filter((r) => r.Horametre && r.Horametre !== "" && r.Horametre !== "0").map((r) => ({ date: r.Date, value: parseFloat(r.Horametre) }));
-      const dataKM = releveAsc.filter((r) => r.KM && r.KM !== "" && r.KM !== "0").map((r) => ({ date: r.Date, value: parseFloat(r.KM) }));
+      // Courbe KM : releves admin + releves terrain des employes, tries par date
+      const dataKM = releveAsc.filter((r) => r.KM && r.KM !== "" && r.KM !== "0").map((r) => ({ date: r.Date, value: parseFloat(r.KM) }))
+        .concat(relevesTerrainMapped.filter((r) => parseFloat(r.KM) > 0).map((r) => ({ date: r.Date, value: parseFloat(r.KM) })))
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "clipboard-list", size: 20 }, eq.Title), subtitle: "Details et historique", action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
@@ -3652,23 +3681,34 @@
         h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa", display: "flex", alignItems: "center", justifyContent: "space-between" } },
             h(IconText, { icon: "timer", size: 16, color: "#a78bfa" }, "Historique Horametre / KM"),
-            eqReleves.length > 3 ? h("span", { style: { fontSize: 11, color: "#71717a", fontWeight: 500 } }, eqReleves.length + " releves - scroll pour voir plus") : null
+            histReleves.length > 3 ? h("span", { style: { fontSize: 11, color: "#71717a", fontWeight: 500 } }, histReleves.length + " releves - scroll pour voir plus") : null
           ),
-          eqReleves.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun releve") :
-            h("div", { style: { overflowX: "auto", overflowY: "auto", maxHeight: eqReleves.length > 3 ? 200 : "none", border: eqReleves.length > 3 ? "1px solid rgba(255,255,255,0.06)" : "none", borderRadius: 8 } },
+          histReleves.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun releve") :
+            h("div", { style: { overflowX: "auto", overflowY: "auto", maxHeight: histReleves.length > 3 ? 200 : "none", border: histReleves.length > 3 ? "1px solid rgba(255,255,255,0.06)" : "none", borderRadius: 8 } },
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                 h("thead", { style: { position: "sticky", top: 0, zIndex: 1, background: "rgba(36,40,60,0.95)", backdropFilter: "blur(8px)" } }, h("tr", { style: { textAlign: "left" } },
                   ["Date", "Horametre", "KM", "Variation", "Technicien", ""].map((x, i) => h("th", { key: i, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.08)" } }, x)))),
-                h("tbody", null, eqReleves.map((r, idx) => {
-                  const prev = eqReleves[idx + 1];
-                  const deltaH = prev ? (parseInt(r.Horametre || 0) - parseInt(prev.Horametre || 0)) : 0;
-                  const deltaKM = prev ? (parseInt(r.KM || 0) - parseInt(prev.KM || 0)) : 0;
+                h("tbody", null, histReleves.map((r, idx) => {
+                  // Variation : chaque compteur se compare au PRECEDENT RELEVE QUI LE
+                  // RENSEIGNE (les releves terrain n'ont pas d'horametre, les releves
+                  // admin d'engins n'ont pas toujours de km) \u2014 evite les deltas absurdes
+                  var prevH = null, prevKM = null;
+                  for (var pj = idx + 1; pj < histReleves.length; pj++) {
+                    var pr = histReleves[pj];
+                    if (prevH === null && !pr._terrain && pr.Horametre !== "" && pr.Horametre != null && parseFloat(pr.Horametre) > 0) prevH = parseFloat(pr.Horametre) || 0;
+                    if (prevKM === null && parseFloat(pr.KM) > 0) prevKM = parseFloat(pr.KM);
+                    if (prevH !== null && prevKM !== null) break;
+                  }
+                  var varParts = [];
+                  if (!r._terrain && parseFloat(r.Horametre) > 0 && prevH !== null) varParts.push("+" + fmtNum((parseFloat(r.Horametre) || 0) - prevH) + " h");
+                  if (parseFloat(r.KM) > 0 && prevKM !== null) varParts.push("+" + fmtNum((parseFloat(r.KM) || 0) - prevKM) + " km");
                   return h("tr", { key: r.Id, style: { borderBottom: "1px solid rgba(255,255,255,0.04)" } },
                     h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, r.Date),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: "#fafafa" } }, fmtNum(r.Horametre || 0) + " h"),
-                    h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, fmtNum(r.KM || 0) + " km"),
-                    h("td", { style: { padding: "10px 12px", color: "#86efac", fontWeight: 600 } }, prev ? "+" + fmtNum(deltaH) + " h / +" + fmtNum(deltaKM) + " km" : "\u2014"),
-                    h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, r.Technicien || "\u2014"),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: "#fafafa" } }, r._terrain ? "\u2014" : fmtNum(r.Horametre || 0) + " h"),
+                    h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, parseFloat(r.KM) > 0 ? fmtNum(r.KM) + " km" : "\u2014"),
+                    h("td", { style: { padding: "10px 12px", color: "#86efac", fontWeight: 600 } }, varParts.length ? varParts.join(" / ") : "\u2014"),
+                    h("td", { style: { padding: "10px 12px", color: "#d4d4d8" } }, r.Technicien || "\u2014",
+                      r._terrain ? h("span", { style: { marginLeft: 6, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.35)", color: "#7dd3fc" } }, "terrain") : null),
                     h("td", { style: { padding: "10px 12px", textAlign: "right" } },
                       isAdmin
                         ? h("button", { onClick: () => setReleveToDelete(r), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 15, padding: 4, color: "#f43f5e" }, title: "Supprimer ce releve" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
@@ -3723,8 +3763,19 @@
                 h(Button, { variant: "secondary", onClick: async () => { await linkPieceEquipement(p.Id, eq.Id); }, style: { padding: "6px 12px", fontSize: 12 } }, "+ Lier"))))),
         releveToDelete && h(ConfirmDialog, {
           title: "Supprimer le releve ?",
-          message: "Confirmer la suppression du releve du " + (releveToDelete.Date || "") + " (" + fmtNum(releveToDelete.Horametre || 0) + " h / " + fmtNum(releveToDelete.KM || 0) + " km) ? Cette action ne peut pas etre annulee.",
-          onConfirm: async () => { await deleteReleve(releveToDelete.Id); setReleveToDelete(null); },
+          message: "Confirmer la suppression du releve du " + (releveToDelete.Date || "") + " (" + (releveToDelete._terrain ? fmtNum(releveToDelete.KM || 0) + " km - releve terrain de " + (releveToDelete.Technicien || "?") : fmtNum(releveToDelete.Horametre || 0) + " h / " + fmtNum(releveToDelete.KM || 0) + " km") + ") ? Cette action ne peut pas etre annulee.",
+          onConfirm: async () => {
+            if (releveToDelete._terrain) {
+              // Releve employe (table releves_km) : le trigger DB resynchronise
+              // km_actuel avec le max des releves restants apres suppression
+              const res = await supabase.from("releves_km").delete().eq("id", releveToDelete._rawId);
+              if (res.error) { alert("Erreur : " + res.error.message); }
+              else { setRelevesKmTerrain(relevesKmTerrain.filter(function(x) { return x.id !== releveToDelete._rawId; })); }
+            } else {
+              await deleteReleve(releveToDelete.Id);
+            }
+            setReleveToDelete(null);
+          },
           onCancel: () => setReleveToDelete(null),
         }));
     }
