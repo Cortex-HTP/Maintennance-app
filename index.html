@@ -11478,11 +11478,20 @@
         var coutIndirect = chargesIndirVarTotal * partMetres + coutChargesFixesTotal * partCA + coutPrimesMetrageTotal * partMetres;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         var caTotal = (s.caGenere || 0) + (s.caFacturationActivites || 0);
+        // Jours REELLEMENT travailles par la machine (dates distinctes de rapport)
+        var nbJoursM = Object.keys(s.joursTravailles || {}).length;
         out[code] = {
           coutMetre: s.metres > 0 ? coutTotal / s.metres : 0,
           coutTotal: coutTotal,
           metres: s.metres,
-          caTotal: caTotal
+          caTotal: caTotal,
+          // Exposes pour le calculateur de prix de vente : le COUT/JOUR est la
+          // base de tout devis. La difficulte du terrain agit sur la CADENCE
+          // (m/jour), pas sur ce cout journalier -> un terrain dur coute plus
+          // cher au metre parce qu'il prend plus de jours.
+          joursTravailles: nbJoursM,
+          coutJour: nbJoursM > 0 ? coutTotal / nbJoursM : 0,
+          metresJour: nbJoursM > 0 ? s.metres / nbJoursM : 0
         };
       });
       return out;
@@ -17689,6 +17698,7 @@
         { key: "planning", label: "Calendrier", icon: "calendar" },
         { key: "avancement", label: "Avancement", icon: "hard-hat" },
         { key: "planning-employes", label: "Planning Employes", icon: "users" },
+        { key: "prix-vente", label: "Prix de vente", icon: "calculator" },
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
         { key: "emprunts", label: "Emprunts", icon: "landmark" },
@@ -28881,6 +28891,290 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────
+    // ─── EcranPrixVente : calculateur de prix de vente au metre ───────────────
+    // Principe metier : la DIFFICULTE du terrain n'augmente pas le cout JOURNALIER
+    // de la machine, elle fait BAISSER LA CADENCE (m/jour). Un terrain dur prend
+    // donc plus de jours -> chaque metre porte plus de cout.
+    //   jours = metrage / cadence, majore des aleas
+    //   cout  = mobilisation + jours x cout/jour  (cout/jour = donnees REELLES)
+    //   prix  = (cout / metrage) / (1 - marge)
+    function EcranPrixVente() {
+      var ctx = useAppData();
+      var raps = ctx.dbRapportsForage || [];
+      var dbChantiers = ctx.dbChantiers || [];
+
+      // ── Periode d'analyse des couts : les 3 derniers mois COMPLETS ──
+      // (un mois en cours donnerait un cout/jour instable, cf. barriere jour)
+      var pvNow = new Date();
+      var pvFin = new Date(pvNow.getFullYear(), pvNow.getMonth(), 0, 23, 59, 59); // fin du mois dernier
+      var pvDebut = new Date(pvNow.getFullYear(), pvNow.getMonth() - 3, 1);
+      var coutsMachines = computeCoutMachines(ctx, pvDebut, pvFin);
+
+      // Machines avec un cout/jour exploitable
+      var machinesPV = Object.keys(coutsMachines)
+        .filter(function(c) { return coutsMachines[c].coutJour > 0 && coutsMachines[c].joursTravailles >= 3; })
+        .sort();
+      // Cout/jour moyen de la flotte = total des couts / total des jours-machine
+      var flotte = (function() {
+        var ct = 0, nj = 0;
+        machinesPV.forEach(function(c) { ct += coutsMachines[c].coutTotal; nj += coutsMachines[c].joursTravailles; });
+        return { coutJour: nj > 0 ? ct / nj : 0, jours: nj, coutTotal: ct };
+      })();
+
+      // ── Cadences REELLES par site sur la meme periode (proxy de difficulte) ──
+      var cadencesSites = (function() {
+        var bySite = {};
+        raps.forEach(function(r) {
+          if (!r || !r.date_rapport) return;
+          var d = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
+          if (isNaN(d.getTime()) || d < pvDebut || d > pvFin) return;
+          var site = String(r.lieu || "").toUpperCase().trim();
+          if (!site) return;
+          if (!bySite[site]) bySite[site] = { jours: {}, metres: 0 };
+          bySite[site].jours[String(r.date_rapport).substring(0, 10)] = true;
+          bySite[site].metres += parseFloat(r.total_metres) || 0;
+        });
+        return Object.keys(bySite).map(function(s) {
+          var nj = Object.keys(bySite[s].jours).length;
+          return { site: s, jours: nj, metres: bySite[s].metres, cadence: nj > 0 ? bySite[s].metres / nj : 0 };
+        }).filter(function(x) { return x.jours >= 3 && x.cadence > 0; }).sort(function(a, b) { return b.cadence - a.cadence; });
+      })();
+
+      // Presets de difficulte derives du reel : le plus rapide / la mediane / le plus lent
+      var presetsAuto = (function() {
+        if (cadencesSites.length === 0) return { f: 300, m: 100, d: 35, refF: "", refM: "", refD: "" };
+        var haut = cadencesSites[0];
+        var bas = cadencesSites[cadencesSites.length - 1];
+        var med = cadencesSites[Math.floor(cadencesSites.length / 2)];
+        return {
+          f: Math.round(haut.cadence), m: Math.round(med.cadence), d: Math.round(bas.cadence),
+          refF: haut.site, refM: med.site, refD: bas.site
+        };
+      })();
+
+      var _machine = useState("__flotte__"); var machineSel = _machine[0], setMachineSel = _machine[1];
+      var _diff = useState("m"); var diffSel = _diff[0], setDiffSel = _diff[1];
+      var _metrage = useState("5000"); var metrageStr = _metrage[0], setMetrageStr = _metrage[1];
+      var _cadences = useState(null); var cadOverride = _cadences[0], setCadOverride = _cadences[1];
+      var _mob = useState("800000"); var mobStr = _mob[0], setMobStr = _mob[1];
+      var _marge = useState(25); var margePct = _marge[0], setMargePct = _marge[1];
+      var _alea = useState(10); var aleaPct = _alea[0], setAleaPct = _alea[1];
+
+      var cadences = cadOverride || { f: presetsAuto.f, m: presetsAuto.m, d: presetsAuto.d };
+      var coutJourRetenu = machineSel === "__flotte__"
+        ? flotte.coutJour
+        : (coutsMachines[machineSel] ? coutsMachines[machineSel].coutJour : flotte.coutJour);
+      var metrage = parseFloat(metrageStr) || 0;
+      var mobilisation = parseFloat(mobStr) || 0;
+      var cadence = parseFloat(cadences[diffSel]) || 1;
+
+      // ── Le calcul ──
+      function chiffrePV(m, cad, cj, mob, marge, alea) {
+        var joursForage = cad > 0 ? m / cad : 0;
+        var jours = joursForage * (1 + alea / 100);
+        var coutTotal = mob + jours * cj;
+        var coutMetre = m > 0 ? coutTotal / m : 0;
+        var prix = marge < 100 ? coutMetre / (1 - marge / 100) : coutMetre;
+        return { joursForage: joursForage, jours: jours, coutTotal: coutTotal, coutMetre: coutMetre, prix: prix };
+      }
+      function arrondiCom(p) { return Math.ceil(p / 50) * 50; } // arrondi commercial 50 XPF
+
+      var res = chiffrePV(metrage, cadence, coutJourRetenu, mobilisation, margePct, aleaPct);
+      var prixConseille = arrondiCom(res.prix);
+      var caTotalPV = prixConseille * metrage;
+      var margeXpf = caTotalPV - res.coutTotal;
+
+      var inputStylePV = { width: "100%", padding: "10px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 14, fontFamily: "inherit" };
+      var lblPV = { display: "block", fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 5 };
+      var DIFFS = [
+        { key: "f", label: "Facile", grad: "linear-gradient(135deg,#15803d,#22c55e)", bord: "#22c55e", ref: presetsAuto.refF },
+        { key: "m", label: "Moyen", grad: "linear-gradient(135deg,#b45309,#f59e0b)", bord: "#f59e0b", ref: presetsAuto.refM },
+        { key: "d", label: "Difficile", grad: "linear-gradient(135deg,#b91c1c,#ef4444)", bord: "#ef4444", ref: presetsAuto.refD }
+      ];
+      var VOLUMES_PV = [500, 1000, 2000, 5000, 10000, 20000];
+
+      function setCad(k, v) {
+        var next = { f: cadences.f, m: cadences.m, d: cadences.d };
+        next[k] = v;
+        setCadOverride(next);
+      }
+
+      // Aucune donnee de cout -> on le dit clairement plutot que d'afficher 0
+      if (flotte.coutJour <= 0) {
+        return h("div", null,
+          h(PageHeader, { title: h(IconText, { icon: "calculator", size: 20 }, "Prix de vente"), subtitle: "Determiner un prix au metre selon le volume et la difficulte" }),
+          h(Card, null, h("div", { style: { padding: 24, textAlign: "center", color: "#fda4af", fontSize: 13 } },
+            h(Icon, { name: "alert-triangle", size: 20, color: "#fda4af" }),
+            h("div", { style: { marginTop: 8 } }, "Pas assez de donnees sur les 3 derniers mois complets pour calculer un cout/jour fiable."),
+            h("div", { style: { marginTop: 4, color: "#a1a1aa", fontSize: 12 } }, "Il faut des rapports de forage et des charges saisies sur la periode.")))
+        );
+      }
+
+      return h("div", null,
+        h(PageHeader, {
+          title: h(IconText, { icon: "calculator", size: 20 }, "Prix de vente"),
+          subtitle: "Prix au metre selon le volume et la difficulte du terrain - base sur tes couts reels"
+        }),
+        // Bandeau source des donnees
+        h("div", { style: { background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.30)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12.5, color: "#c7d2fe", display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" } },
+          h(Icon, { name: "database", size: 15, color: "#a5b4fc" }),
+          h("span", null, "Couts calcules sur ", h("strong", null, "les 3 derniers mois complets"), " (" +
+            String(pvDebut.getDate()).padStart(2, "0") + "/" + String(pvDebut.getMonth() + 1).padStart(2, "0") + " au " +
+            String(pvFin.getDate()).padStart(2, "0") + "/" + String(pvFin.getMonth() + 1).padStart(2, "0") + ") : " +
+            fmtNum(Math.round(flotte.coutTotal)) + " XPF sur " + flotte.jours + " jours-machine.")
+        ),
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16 } },
+          // ── ENTREES ──
+          h(Card, null,
+            h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "sliders-horizontal", size: 15 }, "Le chantier a chiffrer")),
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblPV }, "Metrage total a forer (m)"),
+              h("input", { type: "number", min: "1", step: "100", value: metrageStr, onChange: function(e) { setMetrageStr(e.target.value); }, style: inputStylePV })
+            ),
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblPV }, "Machine (source du cout/jour)"),
+              h("select", { value: machineSel, onChange: function(e) { setMachineSel(e.target.value); }, style: inputStylePV },
+                h("option", { value: "__flotte__" }, "Moyenne flotte - " + fmtNum(Math.round(flotte.coutJour)) + " XPF/j"),
+                machinesPV.map(function(c) {
+                  return h("option", { key: c, value: c }, c + " - " + fmtNum(Math.round(coutsMachines[c].coutJour)) + " XPF/j (" + coutsMachines[c].joursTravailles + " j)");
+                })
+              ),
+              h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4, lineHeight: 1.5 } },
+                "Cout/jour tire des donnees reelles : consommables + personnel + charges + emprunt + frais generaux.")
+            ),
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblPV }, "Difficulte du terrain (= cadence m/jour)"),
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 } },
+                DIFFS.map(function(d) {
+                  var on = diffSel === d.key;
+                  return h("button", { key: d.key, onClick: function() { setDiffSel(d.key); },
+                    style: { padding: "11px 6px", borderRadius: 10, border: "1px solid " + (on ? d.bord : "rgba(255,255,255,0.10)"), background: on ? d.grad : "rgba(0,0,0,0.25)", color: on ? "#fff" : "#cbd5e1", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, lineHeight: 1.4 } },
+                    d.label,
+                    h("span", { style: { display: "block", fontSize: 10.5, fontWeight: 600, color: on ? "rgba(255,255,255,0.85)" : "#71717a", marginTop: 2 } }, fmtNum(cadences[d.key]) + " m/j")
+                  );
+                })
+              ),
+              DIFFS.map(function(d) {
+                if (diffSel !== d.key) return null;
+                return h("div", { key: "cad-" + d.key, style: { marginTop: 8 } },
+                  h("input", { type: "number", min: "1", step: "5", value: cadences[d.key], onChange: function(e) { setCad(d.key, e.target.value); }, style: inputStylePV }),
+                  d.ref ? h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "Reference mesuree : " + d.ref + " (" + fmtNum(presetsAuto[d.key]) + " m/j)") : null
+                );
+              })
+            ),
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblPV }, "Mobilisation / demobilisation (forfait XPF)"),
+              h("input", { type: "number", min: "0", step: "50000", value: mobStr, onChange: function(e) { setMobStr(e.target.value); }, style: inputStylePV })
+            ),
+            h("div", { style: { marginBottom: 14 } },
+              h("label", { style: lblPV }, "Marge commerciale visee : " + margePct + " %"),
+              h("input", { type: "range", min: "0", max: "60", value: margePct, onChange: function(e) { setMargePct(parseInt(e.target.value)); }, style: { width: "100%", accentColor: "#818cf8" } })
+            ),
+            h("div", null,
+              h("label", { style: lblPV }, "Aleas prevus (meteo, pannes, deplacements) : " + aleaPct + " %"),
+              h("input", { type: "range", min: "0", max: "40", value: aleaPct, onChange: function(e) { setAleaPct(parseInt(e.target.value)); }, style: { width: "100%", accentColor: "#818cf8" } })
+            )
+          ),
+          // ── RESULTAT ──
+          h(Card, null,
+            h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "target", size: 15 }, "Prix conseille")),
+            h("div", { style: { textAlign: "center", padding: "20px 16px", borderRadius: 14, background: "linear-gradient(135deg,rgba(99,102,241,0.18),rgba(99,102,241,0.04))", border: "1px solid rgba(99,102,241,0.35)" } },
+              h("div", { style: { fontSize: 11.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a5b4fc" } }, "Prix au metre a proposer"),
+              h("div", { style: { fontFamily: "monospace", fontSize: 40, fontWeight: 900, margin: "6px 0 2px", letterSpacing: -1 } }, fmtNum(prixConseille)),
+              h("div", { style: { fontSize: 13, color: "#c7d2fe" } }, "XPF / metre · " + fmtNum(Math.round(caTotalPV)) + " XPF de CA"),
+              h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 8 } },
+                "Prix plancher (marge zero) : ", h("strong", { style: { color: "#fda4af" } }, fmtNum(arrondiCom(res.coutMetre))), " XPF/m")
+            ),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginTop: 14 } },
+              [["Duree chantier", res.jours.toFixed(1) + " j", "#7dd3fc"],
+               ["Cout total", fmtNum(Math.round(res.coutTotal)), "#fda4af"],
+               ["Cout au metre", fmtNum(Math.round(res.coutMetre)), "#fda4af"],
+               ["Marge", fmtNum(Math.round(margeXpf)), "#86efac"]].map(function(kv, i) {
+                return h("div", { key: i, style: { background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "10px 12px" } },
+                  h("div", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a" } }, kv[0]),
+                  h("div", { style: { fontFamily: "monospace", fontWeight: 800, fontSize: 16, marginTop: 3, color: kv[2] } }, kv[1])
+                );
+              })
+            ),
+            h("h3", { style: { margin: "20px 0 10px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "list", size: 15 }, "Le calcul en clair")),
+            [
+              fmtNum(metrage) + " m ÷ " + fmtNum(cadence) + " m/j = " + res.joursForage.toFixed(1) + " j de forage",
+              "+ " + aleaPct + " % d'aleas = " + res.jours.toFixed(1) + " j a payer",
+              res.jours.toFixed(1) + " j × " + fmtNum(Math.round(coutJourRetenu)) + " + " + fmtNum(mobilisation) + " (mobilisation) = " + fmtNum(Math.round(res.coutTotal)) + " XPF",
+              fmtNum(Math.round(res.coutTotal)) + " ÷ " + fmtNum(metrage) + " m = " + fmtNum(Math.round(res.coutMetre)) + " XPF/m de cout",
+              fmtNum(Math.round(res.coutMetre)) + " ÷ (1 − " + margePct + " %) → arrondi " + fmtNum(prixConseille) + " XPF/m"
+            ].map(function(t, i) {
+              return h("div", { key: i, style: { fontFamily: "monospace", fontSize: 12, color: "#cbd5e1", background: "rgba(0,0,0,0.25)", borderLeft: "3px solid #6366f1", padding: "8px 12px", borderRadius: "0 8px 8px 0", marginBottom: 6 } }, t);
+            })
+          )
+        ),
+        // ── GRILLE TARIFAIRE ──
+        h(Card, { style: { marginTop: 16 } },
+          h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "table", size: 15, color: "#86efac" }, "Grille tarifaire (prix/m conseille)")),
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+              h("thead", null, h("tr", null,
+                ["Metrage", "Facile (" + fmtNum(cadences.f) + " m/j)", "Moyen (" + fmtNum(cadences.m) + " m/j)", "Difficile (" + fmtNum(cadences.d) + " m/j)"].map(function(x, i) {
+                  return h("th", { key: i, style: { textAlign: "left", padding: "9px 10px", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, x);
+                })
+              )),
+              h("tbody", null, VOLUMES_PV.map(function(v) {
+                var proche = metrage > 0 && Math.abs(v - metrage) / v < 0.15;
+                return h("tr", { key: v, style: { background: proche ? "rgba(99,102,241,0.10)" : "transparent" } },
+                  h("td", { style: { padding: "9px 10px", fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.04)" } }, fmtNum(v) + " m"),
+                  ["f", "m", "d"].map(function(k) {
+                    var p = arrondiCom(chiffrePV(v, parseFloat(cadences[k]) || 1, coutJourRetenu, mobilisation, margePct, aleaPct).prix);
+                    var col = k === "f" ? "#86efac" : (k === "m" ? "#fde68a" : "#fda4af");
+                    return h("td", { key: k, style: { padding: "9px 10px", fontFamily: "monospace", color: col, borderBottom: "1px solid rgba(255,255,255,0.04)" } }, fmtNum(p));
+                  })
+                );
+              }))
+            )
+          ),
+          h("div", { style: { fontSize: 11.5, color: "#71717a", lineHeight: 1.6, marginTop: 10 } },
+            "L'effet volume vient de la ", h("strong", null, "mobilisation amortie"), " : un petit chantier porte le meme forfait de deplacement qu'un gros, donc son prix au metre est plus eleve. Ta ligne en cours est surlignee.")
+        ),
+        // ── CONFRONTATION AUX CHANTIERS REELS ──
+        cadencesSites.length > 0 ? h(Card, { style: { marginTop: 16 } },
+          h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "git-compare", size: 15, color: "#fde68a" }, "Tes chantiers face au calculateur")),
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+              h("thead", null, h("tr", null,
+                ["Site", "Cadence reelle", "Prix pratique", "Prix conseille", "Ecart", "Verdict"].map(function(x, i) {
+                  return h("th", { key: i, style: { textAlign: "left", padding: "9px 10px", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, x);
+                })
+              )),
+              h("tbody", null, cadencesSites.map(function(cs) {
+                // Chantier correspondant (par site) pour recuperer prix + metrage contractuels
+                var ch = dbChantiers.find(function(c) { return String(c.site || "").toUpperCase().trim() === cs.site; });
+                var prixPratique = ch ? (parseFloat(ch.prixMetre) || 0) : 0;
+                var metrageRef = ch && parseFloat(ch.metrage) > 0 ? parseFloat(ch.metrage) : cs.metres;
+                var r = chiffrePV(metrageRef, cs.cadence, coutJourRetenu, mobilisation, margePct, aleaPct);
+                var conseil = arrondiCom(r.prix);
+                var verdict, bg, br, col;
+                if (prixPratique <= 0) { verdict = "prix non renseigne"; bg = "rgba(148,163,184,0.12)"; br = "rgba(148,163,184,0.30)"; col = "#cbd5e1"; }
+                else if (prixPratique < r.coutMetre) { verdict = "EN PERTE"; bg = "rgba(244,63,94,0.15)"; br = "rgba(244,63,94,0.45)"; col = "#fda4af"; }
+                else if (prixPratique < conseil) { verdict = "marge faible"; bg = "rgba(245,158,11,0.15)"; br = "rgba(245,158,11,0.45)"; col = "#fde68a"; }
+                else { verdict = "OK"; bg = "rgba(34,197,94,0.15)"; br = "rgba(34,197,94,0.40)"; col = "#86efac"; }
+                var ecart = prixPratique - conseil;
+                return h("tr", { key: cs.site },
+                  h("td", { style: { padding: "9px 10px", fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.04)" } }, cs.site),
+                  h("td", { style: { padding: "9px 10px", fontFamily: "monospace", color: "#7dd3fc", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, cs.cadence.toFixed(1) + " m/j"),
+                  h("td", { style: { padding: "9px 10px", fontFamily: "monospace", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, prixPratique > 0 ? fmtNum(prixPratique) : "—"),
+                  h("td", { style: { padding: "9px 10px", fontFamily: "monospace", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, fmtNum(conseil)),
+                  h("td", { style: { padding: "9px 10px", fontFamily: "monospace", color: ecart >= 0 ? "#86efac" : "#fda4af", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, prixPratique > 0 ? ((ecart >= 0 ? "+" : "") + fmtNum(ecart)) : "—"),
+                  h("td", { style: { padding: "9px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                    h("span", { style: { padding: "2px 9px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: bg, border: "1px solid " + br, color: col } }, verdict))
+                );
+              }))
+            )
+          ),
+          h("div", { style: { fontSize: 11.5, color: "#71717a", lineHeight: 1.6, marginTop: 10 } },
+            "Comparaison au metrage contractuel de chaque chantier, avec les hypotheses ci-dessus (marge " + margePct + " %, aleas " + aleaPct + " %). Fais varier le cout/jour et la mobilisation pour tester la robustesse d'un prix.")
+        ) : null
+      );
+    }
+
     function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
@@ -28899,6 +29193,7 @@
           { key: "planning", label: "Calendrier", lucide: "calendar" },
           { key: "avancement", label: "Avancement", lucide: "hard-hat" },
           { key: "planning-employes", label: "Planning Employes", lucide: "users" },
+          { key: "prix-vente", label: "Prix de vente", lucide: "calculator" },
           { key: "primes", label: "Primes", lucide: "trophy" },
         ]},
         { name: "Equipe", pages: [
@@ -29147,6 +29442,7 @@
             { group: "Pages", iconKey: "page", title: "Maintenance",     sub: "Vue d'ensemble interventions",   label: "maintenance",  shortcut: "Page", pageKey: "accueil",        action: function() { onNavigate("accueil"); } },
             { group: "Pages", iconKey: "page", title: "Avancement",      sub: "Saisie metres / jour",           label: "avancement",   shortcut: "Page", pageKey: "avancement",     action: function() { onNavigate("avancement"); } },
             { group: "Pages", iconKey: "page", title: "Previsionnel",    sub: "Prevu chantier + meteo",          label: "previsionnel", shortcut: "Page", pageKey: "previsionnel",   action: function() { onNavigate("previsionnel"); } },
+            { group: "Pages", iconKey: "page", title: "Prix de vente",   sub: "Devis : volume + difficulte terrain", label: "prix vente devis tarif metre", shortcut: "Page", pageKey: "prix-vente", action: function() { onNavigate("prix-vente"); } },
             { group: "Pages", iconKey: "page", title: "Primes",          sub: "Calcul primes de metrage",       label: "primes",       shortcut: "Page", pageKey: "primes",         action: function() { onNavigate("primes"); } },
             { group: "Pages", iconKey: "page", title: "Soumissions",     sub: "Releves / conges / commandes",   label: "soumissions",  shortcut: "Page", pageKey: "soumissions",    action: function() { onNavigate("soumissions"); } },
             { group: "Pages", iconKey: "page", title: "Alertes saisies", sub: "Rapports / heures manquants",    label: "alertes",      shortcut: "Page", pageKey: "alertes-saisies", action: function() { onNavigate("alertes-saisies"); } },
@@ -31908,6 +32204,7 @@
         if (currentPage === "planning") return h(EcranPlanning, null);
         if (currentPage === "avancement") return h(EcranAvancement, null);
         if (currentPage === "previsionnel") return h(EcranPrevisionnel, { initialChantierId: pageData && pageData.chantierId });
+        if (currentPage === "prix-vente") return h(EcranPrixVente, null);
         if (currentPage === "coffre-rh") return h(EcranCoffreRH, null);
         if (currentPage === "achats-previsionnels") return h(EcranAchatsPrevisionnels, null);
         if (currentPage === "planning-employes") return h(EcranPlanningEmployes, null);
