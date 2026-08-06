@@ -7153,6 +7153,20 @@
     // Conventions :
     // - dateEmbauche = jour J1 d'employe (premier jour d'emploi inclus)
     // - dateFinContrat = jour de debauche / fin contrat (premier jour NON employe)
+    // Vrai si le releve est un JOUR D'ABSENCE (conge, maladie, ferie, recup...)
+    // et non une journee travaillee : absence_type renseigne ET aucune heure.
+    // Deux origines possibles, d'ou le test sur le TYPE et pas sur la source :
+    //  - synchro d'un conge approuve     -> source "auto_conge",  type "conge"
+    //  - saisie de l'employe dans l'app  -> source "app_employe", type "Conge paye"
+    function estAbsenceReleve(r) {
+      if (!r) return false;
+      var t = String(r.absence_type || "").trim();
+      if (!t) return false;
+      var min = parseInt(r.total_minutes);
+      if (isNaN(min)) min = 0;
+      return min === 0;
+    }
+
     function isActiveEmploye(p, refDate) {
       if (!p) return false;
       var ref = refDate || new Date();
@@ -23637,12 +23651,15 @@
         //  1) personnel_id du rapport_forage correspondant (date+sondeuse) - SOURCE LA PLUS AUTORITAIRE
         //  2) Si pas de rapport : la ligne dont fonction = "Sondeur" (regle metier post-migration)
         //  3) Fallback : 1er releve par id du groupe
-        // Les absences creees AUTOMATIQUEMENT a l'approbation d'un conge
-        // (source "auto_conge", 0 h) servent au RECAP MENSUEL (colonnes CP/CSS/
-        // Maladie) et a neutraliser l'alerte "releve manquant". Elles n'ont rien
-        // a faire dans la LISTE des releves saisis par les equipes : on les
-        // masque ici (le recap mensuel, lui, les garde).
-        var rawList = applyFilter(rels).filter(function(r) { return String(r.source || "") !== "auto_conge"; });
+        // Les JOURS D'ABSENCE (0 h) ne sont pas des releves d'heures a controler :
+        // ils servent au RECAP MENSUEL (colonnes CP/CSS/Maladie) et a neutraliser
+        // l'alerte "releve manquant". On les masque donc de la LISTE et de la
+        // rubrique A VERIFIER (le recap, lui, les garde).
+        // Le critere est l'ABSENCE + 0 heure, pas la source : les conges arrivent
+        // par deux voies (synchro d'un conge approuve -> source "auto_conge", ET
+        // saisie directe de l'employe dans l'app -> source "app_employe" avec
+        // absence_type "Conge paye"). Filtrer sur la source n'en attrapait qu'une.
+        var rawList = applyFilter(rels).filter(function(r) { return !estAbsenceReleve(r); });
         var responsableByGroup = {}; // key = "date|sondeuse_code" -> personnel_id
         // 1) Index des rapports par (date, sondeuse)
         var rapByGroup = {};
@@ -24641,15 +24658,24 @@
         function absBucket(t) {
           var s = String(t || "").toLowerCase().trim();
           if (!s) return null;
-          if (s === "conge" || s === "cp") return "CP";
-          if (s === "cp_v" || s === "cpv" || s === "cp v") return "CP V";
-          if (s === "css" || s === "chomage" || s === "chomage_technique") return "CSS";
+          // Les libelles viennent de DEUX sources : la synchro des conges approuves
+          // (conge / maladie / sans_solde) ET la saisie directe de l'employe dans
+          // l'app terrain ("Conge paye", "Conge sans solde", "Recuperation"...).
+          // Sans ces variantes, un conge saisi par l'employe retournait null : il
+          // n'apparaissait dans AUCUNE colonne du recap tout en comptant comme un
+          // poste travaille.
+          if (s === "conge" || s === "cp" || s === "conge paye" || s === "conge_paye") return "CP";
+          if (s === "cp_v" || s === "cpv" || s === "cp v" || s === "conge vendu") return "CP V";
+          if (s === "css" || s === "chomage" || s === "chomage_technique"
+              || s === "sans_solde" || s === "conge sans solde" || s === "sans solde") return "CSS";
           if (s === "maladie") return "Maladie";
-          if (s === "ai") return "AI";
-          if (s === "ferie") return "FERIE";
+          if (s === "ai" || s === "accident" || s === "accident travail") return "AI";
+          if (s === "ferie" || s === "jour ferie") return "FERIE";
           if (s === "delegation") return "DELEGATION";
           if (s === "reunion") return "REUNION";
-          if (s === "non_productif") return null; // pas de colonne dediee
+          // Recuperation / repos hebdomadaire : jours non travailles sans colonne
+          // dediee -> pas de bucket, mais reconnus comme absence par estAbsenceReleve
+          if (s === "non_productif" || s === "recuperation" || s === "repos hebdomadaire") return null;
           return null;
         }
 
@@ -24744,26 +24770,36 @@
           var routeCh = hhmmToMin(r.route_chauffeur) / 60; // heures decimales
           var routePa = hhmmToMin(r.route_passager) / 60;
 
-          a.nbPoste += 1;
-          if (isDim) a.nbPosteDim += 1;
-          a.routeChauf += routeCh;
-          a.routePass += routePa;
-          if (isDim) a.heuresDim += totMin / 60;
-          else a.heuresNorm += totMin / 60;
-          a.heuresEffectives += totMin / 60;
-          a.heurePause += pauseMin / 60;
-          a.totalHorsPause += Math.max(0, (totMin - pauseMin) / 60);
-          a.primePanier += parseInt(r.prime_panier) || 0;
-
-          // Sondeur = responsable du groupe (date+sondeuse) detecte via rapport.personnel_id
-          // Tous les autres releves du groupe = aide sondeur, peu importe leur fonction string
-          if (isResponsableOfGroup(r)) a.posteSondeur += 1;
-          else a.posteAideSondeur += 1;
-
           var bucket = absBucket(r.absence_type);
-          if (bucket && a.absences[bucket] != null) a.absences[bucket] += 1;
+          // JOUR D'ABSENCE (conge, maladie, ferie, recup... a 0 h) : il ne doit
+          // compter QUE dans sa colonne d'absence. Le compter comme un poste
+          // gonflait le "Nb post." (ex. 7 au lieu de 3) et le "Poste sondeur",
+          // alors que l'employe n'a pas travaille ce jour-la.
+          // On se base sur estAbsenceReleve (et non sur bucket) : "Recuperation"
+          // et "Repos hebdomadaire" n'ont pas de colonne dediee mais restent des
+          // jours non travailles.
+          var absencePure = estAbsenceReleve(r);
+          if (!absencePure) {
+            a.nbPoste += 1;
+            if (isDim) a.nbPosteDim += 1;
+            a.routeChauf += routeCh;
+            a.routePass += routePa;
+            if (isDim) a.heuresDim += totMin / 60;
+            else a.heuresNorm += totMin / 60;
+            a.heuresEffectives += totMin / 60;
+            a.heurePause += pauseMin / 60;
+            a.totalHorsPause += Math.max(0, (totMin - pauseMin) / 60);
+            a.primePanier += parseInt(r.prime_panier) || 0;
 
-          if (r.eloignement === true || String(r.eloignement || "").toLowerCase() === "oui") a.eloignement += 1;
+            // Sondeur = responsable du groupe (date+sondeuse) detecte via rapport.personnel_id
+            // Tous les autres releves du groupe = aide sondeur, peu importe leur fonction string
+            if (isResponsableOfGroup(r)) a.posteSondeur += 1;
+            else a.posteAideSondeur += 1;
+
+            if (r.eloignement === true || String(r.eloignement || "").toLowerCase() === "oui") a.eloignement += 1;
+          }
+          // Les jours d'absence comptent toujours dans leur colonne dediee
+          if (bucket && a.absences[bucket] != null) a.absences[bucket] += 1;
         });
 
         // Tri : par employe asc, puis par sondeuse asc
@@ -24771,14 +24807,26 @@
         // Pour chaque employe, lignes par sondeuse + ligne total
         var lignes = [];
         emps.forEach(function(emp) {
-          var byEmp = Object.keys(agg).filter(function(k) { return agg[k].emp === emp; }).map(function(k) { return agg[k]; }).sort(function(a, b) { return a.sond.localeCompare(b.sond); });
+          var byEmpAll = Object.keys(agg).filter(function(k) { return agg[k].emp === emp; }).map(function(k) { return agg[k]; }).sort(function(a, b) { return a.sond.localeCompare(b.sond); });
+          // Les lignes SANS machine et SANS poste (uniquement des jours d'absence)
+          // ne sont pas affichees comme une ligne "sondeuse -" : leurs absences
+          // remontent dans le Total de l'employe. Sinon on voyait une ligne vide
+          // avec juste "CP 4" et une machine "-" qui n'a aucun sens.
+          var absentOnly = byEmpAll.filter(function(r) { return r.nbPoste === 0 && r.sond === "-"; });
+          var byEmp = byEmpAll.filter(function(r) { return !(r.nbPoste === 0 && r.sond === "-"); });
+          // Employe qui n'a QUE des absences sur la periode : on garde la ligne
+          // pour ne pas le faire disparaitre du recap
+          if (byEmp.length === 0) byEmp = byEmpAll;
           // ligne par sondeuse (si > 1) ; sinon une seule ligne
-          var multi = byEmp.length > 1;
+          var multi = byEmp.length > 1 || (absentOnly.length > 0 && byEmp.length >= 1 && byEmp !== byEmpAll);
           byEmp.forEach(function(r) { lignes.push({ kind: "row", emp: emp, sond: r.sond, data: r }); });
           // Total employe (somme)
           if (multi) {
             var t = { emp: emp, sond: "Total", nbPoste: 0, nbPosteDim: 0, routeChauf: 0, routePass: 0, heuresNorm: 0, heuresDim: 0, heuresEffectives: 0, heurePause: 0, totalHorsPause: 0, primePanier: 0, posteSondeur: 0, posteAideSondeur: 0, absences: {"CP":0,"CP V":0,"CSS":0,"Maladie":0,"AI":0,"FERIE":0,"DELEGATION":0,"REUNION":0}, eloignement: 0 };
-            byEmp.forEach(function(r) {
+            // On somme byEmpAll (et non byEmp) : les lignes d'absence masquees a
+            // l'affichage doivent quand meme remonter leurs CP/CSS/Maladie ici,
+            // sinon les jours de conge disparaitraient completement du recap.
+            byEmpAll.forEach(function(r) {
               t.nbPoste += r.nbPoste; t.nbPosteDim += r.nbPosteDim;
               t.routeChauf += r.routeChauf; t.routePass += r.routePass;
               t.heuresNorm += r.heuresNorm; t.heuresDim += r.heuresDim;
@@ -25109,28 +25157,41 @@
                       var dt = new Date(d.date);
                       var jourLabel = jourLabels[dt.getDay()];
                       var jourColor = d.isDim ? "#f9a8d4" : "#a1a1aa";
-                      return h("tr", { key: idx, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
+                      // ── Jour d'ABSENCE : on l'annonce clairement (badge + teinte)
+                      // au lieu d'une ligne de tirets avec un "1" perdu a droite.
+                      var ABS_LBL = { "CP": "CONGE PAYE", "CP V": "CONGE VENDU", "CSS": "SANS SOLDE", "Maladie": "MALADIE", "AI": "ACCIDENT", "FERIE": "FERIE", "DELEGATION": "DELEGATION", "REUNION": "REUNION" };
+                      var ABS_COL = { "CP": "#67e8f9", "CP V": "#67e8f9", "CSS": "#fbbf24", "Maladie": "#fda4af", "AI": "#fda4af", "FERIE": "#c4b5fd", "DELEGATION": "#c4b5fd", "REUNION": "#c4b5fd" };
+                      var absKey = null;
+                      Object.keys(d.absences || {}).forEach(function(k) { if (!absKey && d.absences[k]) absKey = k; });
+                      var estAbs = !!absKey && !(parseFloat(d.heuresEffectives) > 0);
+                      var absCol = estAbs ? (ABS_COL[absKey] || "#67e8f9") : null;
+                      if (estAbs) bg = "rgba(103,232,249,0.06)";
+                      return h("tr", { key: idx, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)", borderLeft: estAbs ? "3px solid " + absCol : "3px solid transparent" } },
                         h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", whiteSpace: "nowrap", color: "#e5e7eb" }) }, fmtFr(d.date)),
                         h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: jourColor, fontWeight: 700 }) }, jourLabel),
                         h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, d.emp),
-                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, d.sond),
-                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a1a1aa", fontSize: 11 }) }, d.fonction || "-"),
-                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, d.heureDebut || "-"),
-                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, d.heureFin || "-"),
+                        // Colonne Sondeuse : porte le badge d'absence (pas de machine ce jour-la)
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) },
+                          estAbs
+                            ? h("span", { style: { display: "inline-block", padding: "2px 9px", borderRadius: 999, fontSize: 10, fontWeight: 800, letterSpacing: 0.3, background: "rgba(103,232,249,0.15)", border: "1px solid " + absCol + "66", color: absCol, whiteSpace: "nowrap" } }, ABS_LBL[absKey] || absKey)
+                            : d.sond),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: estAbs ? absCol : "#a1a1aa", fontSize: 11, fontWeight: estAbs ? 700 : 400 }) }, estAbs ? "Absent" : (d.fonction || "-")),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, estAbs ? "" : (d.heureDebut || "-")),
+                        h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit" }) }, estAbs ? "" : (d.heureFin || "-")),
                         h("td", { style: rowS }, num(d.routeChauf) || ""),
                         h("td", { style: rowS }, num(d.routePass) || ""),
                         h("td", { style: Object.assign({}, rowS, { color: "#86efac", fontWeight: 700 }) }, num(d.heuresEffectives) || ""),
                         h("td", { style: rowS }, num(d.heurePause) || ""),
                         h("td", { style: rowS }, num(d.totalHorsPause) || ""),
                         h("td", { style: Object.assign({}, rowS, { color: "#fde68a" }) }, d.primePanier || ""),
-                        h("td", { style: rowS }, d.absences["CP"] || ""),
-                        h("td", { style: rowS }, d.absences["CP V"] || ""),
-                        h("td", { style: rowS }, d.absences["CSS"] || ""),
-                        h("td", { style: rowS }, d.absences["Maladie"] || ""),
-                        h("td", { style: rowS }, d.absences["AI"] || ""),
-                        h("td", { style: rowS }, d.absences["FERIE"] || ""),
-                        h("td", { style: rowS }, d.absences["DELEGATION"] || ""),
-                        h("td", { style: rowS }, d.absences["REUNION"] || ""),
+                        // Colonnes d'absence : la valeur est mise en evidence (fond
+                        // teinte + gras) pour etre reperable dans un tableau large
+                        ["CP", "CP V", "CSS", "Maladie", "AI", "FERIE", "DELEGATION", "REUNION"].map(function(ak) {
+                          var v = d.absences[ak];
+                          if (!v) return h("td", { key: ak, style: rowS }, "");
+                          var c = ABS_COL[ak] || "#67e8f9";
+                          return h("td", { key: ak, style: Object.assign({}, rowS, { background: c + "22", color: c, fontWeight: 800 }) }, v);
+                        }),
                         h("td", { style: Object.assign({}, rowS, { color: "#67e8f9" }) }, d.eloignement || "")
                       );
                     });
