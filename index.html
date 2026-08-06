@@ -22290,6 +22290,49 @@
       var [saving, setSaving] = useState(false);
       function upd(k, v) { setForm(Object.assign({}, form, { [k]: v })); }
 
+      // ── Gamme IA : convertit la DESCRIPTION DE LA DEMANDE employe en etapes ──
+      // C'est ici que les demandes venues du terrain deviennent des interventions :
+      // la gamme doit donc se generer des l'ouverture de cette modale, sans clic.
+      var [iaLoad, setIaLoad] = useState(false);
+      var [iaInfo, setIaInfo] = useState(null);
+      async function genGammeIA(silent) {
+        var text = String((form && form.Travaux_Effectues) || demande.description || "").trim();
+        if (text.length < 4) { if (!silent) alert("La demande n'a pas de description a convertir en gamme."); return; }
+        setIaLoad(true); setIaInfo(null);
+        try {
+          var tok = "";
+          try { var sess = await supabase.auth.getSession(); tok = (sess && sess.data && sess.data.session && sess.data.session.access_token) || ""; } catch (e) {}
+          var r = await fetch("/api/gamme-from-text", {
+            method: "POST",
+            headers: Object.assign({ "Content-Type": "application/json" }, tok ? { Authorization: "Bearer " + tok } : {}),
+            body: JSON.stringify({ text: text, machine: (form && form.Equipement) || "", typePanne: demande.type_panne || "" })
+          });
+          var data = await r.json().catch(function() { return {}; });
+          var etapes = Array.isArray(data.etapes) ? data.etapes : null;
+          if (!r.ok && !etapes) throw new Error(data.error || ("HTTP " + r.status));
+          if (!etapes || etapes.length === 0) throw new Error("Aucune etape generee");
+          setForm(function(prev) {
+            return Object.assign({}, prev, {
+              Gamme: etapes.map(function(lbl, i) { return { id: "ia-" + Date.now() + "-" + i, label: String(lbl), done: false, fromPlan: false }; })
+            });
+          });
+          // On indique si l'IA a vraiment tourne ou si c'est un simple decoupage
+          setIaInfo({ n: etapes.length, source: data.source || "ia" });
+        } catch (e) {
+          setIaInfo({ erreur: (e && e.message) || "erreur" });
+          if (!silent) alert("Generation IA impossible : " + ((e && e.message) || "erreur"));
+        } finally {
+          setIaLoad(false);
+        }
+      }
+      // AUTO a l'ouverture de la modale (silencieux) si la demande a une
+      // description et qu'aucune etape n'est deja definie
+      React.useEffect(function() {
+        var t = String((initialForm && initialForm.Travaux_Effectues) || demande.description || "").trim();
+        var g = initialForm && Array.isArray(initialForm.Gamme) ? initialForm.Gamme : [];
+        if (t.length >= 4 && g.length === 0) genGammeIA(true);
+      }, []);
+
       async function save() {
         if (!form.Title || !form.Title.trim()) { alert("Le titre est obligatoire."); return; }
         if (!form.Date_Intervention) { alert("La date est obligatoire."); return; }
@@ -22376,6 +22419,47 @@
           h("div", { style: { gridColumn: "1 / -1" } },
             h("label", { style: labelS }, "Commentaire"),
             h("textarea", { rows: 4, style: Object.assign({}, inputS, { resize: "vertical", fontFamily: "inherit" }), value: form.Travaux_Effectues || "", onChange: function(e) { upd("Travaux_Effectues", e.target.value); }, placeholder: "Commentaire / description detaillee des travaux..." })
+          ),
+          // ─── Gamme d'operations generee automatiquement depuis la demande ───
+          h("div", { style: { gridColumn: "1 / -1" } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" } },
+              h("label", { style: Object.assign({}, labelS, { marginBottom: 0 }) }, "Gamme d'operations"),
+              h("button", { type: "button", disabled: iaLoad, onClick: function() { genGammeIA(false); },
+                style: { padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", cursor: iaLoad ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 5 } },
+                h(Icon, { name: "sparkles", size: 12, color: "#c4b5fd" }),
+                iaLoad ? "Generation..." : (Array.isArray(form.Gamme) && form.Gamme.length > 0 ? "Regenerer" : "Generer avec l'IA"))
+            ),
+            iaLoad ? h("div", { style: { padding: "10px 12px", background: "rgba(167,139,250,0.06)", border: "1px dashed rgba(167,139,250,0.30)", borderRadius: 8, fontSize: 12, color: "#c4b5fd" } }, "L'IA convertit la description de la demande en etapes...") : null,
+            (!iaLoad && Array.isArray(form.Gamme) && form.Gamme.length > 0) ? h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: "8px 12px" } },
+              form.Gamme.map(function(g, gi) {
+                return h("div", { key: g.id || gi, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: gi < form.Gamme.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                  h("span", { style: { fontSize: 10.5, fontWeight: 800, color: "#71717a", minWidth: 18 } }, (gi + 1) + "."),
+                  h("input", { type: "text", value: g.label || "",
+                    onChange: function(e) {
+                      var v = e.target.value;
+                      setForm(function(prev) {
+                        var arr = (prev.Gamme || []).slice();
+                        arr[gi] = Object.assign({}, arr[gi], { label: v });
+                        return Object.assign({}, prev, { Gamme: arr });
+                      });
+                    },
+                    style: { flex: 1, padding: "5px 8px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, color: "#e5e7eb", fontSize: 12.5, fontFamily: "inherit" } }),
+                  h("button", { type: "button", title: "Retirer cette etape",
+                    onClick: function() {
+                      setForm(function(prev) {
+                        return Object.assign({}, prev, { Gamme: (prev.Gamme || []).filter(function(_, xi) { return xi !== gi; }) });
+                      });
+                    },
+                    style: { background: "transparent", border: "none", cursor: "pointer", padding: 3, color: "#f43f5e" } }, h(Icon, { name: "x", size: 13, color: "#f43f5e" }))
+                );
+              })
+            ) : null,
+            (!iaLoad && (!Array.isArray(form.Gamme) || form.Gamme.length === 0)) ? h("div", { style: { fontSize: 11.5, color: "#71717a", fontStyle: "italic" } }, "Aucune etape. La gamme est generee automatiquement depuis la description de la demande.") : null,
+            iaInfo && iaInfo.erreur ? h("div", { style: { fontSize: 11, color: "#fda4af", marginTop: 5 } }, "IA indisponible (" + iaInfo.erreur + ") - tu peux saisir les etapes a la main ou relancer.") : null,
+            iaInfo && !iaInfo.erreur ? h("div", { style: { fontSize: 11, color: iaInfo.source === "ia" ? "#86efac" : "#fde68a", marginTop: 5 } },
+              iaInfo.source === "ia"
+                ? (iaInfo.n + " etape(s) generee(s) par l'IA - modifiables ci-dessus")
+                : (iaInfo.n + " etape(s) obtenues par decoupage simple (cle IA non configuree cote serveur)")) : null
           )
         ),
         h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.07)" } },
