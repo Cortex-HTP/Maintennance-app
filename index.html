@@ -23637,7 +23637,12 @@
         //  1) personnel_id du rapport_forage correspondant (date+sondeuse) - SOURCE LA PLUS AUTORITAIRE
         //  2) Si pas de rapport : la ligne dont fonction = "Sondeur" (regle metier post-migration)
         //  3) Fallback : 1er releve par id du groupe
-        var rawList = applyFilter(rels);
+        // Les absences creees AUTOMATIQUEMENT a l'approbation d'un conge
+        // (source "auto_conge", 0 h) servent au RECAP MENSUEL (colonnes CP/CSS/
+        // Maladie) et a neutraliser l'alerte "releve manquant". Elles n'ont rien
+        // a faire dans la LISTE des releves saisis par les equipes : on les
+        // masque ici (le recap mensuel, lui, les garde).
+        var rawList = applyFilter(rels).filter(function(r) { return String(r.source || "") !== "auto_conge"; });
         var responsableByGroup = {}; // key = "date|sondeuse_code" -> personnel_id
         // 1) Index des rapports par (date, sondeuse)
         var rapByGroup = {};
@@ -23787,6 +23792,14 @@
                     canEditSoumissions ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 } },
                       h("span", { style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#a5b4fc", fontWeight: 700 } },
                         h(Icon, { name: "edit-3", size: 12, color: "#a5b4fc" }), "Modifier"),
+                      // ACCEPTER : le releve est valide tel quel -> statut valide_admin.
+                      // Il sort alors de la rubrique "A verifier" (les alertes IA ne
+                      // s'appliquent qu'aux releves en_attente) sans avoir a l'ouvrir.
+                      r.statut === "en_attente" ? h("span", {
+                        onClick: function(ev) { ev.stopPropagation(); updateReleveStatut(r.id, "valide_admin"); },
+                        title: "Accepter ce releve tel quel (il sort de la liste a verifier)",
+                        style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#86efac", fontWeight: 700, padding: "3px 9px", borderRadius: 6, border: "1px solid rgba(34,197,94,0.40)", background: "rgba(34,197,94,0.12)", cursor: "pointer" }
+                      }, h(Icon, { name: "check", size: 12, color: "#86efac" }), "Accepter") : null,
                       h("span", {
                         onClick: function(ev) { ev.stopPropagation(); deleteReleveHeures(r); },
                         style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#fda4af", fontWeight: 700, padding: "3px 9px", borderRadius: 6, border: "1px solid rgba(244,63,94,0.35)", background: "rgba(244,63,94,0.10)", cursor: "pointer" }
