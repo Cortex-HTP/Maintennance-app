@@ -23080,92 +23080,178 @@
       var _envSaving = useState(null);
       var envSaving = _envSaving[0], setEnvSaving = _envSaving[1];
 
+      // Nombre a partir d'une valeur qui peut etre string, vide ou absente.
+      // Une chaine vide ou non numerique ne "masque" jamais une autre cle.
+      function cmdNum(v) {
+        if (v == null || v === "") return null;
+        var n = parseFloat(String(v).replace(",", ".")); // tolere la virgule FR
+        return isNaN(n) || n < 0 ? null : n;
+      }
+      // Quantite demandee : qty en PREMIER (forme reelle des donnees, comme
+      // partout ailleurs dans l'app), puis les variantes historiques.
       function cmdLigneQty(l) {
-        var n = parseFloat(l.quantite != null ? l.quantite : (l.qte != null ? l.qte : l.qty));
-        return isNaN(n) || n < 0 ? 0 : n;
+        var n = cmdNum(l.qty);
+        if (n === null) n = cmdNum(l.quantite);
+        if (n === null) n = cmdNum(l.qte);
+        return n === null ? 0 : n;
       }
       function cmdLigneEnvoye(l) {
-        var n = parseFloat(l.envoye);
-        return isNaN(n) || n < 0 ? 0 : n;
+        var n = cmdNum(l.envoye);
+        return n === null ? 0 : n;
       }
-      // Etat d'edition courant du bon (initialise depuis la base au 1er affichage)
+      // Affichage des quantites SANS perdre les decimales (huiles en litres...)
+      function cmdFmtQte(v) {
+        var n = cmdNum(v);
+        if (n === null) n = 0;
+        return Math.round(n * 100) / 100 === Math.round(n) ? fmtNum(Math.round(n)) : String(Math.round(n * 100) / 100).replace(".", ",");
+      }
+      // Le draft stocke la valeur BRUTE saisie (string) : indispensable pour
+      // pouvoir taper "2." puis "2.5" sans que le champ se remette a 0 a chaque
+      // frappe. La conversion en nombre se fait a la lecture / l'enregistrement.
       function cmdDraft(c, lignes) {
         var k = String(c.id);
         if (envDraft[k]) return envDraft[k];
         return lignes.map(function(l) { return cmdLigneEnvoye(l); });
       }
+      // Valeur numerique d'une case du draft (pour tous les calculs)
+      function cmdDraftNum(draft, i, l) {
+        if (!draft || draft[i] == null) return cmdLigneEnvoye(l);
+        var n = cmdNum(draft[i]);
+        return n === null ? 0 : n;
+      }
       function cmdSetDraft(c, lignes, idx, val) {
         var k = String(c.id);
-        var cur = cmdDraft(c, lignes).slice();
+        var base = cmdDraft(c, lignes);
         var max = cmdLigneQty(lignes[idx]);
-        var n = parseFloat(val);
-        if (isNaN(n) || n < 0) n = 0;
-        if (max > 0 && n > max) n = max; // on n'envoie jamais plus que demande
-        cur[idx] = n;
-        var next = {};
-        Object.keys(envDraft).forEach(function(kk) { next[kk] = envDraft[kk]; });
-        next[k] = cur;
-        setEnvDraft(next);
+        var v = val;
+        var n = cmdNum(v);
+        // Clamp UNIQUEMENT si la saisie est un nombre exploitable et depasse
+        // le demande. Une saisie intermediaire ("2.", "") est conservee telle
+        // quelle pour ne pas casser la frappe.
+        if (n !== null && max > 0 && n > max) v = max;
+        setEnvDraft(function(prev) {
+          var cur = (prev[k] || base).slice();
+          cur[idx] = v;
+          var next = {};
+          Object.keys(prev).forEach(function(kk) { next[kk] = prev[kk]; });
+          next[k] = cur;
+          return next;
+        });
       }
       function cmdToggleLigne(c, lignes, idx, coche) {
-        cmdSetDraft(c, lignes, idx, coche ? cmdLigneQty(lignes[idx]) : 0);
+        var q = cmdLigneQty(lignes[idx]);
+        // Ligne sans quantite demandee : on marque 1 (symbolique) pour pouvoir
+        // quand meme la cocher comme servie
+        cmdSetDraft(c, lignes, idx, coche ? (q > 0 ? q : 1) : 0);
       }
       function cmdToutEnvoyer(c, lignes) {
         var k = String(c.id);
-        var next = {};
-        Object.keys(envDraft).forEach(function(kk) { next[kk] = envDraft[kk]; });
-        next[k] = lignes.map(function(l) { return cmdLigneQty(l); });
-        setEnvDraft(next);
+        setEnvDraft(function(prev) {
+          var next = {};
+          Object.keys(prev).forEach(function(kk) { next[kk] = prev[kk]; });
+          next[k] = lignes.map(function(l) { var q = cmdLigneQty(l); return q > 0 ? q : 1; });
+          return next;
+        });
       }
-      // Enregistre : ecrit la quantite cumulee + trace le mouvement du jour
+      function cmdPurgeDraft(cid) {
+        var k = String(cid);
+        setEnvDraft(function(prev) {
+          if (!prev[k]) return prev;
+          var next = {};
+          Object.keys(prev).forEach(function(kk) { if (kk !== k) next[kk] = prev[kk]; });
+          return next;
+        });
+      }
+      // Enregistre : ecrit la quantite cumulee + trace le mouvement du jour.
+      // RELECTURE AVANT ECRITURE : on repart des lignes fraiches de la base et
+      // on refuse d'ecrire si quelqu'un d'autre a modifie le bon entre-temps
+      // (sinon l'ecriture ecraserait son envoi ET son historique en silence).
       function cmdSaveEnvois(c, lignes) {
         var k = String(c.id);
         var draft = envDraft[k];
         if (!draft) return;
         var dNow = new Date();
         var today = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
-        var nbMouv = 0;
-        var newLignes = lignes.map(function(l, i) {
+        // Mouvements calcules sur le snapshot affiche
+        var mouvements = lignes.map(function(l, i) {
           var avant = cmdLigneEnvoye(l);
-          var apres = draft[i] != null ? draft[i] : avant;
-          var out = Object.assign({}, l, { envoye: apres });
-          if (apres !== avant) {
-            nbMouv++;
-            var histo = Array.isArray(l.envois) ? l.envois.slice() : [];
-            histo.push({ date: today, qte: Math.round((apres - avant) * 100) / 100 });
-            out.envois = histo;
-          }
-          return out;
+          var apres = cmdDraftNum(draft, i, l);
+          return { avant: avant, apres: apres, delta: Math.round((apres - avant) * 100) / 100 };
         });
-        if (nbMouv === 0) { if (showToast) showToast("Aucun changement a enregistrer"); return; }
+        var nbMouv = mouvements.filter(function(m) { return m.delta !== 0; }).length;
+        if (nbMouv === 0) {
+          cmdPurgeDraft(c.id); // evite la pastille "non enregistre" collante
+          if (showToast) showToast("Aucun changement a enregistrer", "info");
+          return;
+        }
         var table = c._source === "mecanicien" ? "commandes_materiel_mec" : "bons_commande";
         var realId = c._source === "mecanicien" ? c._rawId : c.id;
         setEnvSaving(k);
-        supabase.from(table).update({ lignes: newLignes }).eq("id", realId).select().single().then(function(res) {
+        function echec(msg) {
           setEnvSaving(null);
-          if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); else alert("Erreur : " + res.error.message); return; }
-          setCmds(cmds.map(function(x) { return x.id === c.id ? Object.assign({}, x, { lignes: newLignes }) : x; }));
-          // Le draft est purge : l'affichage repart de la base (source de verite)
-          var next = {};
-          Object.keys(envDraft).forEach(function(kk) { if (kk !== k) next[kk] = envDraft[kk]; });
-          setEnvDraft(next);
-          var reste = newLignes.filter(function(l) { return cmdLigneEnvoye(l) < cmdLigneQty(l); }).length;
-          if (showToast) showToast(reste === 0 ? "Envoi enregistre - bon complet" : "Envoi enregistre - reste " + reste + " article(s)", "success");
-        });
+          if (showToast) showToast(msg, "error"); else alert(msg);
+        }
+        supabase.from(table).select("lignes").eq("id", realId).single().then(function(fr) {
+          if (fr.error) { echec("Lecture : " + fr.error.message); return; }
+          var fresh = Array.isArray(fr.data && fr.data.lignes) ? fr.data.lignes : [];
+          if (fresh.length !== lignes.length) {
+            setEnvSaving(null);
+            alert("Ce bon a ete modifie ailleurs (nombre d'articles different). Recharge la page avant d'enregistrer.");
+            return;
+          }
+          // Conflit : la quantite envoyee en base a bouge depuis l'affichage
+          var conflit = null;
+          fresh.forEach(function(fl, i) {
+            if (conflit) return;
+            if (cmdLigneEnvoye(fl) !== mouvements[i].avant) {
+              conflit = (fl.designation || fl.description || ("article " + (i + 1)));
+            }
+          });
+          if (conflit) {
+            setEnvSaving(null);
+            alert("Ce bon a ete modifie ailleurs entre-temps (" + conflit + "). Tes saisies sont conservees : recharge la page pour voir l'etat a jour, puis ressaisis l'envoi.");
+            return;
+          }
+          var newLignes = fresh.map(function(fl, i) {
+            var m = mouvements[i];
+            var out = Object.assign({}, fl, { envoye: m.apres });
+            if (m.delta !== 0) {
+              var histo = Array.isArray(fl.envois) ? fl.envois.slice() : [];
+              histo.push({ date: today, qte: m.delta });
+              out.envois = histo;
+            }
+            return out;
+          });
+          supabase.from(table).update({ lignes: newLignes }).eq("id", realId).select().single().then(function(res) {
+            setEnvSaving(null);
+            if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); else alert("Erreur : " + res.error.message); return; }
+            setCmds(function(prev) {
+              return prev.map(function(x) { return x.id === c.id ? Object.assign({}, x, { lignes: newLignes }) : x; });
+            });
+            cmdPurgeDraft(c.id); // l'affichage repart de la base (source de verite)
+            var reste = newLignes.filter(function(l) {
+              var q = cmdLigneQty(l), e = cmdLigneEnvoye(l);
+              return q > 0 ? e < q : e <= 0;
+            }).length;
+            if (showToast) showToast(reste === 0 ? "Envoi enregistre - bon complet" : "Envoi enregistre - reste " + reste + " article(s)", "success");
+          }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
+        }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
       }
       // Avancement d'un bon : { nbServies, total, qteEnvoyee, qteTotale, pct, complet }
       function cmdAvancement(lignes, draft) {
         var nbServies = 0, qteEnvoyee = 0, qteTotale = 0;
         lignes.forEach(function(l, i) {
           var q = cmdLigneQty(l);
-          var e = draft && draft[i] != null ? draft[i] : cmdLigneEnvoye(l);
-          qteTotale += q; qteEnvoyee += e;
-          if (q > 0 && e >= q) nbServies++;
+          var e = cmdDraftNum(draft, i, l);
+          qteTotale += q;
+          if (q > 0) qteEnvoyee += Math.min(e, q); // jamais plus de 100 %
+          // Ligne sans quantite demandee : servie des qu'elle est cochee
+          if (q > 0 ? e >= q : e > 0) nbServies++;
         });
         return {
           nbServies: nbServies, total: lignes.length,
           qteEnvoyee: qteEnvoyee, qteTotale: qteTotale,
-          pct: qteTotale > 0 ? Math.round(qteEnvoyee / qteTotale * 100) : 0,
+          pct: qteTotale > 0 ? Math.round(qteEnvoyee / qteTotale * 100) : (nbServies === lignes.length && lignes.length > 0 ? 100 : 0),
           complet: lignes.length > 0 && nbServies === lignes.length
         };
       }
@@ -23855,7 +23941,7 @@
                     h("div", { style: { width: avc.pct + "%", height: "100%", borderRadius: 99, background: avc.complet ? "linear-gradient(90deg,#15803d,#22c55e)" : "linear-gradient(90deg,#b45309,#f59e0b)", transition: "width 0.25s" } })
                   ),
                   h("div", { style: { fontSize: 12.5, fontWeight: 700, color: avc.complet ? "#86efac" : "#cbd5e1" } },
-                    avc.nbServies + " ligne" + (avc.nbServies > 1 ? "s" : "") + " sur " + avc.total + " servie" + (avc.nbServies > 1 ? "s" : "") + " · " + fmtNum(avc.qteEnvoyee) + " / " + fmtNum(avc.qteTotale) + " unites envoyees (" + avc.pct + " %)")
+                    avc.nbServies + " ligne" + (avc.nbServies > 1 ? "s" : "") + " sur " + avc.total + " servie" + (avc.nbServies > 1 ? "s" : "") + (avc.qteTotale > 0 ? " · " + cmdFmtQte(avc.qteEnvoyee) + " / " + cmdFmtQte(avc.qteTotale) + " unites envoyees (" + avc.pct + " %)" : ""))
                 ),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
                   lignes.map(function(l, i) {
@@ -23865,10 +23951,14 @@
                     var unit = l.unite || l.unit || (l.isLiquide ? "L" : "");
                     var known = isPieceKnown(designation, refStr);
                     var photos = Array.isArray(l.photos) ? l.photos : [];
-                    var envoye = draftC && draftC[i] != null ? draftC[i] : cmdLigneEnvoye(l);
-                    var ligneComplete = qty > 0 && envoye >= qty;
+                    var envoye = cmdDraftNum(draftC, i, l);
+                    // Ligne sans quantite demandee : servie des qu'elle est cochee
+                    var ligneComplete = qty > 0 ? envoye >= qty : envoye > 0;
                     var resteL = qty - envoye;
                     var histoL = Array.isArray(l.envois) ? l.envois : [];
+                    // Valeur AFFICHEE dans le champ : la saisie brute si edition en
+                    // cours (permet de taper "2." vers "2,5"), sinon la base
+                    var valChamp = draftC && draftC[i] != null ? draftC[i] : cmdLigneEnvoye(l);
                     return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, opacity: ligneComplete ? 0.72 : 1 } },
                       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
                         // Case a cocher : ligne entierement envoyee
@@ -23881,9 +23971,9 @@
                             refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
                           ),
                           h("div", { style: { fontSize: 10.5, fontWeight: 700, marginTop: 3, color: ligneComplete ? "#86efac" : (envoye > 0 ? "#fde68a" : "#71717a") } },
-                            ligneComplete ? "Complet" : (envoye > 0 ? "Reste " + fmtNum(resteL) + " " + (unit || "a envoyer") : "Pas encore envoye")),
+                            ligneComplete ? "Complet" : (envoye > 0 ? "Reste " + cmdFmtQte(resteL) + " " + (unit || "a envoyer") : "Pas encore envoye")),
                           histoL.length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3 } },
-                            histoL.map(function(ev) { return (ev.qte > 0 ? "+" : "") + fmtNum(ev.qte) + " le " + String(ev.date).substring(0, 10).split("-").reverse().join("/"); }).join(" · ")) : null,
+                            histoL.map(function(ev) { return (ev.qte > 0 ? "+" : "-") + cmdFmtQte(Math.abs(ev.qte)) + " le " + String(ev.date).substring(0, 10).split("-").reverse().join("/"); }).join(" · ")) : null,
                           l.autreInfo ? h("div", { style: { fontSize: 11, color: "#cbd5e1", marginTop: 4, fontStyle: "italic" } }, l.autreInfo) : null,
                           !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
                             style: { marginTop: 6, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" } },
@@ -23895,13 +23985,14 @@
                         h("div", { style: { display: "flex", alignItems: "flex-start", gap: 8, flexShrink: 0 } },
                           h("div", null,
                             h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Envoye"),
-                            h("input", { type: "number", min: "0", max: String(qty), step: "any", value: envoye,
+                            h("input", { type: "text", inputMode: "decimal", value: String(valChamp),
                               onChange: function(e) { cmdSetDraft(c, lignes, i, e.target.value); },
+                              title: qty > 0 ? "Maximum " + cmdFmtQte(qty) : "Aucune quantite demandee sur cette ligne",
                               style: { width: 66, padding: "6px 8px", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
                           ),
                           h("div", null,
                             h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Demande"),
-                            h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } }, fmtNum(qty) + " " + unit)
+                            h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } }, (qty > 0 ? cmdFmtQte(qty) : "—") + " " + unit)
                           )
                         )
                       ),
