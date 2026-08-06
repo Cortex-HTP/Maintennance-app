@@ -557,12 +557,12 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
       var lon = c.longitude !== "" && c.longitude !== null && c.longitude !== undefined ? parseFloat(c.longitude) : null;
-      return { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, jour_cloture_facturation: Math.min(Math.max(parseInt(c.jourCloture) || 25, 1), 31), date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon };
+      return { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, jour_cloture_facturation: Math.min(Math.max(parseInt(c.jourCloture) || 25, 1), 31), date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon, carburant_client: c.carburantClient === true };
     }
     // Petit badge "client" affiche a cote du nom d'un chantier (Avancement,
     // Previsionnel, Planning, cartes...). Retourne null si pas de client.
@@ -570,6 +570,31 @@
       var cl = ch && ch.client ? String(ch.client).trim() : "";
       if (!cl) return null;
       return h("span", { style: Object.assign({ fontSize: 10.5, fontWeight: 700, color: "#7dd3fc", background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", borderRadius: 999, padding: "1px 8px", marginLeft: 8, whiteSpace: "nowrap", verticalAlign: "middle", letterSpacing: 0.3 }, extraStyle || {}) }, cl);
+    }
+    // Interrupteur "carburant fourni par le client" du formulaire chantier.
+    // Partage par les 2 formulaires (Chantiers et Avancement) pour rester identiques.
+    function champCarburantClient(f, upd) {
+      var actif = f.carburantClient === true;
+      return h("div", {
+        onClick: function() { upd("carburantClient", !actif); },
+        style: {
+          display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", userSelect: "none",
+          padding: "12px 14px", borderRadius: 10,
+          background: actif ? "rgba(251,191,36,0.10)" : "rgba(255,255,255,0.03)",
+          border: "1px solid " + (actif ? "rgba(251,191,36,0.40)" : "rgba(255,255,255,0.08)")
+        }
+      },
+        h("div", { style: { width: 18, height: 18, marginTop: 1, flexShrink: 0, borderRadius: 5, background: actif ? "#fbbf24" : "transparent", border: "2px solid " + (actif ? "#fbbf24" : "#52525b"), display: "flex", alignItems: "center", justifyContent: "center" } },
+          actif ? h(Icon, { name: "check", size: 12, color: "#1c1917" }) : null
+        ),
+        h("div", null,
+          h("div", { style: { fontSize: 13, fontWeight: 700, color: actif ? "#fde68a" : "#d4d4d8" } }, "Carburant fourni par le client"),
+          h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3, lineHeight: 1.45 } },
+            actif
+              ? "Les pleins de ce chantier restent saisis par les equipes (suivi conso, horametres) mais ne comptent plus dans les couts : cout/m machine, seuil de rentabilite, marges et prix de vente les excluent."
+              : "Le carburant est a notre charge : les pleins de ce chantier sont comptes dans les couts.")
+        )
+      );
     }
     // Variante texte pour les <option> de <select> (pas de style possible dedans)
     function chantierOptionLabel(c) {
@@ -8620,7 +8645,7 @@
       };
 
       // ── CRUD Chantiers ──
-      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null }); setShowModal(true); };
+      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
@@ -9641,6 +9666,7 @@
               h(FormField, { label: "Prix au metre (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.prixMetre, onChange: function(e) { upd("prixMetre", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
             ),
+            champCarburantClient(f, upd),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
               h(FormField, { label: "Depenses prevues (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
@@ -11090,6 +11116,61 @@
       return null;
     }
 
+    // ── CARBURANT FOURNI PAR LE CLIENT ──────────────────────────────────────────
+    // Certains chantiers sont conclus "carburant a la charge du client" : les equipes
+    // saisissent quand meme les pleins (suivi de consommation, horametres, derives
+    // moteur) mais ces litres ne doivent PESER DANS AUCUN COUT : ni cout/m machine,
+    // ni cout/m global, ni seuil de rentabilite, ni prix de vente, ni marges.
+    //
+    // Un plein est rattache a un chantier de deux facons :
+    //   - rapport_id renseigne  -> chantier du rapport
+    //   - sinon                 -> rapport de la MEME sondeuse le MEME jour
+    // (exactement la regle d'attribution utilisee par les couts machine).
+    //
+    // Retourne une fonction test(carb) -> true si ce plein est a la charge du CLIENT
+    // (donc a exclure des couts). Si aucun chantier n'est en carburant client, on
+    // renvoie une fonction constante false : zero surcout sur le cas general.
+    function buildCarburantClientTest(ctx) {
+      var faux = function() { return false; };
+      var clientSet = {};
+      var nb = 0;
+      (ctx.dbChantiers || []).forEach(function(c) {
+        if (c && c.carburantClient === true && c.id != null) { clientSet[String(c.id)] = true; nb++; }
+      });
+      if (nb === 0) return faux;
+      // Index des rapports : par id, et par sondeuse|date
+      var chantierParRapportId = {};
+      var chantierParMachineDate = {};
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r || r.chantier_id == null) return;
+        var ck = String(r.chantier_id);
+        if (r.id != null) chantierParRapportId[String(r.id)] = ck;
+        var code = String(r.sondeuse_code || "").toUpperCase().trim();
+        var d = String(r.date_rapport || "").substring(0, 10);
+        if (code && d) chantierParMachineDate[code + "|" + d] = ck;
+      });
+      return function(carb) {
+        if (!carb) return false;
+        var ck = null;
+        if (carb.rapport_id != null && chantierParRapportId[String(carb.rapport_id)]) {
+          ck = chantierParRapportId[String(carb.rapport_id)];
+        } else {
+          var code = String(carb.sondeuse_code || "").toUpperCase().trim();
+          var d = String(carb.date_consommation || "").substring(0, 10);
+          if (code && d) ck = chantierParMachineDate[code + "|" + d] || null;
+        }
+        // Plein non rattachable a un chantier (VL, atelier, avance) -> reste a notre charge
+        if (!ck) return false;
+        return clientSet[ck] === true;
+      };
+    }
+    // Vrai si le chantier est en "carburant fourni par le client" (pour les libelles UI).
+    function chantierCarburantClient(chantiers, chantierId) {
+      if (chantierId == null) return false;
+      var ch = (chantiers || []).find(function(c) { return c && String(c.id) === String(chantierId); });
+      return !!(ch && ch.carburantClient === true);
+    }
+
     // ── Cout de revient au metre PAR MACHINE (moteur du "Detail par sondeuse" des Stats) ──
     // Fonction module-level qui REPRODUIT EXACTEMENT le calcul inline de EcranStatistiques
     // (section "Detail par sondeuse") sur la periode [periodStart, periodEnd]. Objectif :
@@ -11356,8 +11437,14 @@
       // ── Detail par sondeuse (sondeusesMap) ──
       var sondeusesMap = {};
       var prixMazoutMetre = lookupPrix("Mazout/L", "");
+      // Chantiers ou le carburant est fourni par le client : pleins saisis, non coutes
+      var carbClientChantiers = {};
+      (ctx.dbChantiers || []).forEach(function(c) {
+        if (c && c.carburantClient === true && c.id != null) carbClientChantiers[String(c.id)] = true;
+      });
       filtered.forEach(function(r) {
         var code = r.sondeuse_code || "—";
+        var carbClientRapport = r.chantier_id != null && carbClientChantiers[String(r.chantier_id)] === true;
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
           coutConso: 0, coutConsommablesTerrain: 0, coutPersonnel: 0, coutEmprunt: 0,
@@ -11390,14 +11477,17 @@
           sondeusesMap[code].coutConso += qty * prix;
           sondeusesMap[code].coutConsommablesTerrain += qty * prix;
         });
-        carburants.forEach(function(cb) {
-          var lieParId = cb.rapport_id && cb.rapport_id === r.id;
-          var lieParDateSondeuse = !cb.rapport_id && cb.sondeuse_code === r.sondeuse_code && String(cb.date_consommation || "").substring(0, 10) === String(r.date_rapport || "").substring(0, 10);
-          if (!lieParId && !lieParDateSondeuse) return;
-          var qtyL = parseFloat(cb.quantite_l) || 0;
-          if (qtyL <= 0) return;
-          sondeusesMap[code].coutConso += qtyL * prixMazoutMetre;
-        });
+        // Carburant a la charge du CLIENT sur ce chantier -> litres saisis mais non coutes
+        if (!carbClientRapport) {
+          carburants.forEach(function(cb) {
+            var lieParId = cb.rapport_id && cb.rapport_id === r.id;
+            var lieParDateSondeuse = !cb.rapport_id && cb.sondeuse_code === r.sondeuse_code && String(cb.date_consommation || "").substring(0, 10) === String(r.date_rapport || "").substring(0, 10);
+            if (!lieParId && !lieParDateSondeuse) return;
+            var qtyL = parseFloat(cb.quantite_l) || 0;
+            if (qtyL <= 0) return;
+            sondeusesMap[code].coutConso += qtyL * prixMazoutMetre;
+          });
+        }
         var equipe = Array.isArray(r.equipe) ? r.equipe : [];
         equipe.forEach(function(m) {
           if (!m) return;
@@ -11676,9 +11766,11 @@
         m.metres += metres; m.directs += directs;
         if (isReliable(d)) { directsReliable += directs; metresReliable += metres; }
       });
-      // Carburant par machine (annee complete)
+      // Carburant par machine (annee complete), hors chantiers a carburant client
+      var estCarbClientPM = buildCarburantClientTest(ctx);
       (ctx.dbCarburants || []).forEach(function(c) {
         if (!c || !c.date_consommation) return;
+        if (estCarbClientPM(c)) return; // a la charge du client -> pas un cout pour nous
         var d = dOf(c.date_consommation);
         if (!isCurYear(d)) return;
         var code = String(c.sondeuse_code || "").toUpperCase().trim();
@@ -12224,7 +12316,8 @@
       useEffect(function() {
         var d90 = new Date(Date.now() - 90 * 86400 * 1000);
         var iso = d90.toISOString().substring(0, 10);
-        supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l").gte("date_consommation", iso).then(function(res) {
+        // rapport_id necessaire pour rattacher un plein a son chantier (carburant client)
+        supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").gte("date_consommation", iso).then(function(res) {
           if (res && res.data) setCarbs90j(res.data);
         });
       }, []);
@@ -12256,7 +12349,12 @@
           var prixMazout = 175;
           var pmRow = parametresList.find(function(p) { return p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre"); });
           if (pmRow && pmRow.valeur) prixMazout = parseFloat(pmRow.valeur) || 175;
-          var coutCarburant90j = (carbs90j || []).reduce(function(s, c) { return s + ((parseFloat(c.quantite_l) || 0) * prixMazout); }, 0);
+          // Carburant a la charge du client exclu : saisi pour le suivi conso, pas un cout
+          var estCarbClient90j = buildCarburantClientTest(ctxAv);
+          var coutCarburant90j = (carbs90j || []).reduce(function(s, c) {
+            if (estCarbClient90j(c)) return s;
+            return s + ((parseFloat(c.quantite_l) || 0) * prixMazout);
+          }, 0);
           // Consommables sondeuses 90j (forets, joints, etc. depuis consommables_perdus des rapports)
           var piecesList = ctxAv.pieces || [];
           var pieceIdxCG = {};
@@ -12553,7 +12651,7 @@
 
       // CRUD handlers
       var openNewChantier = function() {
-        setEditing({ id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null });
+        setEditing({ id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false });
         setShowModal(true);
       };
       var openEditChantier = function(c) {
@@ -13075,6 +13173,7 @@
               h(FormField, { label: "Depenses prevues" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
             ),
+            champCarburantClient(f, upd),
             h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
               statuts.map(function(s) { return h("option", { key: s, value: s }, s); })
             )),
@@ -19087,7 +19186,10 @@
       filtered.forEach(function(r) { filteredIdsSet[r.id] = true; });
       var prixMazout = lookupPrix("Mazout/L", "");
       var mazoutDisplayName = pieceDesignationOfficielle("Mazout/L", "");
+      // Chantiers a carburant client : les litres sont saisis mais ne sont pas un cout
+      var estCarbClientConso = buildCarburantClientTest(ctx);
       (carburants || []).forEach(function(c) {
+        if (estCarbClientConso(c)) return;
         var dateStr = String(c.date_consommation || "").substring(0, 10);
         if (!dateStr) return;
         var d = new Date(dateStr);
@@ -19280,9 +19382,12 @@
           minutesForationYTD += durBtw(a.debut, a.fin);
         });
       });
-      // Carburant YTD (de consommations_carburant - source unique du mazout)
+      // Carburant YTD (de consommations_carburant - source unique du mazout),
+      // hors chantiers ou le carburant est fourni par le client.
       var prixMazoutYTD = lookupPrix("Mazout/L", "");
+      var estCarbClientYTD = buildCarburantClientTest(ctx);
       (carburants || []).forEach(function(c) {
+        if (estCarbClientYTD(c)) return;
         var dateStr = String(c.date_consommation || "").substring(0, 10);
         if (!dateStr) return;
         var dd = new Date(dateStr);
@@ -19901,8 +20006,14 @@
 
       // ── Detail par sondeuse ──
       var sondeusesMap = {}; // code -> stats
+      // Chantiers a carburant client : les pleins restent saisis mais ne sont pas coutes
+      var carbClientChantiersStat = {};
+      (ctx.dbChantiers || []).forEach(function(c) {
+        if (c && c.carburantClient === true && c.id != null) carbClientChantiersStat[String(c.id)] = true;
+      });
       filtered.forEach(function(r) {
         var code = r.sondeuse_code || "—";
+        var carbClientRapportStat = r.chantier_id != null && carbClientChantiersStat[String(r.chantier_id)] === true;
         if (!sondeusesMap[code]) sondeusesMap[code] = {
           rapports: 0, metres: 0, minutes: 0, minutesForation: 0,
           coutConso: 0, coutConsommablesTerrain: 0, coutPersonnel: 0, coutEmprunt: 0,
@@ -19943,14 +20054,16 @@
         // Carburant : entrees liees a ce rapport (par rapport_id ou couple sondeuse+date).
         // Le prix unitaire est lookup depuis pieces (entree "Mazout/L").
         var prixMazoutMetre = lookupPrix("Mazout/L", "");
-        (carburants || []).forEach(function(cb) {
-          var lieParId = cb.rapport_id && cb.rapport_id === r.id;
-          var lieParDateSondeuse = !cb.rapport_id && cb.sondeuse_code === r.sondeuse_code && String(cb.date_consommation || "").substring(0, 10) === String(r.date_rapport || "").substring(0, 10);
-          if (!lieParId && !lieParDateSondeuse) return;
-          var qtyL = parseFloat(cb.quantite_l) || 0;
-          if (qtyL <= 0) return;
-          sondeusesMap[code].coutConso += qtyL * prixMazoutMetre;
-        });
+        if (!carbClientRapportStat) {
+          (carburants || []).forEach(function(cb) {
+            var lieParId = cb.rapport_id && cb.rapport_id === r.id;
+            var lieParDateSondeuse = !cb.rapport_id && cb.sondeuse_code === r.sondeuse_code && String(cb.date_consommation || "").substring(0, 10) === String(r.date_rapport || "").substring(0, 10);
+            if (!lieParId && !lieParDateSondeuse) return;
+            var qtyL = parseFloat(cb.quantite_l) || 0;
+            if (qtyL <= 0) return;
+            sondeusesMap[code].coutConso += qtyL * prixMazoutMetre;
+          });
+        }
         // Cout salaire personnel : pour chaque membre de l'equipe, salaire / jours Lun-Jeu du mois.
         // On passe r.date_rapport pour que le diviseur soit base sur le mois calendaire du rapport.
         var equipe = Array.isArray(r.equipe) ? r.equipe : [];
