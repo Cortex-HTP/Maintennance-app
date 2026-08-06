@@ -11530,6 +11530,63 @@
       return out;
     }
 
+    // ── RATIO CASH / COMPTA : passer une marge comptable en vision tresorerie ──
+    // La banque ne ventile PAS ses mouvements par chantier ni par machine : impossible
+    // de calculer un cout cash propre a Tiebaghi ou a FS1. On calcule donc un ratio
+    // GLOBAL entre le decaisse reel et le cout comptable de la MEME periode, puis on
+    // l'applique au cout/m de chaque machine : chaque chantier garde son ecart de
+    // performance, et le total colle aux sorties de banque.
+    //
+    // Decaisse reel = credit des comptes 512 (banque), MOINS la part "circulante" d'une
+    // meme piece (un virement interne SG <-> BCI apparait en debit sur un compte et en
+    // credit sur l'autre : ce n'est pas une depense). Journal RAN (a-nouveaux) exclu de
+    // cette neutralisation, ses contreparties n'etant pas des virements.
+    //
+    // Retourne { ratio, decaisse, coutCompta, metres, aDonnees }.
+    // aDonnees = false -> l'appelant DOIT garder le cout comptable et le dire a l'ecran.
+    function computeRatioCashCompta(ctx, periodStart, periodEnd) {
+      var vide = { ratio: 1, decaisse: 0, coutCompta: 0, metres: 0, aDonnees: false };
+      var ecr = ctx.dbEcrCompta || [];
+      if (ecr.length === 0 || !periodStart || !periodEnd) return vide;
+      // 1) Decaisse reel de la periode, virements internes neutralises
+      var grp = {};
+      ecr.forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        var d = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getTime() < periodStart.getTime() || d.getTime() > periodEnd.getTime()) return;
+        var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + String(e.date_ecriture).substring(0, 10);
+        if (!grp[cle]) grp[cle] = [];
+        grp[cle].push(e);
+      });
+      var decaisse = 0;
+      Object.keys(grp).forEach(function(cle) {
+        var lignes = grp[cle];
+        var jc0 = String(lignes[0].journal_code || "").toUpperCase();
+        var deb512 = 0, cred512 = 0;
+        lignes.forEach(function(e) {
+          if (String(e.compte_code || "").substring(0, 3) !== "512") return;
+          deb512 += parseFloat(e.debit) || 0;
+          cred512 += parseFloat(e.credit) || 0;
+        });
+        if (deb512 === 0 && cred512 === 0) return;
+        var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
+        decaisse += (cred512 - circ);
+      });
+      if (decaisse <= 0) return vide;
+      // 2) Cout COMPTABLE de la meme periode = somme des couts machine (meme moteur que
+      //    les cards de rentabilite), pour que numerateur et denominateur soient alignes.
+      var parMachine = computeCoutMachines(ctx, periodStart, periodEnd);
+      var coutCompta = 0, metres = 0;
+      Object.keys(parMachine || {}).forEach(function(code) {
+        var m = parMachine[code];
+        if (!m) return;
+        coutCompta += parseFloat(m.coutTotal) || 0;
+        metres += parseFloat(m.metres) || 0;
+      });
+      if (coutCompta <= 0) return vide;
+      return { ratio: decaisse / coutCompta, decaisse: decaisse, coutCompta: coutCompta, metres: metres, aDonnees: true };
+    }
+
     // ── Cout de revient reel au metre depuis le FEC, ANCRE SUR LE MOIS DE REFERENCE ──
     // = charges mensuelles moyennes (classe 6, mois compta a jour) / metrage du mois plein
     //   le plus recent (ex: juin). On divise par un mois REPRESENTATIF plutot que par la
@@ -12319,6 +12376,17 @@
         var infoMach = code ? coutMetreParMachineAv[code] : null;
         if (infoMach && infoMach.coutMetre > 0) return infoMach.coutMetre;
         return coutMetreGlobalEstime;
+      }
+      // ── VISION CASH des previsions de marge des cartes chantier ──
+      // Les previsions ne sont plus comptables mais en TRESORERIE : le cout/m de la
+      // machine dominante est recale par le ratio decaisse reel / cout comptable de la
+      // meme periode (cf. computeRatioCashCompta). Chaque chantier garde l'ecart de
+      // performance de sa machine, mais le niveau correspond aux sorties de banque.
+      var ratioCashAv = computeRatioCashCompta(ctxAv, _coutMachDebut, _coutMachFin);
+      function coutMetreCashChantier(chantierId) {
+        var base = coutMetreChantier(chantierId);
+        if (!(base > 0)) return 0;
+        return ratioCashAv.aDonnees ? base * ratioCashAv.ratio : base;
       }
       var setSaisiesState = ctxAv.setDbSaisies;
       var affectationsAv = ctxAv.dbAffectations || [];
@@ -13850,22 +13918,34 @@
                         decalageJ = sign * cnt;
                       } catch (e) {}
                     }
-                    // CA restant + marge NETTE : base = cout complet FEC (personnel + charges
-                    // patronales + charges fixes + emprunts + carburant + primes + consommables)
-                    // en priorite -> marge nette garantie. Fallback "depenses prevues" saisies
-                    // uniquement si aucune donnee compta FEC n'est encore disponible.
+                    // CA restant + marge CASH : base = cout/m de la machine dominante RECALE
+                    // en tresorerie (ratio decaisse reel / cout comptable de la meme periode).
+                    // On previsionne ce qui SORT DE LA BANQUE, pas la charge comptable.
+                    // Fallback "depenses prevues" saisies uniquement si aucune donnee FEC.
                     var prixMetre = chantier.prixMetre || 0;
                     var caTotal = chantier.metrage * prixMetre;
                     var caRestant = metresRestants * prixMetre;
-                    var coutMChantier = coutMetreChantier(chantier.id);
+                    var coutMComptaChantier = coutMetreChantier(chantier.id);
+                    var coutMChantier = coutMetreCashChantier(chantier.id);
                     var machineDom = chantierMachineDom[String(chantier.id)];
                     var coutTotalPrevu = 0;
                     var coutSource = "";
                     if (coutMChantier > 0) {
                       coutTotalPrevu = coutMChantier * chantier.metrage;
-                      coutSource = (machineDom && coutMetreParMachineAv[machineDom] && coutMetreParMachineAv[machineDom].coutMetre > 0)
-                        ? ("Cout complet machine " + machineDom + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m (personnel + charges + emprunts + carburant + primes + conso)")
-                        : ("Cout complet FEC : " + fmtNum(Math.round(coutMChantier)) + " XPF/m (personnel + charges + emprunts + carburant + primes + conso)");
+                      var libMach = (machineDom && coutMetreParMachineAv[machineDom] && coutMetreParMachineAv[machineDom].coutMetre > 0)
+                        ? ("machine " + machineDom) : "FEC";
+                      coutSource = ratioCashAv.aDonnees
+                        ? ("Cout CASH " + libMach + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m"
+                           + "\n\nVision tresorerie : cout comptable " + fmtNum(Math.round(coutMComptaChantier)) + " XPF/m"
+                           + " x ratio cash " + ratioCashAv.ratio.toFixed(2)
+                           + "\nRatio = decaisse reel " + fmtNum(Math.round(ratioCashAv.decaisse)) + " XPF"
+                           + " / cout comptable " + fmtNum(Math.round(ratioCashAv.coutCompta)) + " XPF sur la meme periode."
+                           + "\n\nLa banque ne ventile pas ses mouvements par chantier : le ratio est global,"
+                           + " l'ecart de performance entre machines est conserve.")
+                        : ("Cout complet " + libMach + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m"
+                           + " (personnel + charges + emprunts + carburant + primes + conso)"
+                           + "\n\nVision COMPTABLE : pas encore de mouvements bancaires (512) importes,"
+                           + " impossible de calculer le ratio cash. Importe la compta pour basculer en tresorerie.");
                     } else if ((parseFloat(chantier.depensesPrevues) || 0) > 0) {
                       coutTotalPrevu = parseFloat(chantier.depensesPrevues);
                       coutSource = "Depenses prevues saisies (a defaut de donnees compta FEC)";
@@ -14088,9 +14168,9 @@
                             tooltip: "CA total contrat (" + fmtNum(chantier.metrage) + " m x " + fmtNum(prixMetre) + " XPF/m) : " + fmtNum(Math.round(caTotal)) + " XPF\nCA deja realise : " + fmtNum(Math.round(caTotal - caRestant)) + " XPF\nCA restant a facturer : " + fmtNum(Math.round(caRestant)) + " XPF"
                           }),
                           KpiTile({
-                            icon: "trending-up",
+                            icon: ratioCashAv.aDonnees ? "banknote" : "trending-up",
                             accent: margePct >= 20 ? "#22c55e" : margePct >= 10 ? "#fbbf24" : "#f43f5e",
-                            label: "Marge nette",
+                            label: ratioCashAv.aDonnees ? "Marge cash" : "Marge nette",
                             value: coutTotalPrevu > 0 ? (margeEstimee >= 1000000 ? (margeEstimee / 1000000).toFixed(1) + " MF" : fmtNum(Math.round(margeEstimee / 1000)) + " k") : "N/A",
                             valueColor: margePct >= 20 ? "#86efac" : margePct >= 10 ? "#fde68a" : "#fda4af",
                             hint: coutTotalPrevu > 0 ? margePct + " %" : "renseigne dép.",
@@ -14766,11 +14846,11 @@
             var deltaMetrage = metrageRealisable - metragePrev;
             var deltaMetragePct = metragePrev > 0 ? Math.round((deltaMetrage / metragePrev) * 100) : 0;
 
-            // ── Point mort estime du chantier (base sur cout/m 90j toutes depenses) ──
-            // coutMetreGlobalEstime integre : personnel x 1.40 + charges fixes + emprunts
-            //                                  + carburant + primes x 1.40 + consommables
-            // Point mort = nb metres minimum a faire au prix actuel pour couvrir les couts attribues
-            var coutMPrev = coutMetreChantier(chantier.id);
+            // ── Point mort estime du chantier, en VISION CASH ──
+            // Base = cout/m de la machine dominante recale en tresorerie (ratio decaisse
+            // reel / cout comptable). Point mort = nb de metres minimum a faire au prix
+            // actuel pour couvrir les DECAISSEMENTS attribues au chantier.
+            var coutMPrev = coutMetreCashChantier(chantier.id);
             var coutTotalEstime = (typeof coutMPrev === "number" && coutMPrev > 0)
               ? Math.round(coutMPrev * metragePrev)
               : 0;
@@ -14848,7 +14928,8 @@
                 pointMortMetres > 0 ? h("div", { style: { background: margePrev >= 0 ? "linear-gradient(135deg, rgba(99,102,241,0.12), rgba(34,197,94,0.10))" : "linear-gradient(135deg, rgba(244,63,94,0.15), rgba(251,191,36,0.08))", padding: "14px 18px", borderRadius: 12, border: "1px solid " + (margePrev >= 0 ? "rgba(99,102,241,0.30)" : "rgba(244,63,94,0.35)"), marginBottom: 10 } },
                   h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
                     h(Icon, { name: "trending-up", size: 16, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af" }),
-                    h("div", { style: { fontSize: 11, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1.2 } }, "Point mort estime")
+                    h("div", { style: { fontSize: 11, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1.2 }, title: ratioCashAv.aDonnees ? ("Vision TRESORERIE : metres a produire pour couvrir les DECAISSEMENTS attribues au chantier.\n\nCout cash " + fmtNum(Math.round(coutMPrev)) + " XPF/m = cout comptable " + fmtNum(Math.round(coutMetreChantier(chantier.id))) + " XPF/m x ratio cash " + ratioCashAv.ratio.toFixed(2) + ".") : "Vision comptable (pas encore de mouvements bancaires importes)." },
+                      "Point mort estime" + (ratioCashAv.aDonnees ? " · cash" : ""))
                   ),
                   h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 8 } },
                     // Point mort total
