@@ -24816,11 +24816,16 @@
           // Employe qui n'a QUE des absences sur la periode : on garde la ligne
           // pour ne pas le faire disparaitre du recap
           if (byEmp.length === 0) byEmp = byEmpAll;
-          byEmp.forEach(function(r) { lignes.push({ kind: "row", emp: emp, sond: r.sond, data: r }); });
-          // Ligne TOTAL pour CHAQUE employe (et plus seulement ceux a plusieurs
-          // machines) : toutes les lignes de synthese sont ainsi au meme endroit
-          // et de la meme couleur (jaune), lecture homogene pour la paie.
-          {
+          // Des absences ont-elles ete masquees ? Si oui, il FAUT une ligne Total
+          // pour porter les CP/CSS/Maladie (la ligne machine ne les contient pas).
+          var aAbsencesMasquees = byEmp.length !== byEmpAll.length;
+          // UNE SEULE machine et rien de masque : la ligne unique EST le total,
+          // on la colore en jaune au lieu de la dedoubler.
+          var ligneUniqueEstTotal = byEmp.length === 1 && !aAbsencesMasquees;
+          byEmp.forEach(function(r) { lignes.push({ kind: "row", emp: emp, sond: r.sond, data: r, soloTotal: ligneUniqueEstTotal }); });
+          // Ligne TOTAL : pour les employes a plusieurs machines, et pour ceux
+          // dont des jours d'absence ont ete masques (sinon les CP seraient perdus).
+          if (!ligneUniqueEstTotal) {
             var t = { emp: emp, sond: "Total", nbPoste: 0, nbPosteDim: 0, routeChauf: 0, routePass: 0, heuresNorm: 0, heuresDim: 0, heuresEffectives: 0, heurePause: 0, totalHorsPause: 0, primePanier: 0, posteSondeur: 0, posteAideSondeur: 0, absences: {"CP":0,"CP V":0,"CSS":0,"Maladie":0,"AI":0,"FERIE":0,"DELEGATION":0,"REUNION":0}, eloignement: 0 };
             // On somme byEmpAll (et non byEmp) : les lignes d'absence masquees a
             // l'affichage doivent quand meme remonter leurs CP/CSS/Maladie ici,
@@ -24866,7 +24871,9 @@
             var d = l.data;
             var emp = l.kind === "total" ? (l.emp + " Total") : l.emp;
             var sond = l.kind === "total" ? null : l.sond;
-            if (l.kind === "total") totalRowIdxs.push(aoa.length);
+            // Meme regle qu'a l'ecran : la ligne unique d'un employe mono-machine
+            // est mise en forme comme un total (surlignee) dans l'export.
+            if (l.kind === "total" || l.soloTotal) totalRowIdxs.push(aoa.length);
             aoa.push([
               emp, sond, d.nbPoste, d.nbPosteDim,
               num(d.routeChauf), num(d.routePass), num(d.heuresNorm), num(d.heuresDim),
@@ -25105,9 +25112,14 @@
                   h("tbody", null, lignes.map(function(l, idx) {
                     var d = l.data;
                     var isTot = l.kind === "total";
-                    var rowS = isTot ? tdTotS : tdS;
-                    return h("tr", { key: idx, style: { background: isTot ? "rgba(251,191,36,0.04)" : "transparent" } },
-                      h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: isTot ? 800 : 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, isTot ? l.emp + " Total" : l.emp),
+                    // Ligne unique d'un employe a une seule machine : elle FAIT
+                    // office de total -> meme mise en forme jaune, mais on garde
+                    // le nom simple et la machine visible (pas de doublon).
+                    var isSolo = !!l.soloTotal;
+                    var enJaune = isTot || isSolo;
+                    var rowS = enJaune ? tdTotS : tdS;
+                    return h("tr", { key: idx, style: { background: enJaune ? "rgba(251,191,36,0.04)" : "transparent" } },
+                      h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontWeight: enJaune ? 800 : 700, fontFamily: "inherit", whiteSpace: "nowrap" }) }, isTot ? l.emp + " Total" : l.emp),
                       h("td", { style: Object.assign({}, rowS, { textAlign: "left", fontFamily: "inherit", color: "#a78bfa" }) }, isTot ? "" : l.sond),
                       h("td", { style: rowS }, d.nbPoste || ""),
                       h("td", { style: rowS }, d.nbPosteDim || ""),
