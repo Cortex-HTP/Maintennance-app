@@ -11634,34 +11634,127 @@
     //
     // Retourne { ratio, decaisse, coutCompta, metres, aDonnees }.
     // aDonnees = false -> l'appelant DOIT garder le cout comptable et le dire a l'ecran.
+    // ── FLUX BANCAIRES REELS sur une periode (source unique) ────────────────────
+    // Somme les comptes 512 (banque) en NEUTRALISANT les virements internes
+    // SG <-> BCI : une meme piece qui porte un debit ET un credit 512 n'est pas
+    // un flux, c'est de l'argent qui change de poche. Sans cette neutralisation,
+    // encaisse ET decaisse sont gonfles et le pourcentage est dilue vers zero.
+    // Le journal RAN (a-nouveaux) est exclu de la neutralisation : ses
+    // contreparties ne sont pas des virements.
+    //
+    // Retourne { encaisse, decaisse, net, pct, aDonnees, dernierMois }.
+    // pct = net / encaisse (part de ce qui rentre qui reste effectivement).
+    function computeFluxBanque(ecritures, periodStart, periodEnd) {
+      var vide = { encaisse: 0, decaisse: 0, net: 0, pct: null, aDonnees: false, dernierMois: null };
+      var ecr = ecritures || [];
+      if (ecr.length === 0) return vide;
+      var grp = {};
+      var dernierMois = null;
+      ecr.forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        if (String(e.compte_code || "").substring(0, 3) !== "512") return;
+        var iso = String(e.date_ecriture).substring(0, 10);
+        var mk = iso.substring(0, 7);
+        if (!dernierMois || mk > dernierMois) dernierMois = mk;
+        var d = new Date(iso + "T00:00:00");
+        if (isNaN(d.getTime())) return;
+        if (periodStart && d.getTime() < periodStart.getTime()) return;
+        if (periodEnd && d.getTime() > periodEnd.getTime()) return;
+        var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + iso;
+        if (!grp[cle]) grp[cle] = [];
+        grp[cle].push(e);
+      });
+      var encaisse = 0, decaisse = 0, nbPieces = 0;
+      Object.keys(grp).forEach(function(cle) {
+        var lignes = grp[cle];
+        var jc0 = String(lignes[0].journal_code || "").toUpperCase();
+        var deb = 0, cred = 0;
+        lignes.forEach(function(e) {
+          deb += parseFloat(e.debit) || 0;
+          cred += parseFloat(e.credit) || 0;
+        });
+        if (deb === 0 && cred === 0) return;
+        var circ = jc0 === "RAN" ? 0 : Math.min(deb, cred);
+        encaisse += (deb - circ);
+        decaisse += (cred - circ);
+        nbPieces++;
+      });
+      if (nbPieces === 0) return { encaisse: 0, decaisse: 0, net: 0, pct: null, aDonnees: false, dernierMois: dernierMois };
+      var net = encaisse - decaisse;
+      return {
+        encaisse: encaisse, decaisse: decaisse, net: net,
+        pct: encaisse > 0 ? (net / encaisse) * 100 : null,
+        aDonnees: true, dernierMois: dernierMois
+      };
+    }
+
+    // Flux bancaires MOIS PAR MOIS sur une annee : [{encaisse, decaisse, net, aDonnees}, x12].
+    // Sert a distinguer les mois CLOTURES (reels, fiables) des mois a projeter.
+    function computeFluxBanqueParMois(ecritures, annee) {
+      var out = [];
+      for (var m = 0; m < 12; m++) {
+        var deb = new Date(annee, m, 1);
+        var fin = new Date(annee, m + 1, 0, 23, 59, 59);
+        out.push(computeFluxBanque(ecritures, deb, fin));
+      }
+      return out;
+    }
+
+    // ── MARGE CASH DE L'ANNEE : realise sur les mois clotures + projection ──────
+    // Mois CLOTURE = mois echu AVEC des mouvements bancaires (compta a jour).
+    // Les mois restants (mois en cours inclus) sont projetes a la moyenne mensuelle
+    // des mois clotures : c'est la meme hypothese de repli que le previsionnel
+    // tresorerie quand il n'a pas mieux ("objectif = moyenne reelle observee").
+    //
+    // Retourne { pctReel, netReel, encReel, pctProj, netProj, encProj,
+    //            nbClotures, nbProjetes, dernierMoisClos, aDonnees }.
+    function computeMargeCashAnnee(ecritures, refDate) {
+      var vide = { aDonnees: false, pctReel: null, netReel: 0, encReel: 0, pctProj: null,
+                   netProj: 0, encProj: 0, nbClotures: 0, nbProjetes: 0, dernierMoisClos: null };
+      var annee = refDate.getFullYear();
+      var parMois = computeFluxBanqueParMois(ecritures, annee);
+      var moisCourant = refDate.getMonth();
+      var encClos = 0, decClos = 0, nbClos = 0, dernier = null;
+      for (var m = 0; m < 12; m++) {
+        var estEchu = m < moisCourant;
+        if (estEchu && parMois[m].aDonnees) {
+          encClos += parMois[m].encaisse;
+          decClos += parMois[m].decaisse;
+          nbClos++;
+          dernier = m;
+        }
+      }
+      // Realise A DATE = mois clotures + ce qui est deja passe sur le mois en cours
+      var encReel = encClos + (parMois[moisCourant].aDonnees ? parMois[moisCourant].encaisse : 0);
+      var decReel = decClos + (parMois[moisCourant].aDonnees ? parMois[moisCourant].decaisse : 0);
+      if (nbClos === 0 && !parMois[moisCourant].aDonnees) return vide;
+      var netReel = encReel - decReel;
+      // Projection : moyenne des mois clotures appliquee aux mois restants.
+      // Le mois en cours compte pour 1 mois plein (on remplace son partiel par la moyenne).
+      var nbRestants = 12 - moisCourant;
+      var encProj = encClos, decProj = decClos;
+      if (nbClos > 0) {
+        encProj += (encClos / nbClos) * nbRestants;
+        decProj += (decClos / nbClos) * nbRestants;
+      } else {
+        encProj = encReel; decProj = decReel; nbRestants = 0;
+      }
+      return {
+        aDonnees: true,
+        pctReel: encReel > 0 ? ((netReel) / encReel) * 100 : null,
+        netReel: netReel, encReel: encReel, decReel: decReel,
+        pctProj: encProj > 0 ? ((encProj - decProj) / encProj) * 100 : null,
+        netProj: encProj - decProj, encProj: encProj, decProj: decProj,
+        nbClotures: nbClos, nbProjetes: nbRestants, dernierMoisClos: dernier
+      };
+    }
+
     function computeRatioCashCompta(ctx, periodStart, periodEnd) {
       var vide = { ratio: 1, decaisse: 0, coutCompta: 0, metres: 0, aDonnees: false };
       var ecr = ctx.dbEcrCompta || [];
       if (ecr.length === 0 || !periodStart || !periodEnd) return vide;
       // 1) Decaisse reel de la periode, virements internes neutralises
-      var grp = {};
-      ecr.forEach(function(e) {
-        if (!e || !e.date_ecriture) return;
-        var d = new Date(String(e.date_ecriture).substring(0, 10) + "T00:00:00");
-        if (isNaN(d.getTime()) || d.getTime() < periodStart.getTime() || d.getTime() > periodEnd.getTime()) return;
-        var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + String(e.date_ecriture).substring(0, 10);
-        if (!grp[cle]) grp[cle] = [];
-        grp[cle].push(e);
-      });
-      var decaisse = 0;
-      Object.keys(grp).forEach(function(cle) {
-        var lignes = grp[cle];
-        var jc0 = String(lignes[0].journal_code || "").toUpperCase();
-        var deb512 = 0, cred512 = 0;
-        lignes.forEach(function(e) {
-          if (String(e.compte_code || "").substring(0, 3) !== "512") return;
-          deb512 += parseFloat(e.debit) || 0;
-          cred512 += parseFloat(e.credit) || 0;
-        });
-        if (deb512 === 0 && cred512 === 0) return;
-        var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
-        decaisse += (cred512 - circ);
-      });
+      var decaisse = computeFluxBanque(ecr, periodStart, periodEnd).decaisse;
       if (decaisse <= 0) return vide;
       // 2) Cout COMPTABLE de la meme periode = somme des couts machine (meme moteur que
       //    les cards de rentabilite), pour que numerateur et denominateur soient alignes.
@@ -13312,30 +13405,43 @@
                 h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, "CA " + fmtMF(ca) + (ratioCashAv.aDonnees ? " − coût cash " : " − coût complet ") + fmtMF(cout))
               );
             }
-            // Marge tresorerie (cash) : (encaisse - decaisse) / encaisse sur l'annee en cours,
-            // direct depuis le grand livre (comptes 512 banque). debit = entree, credit = sortie.
-            var _yTreso = String(new Date().getFullYear());
-            var encY = 0, decY = 0;
-            (ctxAv.dbEcrCompta || []).forEach(function(e) {
-              if (!e || !e.compte_code || String(e.compte_code).substring(0, 3) !== "512") return;
-              if (!e.date_ecriture || String(e.date_ecriture).substring(0, 4) !== _yTreso) return;
-              encY += parseFloat(e.debit) || 0;
-              decY += parseFloat(e.credit) || 0;
-            });
-            var pctTreso = encY > 0 ? Math.round(((encY - decY) / encY) * 100) : null;
-            return h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch", padding: 16, marginBottom: 14, borderRadius: 14, background: "linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))", border: "1px solid rgba(34,197,94,0.20)" } },
-              panelM(ratioCashAv.aDonnees ? "Marge cash · contrat" : "Marge nette · contrat", "trending-up", pctC, margeC, caC, coutC),
-              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
-              panelM(ratioCashAv.aDonnees ? "Marge cash · réalisé à date" : "Marge nette · réalisé à date", "banknote", pctR, margeR, caR, coutR),
-              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
-              h("div", { style: { flex: "1 1 220px", minWidth: 200 }, title: "Marge tresorerie = (encaisse - decaisse) / encaisse sur l'annee, d'apres les mouvements bancaires reels (comptes 512). Inclut TOUS les flux : clients, fournisseurs, salaires, emprunts, investissements." },
+            // ── LES 2 TUILES CASH REELLES : la banque, pas un cout au metre ──────────
+            // La marge des chantiers ne peut pas etre negative tant que le prix couvre le
+            // cout de production, alors que l'entreprise, elle, perd de l'argent : mois sans
+            // forage, investissements, capital des emprunts, decalage d'encaissement. Ces
+            // deux tuiles lisent donc DIRECTEMENT le compte en banque (512), virements
+            // internes SG<->BCI neutralises.
+            var _cashAn = computeMargeCashAnnee(ctxAv.dbEcrCompta || [], new Date());
+            var MOIS_FR = ["janvier", "fevrier", "mars", "avril", "mai", "juin", "juillet", "aout", "septembre", "octobre", "novembre", "decembre"];
+            var _libClos = _cashAn.dernierMoisClos != null ? MOIS_FR[_cashAn.dernierMoisClos] : null;
+            var pctEnCours = _cashAn.aDonnees && _cashAn.pctReel != null ? Math.round(_cashAn.pctReel) : null;
+            var pctAnnee = _cashAn.aDonnees && _cashAn.pctProj != null ? Math.round(_cashAn.pctProj) : null;
+
+            function panelCash(titre, ic, pct, net, enc, dec, sousLigne, tip) {
+              return h("div", { style: { flex: "1 1 220px", minWidth: 200 }, title: tip },
                 h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } },
-                  h(Icon, { name: "banknote", size: 14, color: colM(pctTreso) }), "Marge trésorerie · année"),
-                h("div", { style: { fontSize: 26, fontWeight: 800, color: colM(pctTreso), lineHeight: 1 } }, pctTreso == null ? "—" : (pctTreso + " %")),
-                h("div", { style: { fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginTop: 4 } }, pctTreso == null ? "compta indisponible" : (fmtMF(encY - decY) + " XPF net")),
-                h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } }, pctTreso == null ? "importe la compta (grand livre)" : ("encaissé " + fmtMF(encY) + " − décaissé " + fmtMF(decY) + " · banque " + _yTreso))
-              ),
-              nbSansCout > 0 ? h("div", { style: { flex: "1 1 100%", fontSize: 10.5, color: "#fbbf24", marginTop: 2 } }, nbSansCout + " chantier(s) sans coût disponible (exclus du coût) — importe la compta pour affiner") : null
+                  h(Icon, { name: ic, size: 14, color: colM(pct) }), titre),
+                h("div", { style: { fontSize: 26, fontWeight: 800, color: colM(pct), lineHeight: 1 } }, pct == null ? "—" : (pct + " %")),
+                h("div", { style: { fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginTop: 4 } },
+                  pct == null ? "compta indisponible" : (fmtMF(net) + " XPF net")),
+                h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 4 } },
+                  pct == null ? "importe la compta (grand livre)" : sousLigne)
+              );
+            }
+
+            return h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch", padding: 16, marginBottom: 14, borderRadius: 14, background: "linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))", border: "1px solid rgba(34,197,94,0.20)" } },
+              panelCash("Marge cash · en cours", "wallet", pctEnCours, _cashAn.netReel, _cashAn.encReel, _cashAn.decReel,
+                "encaissé " + fmtMF(_cashAn.encReel) + " − décaissé " + fmtMF(_cashAn.decReel) + " · banque à date",
+                "CASH REEL depuis le 1er janvier : ce qui est entre en banque moins ce qui en est sorti, virements internes SG<->BCI neutralises.\n\nC'est le chiffre qui dit si on gagne ou si on perd. Il inclut TOUT : clients, salaires, fournisseurs, investissements, capital des emprunts, impots.\n\nA ne pas confondre avec la marge des chantiers (3e tuile) : un chantier peut etre vendu au bon prix pendant que l'entreprise brule du cash, a cause des mois sans forage, des investissements et du decalage d'encaissement."),
+              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
+              panelCash("Marge cash · année (projeté)", "banknote", pctAnnee, _cashAn.netProj, _cashAn.encProj, _cashAn.decProj,
+                _cashAn.nbClotures + " mois clôturé(s)" + (_libClos ? " (jusqu'à " + _libClos + ")" : "") + " + " + _cashAn.nbProjetes + " projeté(s)",
+                "PROJECTION SUR L'ANNEE : les " + _cashAn.nbClotures + " mois clotures sont reels, les " + _cashAn.nbProjetes + " mois restants sont projetes a la moyenne mensuelle observee sur ces mois clotures.\n\nC'est l'hypothese de repli du previsionnel tresorerie (\"objectif = moyenne reelle observee\"). Le detail mois par mois, avec les encaissements theoriques des chantiers et les factures fournisseurs, est dans Statistiques > Tresorerie previsionnelle.\n\nSi la compta n'est pas a jour, la projection vieillit : regarde le nombre de mois clotures ci-dessus."),
+              h("div", { style: { width: 1, background: "rgba(255,255,255,0.08)", alignSelf: "stretch" } }),
+              panelM(ratioCashAv.aDonnees ? "Marge/m cash · chantiers" : "Marge nette · chantiers", "trending-up", pctR, margeR, caR, coutR),
+              h("div", { style: { flex: "1 1 100%", fontSize: 10.5, color: "#71717a", marginTop: 2, lineHeight: 1.6 } },
+                "Les 2 premières tuiles = argent réellement entré/sorti de la banque. La 3e = rentabilité du forage seul (CA produit − coût cash des machines) : elle ne couvre ni les mois sans forage, ni les chantiers terminés, ni les investissements, ni le capital des emprunts, ni le décalage d'encaissement client."
+                + (nbSansCout > 0 ? " " + nbSansCout + " chantier(s) sans coût disponible." : ""))
             );
           }()),
           (function() {
