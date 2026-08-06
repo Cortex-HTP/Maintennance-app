@@ -18875,8 +18875,17 @@
       // le cout/jour et le cout au metre en sortaient fausses (dilues le matin,
       // puis se corrigeant en fin de journee). On arrete donc la periode a la
       // veille tant que la journee n'est pas "close".
+      // La journee est close des que les rapports du jour sont arrives : un rapport
+      // envoye = la journee de cette machine est terminee, son metrage est reel et
+      // doit s'afficher tout de suite (sinon on masquait une production deja saisie
+      // jusqu'a 17h). A defaut de rapport, on retombe sur l'heure : une journee sans
+      // production reste une journee qui coute.
       var HEURE_CLOTURE_JOUR = 17; // heure locale (l'app tourne en NC)
-      var jourEnCoursClos = now.getHours() >= HEURE_CLOTURE_JOUR;
+      var todayISOStats = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+      var aRapportAujourdhui = (rapports || []).some(function(r) {
+        return r && r.date_rapport && String(r.date_rapport).substring(0, 10) === todayISOStats;
+      });
+      var jourEnCoursClos = now.getHours() >= HEURE_CLOTURE_JOUR || aRapportAujourdhui;
       var borneFinJour = jourEnCoursClos
         ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59)
         : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59);
@@ -20366,9 +20375,9 @@
             h("option", { value: "all" }, "Tout l'historique")
           ),
           // Barriere journee : on dit CLAIREMENT jusqu'ou vont les chiffres
-          barriereJourActive ? h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", color: "#7dd3fc", fontSize: 11, fontWeight: 700 }, title: "La journee en cours n'est comptabilisee qu'a partir de " + HEURE_CLOTURE_JOUR + "h : avant, elle n'a que des rapports partiels et faussait le cout/jour et le cout au metre." },
+          barriereJourActive ? h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", color: "#7dd3fc", fontSize: 11, fontWeight: 700 }, title: "Aucun rapport de forage n'est encore arrive aujourd'hui : la journee n'est pas comptabilisee, sinon elle compterait comme un jour PLEIN dans les couts/jour avec un metrage a zero. Elle basculera des le premier rapport recu, ou a " + HEURE_CLOTURE_JOUR + "h au plus tard." },
             h(Icon, { name: "clock", size: 12, color: "#7dd3fc" }),
-            "Arrete au " + String(periodEnd.getDate()).padStart(2, "0") + "/" + String(periodEnd.getMonth() + 1).padStart(2, "0") + " (journee en cours non close)"
+            "Arrete au " + String(periodEnd.getDate()).padStart(2, "0") + "/" + String(periodEnd.getMonth() + 1).padStart(2, "0") + " (aucun rapport recu aujourd'hui)"
           ) : null,
           h("span", { style: lblStyle }, "Chantier"),
           h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: ddStyle },
