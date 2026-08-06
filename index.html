@@ -2618,13 +2618,28 @@
           setIaGammeLoading(false);
         }
       }
-      // AUTO : a la reception d'une demande venant de l'app employe (source mecanicien)
-      // qui a un commentaire/description mais pas encore de gamme -> on genere la gamme
-      // automatiquement (en silencieux). L'admin peut ensuite la modifier ou la relancer.
+      // AUTO : la gamme se genere des qu'un commentaire existe et qu'aucune gamme
+      // n'est encore definie - QUELLE QUE SOIT LA SOURCE (intervention creee par
+      // l'admin comme demande venue de l'app employe). Avant, la condition exigeait
+      // source = mecanicien ET ne s'evaluait qu'au montage : une intervention saisie
+      // depuis l'admin ne declenchait donc jamais l'IA.
+      // Regles : jamais si un plan est lie (la gamme vient du plan), jamais si des
+      // etapes existent deja (on n'ecrase pas le travail en cours), une seule
+      // tentative par texte (pas d'appel API a chaque frappe).
+      var iaAutoTexte = React.useRef("");
+      function autoGammeSiVide(txt) {
+        var t = String(txt || "").trim();
+        if (t.length < 4) return;
+        if (f.Plan) return;
+        if (Array.isArray(f.Gamme) && f.Gamme.length > 0) return;
+        if (iaAutoTexte.current === t) return;
+        iaAutoTexte.current = t;
+        genererGammeIA(true);
+      }
       React.useEffect(function() {
         var _t = String(f.Travaux_Effectues || f.DescriptionProbleme || "").trim();
-        // Pas si un plan est lie (la gamme vient alors du plan de maintenance).
-        if (f.Source === "mecanicien" && !f.Plan && _t && (!Array.isArray(f.Gamme) || f.Gamme.length === 0)) {
+        if (_t && !f.Plan && (!Array.isArray(f.Gamme) || f.Gamme.length === 0)) {
+          iaAutoTexte.current = _t;
           genererGammeIA(true);
         }
       }, []);
@@ -2804,13 +2819,17 @@
               }())
             })),
             h("div", { style: { gridColumn: "1 / -1" } },
-              h(FormField, { label: "Commentaire" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value), onBlur: () => upd("Travaux_Effectues", capitalizeFirst(f.Travaux_Effectues)), placeholder: "Commentaire / travaux..." })))),
+              h(FormField, { label: "Commentaire" }, h("textarea", { style: { ...inputStyle, minHeight: 80, resize: "vertical" }, value: f.Travaux_Effectues, onChange: (e) => upd("Travaux_Effectues", e.target.value),
+                // A la sortie du champ : on capitalise ET on lance la gamme IA si
+                // aucune n'existe (declencheur naturel, pas d'appel a chaque frappe)
+                onBlur: function() { var t = capitalizeFirst(f.Travaux_Effectues); upd("Travaux_Effectues", t); autoGammeSiVide(t); },
+                placeholder: "Commentaire / travaux..." })))),
           // ─── IA : convertit le Commentaire (ou la description) en gamme d'operations ───
           h("div", { style: { margin: "2px 0 10px" } },
             h("button", { type: "button", disabled: iaGammeLoading, onClick: function() { genererGammeIA(false); }, style: { padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: iaGammeLoading ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
               h(Icon, { name: "sparkles", size: 14, color: "#c4b5fd" }),
               iaGammeLoading ? "Generation en cours..." : "Regenerer la gamme avec l'IA"),
-            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, "La gamme est generee automatiquement a la reception d'une demande employe. Bouton = relancer. Etapes modifiables plus bas.")),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4 } }, iaGammeLoading ? "L'IA convertit le commentaire en etapes..." : "La gamme se genere AUTOMATIQUEMENT des que tu sors du champ Commentaire (si aucune etape n'existe deja et qu'aucun plan n'est lie). Bouton = relancer / remplacer. Etapes modifiables plus bas.")),
           // ─── Section Rapport Mecanicien (visible si mecanicien assigne OU source = mecanicien) ───
           (f.MecanicienCode || isSourceMec) ? h("div", { style: { marginTop: 20, padding: 16, background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 12 } },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } },
@@ -23105,30 +23124,41 @@
         if (n === null) n = 0;
         return Math.round(n * 100) / 100 === Math.round(n) ? fmtNum(Math.round(n)) : String(Math.round(n * 100) / 100).replace(".", ",");
       }
-      // Le draft stocke la valeur BRUTE saisie (string) : indispensable pour
-      // pouvoir taper "2." puis "2.5" sans que le champ se remette a 0 a chaque
-      // frappe. La conversion en nombre se fait a la lecture / l'enregistrement.
+      // ── Le draft = ce qu'on envoie MAINTENANT (un ajout), pas le cumul ──
+      // Apres enregistrement, la quantite deja envoyee est SOUSTRAITE de la
+      // demande : le champ repart de 0 et la ligne affiche ce qu'il RESTE.
+      // La valeur est stockee BRUTE (string) pour pouvoir taper "2." puis
+      // "2,5" sans que le champ se remette a zero a chaque frappe.
       function cmdDraft(c, lignes) {
         var k = String(c.id);
         if (envDraft[k]) return envDraft[k];
-        return lignes.map(function(l) { return cmdLigneEnvoye(l); });
+        return lignes.map(function() { return 0; });
       }
-      // Valeur numerique d'une case du draft (pour tous les calculs)
-      function cmdDraftNum(draft, i, l) {
-        if (!draft || draft[i] == null) return cmdLigneEnvoye(l);
+      // Quantite saisie maintenant (numerique)
+      function cmdSaisieNum(draft, i) {
+        if (!draft || draft[i] == null) return 0;
         var n = cmdNum(draft[i]);
         return n === null ? 0 : n;
+      }
+      // Reste a envoyer AVANT la saisie en cours
+      function cmdResteAvant(l) {
+        var q = cmdLigneQty(l);
+        var deja = cmdLigneEnvoye(l);
+        return q > 0 ? Math.max(0, q - deja) : 0;
+      }
+      // Total envoye si on enregistre maintenant (cumul + saisie)
+      function cmdTotalApres(draft, i, l) {
+        return cmdLigneEnvoye(l) + cmdSaisieNum(draft, i);
       }
       function cmdSetDraft(c, lignes, idx, val) {
         var k = String(c.id);
         var base = cmdDraft(c, lignes);
-        var max = cmdLigneQty(lignes[idx]);
+        var reste = cmdResteAvant(lignes[idx]);
         var v = val;
         var n = cmdNum(v);
-        // Clamp UNIQUEMENT si la saisie est un nombre exploitable et depasse
-        // le demande. Une saisie intermediaire ("2.", "") est conservee telle
-        // quelle pour ne pas casser la frappe.
-        if (n !== null && max > 0 && n > max) v = max;
+        // Clamp au RESTE (on ne peut pas envoyer plus qu'il ne reste du).
+        // Une saisie intermediaire ("2.", "") est conservee telle quelle.
+        if (n !== null && reste > 0 && n > reste) v = reste;
         setEnvDraft(function(prev) {
           var cur = (prev[k] || base).slice();
           cur[idx] = v;
@@ -23139,17 +23169,20 @@
         });
       }
       function cmdToggleLigne(c, lignes, idx, coche) {
-        var q = cmdLigneQty(lignes[idx]);
-        // Ligne sans quantite demandee : on marque 1 (symbolique) pour pouvoir
-        // quand meme la cocher comme servie
-        cmdSetDraft(c, lignes, idx, coche ? (q > 0 ? q : 1) : 0);
+        var l = lignes[idx];
+        var reste = cmdResteAvant(l);
+        // Cocher = envoyer tout ce qui reste. Ligne sans quantite demandee : 1.
+        cmdSetDraft(c, lignes, idx, coche ? (reste > 0 ? reste : (cmdLigneQty(l) > 0 ? 0 : 1)) : 0);
       }
       function cmdToutEnvoyer(c, lignes) {
         var k = String(c.id);
         setEnvDraft(function(prev) {
           var next = {};
           Object.keys(prev).forEach(function(kk) { next[kk] = prev[kk]; });
-          next[k] = lignes.map(function(l) { var q = cmdLigneQty(l); return q > 0 ? q : 1; });
+          next[k] = lignes.map(function(l) {
+            var reste = cmdResteAvant(l);
+            return reste > 0 ? reste : (cmdLigneQty(l) > 0 ? 0 : 1);
+          });
           return next;
         });
       }
@@ -23172,11 +23205,11 @@
         if (!draft) return;
         var dNow = new Date();
         var today = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
-        // Mouvements calcules sur le snapshot affiche
+        // Le draft EST le mouvement (quantite envoyee maintenant). On l'ajoute
+        // au cumul : plus besoin de refuser en cas de modification concurrente,
+        // deux envois s'additionnent naturellement.
         var mouvements = lignes.map(function(l, i) {
-          var avant = cmdLigneEnvoye(l);
-          var apres = cmdDraftNum(draft, i, l);
-          return { avant: avant, apres: apres, delta: Math.round((apres - avant) * 100) / 100 };
+          return { delta: Math.round(cmdSaisieNum(draft, i) * 100) / 100 };
         });
         var nbMouv = mouvements.filter(function(m) { return m.delta !== 0; }).length;
         if (nbMouv === 0) {
@@ -23199,25 +23232,24 @@
             alert("Ce bon a ete modifie ailleurs (nombre d'articles different). Recharge la page avant d'enregistrer.");
             return;
           }
-          // Conflit : la quantite envoyee en base a bouge depuis l'affichage
-          var conflit = null;
-          fresh.forEach(function(fl, i) {
-            if (conflit) return;
-            if (cmdLigneEnvoye(fl) !== mouvements[i].avant) {
-              conflit = (fl.designation || fl.description || ("article " + (i + 1)));
-            }
-          });
-          if (conflit) {
-            setEnvSaving(null);
-            alert("Ce bon a ete modifie ailleurs entre-temps (" + conflit + "). Tes saisies sont conservees : recharge la page pour voir l'etat a jour, puis ressaisis l'envoi.");
-            return;
-          }
+          // On applique les mouvements sur les donnees FRAICHES : si un envoi a
+          // ete enregistre ailleurs entre-temps, les deux s'additionnent au lieu
+          // de s'ecraser. Le cumul reste borne a la quantite demandee.
+          var clampes = [];
           var newLignes = fresh.map(function(fl, i) {
             var m = mouvements[i];
-            var out = Object.assign({}, fl, { envoye: m.apres });
-            if (m.delta !== 0) {
+            if (m.delta === 0) return fl;
+            var q = cmdLigneQty(fl);
+            var cible = cmdLigneEnvoye(fl) + m.delta;
+            if (q > 0 && cible > q) {
+              cible = q; // un autre envoi est passe avant : on ne depasse pas la demande
+              clampes.push(fl.designation || fl.description || ("article " + (i + 1)));
+            }
+            var reel = Math.round((cible - cmdLigneEnvoye(fl)) * 100) / 100;
+            var out = Object.assign({}, fl, { envoye: Math.round(cible * 100) / 100 });
+            if (reel !== 0) {
               var histo = Array.isArray(fl.envois) ? fl.envois.slice() : [];
-              histo.push({ date: today, qte: m.delta });
+              histo.push({ date: today, qte: reel });
               out.envois = histo;
             }
             return out;
@@ -23228,11 +23260,14 @@
             setCmds(function(prev) {
               return prev.map(function(x) { return x.id === c.id ? Object.assign({}, x, { lignes: newLignes }) : x; });
             });
-            cmdPurgeDraft(c.id); // l'affichage repart de la base (source de verite)
+            cmdPurgeDraft(c.id); // le champ repart de 0, l'affichage montre le reste
             var reste = newLignes.filter(function(l) {
               var q = cmdLigneQty(l), e = cmdLigneEnvoye(l);
               return q > 0 ? e < q : e <= 0;
             }).length;
+            if (clampes.length > 0) {
+              alert("Attention : un envoi avait deja ete enregistre ailleurs pour " + clampes.join(", ") + ". La quantite a ete limitee a ce qui restait du.");
+            }
             if (showToast) showToast(reste === 0 ? "Envoi enregistre - bon complet" : "Envoi enregistre - reste " + reste + " article(s)", "success");
           }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
         }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
@@ -23242,7 +23277,7 @@
         var nbServies = 0, qteEnvoyee = 0, qteTotale = 0;
         lignes.forEach(function(l, i) {
           var q = cmdLigneQty(l);
-          var e = cmdDraftNum(draft, i, l);
+          var e = cmdTotalApres(draft, i, l); // cumul deja envoye + saisie en cours
           qteTotale += q;
           if (q > 0) qteEnvoyee += Math.min(e, q); // jamais plus de 100 %
           // Ligne sans quantite demandee : servie des qu'elle est cochee
@@ -23951,14 +23986,16 @@
                     var unit = l.unite || l.unit || (l.isLiquide ? "L" : "");
                     var known = isPieceKnown(designation, refStr);
                     var photos = Array.isArray(l.photos) ? l.photos : [];
-                    var envoye = cmdDraftNum(draftC, i, l);
+                    var dejaEnvoye = cmdLigneEnvoye(l);          // enregistre en base
+                    var saisie = cmdSaisieNum(draftC, i);        // envoi en cours de saisie
+                    var envoye = dejaEnvoye + saisie;            // total si on enregistre
                     // Ligne sans quantite demandee : servie des qu'elle est cochee
                     var ligneComplete = qty > 0 ? envoye >= qty : envoye > 0;
-                    var resteL = qty - envoye;
+                    var resteL = Math.max(0, qty - envoye);
                     var histoL = Array.isArray(l.envois) ? l.envois : [];
-                    // Valeur AFFICHEE dans le champ : la saisie brute si edition en
-                    // cours (permet de taper "2." vers "2,5"), sinon la base
-                    var valChamp = draftC && draftC[i] != null ? draftC[i] : cmdLigneEnvoye(l);
+                    // Le champ affiche ce qu'on envoie MAINTENANT (repart de 0 apres
+                    // enregistrement). Valeur brute pour permettre la frappe "2,5".
+                    var valChamp = draftC && draftC[i] != null ? draftC[i] : 0;
                     return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, opacity: ligneComplete ? 0.72 : 1 } },
                       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
                         // Case a cocher : ligne entierement envoyee
@@ -23970,10 +24007,20 @@
                             h("span", { style: { fontWeight: 600, textDecoration: ligneComplete ? "line-through" : "none" } }, designation),
                             refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
                           ),
+                          // Etat de la ligne : demande - deja envoye = reste
                           h("div", { style: { fontSize: 10.5, fontWeight: 700, marginTop: 3, color: ligneComplete ? "#86efac" : (envoye > 0 ? "#fde68a" : "#71717a") } },
-                            ligneComplete ? "Complet" : (envoye > 0 ? "Reste " + cmdFmtQte(resteL) + " " + (unit || "a envoyer") : "Pas encore envoye")),
-                          histoL.length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3 } },
-                            histoL.map(function(ev) { return (ev.qte > 0 ? "+" : "-") + cmdFmtQte(Math.abs(ev.qte)) + " le " + String(ev.date).substring(0, 10).split("-").reverse().join("/"); }).join(" · ")) : null,
+                            ligneComplete
+                              ? "Complet" + (saisie > 0 ? " apres enregistrement" : "")
+                              : (qty > 0
+                                  ? (dejaEnvoye > 0 ? "Deja envoye " + cmdFmtQte(dejaEnvoye) + " sur " + cmdFmtQte(qty) + " · reste " + cmdFmtQte(resteL) + " " + unit : "Reste tout a envoyer (" + cmdFmtQte(qty) + " " + unit + ")")
+                                  : "Aucune quantite demandee")),
+                          // Historique detaille : chaque envoi precedent avec sa date
+                          histoL.length > 0 ? h("div", { style: { marginTop: 5, paddingLeft: 8, borderLeft: "2px solid rgba(56,189,248,0.35)" } },
+                            histoL.map(function(ev, hi) {
+                              return h("div", { key: hi, style: { fontSize: 10.5, color: "#7dd3fc", lineHeight: 1.5 } },
+                                String(ev.date).substring(0, 10).split("-").reverse().join("/") + " : " + (ev.qte > 0 ? "" : "retrait de ") + cmdFmtQte(Math.abs(ev.qte)) + " " + unit + (ev.qte > 0 ? " envoye" : ""));
+                            })
+                          ) : null,
                           l.autreInfo ? h("div", { style: { fontSize: 11, color: "#cbd5e1", marginTop: 4, fontStyle: "italic" } }, l.autreInfo) : null,
                           !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
                             style: { marginTop: 6, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" } },
@@ -23984,15 +24031,18 @@
                         // Quantite envoyee (editable) + quantite demandee
                         h("div", { style: { display: "flex", alignItems: "flex-start", gap: 8, flexShrink: 0 } },
                           h("div", null,
-                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Envoye"),
+                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "J'envoie"),
                             h("input", { type: "text", inputMode: "decimal", value: String(valChamp),
                               onChange: function(e) { cmdSetDraft(c, lignes, i, e.target.value); },
-                              title: qty > 0 ? "Maximum " + cmdFmtQte(qty) : "Aucune quantite demandee sur cette ligne",
-                              style: { width: 66, padding: "6px 8px", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
+                              disabled: ligneComplete && saisie === 0,
+                              title: ligneComplete && saisie === 0 ? "Ligne deja entierement envoyee" : (qty > 0 ? "Reste " + cmdFmtQte(cmdResteAvant(l)) + " a envoyer" : "Aucune quantite demandee sur cette ligne"),
+                              style: { width: 66, padding: "6px 8px", background: ligneComplete && saisie === 0 ? "rgba(0,0,0,0.15)" : "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: ligneComplete && saisie === 0 ? "#52525b" : "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
                           ),
                           h("div", null,
-                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Demande"),
-                            h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } }, (qty > 0 ? cmdFmtQte(qty) : "—") + " " + unit)
+                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Reste du"),
+                            h("div", { style: { fontWeight: 700, color: resteL > 0 ? "#a78bfa" : "#86efac", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } },
+                              (qty > 0 ? cmdFmtQte(resteL) : "—") + " " + unit),
+                            qty > 0 && dejaEnvoye > 0 ? h("div", { style: { fontSize: 9.5, color: "#71717a", textAlign: "right", marginTop: 2 } }, "sur " + cmdFmtQte(qty)) : null
                           )
                         )
                       ),
