@@ -23070,6 +23070,106 @@
           setCmds(cmds.map(function(x) { return x.id === id ? Object.assign({}, x, updated, { _source: x._source || "sondeur" }) : x; }));
         });
       };
+      // ── Suivi des ENVOIS PARTIELS par ligne de bon de commande ──────────────
+      // Chaque ligne du jsonb "lignes" porte : envoye (quantite cumulee envoyee)
+      // et envois [{date, qte}] (historique des mouvements). Aucun SQL requis :
+      // le jsonb accepte les nouvelles cles, et les bons existants demarrent
+      // simplement a 0 envoye.
+      var _envDraft = useState({});
+      var envDraft = _envDraft[0], setEnvDraft = _envDraft[1];
+      var _envSaving = useState(null);
+      var envSaving = _envSaving[0], setEnvSaving = _envSaving[1];
+
+      function cmdLigneQty(l) {
+        var n = parseFloat(l.quantite != null ? l.quantite : (l.qte != null ? l.qte : l.qty));
+        return isNaN(n) || n < 0 ? 0 : n;
+      }
+      function cmdLigneEnvoye(l) {
+        var n = parseFloat(l.envoye);
+        return isNaN(n) || n < 0 ? 0 : n;
+      }
+      // Etat d'edition courant du bon (initialise depuis la base au 1er affichage)
+      function cmdDraft(c, lignes) {
+        var k = String(c.id);
+        if (envDraft[k]) return envDraft[k];
+        return lignes.map(function(l) { return cmdLigneEnvoye(l); });
+      }
+      function cmdSetDraft(c, lignes, idx, val) {
+        var k = String(c.id);
+        var cur = cmdDraft(c, lignes).slice();
+        var max = cmdLigneQty(lignes[idx]);
+        var n = parseFloat(val);
+        if (isNaN(n) || n < 0) n = 0;
+        if (max > 0 && n > max) n = max; // on n'envoie jamais plus que demande
+        cur[idx] = n;
+        var next = {};
+        Object.keys(envDraft).forEach(function(kk) { next[kk] = envDraft[kk]; });
+        next[k] = cur;
+        setEnvDraft(next);
+      }
+      function cmdToggleLigne(c, lignes, idx, coche) {
+        cmdSetDraft(c, lignes, idx, coche ? cmdLigneQty(lignes[idx]) : 0);
+      }
+      function cmdToutEnvoyer(c, lignes) {
+        var k = String(c.id);
+        var next = {};
+        Object.keys(envDraft).forEach(function(kk) { next[kk] = envDraft[kk]; });
+        next[k] = lignes.map(function(l) { return cmdLigneQty(l); });
+        setEnvDraft(next);
+      }
+      // Enregistre : ecrit la quantite cumulee + trace le mouvement du jour
+      function cmdSaveEnvois(c, lignes) {
+        var k = String(c.id);
+        var draft = envDraft[k];
+        if (!draft) return;
+        var dNow = new Date();
+        var today = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
+        var nbMouv = 0;
+        var newLignes = lignes.map(function(l, i) {
+          var avant = cmdLigneEnvoye(l);
+          var apres = draft[i] != null ? draft[i] : avant;
+          var out = Object.assign({}, l, { envoye: apres });
+          if (apres !== avant) {
+            nbMouv++;
+            var histo = Array.isArray(l.envois) ? l.envois.slice() : [];
+            histo.push({ date: today, qte: Math.round((apres - avant) * 100) / 100 });
+            out.envois = histo;
+          }
+          return out;
+        });
+        if (nbMouv === 0) { if (showToast) showToast("Aucun changement a enregistrer"); return; }
+        var table = c._source === "mecanicien" ? "commandes_materiel_mec" : "bons_commande";
+        var realId = c._source === "mecanicien" ? c._rawId : c.id;
+        setEnvSaving(k);
+        supabase.from(table).update({ lignes: newLignes }).eq("id", realId).select().single().then(function(res) {
+          setEnvSaving(null);
+          if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); else alert("Erreur : " + res.error.message); return; }
+          setCmds(cmds.map(function(x) { return x.id === c.id ? Object.assign({}, x, { lignes: newLignes }) : x; }));
+          // Le draft est purge : l'affichage repart de la base (source de verite)
+          var next = {};
+          Object.keys(envDraft).forEach(function(kk) { if (kk !== k) next[kk] = envDraft[kk]; });
+          setEnvDraft(next);
+          var reste = newLignes.filter(function(l) { return cmdLigneEnvoye(l) < cmdLigneQty(l); }).length;
+          if (showToast) showToast(reste === 0 ? "Envoi enregistre - bon complet" : "Envoi enregistre - reste " + reste + " article(s)", "success");
+        });
+      }
+      // Avancement d'un bon : { nbServies, total, qteEnvoyee, qteTotale, pct, complet }
+      function cmdAvancement(lignes, draft) {
+        var nbServies = 0, qteEnvoyee = 0, qteTotale = 0;
+        lignes.forEach(function(l, i) {
+          var q = cmdLigneQty(l);
+          var e = draft && draft[i] != null ? draft[i] : cmdLigneEnvoye(l);
+          qteTotale += q; qteEnvoyee += e;
+          if (q > 0 && e >= q) nbServies++;
+        });
+        return {
+          nbServies: nbServies, total: lignes.length,
+          qteEnvoyee: qteEnvoyee, qteTotale: qteTotale,
+          pct: qteTotale > 0 ? Math.round(qteEnvoyee / qteTotale * 100) : 0,
+          complet: lignes.length > 0 && nbServies === lignes.length
+        };
+      }
+
       var deleteCommande = function(id) {
         var cmdLoc = cmds.find(function(x) { return x.id === id; });
         if (!cmdLoc) return;
@@ -23716,10 +23816,16 @@
           var chant = isMec ? "Intervention #" + (c.intervention_id || "?") : chantierLabel(c.chantier_id);
           var sourceBadge = h("span", { style: { display: "inline-block", marginLeft: 8, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, letterSpacing: 0.4, background: isMec ? "rgba(245,158,11,0.20)" : "rgba(99,102,241,0.20)", color: isMec ? "#fde68a" : "#a5b4fc", border: "1px solid " + (isMec ? "rgba(245,158,11,0.45)" : "rgba(99,102,241,0.45)") } }, isMec ? "MECANICIEN" : "SONDEUR");
           var urgenceBadge = (isMec && c.urgence) ? h("span", { style: { display: "inline-block", marginLeft: 6, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: c.urgence === "urgente" ? "rgba(220,38,38,0.20)" : c.urgence === "elevee" ? "rgba(249,115,22,0.20)" : "rgba(148,163,184,0.15)", color: c.urgence === "urgente" ? "#fca5a5" : c.urgence === "elevee" ? "#fdba74" : "#cbd5e1" } }, (c.urgence || "").toUpperCase()) : null;
+          // Avancement des envois (base + edition en cours si le bon est ouvert)
+          var draftC = isExp ? cmdDraft(c, lignes) : null;
+          var avc = cmdAvancement(lignes, draftC);
+          var etatBadge = lignes.length === 0 ? null : h("span", { style: { display: "inline-block", marginLeft: 6, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: avc.complet ? "rgba(34,197,94,0.18)" : (avc.qteEnvoyee > 0 ? "rgba(245,158,11,0.18)" : "rgba(148,163,184,0.15)"), color: avc.complet ? "#86efac" : (avc.qteEnvoyee > 0 ? "#fde68a" : "#cbd5e1"), border: "1px solid " + (avc.complet ? "rgba(34,197,94,0.45)" : (avc.qteEnvoyee > 0 ? "rgba(245,158,11,0.45)" : "rgba(148,163,184,0.35)")) } },
+            avc.complet ? "COMPLET" : (avc.qteEnvoyee > 0 ? "PARTIEL " + avc.nbServies + "/" + avc.total : "RIEN ENVOYE"));
+          var resteTxt = lignes.length === 0 ? "" : (avc.complet ? " · tout est envoye" : " · reste " + (avc.total - avc.nbServies) + " article" + ((avc.total - avc.nbServies) > 1 ? "s" : "") + " a envoyer");
           return h(React.Fragment, { key: "k-" + c.id },
             rowHeader({
-              name: h("span", null, name, sourceBadge, urgenceBadge),
-              sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (!isMec && c.machine_lieu ? " (" + c.machine_lieu + ")" : ""),
+              name: h("span", null, name, sourceBadge, urgenceBadge, etatBadge),
+              sub: lignes.length + " article" + (lignes.length > 1 ? "s" : "") + (chant ? " - " + chant : "") + (!isMec && c.machine_lieu ? " (" + c.machine_lieu + ")" : "") + resteTxt,
               sender: name,
               right: c.created_at ? "Envoye le " + fmtDateTime(c.created_at) : "Demande le " + fmtDate(c.date_demande),
               statut: c.statut,
@@ -23743,21 +23849,41 @@
               ]),
               lignes.length > 0 ? h("div", null,
                 sectionTitle("Articles demandes"),
+                // Barre d'avancement des envois
+                h("div", { style: { background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "11px 13px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+                  h("div", { style: { flex: "1 1 160px", minWidth: 120, height: 8, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden" } },
+                    h("div", { style: { width: avc.pct + "%", height: "100%", borderRadius: 99, background: avc.complet ? "linear-gradient(90deg,#15803d,#22c55e)" : "linear-gradient(90deg,#b45309,#f59e0b)", transition: "width 0.25s" } })
+                  ),
+                  h("div", { style: { fontSize: 12.5, fontWeight: 700, color: avc.complet ? "#86efac" : "#cbd5e1" } },
+                    avc.nbServies + " ligne" + (avc.nbServies > 1 ? "s" : "") + " sur " + avc.total + " servie" + (avc.nbServies > 1 ? "s" : "") + " · " + fmtNum(avc.qteEnvoyee) + " / " + fmtNum(avc.qteTotale) + " unites envoyees (" + avc.pct + " %)")
+                ),
                 h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: 12 } },
                   lignes.map(function(l, i) {
                     var designation = l.designation || l.description || "-";
                     var refStr = l.reference || l.ref || "";
-                    var qty = l.quantite || l.qte || l.qty || 0;
+                    var qty = cmdLigneQty(l);
                     var unit = l.unite || l.unit || (l.isLiquide ? "L" : "");
                     var known = isPieceKnown(designation, refStr);
                     var photos = Array.isArray(l.photos) ? l.photos : [];
-                    return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13 } },
+                    var envoye = draftC && draftC[i] != null ? draftC[i] : cmdLigneEnvoye(l);
+                    var ligneComplete = qty > 0 && envoye >= qty;
+                    var resteL = qty - envoye;
+                    var histoL = Array.isArray(l.envois) ? l.envois : [];
+                    return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, opacity: ligneComplete ? 0.72 : 1 } },
                       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
-                        h("div", { style: { flex: "1 1 200px", minWidth: 0 } },
+                        // Case a cocher : ligne entierement envoyee
+                        h("input", { type: "checkbox", checked: ligneComplete, onChange: function(e) { cmdToggleLigne(c, lignes, i, e.target.checked); },
+                          title: "Marquer cette ligne comme entierement envoyee",
+                          style: { width: 19, height: 19, accentColor: "#22c55e", cursor: "pointer", flexShrink: 0, marginTop: 2 } }),
+                        h("div", { style: { flex: "1 1 180px", minWidth: 0 } },
                           h("div", null,
-                            h("span", { style: { fontWeight: 600 } }, designation),
+                            h("span", { style: { fontWeight: 600, textDecoration: ligneComplete ? "line-through" : "none" } }, designation),
                             refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
                           ),
+                          h("div", { style: { fontSize: 10.5, fontWeight: 700, marginTop: 3, color: ligneComplete ? "#86efac" : (envoye > 0 ? "#fde68a" : "#71717a") } },
+                            ligneComplete ? "Complet" : (envoye > 0 ? "Reste " + fmtNum(resteL) + " " + (unit || "a envoyer") : "Pas encore envoye")),
+                          histoL.length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3 } },
+                            histoL.map(function(ev) { return (ev.qte > 0 ? "+" : "") + fmtNum(ev.qte) + " le " + String(ev.date).substring(0, 10).split("-").reverse().join("/"); }).join(" · ")) : null,
                           l.autreInfo ? h("div", { style: { fontSize: 11, color: "#cbd5e1", marginTop: 4, fontStyle: "italic" } }, l.autreInfo) : null,
                           !known ? h("button", { onClick: function() { openCreatePiece(designation, refStr, "Autre"); },
                             style: { marginTop: 6, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", color: "#fde68a", border: "1px solid rgba(251,191,36,0.40)", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" } },
@@ -23765,7 +23891,19 @@
                             "+ Pieces"
                           ) : null
                         ),
-                        h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", flexShrink: 0, fontSize: 14 } }, qty + " " + unit)
+                        // Quantite envoyee (editable) + quantite demandee
+                        h("div", { style: { display: "flex", alignItems: "flex-start", gap: 8, flexShrink: 0 } },
+                          h("div", null,
+                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Envoye"),
+                            h("input", { type: "number", min: "0", max: String(qty), step: "any", value: envoye,
+                              onChange: function(e) { cmdSetDraft(c, lignes, i, e.target.value); },
+                              style: { width: 66, padding: "6px 8px", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
+                          ),
+                          h("div", null,
+                            h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Demande"),
+                            h("div", { style: { fontWeight: 700, color: "#a78bfa", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } }, fmtNum(qty) + " " + unit)
+                          )
+                        )
                       ),
                       photos.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))", gap: 6, marginTop: 8 } },
                         photos.map(function(url, pi) {
@@ -23779,6 +23917,12 @@
                 )
               ) : null,
               !isMec && c.signature_png ? h("div", null, sectionTitle("Signature"), sigBox(c.signature_png)) : null,
+              // Actions dediees au suivi des envois (uniquement s'il y a des lignes)
+              lignes.length > 0 ? h("div", { style: { display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap", alignItems: "center" } },
+                actionBtn({ label: "Tout marquer envoye", icon: "check-check", color: "green", onClick: function() { cmdToutEnvoyer(c, lignes); } }),
+                actionBtn({ label: envSaving === String(c.id) ? "Enregistrement..." : "Enregistrer l'envoi", icon: "save", color: "indigo", onClick: function() { if (envSaving !== String(c.id)) cmdSaveEnvois(c, lignes); } }),
+                envDraft[String(c.id)] ? h("span", { style: { fontSize: 11, color: "#fde68a", fontWeight: 700 } }, "Modifications non enregistrees") : null
+              ) : null,
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
                 c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
                 (c.statut === "soumis" || c.statut === "soumise" || c.statut === "traite") ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
