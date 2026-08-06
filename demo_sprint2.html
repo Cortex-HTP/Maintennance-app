@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo Sprint 2 - Previsionnel chantier + Geolocalisation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(ellipse at top, #312e81 0%, #0a0c12 60%); color: #fafafa; font-family: 'Inter', system-ui, -apple-system, sans-serif; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; padding: 16px 24px; background: rgba(10, 12, 18, 0.7); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .logo-mark { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #818cf8, #c084fc); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; margin-right: 12px; }
+  .logo-title { font-size: 16.5px; font-weight: 700; }
+  .logo-sub { font-size: 11.5px; color: #a1a1aa; margin-top: 2px; }
+
+  .container { max-width: 1200px; margin: 32px auto; padding: 0 24px; }
+  h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .sub { color: #a1a1aa; margin-bottom: 24px; font-size: 14px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 24px; }
+  .tab { padding: 11px 18px; cursor: pointer; font-size: 14px; font-weight: 600; color: #a1a1aa; border-bottom: 2px solid transparent; transition: all .15s; }
+  .tab:hover { color: #cbd5e1; }
+  .tab.active { color: #fafafa; border-bottom-color: #818cf8; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Cards */
+  .card { background: rgba(30, 33, 50, 0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 22px; margin-bottom: 18px; }
+  .card h3 { margin: 0 0 14px; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .card h3 .ico { width: 28px; height: 28px; border-radius: 8px; background: rgba(129,140,248,0.18); display: flex; align-items: center; justify-content: center; color: #c4b5fd; font-weight: 800; font-size: 13px; }
+
+  /* ─── Previsionnel ─── */
+  .ch-picker { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  .ch-btn { padding: 9px 16px; background: rgba(36, 40, 60, 0.55); border: 1px solid rgba(255,255,255,0.08); border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer; color: #cbd5e1; font-family: inherit; }
+  .ch-btn:hover { background: rgba(36, 40, 60, 0.85); }
+  .ch-btn.active { background: linear-gradient(135deg, #6366f1, #818cf8); color: #fff; border-color: rgba(129,140,248,0.5); box-shadow: 0 4px 14px rgba(99,102,241,0.3); }
+
+  .kpis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .kpi { background: rgba(30, 33, 50, 0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 16px; }
+  .kpi-lbl { font-size: 10.5px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .kpi-val { font-size: 22px; font-weight: 800; margin-top: 4px; }
+  .kpi-sub { font-size: 11px; color: #71717a; margin-top: 3px; }
+  .kpi.good { background: linear-gradient(135deg, rgba(34,197,94,0.10), rgba(30,33,50,0.6)); border-color: rgba(34,197,94,0.30); }
+  .kpi.good .kpi-val { color: #86efac; }
+  .kpi.warn { background: linear-gradient(135deg, rgba(245,158,11,0.10), rgba(30,33,50,0.6)); border-color: rgba(245,158,11,0.30); }
+  .kpi.warn .kpi-val { color: #fcd34d; }
+  .kpi.bad { background: linear-gradient(135deg, rgba(244,63,94,0.10), rgba(30,33,50,0.6)); border-color: rgba(244,63,94,0.30); }
+  .kpi.bad .kpi-val { color: #fda4af; }
+
+  .formula { background: rgba(20,22,35,0.5); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #cbd5e1; font-family: ui-monospace, 'SF Mono', monospace; line-height: 1.8; }
+  .formula .var { color: #93c5fd; font-weight: 700; }
+  .formula .num { color: #fde68a; font-weight: 700; }
+
+  .health-banner { padding: 14px 16px; border-radius: 10px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+  .health-banner.good { background: rgba(34,197,94,0.10); border: 1px solid rgba(34,197,94,0.30); color: #86efac; }
+  .health-banner.warn { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.30); color: #fde68a; }
+  .health-banner.bad { background: rgba(244,63,94,0.10); border: 1px solid rgba(244,63,94,0.30); color: #fda4af; }
+  .health-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-weight: 800; font-size: 18px; }
+  .health-banner.good .health-icon { background: rgba(34,197,94,0.20); }
+  .health-banner.warn .health-icon { background: rgba(245,158,11,0.20); }
+  .health-banner.bad .health-icon { background: rgba(244,63,94,0.20); }
+  .health-text { flex: 1; }
+  .health-text h4 { margin: 0 0 2px; font-size: 14px; font-weight: 700; }
+  .health-text p { margin: 0; font-size: 12px; color: #cbd5e1; }
+
+  /* Progress bar */
+  .progress { width: 100%; height: 10px; background: rgba(255,255,255,0.06); border-radius: 5px; overflow: hidden; margin: 10px 0 14px; position: relative; }
+  .progress-bar { height: 100%; border-radius: 5px; transition: width .6s; }
+  .progress-marker { position: absolute; top: -4px; width: 2px; height: 18px; background: #fbbf24; }
+
+  /* ─── Geoloc ─── */
+  #map { height: 460px; width: 100%; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #cbd5e1; }
+  .legend > div { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+  .legend-dot.active { background: #22c55e; }
+  .legend-dot.pause { background: #f59e0b; }
+  .legend-dot.inactif { background: #ef4444; }
+
+  /* Sondeur list cote droit */
+  .sondeurs-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
+  @media (max-width: 900px) { .sondeurs-grid { grid-template-columns: 1fr; } }
+  .sondeur-card { background: rgba(36,40,60,0.55); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; transition: all .15s; }
+  .sondeur-card:hover { background: rgba(36,40,60,0.85); border-color: rgba(129,140,248,0.4); }
+  .sondeur-card.selected { background: linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.06)); border-color: rgba(129,140,248,0.5); }
+  .sondeur-card .sc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .sc-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #818cf8); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+  .sc-nom { font-size: 13.5px; font-weight: 700; color: #fafafa; }
+  .sc-status { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
+  .sc-status.active { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .sc-status.pause { background: #f59e0b; }
+  .sc-status.inactif { background: #ef4444; }
+  .sc-meta { font-size: 11.5px; color: #a1a1aa; padding-left: 40px; line-height: 1.5; }
+  .sc-meta strong { color: #cbd5e1; }
+
+  .footer { color: #71717a; font-size: 12px; margin-top: 36px; text-align: center; padding-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo-mark">W</div>
+  <div>
+    <div class="logo-title">Demo Sprint 2 - Previsionnel chantier + Geolocalisation</div>
+    <div class="logo-sub">Maquette interactive pour validation</div>
+  </div>
+</div>
+
+<div class="container">
+  <h1>Sprint 2</h1>
+  <div class="sub">Deux nouvelles fonctionnalites a integrer apres validation. Tu cliques, tu joues avec, tu me dis ce qui te plait ou pas.</div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="prev">#3 Previsionnel chantier</div>
+    <div class="tab" data-tab="geo">#2 Geolocalisation sondeurs</div>
+  </div>
+
+  <!-- ─────── PANEL : PREVISIONNEL ─────── -->
+  <div class="panel active" data-panel="prev">
+    <p style="color: #cbd5e1; font-size: 13.5px; margin: 0 0 18px; line-height: 1.6;">
+      Sur la fiche chantier : <strong>projection en temps reel</strong> de la fin du chantier, du cout restant, du CA restant et de la marge prevue. Base sur la <strong>vitesse moyenne recente</strong> (14 derniers jours) plutot que sur l'objectif theorique. Tu vois si le chantier va bien tenir ses delais ET sa rentabilite.
+    </p>
+
+    <div class="ch-picker" id="chPicker">
+      <button class="ch-btn active" data-ch="kopetoNord">Kopeto Nord</button>
+      <button class="ch-btn" data-ch="kopetoSud">Kopeto Sud (en retard)</button>
+      <button class="ch-btn" data-ch="tiebaghi">Tiebaghi (en avance)</button>
+      <button class="ch-btn" data-ch="goro">Goro (deficitaire)</button>
+    </div>
+
+    <div id="prevContent"></div>
+  </div>
+
+  <!-- ─────── PANEL : GEOLOC ─────── -->
+  <div class="panel" data-panel="geo">
+    <p style="color: #cbd5e1; font-size: 13.5px; margin: 0 0 18px; line-height: 1.6;">
+      Le sondeur autorise sa position GPS <strong>une fois au matin</strong> a l'ouverture de l'app (pas de tracking continu, RGPD friendly). Toi cote admin tu vois la <strong>carte de NC</strong> avec un pin par sondeur connecte. Indication visuelle si quelqu'un est sur un chantier <strong>autre que celui prevu</strong>.
+    </p>
+
+    <div class="sondeurs-grid">
+      <div>
+        <div class="card" style="padding: 14px;">
+          <h3 style="margin: 0 0 10px;"><span class="ico">M</span>Carte des sondeurs en ce moment</h3>
+          <div id="map"></div>
+          <div class="legend">
+            <div><span class="legend-dot active"></span>Actif (validation < 4h)</div>
+            <div><span class="legend-dot pause"></span>En pause (pas de saisie en cours)</div>
+            <div><span class="legend-dot inactif"></span>Inactif (> 4h sans mouvement)</div>
+            <div style="margin-left: auto;"><span style="color: #fde68a;">!</span> = pin clignote si chantier different du prevu</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card" style="padding: 14px;">
+          <h3 style="margin: 0 0 10px;"><span class="ico">S</span>Sondeurs connectes (5)</h3>
+          <div id="sondeursList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">Wallis-Label SARL &middot; Demo Sprint 2 &middot; 2026</div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────
+// PARTIE 1 : Previsionnel chantier
+// ────────────────────────────────────────────────
+var CHANTIERS = {
+  kopetoNord: {
+    titre: "Kopeto Nord", client: "SLN",
+    dateDebut: "2026-04-01", dateFin: "2026-09-30",
+    metrageObjectif: 5000, realise: 2150, prixMetre: 12500,
+    coutJourMoyen: 380000,
+    vitesseMoyenne14j: 95, // m/jour ouvre
+    coutTotalPrevu: 32000000, coutRealise: 14500000
+  },
+  kopetoSud: {
+    titre: "Kopeto Sud", client: "SLN",
+    dateDebut: "2026-03-15", dateFin: "2026-07-31",
+    metrageObjectif: 3500, realise: 1280, prixMetre: 12500,
+    coutJourMoyen: 410000,
+    vitesseMoyenne14j: 42,
+    coutTotalPrevu: 22500000, coutRealise: 11200000
+  },
+  tiebaghi: {
+    titre: "Tiebaghi", client: "Eramet",
+    dateDebut: "2026-05-01", dateFin: "2026-08-31",
+    metrageObjectif: 2800, realise: 1450, prixMetre: 14000,
+    coutJourMoyen: 350000,
+    vitesseMoyenne14j: 120,
+    coutTotalPrevu: 18200000, coutRealise: 8100000
+  },
+  goro: {
+    titre: "Goro", client: "Vale",
+    dateDebut: "2026-04-10", dateFin: "2026-08-15",
+    metrageObjectif: 4200, realise: 2050, prixMetre: 11000,
+    coutJourMoyen: 460000,
+    vitesseMoyenne14j: 65,
+    coutTotalPrevu: 28500000, coutRealise: 17400000
+  }
+};
+
+function fmtNum(n) { return Math.round(n).toLocaleString('fr-FR'); }
+function fmtXPF(n) { return fmtNum(n) + ' XPF'; }
+
+function joursOuvres(d1, d2) {
+  var n = 0;
+  var cur = new Date(d1.getTime());
+  while (cur.getTime() <= d2.getTime()) {
+    var dow = cur.getDay();
+    if (dow >= 1 && dow <= 4) n++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return n;
+}
+
+function renderPrev(chKey) {
+  var c = CHANTIERS[chKey];
+  var today = new Date(2026, 5, 9); // 9 juin 2026 pour la demo
+
+  var dateDebut = new Date(c.dateDebut + "T00:00:00");
+  var dateFin = new Date(c.dateFin + "T00:00:00");
+
+  // Vitesse moyenne sur 14 derniers jours = c.vitesseMoyenne14j (fournie)
+  var metresRestants = Math.max(0, c.metrageObjectif - c.realise);
+  // Estimation jours_ouvres_restants pour finir
+  var joursRestantsEstime = c.vitesseMoyenne14j > 0 ? Math.ceil(metresRestants / c.vitesseMoyenne14j) : null;
+  // Date de fin estimee
+  var dateFinEstimee = null;
+  if (joursRestantsEstime) {
+    var d = new Date(today.getTime());
+    var ajoutes = 0;
+    while (ajoutes < joursRestantsEstime) {
+      d.setDate(d.getDate() + 1);
+      var dow = d.getDay();
+      if (dow >= 1 && dow <= 4) ajoutes++;
+    }
+    dateFinEstimee = d;
+  }
+  // Decalage vs dateFin contractuelle (en jours calendaires)
+  var decalageJ = null;
+  if (dateFinEstimee) {
+    decalageJ = Math.round((dateFinEstimee.getTime() - dateFin.getTime()) / 86400000);
+  }
+  // Cout restant estime
+  var coutRestant = c.coutJourMoyen * (joursRestantsEstime || 0);
+  var coutTotalEstime = c.coutRealise + coutRestant;
+  // CA total = objectif * prix_metre
+  var caTotal = c.metrageObjectif * c.prixMetre;
+  var margeEstimee = caTotal - coutTotalEstime;
+  var margePct = caTotal > 0 ? Math.round((margeEstimee / caTotal) * 100) : 0;
+  var avancementPct = c.metrageObjectif > 0 ? Math.round((c.realise / c.metrageObjectif) * 100) : 0;
+
+  // Sante du chantier
+  var healthClass = "good", healthMsg = "Sur les rails", healthDetail = "Le chantier devrait tenir ses delais et sa rentabilite.";
+  if (decalageJ !== null && decalageJ > 7) {
+    healthClass = "warn";
+    healthMsg = "En retard de " + decalageJ + " jours";
+    healthDetail = "Fin estimee : " + dateFinEstimee.toLocaleDateString('fr-FR') + " au lieu de " + dateFin.toLocaleDateString('fr-FR') + ". Renforcer l'equipe ou accepter le glissement.";
+  }
+  if (margePct < 10) {
+    healthClass = "bad";
+    healthMsg = "Rentabilite a risque (" + margePct + "% de marge prevue)";
+    healthDetail = "A ce rythme, le chantier finira avec une marge faible voire negative. Revoir les couts ou la cadence.";
+  }
+
+  var html = '';
+  html += '<div class="health-banner ' + healthClass + '">';
+  html += '<div class="health-icon">' + (healthClass === "good" ? "OK" : healthClass === "warn" ? "!" : "X") + '</div>';
+  html += '<div class="health-text"><h4>' + c.titre + ' - ' + c.client + ' : ' + healthMsg + '</h4><p>' + healthDetail + '</p></div>';
+  html += '</div>';
+
+  // KPIs principaux
+  html += '<div class="kpis-grid">';
+  html += '<div class="kpi"><div class="kpi-lbl">Realise</div><div class="kpi-val">' + fmtNum(c.realise) + ' m</div><div class="kpi-sub">sur ' + fmtNum(c.metrageObjectif) + ' m objectif (' + avancementPct + '%)</div></div>';
+  html += '<div class="kpi"><div class="kpi-lbl">Vitesse 14j</div><div class="kpi-val">' + c.vitesseMoyenne14j + ' m/j</div><div class="kpi-sub">moyenne sur les jours productifs</div></div>';
+  html += '<div class="kpi ' + (healthClass === "good" ? "good" : healthClass === "warn" ? "warn" : "bad") + '"><div class="kpi-lbl">Jours restants</div><div class="kpi-val">' + (joursRestantsEstime || '-') + ' j</div><div class="kpi-sub">a la cadence actuelle</div></div>';
+  html += '<div class="kpi ' + (healthClass === "good" ? "good" : healthClass === "warn" ? "warn" : "bad") + '"><div class="kpi-lbl">Fin estimee</div><div class="kpi-val" style="font-size: 18px;">' + (dateFinEstimee ? dateFinEstimee.toLocaleDateString('fr-FR') : '-') + '</div><div class="kpi-sub">vs ' + dateFin.toLocaleDateString('fr-FR') + ' prevu</div></div>';
+  html += '</div>';
+
+  // Barre de progression
+  html += '<div class="card" style="padding: 18px;">';
+  html += '<h3 style="margin: 0 0 12px;"><span class="ico">A</span>Avancement vs objectif</h3>';
+  html += '<div style="display:flex; justify-content:space-between; font-size:12px; color:#cbd5e1; margin-bottom: 6px;">';
+  html += '<span>0 m</span><span>' + fmtNum(c.realise) + ' m realise</span><span>' + fmtNum(c.metrageObjectif) + ' m objectif</span>';
+  html += '</div>';
+  html += '<div class="progress">';
+  html += '<div class="progress-bar" style="width: ' + avancementPct + '%; background: linear-gradient(90deg, #6366f1, #818cf8);"></div>';
+  html += '</div>';
+  html += '</div>';
+
+  // KPIs financiers
+  html += '<div class="kpis-grid">';
+  html += '<div class="kpi"><div class="kpi-lbl">CA total chantier</div><div class="kpi-val" style="font-size: 18px;">' + fmtXPF(caTotal) + '</div><div class="kpi-sub">' + fmtNum(c.metrageObjectif) + ' m x ' + fmtNum(c.prixMetre) + ' XPF/m</div></div>';
+  html += '<div class="kpi"><div class="kpi-lbl">Cout total estime</div><div class="kpi-val" style="font-size: 18px;">' + fmtXPF(coutTotalEstime) + '</div><div class="kpi-sub">' + fmtNum(c.coutRealise) + ' deja + ' + fmtNum(coutRestant) + ' restants</div></div>';
+  html += '<div class="kpi ' + (margePct >= 20 ? "good" : margePct >= 10 ? "warn" : "bad") + '"><div class="kpi-lbl">Marge prevue</div><div class="kpi-val" style="font-size: 18px;">' + fmtXPF(margeEstimee) + '</div><div class="kpi-sub">' + margePct + '% du CA</div></div>';
+  html += '</div>';
+
+  // Formule
+  html += '<div class="card" style="padding: 18px;">';
+  html += '<h3 style="margin: 0 0 12px;"><span class="ico">f</span>Comment c\'est calcule</h3>';
+  html += '<div class="formula">';
+  html += '<span class="var">Vitesse 14j</span> = moyenne du metrage des 14 derniers jours productifs = <span class="num">' + c.vitesseMoyenne14j + ' m/jour</span><br>';
+  html += '<span class="var">Metres restants</span> = ' + fmtNum(c.metrageObjectif) + ' - ' + fmtNum(c.realise) + ' = <span class="num">' + fmtNum(metresRestants) + ' m</span><br>';
+  html += '<span class="var">Jours restants</span> = ' + fmtNum(metresRestants) + ' / ' + c.vitesseMoyenne14j + ' = <span class="num">' + (joursRestantsEstime || '-') + ' jours ouvres</span><br>';
+  html += '<span class="var">Cout restant</span> = ' + fmtNum(c.coutJourMoyen) + ' / jour x ' + (joursRestantsEstime || 0) + ' j = <span class="num">' + fmtXPF(coutRestant) + '</span><br>';
+  html += '<span class="var">Marge prevue</span> = CA total - (cout realise + cout restant) = <span class="num">' + fmtXPF(margeEstimee) + '</span>';
+  html += '</div>';
+  html += '</div>';
+
+  document.getElementById('prevContent').innerHTML = html;
+}
+
+document.querySelectorAll('#chPicker .ch-btn').forEach(function(b) {
+  b.addEventListener('click', function() {
+    document.querySelectorAll('#chPicker .ch-btn').forEach(function(x) { x.classList.remove('active'); });
+    b.classList.add('active');
+    renderPrev(b.getAttribute('data-ch'));
+  });
+});
+
+renderPrev('kopetoNord');
+
+// ────────────────────────────────────────────────
+// PARTIE 2 : Geolocalisation
+// ────────────────────────────────────────────────
+var SONDEURS = [
+  { id: 1, nom: 'Steeve DESONNEVILLE', machine: 'FS1', chantierActuel: 'Kopeto Nord', chantierPrevu: 'Kopeto Nord', lat: -21.06, lng: 165.05, status: 'active', validation: 'il y a 1h22' },
+  { id: 2, nom: 'Ulrich MACE', machine: 'FS1', chantierActuel: 'Kopeto Nord', chantierPrevu: 'Kopeto Nord', lat: -21.061, lng: 165.052, status: 'active', validation: 'il y a 1h25' },
+  { id: 3, nom: 'Arnold DELHUMEAU', machine: 'D35', chantierActuel: 'Kopeto Sud', chantierPrevu: 'Tiebaghi', lat: -21.20, lng: 165.18, status: 'active', validation: 'il y a 45min', warning: true },
+  { id: 4, nom: 'Pierre STUART', machine: 'D36', chantierActuel: 'Tiebaghi', chantierPrevu: 'Tiebaghi', lat: -20.46, lng: 164.20, status: 'pause', validation: 'il y a 2h10' },
+  { id: 5, nom: 'Kyren WALLIS', machine: 'D37', chantierActuel: 'Goro', chantierPrevu: 'Goro', lat: -22.34, lng: 167.0, status: 'inactif', validation: 'il y a 5h30' }
+];
+
+var map = null;
+var markers = [];
+var selectedId = null;
+
+function initMap() {
+  if (map) return;
+  map = L.map('map', { zoomControl: true }).setView([-21.3, 165.6], 7);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Esri World Imagery',
+    maxZoom: 18
+  }).addTo(map);
+  renderSondeursMap();
+  renderSondeursList();
+}
+
+function renderSondeursMap() {
+  markers.forEach(function(m) { map.removeLayer(m); });
+  markers = [];
+  SONDEURS.forEach(function(s) {
+    var color = s.status === 'active' ? '#22c55e' : s.status === 'pause' ? '#f59e0b' : '#ef4444';
+    var size = s.id === selectedId ? 22 : 16;
+    var html = '<div style="position:relative; width:' + size + 'px; height:' + size + 'px; border-radius:50%; background:' + color + '; border:2px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.5);' + (s.warning ? ' animation: pulseW 1s infinite;' : '') + '"></div>' + (s.warning ? '<div style="position:absolute; top:-4px; right:-4px; width:14px; height:14px; border-radius:50%; background:#fbbf24; color:#000; font-size:10px; font-weight:800; display:flex; align-items:center; justify-content:center; border:2px solid #fff;">!</div>' : '');
+    var icon = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [size/2, size/2] });
+    var marker = L.marker([s.lat, s.lng], { icon: icon }).addTo(map);
+    marker.bindPopup(
+      '<div style="color:#222; font-family:Inter,sans-serif; min-width:180px;">' +
+      '<div style="font-weight:700; font-size:14px; margin-bottom:4px;">' + s.nom + '</div>' +
+      '<div style="font-size:12px; color:#555;">Machine : <strong>' + s.machine + '</strong></div>' +
+      '<div style="font-size:12px; color:#555;">Chantier actuel : <strong>' + s.chantierActuel + '</strong></div>' +
+      (s.warning ? '<div style="font-size:11px; color:#dc2626; margin-top:6px; font-weight:700;">Different du prevu (' + s.chantierPrevu + ')</div>' : '') +
+      '<div style="font-size:11px; color:#888; margin-top:6px;">Position validee ' + s.validation + '</div>' +
+      '</div>'
+    );
+    marker.on('click', function() {
+      selectedId = s.id;
+      renderSondeursMap();
+      renderSondeursList();
+    });
+    markers.push(marker);
+  });
+}
+
+function renderSondeursList() {
+  var html = '';
+  SONDEURS.forEach(function(s) {
+    var nameParts = s.nom.split(' ');
+    var initials = (nameParts[0][0] + (nameParts[1] ? nameParts[1][0] : '')).toUpperCase();
+    html += '<div class="sondeur-card ' + (s.id === selectedId ? 'selected' : '') + '" onclick="selectSondeur(' + s.id + ')">';
+    html += '<div class="sc-head">';
+    html += '<div class="sc-avatar">' + initials + '</div>';
+    html += '<div class="sc-nom">' + s.nom + '</div>';
+    html += '<div class="sc-status ' + s.status + '"></div>';
+    html += '</div>';
+    html += '<div class="sc-meta">';
+    html += 'Machine <strong>' + s.machine + '</strong> sur <strong>' + s.chantierActuel + '</strong>';
+    if (s.warning) html += '<br><span style="color:#fbbf24;">! Prevu sur ' + s.chantierPrevu + '</span>';
+    html += '<br>Position ' + s.validation;
+    html += '</div></div>';
+  });
+  document.getElementById('sondeursList').innerHTML = html;
+}
+
+function selectSondeur(id) {
+  selectedId = id;
+  renderSondeursMap();
+  renderSondeursList();
+  var s = SONDEURS.find(function(x) { return x.id === id; });
+  if (s && map) {
+    map.flyTo([s.lat, s.lng], 11, { duration: 0.8 });
+  }
+}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(function(t) {
+  t.addEventListener('click', function() {
+    document.querySelectorAll('.tab').forEach(function(x) { x.classList.toggle('active', x === t); });
+    document.querySelectorAll('.panel').forEach(function(p) { p.classList.toggle('active', p.getAttribute('data-panel') === t.getAttribute('data-tab')); });
+    if (t.getAttribute('data-tab') === 'geo') {
+      setTimeout(initMap, 100);
+    }
+  });
+});
+
+// Animation pulse pour les warnings
+var style = document.createElement('style');
+style.textContent = '@keyframes pulseW { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }';
+document.head.appendChild(style);
+</script>
+</body>
+</html>

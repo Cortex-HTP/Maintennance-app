@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo - Recherche globale Cmd+K</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(ellipse at top, #312e81 0%, #0a0c12 60%); color: #fafafa; font-family: 'Inter', system-ui, -apple-system, sans-serif; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; background: rgba(10, 12, 18, 0.7); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .logo { display: flex; align-items: center; gap: 12px; }
+  .logo-mark { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #818cf8, #c084fc); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; box-shadow: 0 6px 18px rgba(129, 140, 248, 0.4); }
+  .logo-title { font-size: 16.5px; font-weight: 700; }
+  .logo-sub { font-size: 11.5px; color: #a1a1aa; margin-top: 2px; }
+
+  .container { max-width: 1100px; margin: 40px auto; padding: 0 24px; }
+  h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .sub { color: #a1a1aa; margin-bottom: 30px; font-size: 14.5px; }
+
+  .hero { background: linear-gradient(135deg, rgba(129, 140, 248, 0.18), rgba(192, 132, 252, 0.08)); border: 1px solid rgba(129, 140, 248, 0.3); border-radius: 16px; padding: 28px; margin-bottom: 28px; }
+  .hero h2 { margin: 0 0 8px; font-size: 19px; font-weight: 700; }
+  .hero p { color: #cbd5e1; margin: 0 0 18px; line-height: 1.55; }
+  .kbd-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .kbd { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-bottom-width: 2px; border-radius: 6px; font-size: 13px; font-weight: 700; color: #fff; font-family: ui-monospace, 'SF Mono', monospace; }
+  .kbd-chip { font-size: 13px; color: #a1a1aa; }
+
+  .demo-trigger { display: inline-flex; align-items: center; gap: 12px; padding: 12px 18px; background: rgba(36, 40, 60, 0.55); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; cursor: pointer; transition: all .15s; font-family: inherit; font-size: 14px; color: #cbd5e1; }
+  .demo-trigger:hover { background: rgba(36, 40, 60, 0.8); border-color: rgba(129, 140, 248, 0.4); }
+  .demo-trigger svg { width: 18px; height: 18px; opacity: .7; }
+  .demo-trigger .kbd-mini { font-size: 11px; padding: 3px 7px; background: rgba(255,255,255,0.08); border-radius: 5px; }
+
+  /* ─── Modal recherche ─── */
+  .search-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(10px); display: none; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 100; animation: fade .15s ease-out; }
+  .search-overlay.open { display: flex; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .search-modal { width: 100%; max-width: 640px; background: #1a1d2e; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; box-shadow: 0 30px 90px rgba(0,0,0,0.6), 0 0 0 1px rgba(129,140,248,0.2); overflow: hidden; animation: slideDown .2s ease-out; }
+  @keyframes slideDown { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .search-input-row { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .search-input-row svg { width: 20px; height: 20px; color: #a1a1aa; flex-shrink: 0; }
+  .search-input { flex: 1; background: transparent; border: none; outline: none; color: #fafafa; font-size: 16px; font-family: inherit; }
+  .search-input::placeholder { color: #71717a; }
+  .search-esc { padding: 3px 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 5px; font-size: 10.5px; font-weight: 700; color: #a1a1aa; font-family: ui-monospace, monospace; }
+
+  .search-results { max-height: 60vh; overflow-y: auto; padding: 4px 0; }
+  .search-group { padding: 6px 0; }
+  .search-group-title { padding: 8px 18px 4px; font-size: 10.5px; color: #71717a; text-transform: uppercase; letter-spacing: 0.7px; font-weight: 700; }
+  .search-item { display: flex; align-items: center; gap: 14px; padding: 11px 18px; cursor: pointer; transition: background .1s; }
+  .search-item:hover, .search-item.focused { background: linear-gradient(90deg, rgba(129,140,248,0.15), rgba(192,132,252,0.05)); }
+  .search-item-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-weight: 800; font-size: 12px; }
+  .search-item-icon.equip { background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(99,102,241,0.1)); color: #a5b4fc; }
+  .search-item-icon.pers { background: linear-gradient(135deg, rgba(34,197,94,0.22), rgba(34,197,94,0.08)); color: #86efac; }
+  .search-item-icon.chant { background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(245,158,11,0.08)); color: #fde68a; }
+  .search-item-icon.piece { background: linear-gradient(135deg, rgba(6,182,212,0.22), rgba(6,182,212,0.08)); color: #67e8f9; }
+  .search-item-icon.soum { background: linear-gradient(135deg, rgba(244,63,94,0.22), rgba(244,63,94,0.08)); color: #fda4af; }
+  .search-item-text { flex: 1; min-width: 0; }
+  .search-item-title { font-size: 14px; font-weight: 600; color: #fafafa; }
+  .search-item-sub { font-size: 11.5px; color: #a1a1aa; margin-top: 2px; }
+  .search-item-shortcut { font-size: 11px; color: #71717a; padding: 3px 7px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 5px; font-family: ui-monospace, monospace; }
+  .search-item .hl { background: rgba(251, 191, 36, 0.25); color: #fcd34d; border-radius: 3px; padding: 0 2px; }
+
+  .search-empty { padding: 32px 20px; text-align: center; color: #71717a; font-size: 13px; }
+  .search-footer { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-top: 1px solid rgba(255,255,255,0.06); background: rgba(0,0,0,0.2); font-size: 11px; color: #71717a; }
+  .search-footer .legend { display: flex; gap: 14px; }
+  .search-footer .legend > div { display: flex; align-items: center; gap: 4px; }
+  .legend .kbd-mini { background: rgba(255,255,255,0.06); padding: 2px 5px; border-radius: 4px; font-family: ui-monospace, monospace; font-weight: 700; color: #a1a1aa; }
+
+  /* ─── Cas d'usage cards ─── */
+  .cases { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .case { background: rgba(30, 33, 50, 0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 20px; }
+  .case h3 { margin: 0 0 8px; font-size: 14.5px; font-weight: 700; color: #e0e7ff; }
+  .case p { margin: 0; font-size: 13px; color: #cbd5e1; line-height: 1.55; }
+  .case .try { display: inline-block; margin-top: 12px; font-size: 12.5px; padding: 6px 12px; background: rgba(129,140,248,0.15); color: #c4b5fd; border-radius: 7px; cursor: pointer; border: 1px solid rgba(129,140,248,0.3); font-weight: 600; }
+  .case .try:hover { background: rgba(129,140,248,0.25); }
+
+  .footer { color: #71717a; font-size: 12px; margin-top: 40px; text-align: center; padding-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">
+    <div class="logo-mark">W</div>
+    <div>
+      <div class="logo-title">Demo : Recherche globale</div>
+      <div class="logo-sub">Cmd+K (Mac) ou Ctrl+K (Windows) - tape pour rechercher</div>
+    </div>
+  </div>
+  <div class="demo-trigger" onclick="openSearch()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    Rechercher...
+    <span class="kbd-mini">Ctrl K</span>
+  </div>
+</div>
+
+<div class="container">
+  <h1>Recherche globale (Cmd+K)</h1>
+  <div class="sub">Trouve un equipement, un employe, un chantier, une piece ou une soumission en 2 secondes.</div>
+
+  <div class="hero">
+    <h2>Comment ca marche</h2>
+    <p>Appuie sur <span class="kbd">Ctrl</span> + <span class="kbd">K</span> (ou Cmd+K sur Mac) depuis n'importe quelle page. Tape ce que tu cherches. Resultats groupes par type. Fleches haut/bas pour naviguer. Enter pour ouvrir.</p>
+    <div class="kbd-row">
+      <span class="kbd">Ctrl</span> <span class="kbd-chip">+</span> <span class="kbd">K</span> <span class="kbd-chip">ouvrir</span>
+      <span class="kbd">&uarr;</span> <span class="kbd">&darr;</span> <span class="kbd-chip">naviguer</span>
+      <span class="kbd">Enter</span> <span class="kbd-chip">ouvrir</span>
+      <span class="kbd">Esc</span> <span class="kbd-chip">fermer</span>
+    </div>
+  </div>
+
+  <h2 style="font-size: 18px; margin: 30px 0 16px;">Essaie ces cas d'usage</h2>
+  <div class="cases">
+    <div class="case">
+      <h3>Trouver une machine par code</h3>
+      <p>Tu cherches FS1, D35... tape juste les 2 ou 3 lettres.</p>
+      <span class="try" onclick="openSearch('FS')">Essayer : "FS"</span>
+    </div>
+    <div class="case">
+      <h3>Retrouver un employe</h3>
+      <p>Tu te souviens plus du nom complet d'Ulrich ou Steeve.</p>
+      <span class="try" onclick="openSearch('steeve')">Essayer : "steeve"</span>
+    </div>
+    <div class="case">
+      <h3>Aller vite sur un chantier</h3>
+      <p>Tu veux ouvrir la fiche Kopeto sans passer par la liste.</p>
+      <span class="try" onclick="openSearch('kopeto')">Essayer : "kopeto"</span>
+    </div>
+    <div class="case">
+      <h3>Verifier une piece detachee</h3>
+      <p>Reference partielle, designation libre.</p>
+      <span class="try" onclick="openSearch('foret')">Essayer : "foret"</span>
+    </div>
+    <div class="case">
+      <h3>Soumission a valider</h3>
+      <p>Trouver le releve d'heures envoye par un sondeur.</p>
+      <span class="try" onclick="openSearch('releve')">Essayer : "releve"</span>
+    </div>
+    <div class="case">
+      <h3>Rien tape ?</h3>
+      <p>Affiche tes 8 dernieres pages visitees.</p>
+      <span class="try" onclick="openSearch('')">Essayer : vide</span>
+    </div>
+  </div>
+
+  <div class="footer">Wallis-Label SARL &middot; Demo recherche globale &middot; 2026</div>
+</div>
+
+<!-- ─── Modal recherche ─── -->
+<div class="search-overlay" id="searchOverlay" onclick="if(event.target===this) closeSearch()">
+  <div class="search-modal" onclick="event.stopPropagation()">
+    <div class="search-input-row">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="search-input" id="searchInput" placeholder="Rechercher equipement, employe, chantier, piece, soumission..." autocomplete="off">
+      <span class="search-esc" onclick="closeSearch()">Esc</span>
+    </div>
+    <div class="search-results" id="searchResults"></div>
+    <div class="search-footer">
+      <div class="legend">
+        <div><span class="kbd-mini">&uarr;&darr;</span> naviguer</div>
+        <div><span class="kbd-mini">Enter</span> ouvrir</div>
+        <div><span class="kbd-mini">Esc</span> fermer</div>
+      </div>
+      <div>Wallis-Label admin</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Donnees factices pour la demo
+var DATA = {
+  equipements: [
+    { id: 1, title: 'FS1', sub: 'Foreuse Carotte - Atlas Copco - 1245h', dest: 'Equipements' },
+    { id: 2, title: 'FS2', sub: 'Foreuse Carotte - Atlas Copco - 980h', dest: 'Equipements' },
+    { id: 3, title: 'D35', sub: 'Aircore - 2150h - En panne', dest: 'Equipements' },
+    { id: 4, title: 'D36', sub: 'Aircore - 1820h', dest: 'Equipements' },
+    { id: 5, title: 'D37', sub: 'Aircore - 1640h', dest: 'Equipements' },
+    { id: 6, title: 'D38', sub: 'Aircore - 950h', dest: 'Equipements' },
+    { id: 7, title: 'VL-Hilux', sub: 'Vehicule leger - 84500 km', dest: 'Equipements' }
+  ],
+  personnel: [
+    { id: 1, title: 'Steeve DESONNEVILLE', sub: 'Sondeur - code: p1', dest: 'Personnel' },
+    { id: 2, title: 'Ulrich MACE', sub: 'Aide sondeur - code: p2', dest: 'Personnel' },
+    { id: 3, title: 'Pierre STUART', sub: 'Aide sondeur - code: p3', dest: 'Personnel' },
+    { id: 4, title: 'Arnold DELHUMEAU', sub: 'Sondeur - code: p7', dest: 'Personnel' },
+    { id: 5, title: 'Kyren WALLIS', sub: 'Aide sondeur - code: p11', dest: 'Personnel' }
+  ],
+  chantiers: [
+    { id: 1, title: 'Kopeto Nord', sub: 'Client SLN - 1245 m faits', dest: 'Calendrier' },
+    { id: 2, title: 'Kopeto Sud', sub: 'Client SLN - 890 m faits', dest: 'Calendrier' },
+    { id: 3, title: 'Tiebaghi', sub: 'Client Eramet - 540 m faits', dest: 'Calendrier' },
+    { id: 4, title: 'Goro', sub: 'Client Vale - termine', dest: 'Calendrier' }
+  ],
+  pieces: [
+    { id: 1, title: 'Foret carbure D75', sub: 'FOR-075 - Stock 12 - Compatible: D', dest: 'Pieces detachees' },
+    { id: 2, title: 'Foret diamant DT-110', sub: 'FOR-DT110 - Stock 4 - Compatible: FS', dest: 'Pieces detachees' },
+    { id: 3, title: 'Tubes carottiers 3m', sub: 'TUB-3M - Stock 28', dest: 'Pieces detachees' },
+    { id: 4, title: 'Joints hydrauliques 1"', sub: 'JOI-H-1 - Stock 6 - Stock bas', dest: 'Pieces detachees' },
+    { id: 5, title: 'Tetes de forage 3.5"', sub: 'TET-35 - Stock 8', dest: 'Pieces detachees' }
+  ],
+  soumissions: [
+    { id: 1, title: 'Releve heures Steeve - Vendredi 5 juin', sub: 'En attente - Kopeto Nord - 8h00', dest: 'Soumissions' },
+    { id: 2, title: 'Releve heures Ulrich - Vendredi 5 juin', sub: 'En attente - Kopeto Nord - 8h00', dest: 'Soumissions' },
+    { id: 3, title: 'Commande Arnold - 6 juin', sub: 'En attente - 3 lignes', dest: 'Soumissions' },
+    { id: 4, title: 'Conge Pierre - 15 au 22 juin', sub: 'CP - en attente', dest: 'Soumissions' }
+  ]
+};
+
+var GROUPS = [
+  { key: 'equipements',  label: 'Equipements',         iconClass: 'equip' },
+  { key: 'personnel',    label: 'Personnel',           iconClass: 'pers' },
+  { key: 'chantiers',    label: 'Chantiers',           iconClass: 'chant' },
+  { key: 'pieces',       label: 'Pieces detachees',    iconClass: 'piece' },
+  { key: 'soumissions',  label: 'Soumissions',         iconClass: 'soum' }
+];
+
+var RECENT = ['Equipements', 'Avancement', 'Primes', 'Soumissions', 'Carburant'];
+var focused = 0;
+var allItems = [];
+
+function initials(s) {
+  var p = s.split(/\s+/);
+  if (p.length >= 2) return (p[0][0] + p[1][0]).toUpperCase();
+  return s.substring(0, 2).toUpperCase();
+}
+
+function highlight(text, q) {
+  if (!q) return text;
+  var idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return text;
+  return text.substring(0, idx) + '<span class="hl">' + text.substring(idx, idx + q.length) + '</span>' + text.substring(idx + q.length);
+}
+
+function render(q) {
+  var out = document.getElementById('searchResults');
+  out.innerHTML = '';
+  allItems = [];
+
+  q = (q || '').trim().toLowerCase();
+
+  if (!q) {
+    // Mode "recents"
+    var div = document.createElement('div');
+    div.className = 'search-group';
+    div.innerHTML = '<div class="search-group-title">Pages recentes</div>';
+    RECENT.forEach(function(label, i) {
+      var item = document.createElement('div');
+      item.className = 'search-item';
+      item.innerHTML =
+        '<div class="search-item-icon equip">P</div>' +
+        '<div class="search-item-text"><div class="search-item-title">' + label + '</div><div class="search-item-sub">Page admin</div></div>';
+      item.addEventListener('click', function() { simulateNavigate(label); });
+      div.appendChild(item);
+      allItems.push(item);
+    });
+    out.appendChild(div);
+  } else {
+    var found = false;
+    GROUPS.forEach(function(g) {
+      var matches = DATA[g.key].filter(function(it) {
+        return (it.title + ' ' + it.sub).toLowerCase().indexOf(q) >= 0;
+      });
+      if (matches.length === 0) return;
+      found = true;
+      var div = document.createElement('div');
+      div.className = 'search-group';
+      div.innerHTML = '<div class="search-group-title">' + g.label + ' (' + matches.length + ')</div>';
+      matches.forEach(function(it) {
+        var item = document.createElement('div');
+        item.className = 'search-item';
+        var iconLabel = g.key === 'personnel' ? initials(it.title) : it.title.substring(0, 2).toUpperCase();
+        item.innerHTML =
+          '<div class="search-item-icon ' + g.iconClass + '">' + iconLabel + '</div>' +
+          '<div class="search-item-text">' +
+            '<div class="search-item-title">' + highlight(it.title, q) + '</div>' +
+            '<div class="search-item-sub">' + highlight(it.sub, q) + '</div>' +
+          '</div>' +
+          '<div class="search-item-shortcut">' + it.dest + '</div>';
+        item.addEventListener('click', function() { simulateNavigate(it.dest + ' > ' + it.title); });
+        div.appendChild(item);
+        allItems.push(item);
+      });
+      out.appendChild(div);
+    });
+    if (!found) {
+      out.innerHTML = '<div class="search-empty">Aucun resultat pour "<strong>' + q + '</strong>"</div>';
+    }
+  }
+
+  focused = 0;
+  updateFocus();
+}
+
+function updateFocus() {
+  allItems.forEach(function(it, i) {
+    it.classList.toggle('focused', i === focused);
+  });
+  if (allItems[focused]) allItems[focused].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function simulateNavigate(label) {
+  closeSearch();
+  setTimeout(function() {
+    alert("Navigation vers : " + label + "\n\n(En vrai, ca t'amene directement sur la bonne page de l'app admin)");
+  }, 150);
+}
+
+function openSearch(prefill) {
+  document.getElementById('searchOverlay').classList.add('open');
+  var input = document.getElementById('searchInput');
+  input.value = prefill || '';
+  setTimeout(function() { input.focus(); }, 50);
+  render(prefill);
+}
+function closeSearch() {
+  document.getElementById('searchOverlay').classList.remove('open');
+}
+
+document.getElementById('searchInput').addEventListener('input', function(e) {
+  render(e.target.value);
+});
+
+document.addEventListener('keydown', function(e) {
+  // Ctrl+K / Cmd+K ouvre la search
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openSearch();
+    return;
+  }
+  if (!document.getElementById('searchOverlay').classList.contains('open')) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); focused = Math.min(allItems.length - 1, focused + 1); updateFocus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); focused = Math.max(0, focused - 1); updateFocus(); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (allItems[focused]) allItems[focused].click();
+  }
+});
+</script>
+
+</body>
+</html>

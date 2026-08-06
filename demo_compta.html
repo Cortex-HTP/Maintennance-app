@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Demo - App Comptabilite Wallis-Label</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; background: linear-gradient(135deg, #0f0e1e 0%, #1a1530 100%); color: #fafafa; overflow: hidden; }
+  body::before { content: ""; position: fixed; inset: 0; background: radial-gradient(circle at 20% 0%, rgba(99,102,241,0.18), transparent 50%), radial-gradient(circle at 80% 100%, rgba(192,132,252,0.14), transparent 50%); pointer-events: none; z-index: 0; }
+  #root { position: relative; z-index: 1; height: 100vh; overflow: hidden; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+  .demo-banner { position: fixed; top: 0; left: 0; right: 0; background: linear-gradient(90deg, rgba(245,158,11,0.95), rgba(217,119,6,0.95)); color: #1a1530; text-align: center; padding: 6px 14px; font-size: 12px; font-weight: 700; z-index: 9999; letter-spacing: 0.3px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  .anim-fade-in { animation: fadeIn 0.3s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+<div class="demo-banner">DEMO INTERACTIVE - App Comptabilite (donnees fictives). Pas de backend connecte.</div>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo, useRef } = React;
+const h = React.createElement;
+
+// ─── Helpers ───────────────────────────────────────────────────────────
+function toPascalCase(s) { return s.split("-").map(function(p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join(""); }
+function Icon({ name, size = 16, color = "currentColor", style }) {
+  const ref = useRef(null);
+  useEffect(function() {
+    if (!ref.current) return;
+    ref.current.innerHTML = "";
+    try {
+      const pascal = toPascalCase(name);
+      const svgStr = window.lucide && (window.lucide.icons[pascal] || window.lucide.icons[name]);
+      if (svgStr) {
+        const tmp = document.createElement("div");
+        tmp.innerHTML = window.lucide.createElement(svgStr).outerHTML;
+        const svg = tmp.firstChild;
+        svg.setAttribute("width", String(size));
+        svg.setAttribute("height", String(size));
+        svg.setAttribute("stroke", color);
+        svg.style.display = "inline-block";
+        svg.style.verticalAlign = "middle";
+        svg.style.flexShrink = "0";
+        ref.current.appendChild(svg);
+      }
+    } catch (e) {}
+  }, [name, size, color]);
+  return h("span", { ref: ref, style: Object.assign({ display: "inline-flex", alignItems: "center", lineHeight: 0 }, style || {}) });
+}
+
+function fmtXPF(v) { if (v == null) return "—"; return Math.round(v).toLocaleString("fr-FR") + " XPF"; }
+function fmtNum(v) { if (v == null) return "0"; return Math.round(v).toLocaleString("fr-FR"); }
+function fmtDate(s) {
+  if (!s) return "—";
+  try {
+    const d = new Date(s);
+    return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+  } catch (e) { return s; }
+}
+function fmtDateShort(s) {
+  if (!s) return "—";
+  try {
+    const d = new Date(s);
+    return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+  } catch (e) { return s; }
+}
+function compactMF(v) {
+  if (v == null) return "—";
+  if (v >= 1000000) return (v / 1000000).toFixed(2) + " MF";
+  return Math.round(v / 1000) + " k";
+}
+
+// ─── Donnees fictives ──────────────────────────────────────────────────
+const FOURNISSEURS = [
+  { id: 1, nom: "Atlas Copco NC", siret: "123456789", refClient: "WL2024" },
+  { id: 2, nom: "Fleetguard Filtration", siret: "234567890", refClient: "ATL-7821" },
+  { id: 3, nom: "Total Energies NC", siret: "345678901", refClient: "WALLIS-23" },
+  { id: 4, nom: "OPT NC (telecom)", siret: "456789012", refClient: "TEL-456" },
+  { id: 5, nom: "CCI Noumea (loyer atelier)", siret: "567890123", refClient: "LOC-001" },
+  { id: 6, nom: "Assurance Allianz", siret: "678901234", refClient: "POL-9821" },
+  { id: 7, nom: "EEC Nouvelle-Caledonie", siret: "789012345", refClient: "ELEC-882" },
+  { id: 8, nom: "Garage Auto Nord", siret: "890123456", refClient: "GAN-77" },
+  { id: 9, nom: "Cabinet Comptable Dupond", siret: "901234567", refClient: "HONORAIRES" },
+  { id: 10, nom: "Sodexo (cantine sondeurs)", siret: "012345678", refClient: "WL-CAN-12" }
+];
+
+const CATEGORIES = [
+  { key: "pieces", label: "Pieces detachees", icon: "package", color: "#a78bfa" },
+  { key: "carburant", label: "Carburant / Mazout", icon: "fuel", color: "#fbbf24" },
+  { key: "energie", label: "Electricite", icon: "zap", color: "#fde68a" },
+  { key: "telecom", label: "Telephonie / Internet", icon: "phone", color: "#67e8f9" },
+  { key: "loyer", label: "Loyer / Immobilier", icon: "building", color: "#c4b5fd" },
+  { key: "assurance", label: "Assurance", icon: "shield", color: "#86efac" },
+  { key: "transport", label: "Transport / Vehicules", icon: "truck", color: "#fda4af" },
+  { key: "honoraires", label: "Honoraires / Prestations", icon: "briefcase", color: "#f9a8d4" },
+  { key: "restauration", label: "Restauration / Cantine", icon: "utensils", color: "#fdba74" },
+  { key: "autre", label: "Autre", icon: "more-horizontal", color: "#94a3b8" }
+];
+
+const CHANTIERS = [
+  { id: 1, nom: "Tiebaghi (SLN)", couleur: "#a78bfa" },
+  { id: 2, nom: "Kopeto", couleur: "#67e8f9" },
+  { id: 3, nom: "Atelier Noumea", couleur: "#fcd34d" },
+  { id: 4, nom: "Bureau / VL", couleur: "#94a3b8" }
+];
+
+// Genere ~30 factures fictives reparties sur 3 mois
+function genererFactures() {
+  const list = [];
+  const today = new Date(2026, 5, 15);
+  let id = 1;
+  const tirages = [
+    // Pieces detachees Atlas Copco -> Tiebaghi
+    { fourn: 1, cat: "pieces", chantier: 1, libelle: "Filtres hydrauliques HF41L10VQ x8 + roulement compresseur", htDe: 285000, htA: 420000, tva: 0, daysAgo: 5 },
+    { fourn: 1, cat: "pieces", chantier: 1, libelle: "Filtre mazout FF5319 x4 + filtres air AF891M x6", htDe: 195000, htA: 235000, tva: 0, daysAgo: 18 },
+    { fourn: 1, cat: "pieces", chantier: 2, libelle: "Filtre a huile LF691A x12 (lot annuel)", htDe: 95000, htA: 125000, tva: 0, daysAgo: 32 },
+    { fourn: 1, cat: "pieces", chantier: 3, libelle: "Couronne dentee + chaine compresseur Atlas D38", htDe: 850000, htA: 1200000, tva: 0, daysAgo: 9 },
+    { fourn: 2, cat: "pieces", chantier: 1, libelle: "Filtres Fleetguard - commande trimestrielle", htDe: 320000, htA: 380000, tva: 0, daysAgo: 25 },
+    { fourn: 2, cat: "pieces", chantier: 2, libelle: "Lot filtres hydraulique HIFI", htDe: 145000, htA: 175000, tva: 0, daysAgo: 55 },
+    // Carburant Total
+    { fourn: 3, cat: "carburant", chantier: 1, libelle: "Mazout 3500 L - livraison Tiebaghi sem 23", htDe: 480000, htA: 560000, tva: 0, daysAgo: 3 },
+    { fourn: 3, cat: "carburant", chantier: 1, libelle: "Mazout 2800 L - livraison Tiebaghi sem 21", htDe: 380000, htA: 460000, tva: 0, daysAgo: 14 },
+    { fourn: 3, cat: "carburant", chantier: 1, libelle: "Mazout 4200 L - livraison Tiebaghi sem 19", htDe: 580000, htA: 680000, tva: 0, daysAgo: 28 },
+    { fourn: 3, cat: "carburant", chantier: 4, libelle: "Essence VL flotte juin 2026", htDe: 145000, htA: 175000, tva: 0, daysAgo: 7 },
+    { fourn: 3, cat: "carburant", chantier: 4, libelle: "Essence VL flotte mai 2026", htDe: 158000, htA: 185000, tva: 0, daysAgo: 38 },
+    // EEC
+    { fourn: 7, cat: "energie", chantier: 3, libelle: "Facture electricite atelier - mai 2026", htDe: 85000, htA: 105000, tva: 0, daysAgo: 21 },
+    { fourn: 7, cat: "energie", chantier: 3, libelle: "Facture electricite atelier - avril 2026", htDe: 92000, htA: 112000, tva: 0, daysAgo: 52 },
+    // OPT
+    { fourn: 4, cat: "telecom", chantier: 4, libelle: "Abonnement telephonie + internet bureau mai", htDe: 45000, htA: 65000, tva: 0, daysAgo: 19 },
+    { fourn: 4, cat: "telecom", chantier: 4, libelle: "Abonnement telephonie + internet bureau juin", htDe: 45000, htA: 65000, tva: 0, daysAgo: 4 },
+    // Loyer
+    { fourn: 5, cat: "loyer", chantier: 3, libelle: "Loyer atelier Noumea juin 2026", htDe: 580000, htA: 650000, tva: 0, daysAgo: 12 },
+    { fourn: 5, cat: "loyer", chantier: 3, libelle: "Loyer atelier Noumea mai 2026", htDe: 580000, htA: 650000, tva: 0, daysAgo: 42 },
+    // Assurance
+    { fourn: 6, cat: "assurance", chantier: 1, libelle: "Prime assurance sondeuses Q2 2026", htDe: 320000, htA: 380000, tva: 0, daysAgo: 35 },
+    { fourn: 6, cat: "assurance", chantier: 4, libelle: "Prime assurance flotte VL annuelle", htDe: 245000, htA: 285000, tva: 0, daysAgo: 65 },
+    // Transport
+    { fourn: 8, cat: "transport", chantier: 4, libelle: "Reparation Hilux WL-2104 (embrayage)", htDe: 185000, htA: 225000, tva: 0, daysAgo: 10 },
+    { fourn: 8, cat: "transport", chantier: 1, libelle: "Acheminement D38 Tiebaghi (transport)", htDe: 350000, htA: 420000, tva: 0, daysAgo: 1 },
+    // Honoraires
+    { fourn: 9, cat: "honoraires", chantier: 4, libelle: "Honoraires comptables mai 2026", htDe: 95000, htA: 125000, tva: 0, daysAgo: 22 },
+    { fourn: 9, cat: "honoraires", chantier: 4, libelle: "Honoraires comptables avril 2026", htDe: 95000, htA: 125000, tva: 0, daysAgo: 50 },
+    // Restauration
+    { fourn: 10, cat: "restauration", chantier: 1, libelle: "Paniers repas sondeurs Tiebaghi mai", htDe: 215000, htA: 265000, tva: 0, daysAgo: 23 },
+    { fourn: 10, cat: "restauration", chantier: 2, libelle: "Paniers repas sondeurs Kopeto mai", htDe: 125000, htA: 165000, tva: 0, daysAgo: 24 }
+  ];
+  tirages.forEach(function(t) {
+    const dt = new Date(today.getTime() - t.daysAgo * 86400000);
+    const ht = Math.round((t.htDe + Math.random() * (t.htA - t.htDe)) / 1000) * 1000;
+    const tva = 0; // En NC pas de TVA equivalente metropole
+    const ttc = ht + tva;
+    // Statut : selon anciennete et tirage aleatoire
+    let statut;
+    if (t.daysAgo < 7) statut = Math.random() < 0.4 ? "nouvelle" : (Math.random() < 0.5 ? "a_completer" : "validee");
+    else if (t.daysAgo < 25) statut = Math.random() < 0.2 ? "a_completer" : (Math.random() < 0.5 ? "validee" : "transmise");
+    else statut = "transmise";
+    // Quelques paiements
+    const paye = statut === "transmise" && Math.random() < 0.6;
+    list.push({
+      id: id++,
+      reference: "F" + String(2026000 + id).padStart(7, "0"),
+      fournisseurId: t.fourn,
+      categorie: t.cat,
+      chantierId: t.chantier,
+      libelle: t.libelle,
+      ht: ht,
+      tva: tva,
+      ttc: ttc,
+      dateFacture: dt.toISOString().substring(0, 10),
+      dateReception: new Date(dt.getTime() + 2 * 86400000).toISOString().substring(0, 10),
+      echeance: new Date(dt.getTime() + 30 * 86400000).toISOString().substring(0, 10),
+      statut: statut,
+      paye: paye,
+      datePaiement: paye ? new Date(dt.getTime() + 35 * 86400000).toISOString().substring(0, 10) : null,
+      fichier: "facture_" + id + ".pdf",
+      uploadeurEmail: Math.random() < 0.6 ? "admin@wallislabel.nc" : "dispatch@wallislabel.nc",
+      notesAdmin: ""
+    });
+  });
+  return list;
+}
+
+const FACTURES_INIT = genererFactures();
+
+const TRANSMISSIONS_INIT = [
+  { id: 1, dateEnvoi: "2026-05-31", lot: "T2026-05", nbFactures: 8, totalHT: 2150000, destinataire: "comptable@cabinet-dupond.nc", statut: "envoyee", fichierZip: "transmission_2026-05.zip" },
+  { id: 2, dateEnvoi: "2026-04-30", lot: "T2026-04", nbFactures: 11, totalHT: 1850000, destinataire: "comptable@cabinet-dupond.nc", statut: "envoyee", fichierZip: "transmission_2026-04.zip" },
+  { id: 3, dateEnvoi: "2026-03-31", lot: "T2026-03", nbFactures: 9, totalHT: 1640000, destinataire: "comptable@cabinet-dupond.nc", statut: "envoyee", fichierZip: "transmission_2026-03.zip" }
+];
+
+const STATUT_INFO = {
+  nouvelle: { label: "Nouvelle", color: "#a5b4fc", bg: "rgba(99,102,241,0.15)", border: "rgba(99,102,241,0.40)", icon: "inbox" },
+  a_completer: { label: "A completer", color: "#fde68a", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.40)", icon: "alert-circle" },
+  validee: { label: "Validee", color: "#86efac", bg: "rgba(34,197,94,0.15)", border: "rgba(34,197,94,0.40)", icon: "check-circle" },
+  transmise: { label: "Transmise", color: "#67e8f9", bg: "rgba(6,182,212,0.15)", border: "rgba(6,182,212,0.40)", icon: "send" }
+};
+
+// ─── Composants UI ─────────────────────────────────────────────────────
+function GlassCard({ children, style, onClick }) {
+  return h("div", {
+    onClick: onClick,
+    style: Object.assign({
+      background: "rgba(36, 40, 60, 0.55)",
+      backdropFilter: "blur(20px) saturate(180%)",
+      WebkitBackdropFilter: "blur(20px) saturate(180%)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 14,
+      padding: 18,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
+      cursor: onClick ? "pointer" : "default"
+    }, style || {})
+  }, children);
+}
+
+function KpiTile({ icon, accent, label, value, hint, badge, badgeColor, onClick }) {
+  return h("div", {
+    onClick: onClick,
+    style: {
+      background: "rgba(36,40,60,0.55)",
+      backdropFilter: "blur(20px) saturate(180%)",
+      WebkitBackdropFilter: "blur(20px) saturate(180%)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderLeft: "3px solid " + accent,
+      borderRadius: 12,
+      padding: 16,
+      boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+      cursor: onClick ? "pointer" : "default",
+      transition: "transform 0.15s, box-shadow 0.15s"
+    },
+    onMouseEnter: function(e) { if (onClick) { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 8px 18px rgba(0,0,0,0.3)"; } },
+    onMouseLeave: function(e) { if (onClick) { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)"; } }
+  },
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 } },
+      h("div", { style: { width: 36, height: 36, borderRadius: 10, background: accent + "20", display: "flex", alignItems: "center", justifyContent: "center" } },
+        h(Icon, { name: icon, size: 18, color: accent })
+      ),
+      badge ? h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: (badgeColor || accent) + "20", color: badgeColor || accent } }, badge) : null
+    ),
+    h("div", { style: { fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: "#fafafa" } }, value),
+    h("div", { style: { fontSize: 11.5, color: "#a1a1aa", fontWeight: 600, marginTop: 4, textTransform: "uppercase", letterSpacing: 0.4 } }, label),
+    hint ? h("div", { style: { fontSize: 11, color: accent, marginTop: 4, fontWeight: 600 } }, hint) : null
+  );
+}
+
+function Button({ children, onClick, variant, disabled, style }) {
+  const v = variant || "primary";
+  const bg = v === "primary" ? "linear-gradient(135deg, #6366f1, #8b5cf6)"
+        : v === "secondary" ? "rgba(255,255,255,0.05)"
+        : v === "danger" ? "linear-gradient(135deg, #f43f5e, #e11d48)"
+        : v === "success" ? "linear-gradient(135deg, #22c55e, #16a34a)"
+        : "rgba(255,255,255,0.05)";
+  const color = v === "secondary" ? "#cbd5e1" : "#ffffff";
+  const border = v === "secondary" ? "1px solid rgba(255,255,255,0.10)" : "none";
+  return h("button", {
+    onClick: onClick,
+    disabled: disabled,
+    style: Object.assign({
+      padding: "9px 16px",
+      borderRadius: 8,
+      background: bg,
+      color: color,
+      border: border,
+      fontWeight: 700,
+      fontSize: 13,
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.5 : 1,
+      transition: "transform 0.12s, box-shadow 0.12s",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 7,
+      fontFamily: "inherit"
+    }, style || {}),
+    onMouseEnter: function(e) { if (!disabled) { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(99,102,241,0.4)"; } },
+    onMouseLeave: function(e) { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = ""; }
+  }, children);
+}
+
+function Modal({ title, onClose, children, size }) {
+  return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 } },
+    h("div", {
+      onClick: function(e) { e.stopPropagation(); },
+      className: "anim-fade-in",
+      style: {
+        background: "linear-gradient(135deg, rgba(36,40,60,0.95), rgba(45,50,75,0.92))",
+        backdropFilter: "blur(24px) saturate(180%)",
+        border: "1px solid rgba(255,255,255,0.10)",
+        borderRadius: 16,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+        width: "100%",
+        maxWidth: size || 580,
+        maxHeight: "90vh",
+        overflow: "auto",
+        padding: 24
+      }
+    },
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, paddingBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.07)" } },
+        h("h2", { style: { fontSize: 17, fontWeight: 800, margin: 0 } }, title),
+        h("button", { onClick: onClose, style: { background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", padding: 4, borderRadius: 6, display: "flex", alignItems: "center" } },
+          h(Icon, { name: "x", size: 20, color: "#94a3b8" }))
+      ),
+      children
+    )
+  );
+}
+
+function StatutBadge({ statut, big }) {
+  const info = STATUT_INFO[statut] || STATUT_INFO.nouvelle;
+  return h("span", { style: { display: "inline-flex", alignItems: "center", gap: 5, padding: big ? "5px 10px" : "3px 8px", borderRadius: 999, background: info.bg, color: info.color, border: "1px solid " + info.border, fontSize: big ? 12 : 11, fontWeight: 700 } },
+    h(Icon, { name: info.icon, size: big ? 13 : 11, color: info.color }),
+    info.label
+  );
+}
+
+// ─── Ecran : Accueil ───────────────────────────────────────────────────
+function EcranAccueil({ factures, transmissions, onNav }) {
+  const today = new Date(2026, 5, 15);
+  const nouvelles = factures.filter(function(f) { return f.statut === "nouvelle"; });
+  const aCompleter = factures.filter(function(f) { return f.statut === "a_completer"; });
+  const validees = factures.filter(function(f) { return f.statut === "validee"; });
+  const mois = today.getMonth();
+  const annee = today.getFullYear();
+  const transmisesMois = factures.filter(function(f) {
+    const d = new Date(f.dateFacture);
+    return f.statut === "transmise" && d.getMonth() === mois && d.getFullYear() === annee;
+  });
+  const totalAttente = nouvelles.concat(aCompleter, validees).reduce(function(s, f) { return s + f.ht; }, 0);
+  const totalTransMois = transmisesMois.reduce(function(s, f) { return s + f.ht; }, 0);
+  const enRetardPaiement = factures.filter(function(f) {
+    const ech = new Date(f.echeance);
+    return !f.paye && ech < today;
+  });
+
+  // Recap par categorie sur 90j
+  const cat90 = {};
+  factures.forEach(function(f) {
+    const d = new Date(f.dateFacture);
+    const daysAgo = (today - d) / 86400000;
+    if (daysAgo > 90) return;
+    cat90[f.categorie] = (cat90[f.categorie] || 0) + f.ht;
+  });
+  const catSorted = Object.keys(cat90).map(function(k) {
+    return { key: k, total: cat90[k], info: CATEGORIES.find(function(c) { return c.key === k; }) };
+  }).sort(function(a, b) { return b.total - a.total; });
+  const maxCat = catSorted.length > 0 ? catSorted[0].total : 1;
+
+  // Activite recente : 5 dernieres factures (toutes statuts)
+  const recentes = factures.slice().sort(function(a, b) { return new Date(b.dateReception) - new Date(a.dateReception); }).slice(0, 6);
+
+  return h("div", null,
+    h("div", { style: { marginBottom: 20 } },
+      h("h1", { style: { margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" } }, "Bonjour Sophie"),
+      h("div", { style: { fontSize: 13.5, color: "#94a3b8", marginTop: 4 } }, today.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }))
+    ),
+    // Bandeau urgence si retards paiement
+    enRetardPaiement.length > 0 ? h("div", { onClick: function() { onNav("inbox"); }, style: { cursor: "pointer", marginBottom: 20, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(244,63,94,0.15), rgba(244,63,94,0.05))", border: "1px solid rgba(244,63,94,0.35)", display: "flex", alignItems: "center", gap: 12 } },
+      h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(244,63,94,0.25)", display: "flex", alignItems: "center", justifyContent: "center" } }, h(Icon, { name: "alert-triangle", size: 18, color: "#fb7185" })),
+      h("div", { style: { flex: 1 } },
+        h("div", { style: { fontSize: 13.5, fontWeight: 700 } }, enRetardPaiement.length + " facture(s) en retard de paiement"),
+        h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 2 } }, fmtXPF(enRetardPaiement.reduce(function(s, f) { return s + f.ht; }, 0)) + " a regler en urgence")
+      ),
+      h("div", { style: { fontSize: 12, fontWeight: 700, color: "#fb7185" } }, "Voir >")
+    ) : null,
+    // KPIs
+    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 } },
+      h(KpiTile, { icon: "inbox", accent: "#6366f1", label: "A traiter", value: nouvelles.length + aCompleter.length, hint: fmtXPF(nouvelles.concat(aCompleter).reduce(function(s, f) { return s + f.ht; }, 0)) + " HT", badge: nouvelles.length > 0 ? nouvelles.length + " nouvelles" : null, badgeColor: "#fde68a", onClick: function() { onNav("inbox"); } }),
+      h(KpiTile, { icon: "check-circle", accent: "#22c55e", label: "Validees pretes", value: validees.length, hint: fmtXPF(validees.reduce(function(s, f) { return s + f.ht; }, 0)) + " a transmettre", onClick: function() { onNav("validees"); } }),
+      h(KpiTile, { icon: "send", accent: "#06b6d4", label: "Transmis ce mois", value: transmisesMois.length, hint: fmtXPF(totalTransMois) + " HT" }),
+      h(KpiTile, { icon: "trending-up", accent: "#f59e0b", label: "Engagement 90j", value: compactMF(totalAttente + totalTransMois * 3) + " XPF", hint: "Toutes categories" })
+    ),
+    // Grid principal : recap categories + recentes
+    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16 } },
+      // Categories
+      h(GlassCard, null,
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+          h("h3", { style: { margin: 0, fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "pie-chart", size: 16, color: "#a78bfa" }), "Repartition 90 jours"),
+          h("span", { style: { fontSize: 11, color: "#71717a" } }, fmtXPF(Object.values(cat90).reduce(function(s, v) { return s + v; }, 0)))
+        ),
+        catSorted.map(function(c) {
+          return h("div", { key: c.key, style: { marginBottom: 10 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 } },
+              h("span", { style: { display: "flex", alignItems: "center", gap: 6, color: "#cbd5e1" } },
+                h(Icon, { name: c.info.icon, size: 12, color: c.info.color }), c.info.label
+              ),
+              h("span", { style: { fontWeight: 700, color: "#fafafa" } }, fmtXPF(c.total))
+            ),
+            h("div", { style: { height: 5, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" } },
+              h("div", { style: { width: (c.total / maxCat * 100) + "%", height: "100%", background: c.info.color, borderRadius: 3 } })
+            )
+          );
+        })
+      ),
+      // Activite recente
+      h(GlassCard, null,
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+          h("h3", { style: { margin: 0, fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "activity", size: 16, color: "#67e8f9" }), "Recentes receptions"),
+          h("button", { onClick: function() { onNav("inbox"); }, style: { background: "transparent", border: "none", color: "#a5b4fc", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 } }, "Tout voir", h(Icon, { name: "chevron-right", size: 12, color: "#a5b4fc" }))
+        ),
+        recentes.map(function(f) {
+          const four = FOURNISSEURS.find(function(x) { return x.id === f.fournisseurId; });
+          const cat = CATEGORIES.find(function(x) { return x.key === f.categorie; });
+          return h("div", { key: f.id, style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: "1px solid rgba(255,255,255,0.04)" } },
+            h("div", { style: { width: 32, height: 32, borderRadius: 8, background: cat.color + "20", border: "1px solid " + cat.color + "30", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+              h(Icon, { name: cat.icon, size: 14, color: cat.color })
+            ),
+            h("div", { style: { flex: 1, minWidth: 0 } },
+              h("div", { style: { fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, four.nom),
+              h("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.libelle)
+            ),
+            h("div", { style: { textAlign: "right", flexShrink: 0 } },
+              h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", fontFamily: "monospace" } }, fmtXPF(f.ht)),
+              h("div", { style: { marginTop: 3 } }, h(StatutBadge, { statut: f.statut }))
+            )
+          );
+        })
+      )
+    )
+  );
+}
+
+// ─── Ecran : Inbox factures ────────────────────────────────────────────
+function EcranInbox({ factures, onChange, showToast }) {
+  const _searchHook = useState(""); const search = _searchHook[0]; const setSearch = _searchHook[1];
+  const _statutHook = useState("all"); const statut = _statutHook[0]; const setStatut = _statutHook[1];
+  const _catHook = useState("all"); const cat = _catHook[0]; const setCat = _catHook[1];
+  const _chantierHook = useState("all"); const chantierF = _chantierHook[0]; const setChantierF = _chantierHook[1];
+  const _editingHook = useState(null); const editing = _editingHook[0]; const setEditing = _editingHook[1];
+  const _showUploadHook = useState(false); const showUpload = _showUploadHook[0]; const setShowUpload = _showUploadHook[1];
+
+  const filtered = factures.filter(function(f) {
+    if (f.statut === "transmise") return false; // pas dans l'inbox
+    if (statut !== "all" && f.statut !== statut) return false;
+    if (cat !== "all" && f.categorie !== cat) return false;
+    if (chantierF !== "all" && f.chantierId !== parseInt(chantierF)) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      const four = FOURNISSEURS.find(function(x) { return x.id === f.fournisseurId; });
+      const match = (f.reference + " " + four.nom + " " + f.libelle).toLowerCase().indexOf(s) >= 0;
+      if (!match) return false;
+    }
+    return true;
+  }).sort(function(a, b) { return new Date(b.dateReception) - new Date(a.dateReception); });
+
+  function handleValidate(f) {
+    onChange(f.id, { statut: "validee" });
+    showToast("Facture " + f.reference + " validee !", "success");
+  }
+  function handleSaveEdit(updated) {
+    onChange(updated.id, updated);
+    setEditing(null);
+    showToast("Facture mise a jour", "success");
+  }
+
+  return h("div", null,
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 } },
+      h("div", null,
+        h("h1", { style: { margin: 0, fontSize: 22, fontWeight: 800 } }, "Inbox factures"),
+        h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginTop: 4 } }, "Factures recues a saisir, completer ou valider")
+      ),
+      h(Button, { onClick: function() { setShowUpload(true); } }, h(Icon, { name: "upload-cloud", size: 14, color: "#fff" }), "Uploader une facture")
+    ),
+    // Filtres
+    h(GlassCard, { style: { padding: 14, marginBottom: 16 } },
+      h("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" } },
+        h("div", { style: { flex: 1, minWidth: 240, position: "relative" } },
+          h(Icon, { name: "search", size: 14, color: "#71717a", style: { position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" } }),
+          h("input", {
+            type: "text", value: search, onChange: function(e) { setSearch(e.target.value); },
+            placeholder: "Reference, fournisseur, libelle...",
+            style: { width: "100%", padding: "9px 12px 9px 36px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", outline: "none" }
+          })
+        ),
+        h("select", { value: statut, onChange: function(e) { setStatut(e.target.value); }, style: dropdownStyle },
+          h("option", { value: "all" }, "Tous statuts"),
+          h("option", { value: "nouvelle" }, "Nouvelles"),
+          h("option", { value: "a_completer" }, "A completer"),
+          h("option", { value: "validee" }, "Validees")
+        ),
+        h("select", { value: cat, onChange: function(e) { setCat(e.target.value); }, style: dropdownStyle },
+          h("option", { value: "all" }, "Toutes categories"),
+          CATEGORIES.map(function(c) { return h("option", { key: c.key, value: c.key }, c.label); })
+        ),
+        h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: dropdownStyle },
+          h("option", { value: "all" }, "Tous chantiers"),
+          CHANTIERS.map(function(c) { return h("option", { key: c.id, value: String(c.id) }, c.nom); })
+        ),
+        h("span", { style: { marginLeft: "auto", fontSize: 12, color: "#94a3b8" } }, filtered.length + " resultat(s)")
+      )
+    ),
+    // Liste factures
+    filtered.length === 0 ?
+      h(GlassCard, { style: { padding: 60, textAlign: "center" } },
+        h(Icon, { name: "inbox", size: 48, color: "rgba(255,255,255,0.18)" }),
+        h("div", { style: { marginTop: 14, fontSize: 14, fontWeight: 700, color: "#cbd5e1" } }, "Aucune facture a traiter"),
+        h("div", { style: { marginTop: 4, fontSize: 12, color: "#94a3b8" } }, "Reglages des filtres ou upload d'une nouvelle facture")
+      ) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+        filtered.map(function(f) {
+          const four = FOURNISSEURS.find(function(x) { return x.id === f.fournisseurId; });
+          const catInfo = CATEGORIES.find(function(x) { return x.key === f.categorie; });
+          const chantier = CHANTIERS.find(function(x) { return x.id === f.chantierId; });
+          const today = new Date(2026, 5, 15);
+          const ech = new Date(f.echeance);
+          const enRetard = !f.paye && ech < today;
+          const aPayer = (today - ech) / 86400000 < 7 && (today - ech) / 86400000 >= -7;
+          return h(GlassCard, { key: f.id, style: { padding: 14 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" } },
+              h("div", { style: { width: 44, height: 44, borderRadius: 10, background: catInfo.color + "20", border: "1px solid " + catInfo.color + "40", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                h(Icon, { name: catInfo.icon, size: 20, color: catInfo.color })
+              ),
+              h("div", { style: { flex: 1, minWidth: 200 } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 } },
+                  h("span", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } }, four.nom),
+                  h(StatutBadge, { statut: f.statut }),
+                  enRetard ? h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "rgba(244,63,94,0.20)", color: "#fda4af" } }, "EN RETARD") : null,
+                  aPayer && !f.paye && !enRetard ? h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "rgba(251,191,36,0.20)", color: "#fde68a" } }, "ECHEANCE PROCHE") : null
+                ),
+                h("div", { style: { fontSize: 12.5, color: "#cbd5e1", marginBottom: 4 } }, f.libelle),
+                h("div", { style: { display: "flex", gap: 14, fontSize: 11, color: "#94a3b8", flexWrap: "wrap" } },
+                  h("span", null, h(Icon, { name: "file-text", size: 11, color: "#94a3b8" }), " " + f.reference),
+                  h("span", null, h(Icon, { name: "calendar", size: 11, color: "#94a3b8" }), " " + fmtDate(f.dateFacture)),
+                  chantier ? h("span", { style: { color: chantier.couleur, fontWeight: 600 } }, h(Icon, { name: "hard-hat", size: 11, color: chantier.couleur }), " " + chantier.nom) : null,
+                  h("span", null, h(Icon, { name: "clock", size: 11, color: "#94a3b8" }), " Echeance " + fmtDate(f.echeance))
+                )
+              ),
+              h("div", { style: { textAlign: "right", flexShrink: 0 } },
+                h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fafafa", fontFamily: "monospace" } }, fmtXPF(f.ht)),
+                h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 2 } }, "HT - TTC " + fmtXPF(f.ttc))
+              ),
+              h("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
+                f.statut !== "validee" ? h(Button, { variant: "success", onClick: function() { handleValidate(f); }, style: { padding: "7px 12px" } }, h(Icon, { name: "check", size: 12, color: "#fff" }), "Valider") : null,
+                h(Button, { variant: "secondary", onClick: function() { setEditing(f); }, style: { padding: "7px 12px" } }, h(Icon, { name: "pencil", size: 12, color: "#cbd5e1" }), "Editer"),
+                h("button", { onClick: function() { showToast("Ouverture aperçu PDF", "info"); }, title: "Voir le fichier",
+                  style: { width: 32, height: 32, borderRadius: 7, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#cbd5e1", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } },
+                  h(Icon, { name: "eye", size: 14, color: "#cbd5e1" }))
+              )
+            )
+          );
+        })
+      ),
+    editing ? h(ModalFacture, { facture: editing, onClose: function() { setEditing(null); }, onSave: handleSaveEdit }) : null,
+    showUpload ? h(ModalUpload, { onClose: function() { setShowUpload(false); }, onUploaded: function() { setShowUpload(false); showToast("Facture uploadee, status 'Nouvelle'", "success"); } }) : null
+  );
+}
+
+const dropdownStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "8px 12px", color: "#fafafa", fontSize: 13, fontFamily: "inherit", cursor: "pointer", outline: "none" };
+
+// ─── Modal saisie / edition facture ────────────────────────────────────
+function ModalFacture({ facture, onClose, onSave }) {
+  const _fHook = useState(Object.assign({}, facture));
+  const f = _fHook[0]; const setF = _fHook[1];
+  function upd(k, v) { setF(Object.assign({}, f, { [k]: v })); }
+
+  return h(Modal, { title: facture && facture.reference ? "Editer " + facture.reference : "Nouvelle facture", onClose: onClose, size: 640 },
+    h("div", { style: { display: "grid", gap: 14 } },
+      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+        h(Field, { label: "Reference" }, h("input", { type: "text", value: f.reference || "", onChange: function(e) { upd("reference", e.target.value); }, style: inputStyle })),
+        h(Field, { label: "Date facture" }, h("input", { type: "date", value: f.dateFacture || "", onChange: function(e) { upd("dateFacture", e.target.value); }, style: inputStyle }))
+      ),
+      h(Field, { label: "Fournisseur" },
+        h("select", { value: f.fournisseurId || "", onChange: function(e) { upd("fournisseurId", parseInt(e.target.value)); }, style: selectStyle },
+          h("option", { value: "" }, "-- Selectionner --"),
+          FOURNISSEURS.map(function(x) { return h("option", { key: x.id, value: x.id }, x.nom); })
+        )
+      ),
+      h(Field, { label: "Libelle / Designation" }, h("textarea", { value: f.libelle || "", onChange: function(e) { upd("libelle", e.target.value); }, rows: 2, style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: 56 }) })),
+      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+        h(Field, { label: "Categorie" },
+          h("select", { value: f.categorie || "", onChange: function(e) { upd("categorie", e.target.value); }, style: selectStyle },
+            h("option", { value: "" }, "-- Selectionner --"),
+            CATEGORIES.map(function(c) { return h("option", { key: c.key, value: c.key }, c.label); })
+          )
+        ),
+        h(Field, { label: "Chantier rattache" },
+          h("select", { value: f.chantierId || "", onChange: function(e) { upd("chantierId", parseInt(e.target.value)); }, style: selectStyle },
+            h("option", { value: "" }, "-- Selectionner --"),
+            CHANTIERS.map(function(c) { return h("option", { key: c.id, value: c.id }, c.nom); })
+          )
+        )
+      ),
+      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 } },
+        h(Field, { label: "Montant HT (XPF)" }, h("input", { type: "number", value: f.ht || "", onChange: function(e) { const ht = parseFloat(e.target.value) || 0; setF(Object.assign({}, f, { ht: ht, ttc: ht + (f.tva || 0) })); }, style: inputStyle })),
+        h(Field, { label: "TVA (XPF)" }, h("input", { type: "number", value: f.tva || 0, onChange: function(e) { const tva = parseFloat(e.target.value) || 0; setF(Object.assign({}, f, { tva: tva, ttc: (f.ht || 0) + tva })); }, style: inputStyle })),
+        h(Field, { label: "TTC (XPF)" }, h("input", { type: "number", value: f.ttc || 0, disabled: true, style: Object.assign({}, inputStyle, { opacity: 0.6 }) }))
+      ),
+      h(Field, { label: "Echeance paiement" }, h("input", { type: "date", value: f.echeance || "", onChange: function(e) { upd("echeance", e.target.value); }, style: inputStyle })),
+      h("div", { style: { padding: 12, borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.20)" } },
+        h("label", { style: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer" } },
+          h("input", { type: "checkbox", checked: !!f.paye, onChange: function(e) { upd("paye", e.target.checked); }, style: { width: 18, height: 18, accentColor: "#22c55e" } }),
+          h("div", null,
+            h("div", { style: { fontSize: 13, fontWeight: 700 } }, "Marquer comme payee"),
+            h("div", { style: { fontSize: 11.5, color: "#94a3b8", marginTop: 2 } }, "Aide a suivre les retards de paiement et le cashflow")
+          )
+        ),
+        f.paye ? h("div", { style: { marginTop: 10 } },
+          h(Field, { label: "Date paiement" }, h("input", { type: "date", value: f.datePaiement || "", onChange: function(e) { upd("datePaiement", e.target.value); }, style: inputStyle }))
+        ) : null
+      ),
+      h(Field, { label: "Notes internes (optionnel)" }, h("textarea", { value: f.notesAdmin || "", onChange: function(e) { upd("notesAdmin", e.target.value); }, rows: 2, placeholder: "Commentaire libre, references projet, etc.", style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: 50 }) })),
+      h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" } },
+        h(Button, { variant: "secondary", onClick: onClose }, "Annuler"),
+        h(Button, { variant: "success", onClick: function() { onSave(Object.assign({}, f, { statut: "validee" })); } }, h(Icon, { name: "check", size: 13, color: "#fff" }), "Valider et enregistrer"),
+        h(Button, { onClick: function() { onSave(f); } }, h(Icon, { name: "save", size: 13, color: "#fff" }), "Enregistrer brouillon")
+      )
+    )
+  );
+}
+
+const inputStyle = { width: "100%", padding: "9px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 7, color: "#fafafa", fontSize: 13, fontFamily: "inherit", outline: "none" };
+const selectStyle = Object.assign({}, inputStyle, { cursor: "pointer" });
+
+function Field({ label, children }) {
+  return h("div", null,
+    h("label", { style: { display: "block", fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 5 } }, label),
+    children
+  );
+}
+
+// ─── Modal upload facture ──────────────────────────────────────────────
+function ModalUpload({ onClose, onUploaded }) {
+  const _draggingHook = useState(false); const dragging = _draggingHook[0]; const setDragging = _draggingHook[1];
+  const _fileHook = useState(null); const file = _fileHook[0]; const setFile = _fileHook[1];
+
+  return h(Modal, { title: "Uploader une facture", onClose: onClose, size: 520 },
+    h("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+      h("div", {
+        onDragOver: function(e) { e.preventDefault(); setDragging(true); },
+        onDragLeave: function() { setDragging(false); },
+        onDrop: function(e) {
+          e.preventDefault();
+          setDragging(false);
+          if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+        },
+        style: {
+          padding: 32, borderRadius: 12,
+          border: "2px dashed " + (dragging ? "rgba(99,102,241,0.60)" : "rgba(255,255,255,0.15)"),
+          background: dragging ? "rgba(99,102,241,0.10)" : "rgba(255,255,255,0.02)",
+          textAlign: "center",
+          transition: "border 0.15s, background 0.15s"
+        }
+      },
+        h(Icon, { name: "cloud-upload", size: 40, color: dragging ? "#a5b4fc" : "rgba(255,255,255,0.30)" }),
+        h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 700, color: "#fafafa" } }, dragging ? "Relachez pour deposer" : "Glissez-deposez le fichier ici"),
+        h("div", { style: { marginTop: 4, fontSize: 11.5, color: "#94a3b8" } }, "PDF, JPG, PNG (max 10 Mo)"),
+        h("div", { style: { marginTop: 14 } },
+          h("input", {
+            type: "file", id: "upload-input",
+            onChange: function(e) { if (e.target.files && e.target.files[0]) setFile(e.target.files[0]); },
+            style: { display: "none" }
+          }),
+          h("label", { htmlFor: "upload-input", style: { display: "inline-block", padding: "8px 16px", borderRadius: 7, background: "rgba(99,102,241,0.20)", border: "1px solid rgba(99,102,241,0.40)", color: "#c4b5fd", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Ou parcourir...")
+        )
+      ),
+      file ? h("div", { style: { padding: 12, borderRadius: 8, background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", display: "flex", alignItems: "center", gap: 10 } },
+        h(Icon, { name: "file-check", size: 18, color: "#86efac" }),
+        h("div", { style: { flex: 1 } },
+          h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#86efac" } }, file.name),
+          h("div", { style: { fontSize: 11, color: "#cbd5e1", marginTop: 2 } }, (file.size / 1024).toFixed(1) + " Ko - pret a uploader")
+        )
+      ) : null,
+      h("div", { style: { padding: 12, borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.20)", fontSize: 12, color: "#cbd5e1" } },
+        h("div", { style: { display: "flex", gap: 8, alignItems: "flex-start" } },
+          h(Icon, { name: "info", size: 14, color: "#a5b4fc", style: { marginTop: 2 } }),
+          h("div", null,
+            h("strong", null, "Auto-detection : "),
+            "L'app va tenter d'extraire automatiquement la reference, le montant et la date depuis le PDF. Tu pourras tout valider/corriger avant enregistrement."
+          )
+        )
+      ),
+      h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+        h(Button, { variant: "secondary", onClick: onClose }, "Annuler"),
+        h(Button, { disabled: !file, onClick: onUploaded }, h(Icon, { name: "upload", size: 13, color: "#fff" }), "Uploader")
+      )
+    )
+  );
+}
+
+// ─── Ecran : Validees (a transmettre) ──────────────────────────────────
+function EcranValidees({ factures, onTransmettre, showToast }) {
+  const _selectedHook = useState({}); const selected = _selectedHook[0]; const setSelected = _selectedHook[1];
+  const _showTransmHook = useState(false); const showTransm = _showTransmHook[0]; const setShowTransm = _showTransmHook[1];
+
+  const validees = factures.filter(function(f) { return f.statut === "validee"; }).sort(function(a, b) { return new Date(a.dateFacture) - new Date(b.dateFacture); });
+  const nbSel = Object.keys(selected).filter(function(k) { return selected[k]; }).length;
+  const totalSel = validees.filter(function(f) { return selected[f.id]; }).reduce(function(s, f) { return s + f.ht; }, 0);
+
+  // Groupe par mois
+  const groupes = {};
+  validees.forEach(function(f) {
+    const k = f.dateFacture.substring(0, 7); // YYYY-MM
+    if (!groupes[k]) groupes[k] = [];
+    groupes[k].push(f);
+  });
+  const groupesArr = Object.keys(groupes).sort(function(a, b) { return a < b ? -1 : 1; }).map(function(k) {
+    return { mois: k, factures: groupes[k], total: groupes[k].reduce(function(s, f) { return s + f.ht; }, 0) };
+  });
+
+  function toggleAll(groupe) {
+    const allSel = groupe.factures.every(function(f) { return selected[f.id]; });
+    const next = Object.assign({}, selected);
+    groupe.factures.forEach(function(f) { next[f.id] = !allSel; });
+    setSelected(next);
+  }
+  function toggleOne(id) {
+    setSelected(Object.assign({}, selected, { [id]: !selected[id] }));
+  }
+  function selectAllMonth(mois) {
+    const grp = groupes[mois];
+    const next = Object.assign({}, selected);
+    grp.forEach(function(f) { next[f.id] = true; });
+    setSelected(next);
+  }
+
+  return h("div", null,
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 } },
+      h("div", null,
+        h("h1", { style: { margin: 0, fontSize: 22, fontWeight: 800 } }, "Factures validees"),
+        h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginTop: 4 } }, "Pretes a etre transmises au cabinet comptable")
+      ),
+      nbSel > 0 ? h(Button, { variant: "success", onClick: function() { setShowTransm(true); } },
+        h(Icon, { name: "send", size: 14, color: "#fff" }),
+        "Transmettre " + nbSel + " facture(s) - " + fmtXPF(totalSel)
+      ) : null
+    ),
+    validees.length === 0 ?
+      h(GlassCard, { style: { padding: 60, textAlign: "center" } },
+        h(Icon, { name: "check-circle", size: 48, color: "rgba(34,197,94,0.30)" }),
+        h("div", { style: { marginTop: 14, fontSize: 14, fontWeight: 700, color: "#cbd5e1" } }, "Tout est a jour !"),
+        h("div", { style: { marginTop: 4, fontSize: 12, color: "#94a3b8" } }, "Aucune facture validee en attente de transmission")
+      ) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+        groupesArr.map(function(g) {
+          const [a, m] = g.mois.split("-");
+          const moisLib = new Date(parseInt(a), parseInt(m) - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+          const allSel = g.factures.every(function(f) { return selected[f.id]; });
+          return h(GlassCard, { key: g.mois, style: { padding: 0, overflow: "hidden" } },
+            h("div", { style: { padding: "14px 18px", display: "flex", alignItems: "center", gap: 12, background: "linear-gradient(135deg, rgba(99,102,241,0.10), rgba(139,92,246,0.05))", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
+              h("input", { type: "checkbox", checked: allSel, onChange: function() { toggleAll(g); }, style: { width: 18, height: 18, accentColor: "#22c55e" } }),
+              h("div", { style: { flex: 1 } },
+                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fafafa", textTransform: "capitalize" } }, moisLib),
+                h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2 } }, g.factures.length + " facture(s) validee(s)")
+              ),
+              h("div", { style: { textAlign: "right" } },
+                h("div", { style: { fontSize: 16, fontWeight: 800, color: "#fafafa", fontFamily: "monospace" } }, fmtXPF(g.total)),
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2 } }, "Total HT")
+              ),
+              h(Button, { variant: "secondary", onClick: function() { selectAllMonth(g.mois); } }, h(Icon, { name: "check-square", size: 12, color: "#cbd5e1" }), "Tout selectionner")
+            ),
+            h("div", null,
+              g.factures.map(function(f) {
+                const four = FOURNISSEURS.find(function(x) { return x.id === f.fournisseurId; });
+                const cat = CATEGORIES.find(function(x) { return x.key === f.categorie; });
+                const chantier = CHANTIERS.find(function(x) { return x.id === f.chantierId; });
+                const isSel = !!selected[f.id];
+                return h("div", { key: f.id, onClick: function() { toggleOne(f.id); }, style: { padding: "10px 18px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderTop: "1px solid rgba(255,255,255,0.04)", background: isSel ? "rgba(34,197,94,0.06)" : "transparent" } },
+                  h("input", { type: "checkbox", checked: isSel, onChange: function() {}, style: { width: 16, height: 16, accentColor: "#22c55e" } }),
+                  h("div", { style: { width: 28, height: 28, borderRadius: 7, background: cat.color + "20", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                    h(Icon, { name: cat.icon, size: 13, color: cat.color })
+                  ),
+                  h("div", { style: { flex: 1, minWidth: 0 } },
+                    h("div", { style: { fontSize: 13, fontWeight: 600, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, four.nom + " - " + f.libelle),
+                    h("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 2 } },
+                      f.reference + " - " + fmtDate(f.dateFacture) + (chantier ? " - " + chantier.nom : "")
+                    )
+                  ),
+                  h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa", fontFamily: "monospace" } }, fmtXPF(f.ht))
+                );
+              })
+            )
+          );
+        })
+      ),
+    showTransm ? h(ModalTransmission, { factures: validees.filter(function(f) { return selected[f.id]; }), onClose: function() { setShowTransm(false); }, onSend: function() {
+      onTransmettre(Object.keys(selected).filter(function(k) { return selected[k]; }).map(function(k) { return parseInt(k); }));
+      setSelected({});
+      setShowTransm(false);
+      showToast("Transmission envoyee ! Email recapitulatif envoye au cabinet.", "success");
+    } }) : null
+  );
+}
+
+// ─── Modal generation transmission ─────────────────────────────────────
+function ModalTransmission({ factures, onClose, onSend }) {
+  const _destHook = useState("comptable@cabinet-dupond.nc");
+  const dest = _destHook[0]; const setDest = _destHook[1];
+  const _msgHook = useState("Bonjour,\n\nVeuillez trouver ci-joint les factures du mois pour comptabilisation.\n\nCordialement,\nSophie - Wallis-Label SARL");
+  const msg = _msgHook[0]; const setMsg = _msgHook[1];
+  const _genHook = useState(false); const generating = _genHook[0]; const setGen = _genHook[1];
+
+  const total = factures.reduce(function(s, f) { return s + f.ht; }, 0);
+
+  // Group par categorie pour le recap
+  const parCat = {};
+  factures.forEach(function(f) {
+    parCat[f.categorie] = (parCat[f.categorie] || 0) + f.ht;
+  });
+
+  function handleSend() {
+    setGen(true);
+    setTimeout(function() { onSend(); }, 1500);
+  }
+
+  return h(Modal, { title: "Generer transmission - " + factures.length + " facture(s)", onClose: onClose, size: 620 },
+    h("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+      // Recap
+      h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.20)" } },
+        h("div", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 } }, "Recapitulatif"),
+        h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 } },
+          h("div", null, h("div", { style: { fontSize: 11, color: "#94a3b8" } }, "Nombre de factures"), h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fafafa" } }, factures.length)),
+          h("div", null, h("div", { style: { fontSize: 11, color: "#94a3b8" } }, "Total HT"), h("div", { style: { fontSize: 18, fontWeight: 800, color: "#a5b4fc", fontFamily: "monospace" } }, fmtXPF(total)))
+        ),
+        h("div", { style: { fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 6 } }, "Repartition :"),
+        Object.keys(parCat).map(function(k) {
+          const c = CATEGORIES.find(function(x) { return x.key === k; });
+          return h("div", { key: k, style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 } },
+            h("span", { style: { color: "#cbd5e1" } }, h(Icon, { name: c.icon, size: 11, color: c.color }), " " + c.label),
+            h("span", { style: { color: "#fafafa", fontWeight: 700, fontFamily: "monospace" } }, fmtXPF(parCat[k]))
+          );
+        })
+      ),
+      h(Field, { label: "Email destinataire" }, h("input", { type: "email", value: dest, onChange: function(e) { setDest(e.target.value); }, style: inputStyle })),
+      h(Field, { label: "Message d'accompagnement" }, h("textarea", { value: msg, onChange: function(e) { setMsg(e.target.value); }, rows: 5, style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: 100 }) })),
+      // Bandeau livraison
+      h("div", { style: { padding: 12, borderRadius: 8, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.20)", display: "flex", gap: 10 } },
+        h(Icon, { name: "package-check", size: 16, color: "#86efac", style: { marginTop: 2 } }),
+        h("div", null,
+          h("div", { style: { fontSize: 13, fontWeight: 700, color: "#86efac" } }, "Le bouton genere :"),
+          h("ul", { style: { margin: "6px 0 0 0", padding: "0 0 0 18px", fontSize: 12, color: "#cbd5e1", lineHeight: 1.7 } },
+            h("li", null, "Un fichier ZIP avec tous les PDF originaux"),
+            h("li", null, "Un fichier CSV avec date, montants, fournisseur, categorie, chantier"),
+            h("li", null, "Un email automatique au cabinet"),
+            h("li", null, "Marque les factures comme 'Transmises' avec date d'envoi")
+          )
+        )
+      ),
+      h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, paddingTop: 8 } },
+        h(Button, { variant: "secondary", onClick: onClose, disabled: generating }, "Annuler"),
+        h(Button, { variant: "success", onClick: handleSend, disabled: generating },
+          generating ? h(React.Fragment, null,
+            h("span", { style: { display: "inline-block", width: 12, height: 12, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" } }),
+            " Generation..."
+          ) : h(React.Fragment, null,
+            h(Icon, { name: "send", size: 13, color: "#fff" }),
+            "Envoyer la transmission"
+          )
+        )
+      ),
+      h("style", null, "@keyframes spin { to { transform: rotate(360deg); } }")
+    )
+  );
+}
+
+// ─── Ecran : Historique transmissions ──────────────────────────────────
+function EcranTransmissions({ transmissions }) {
+  return h("div", null,
+    h("h1", { style: { margin: "0 0 4px", fontSize: 22, fontWeight: 800 } }, "Historique transmissions"),
+    h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 20 } }, "Tous les envois passes au cabinet comptable"),
+    h("div", { style: { display: "flex", flexDirection: "column", gap: 12 } },
+      transmissions.map(function(t) {
+        return h(GlassCard, { key: t.id, style: { padding: 16, display: "flex", alignItems: "center", gap: 14 } },
+          h("div", { style: { width: 44, height: 44, borderRadius: 10, background: "linear-gradient(135deg, rgba(6,182,212,0.20), rgba(8,145,178,0.15))", border: "1px solid rgba(6,182,212,0.40)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+            h(Icon, { name: "send", size: 18, color: "#67e8f9" })
+          ),
+          h("div", { style: { flex: 1 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } },
+              h("span", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } }, "Lot " + t.lot),
+              h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "rgba(6,182,212,0.20)", color: "#67e8f9" } }, "Envoyee")
+            ),
+            h("div", { style: { fontSize: 12, color: "#cbd5e1" } }, t.nbFactures + " facture(s) - " + fmtXPF(t.totalHT) + " HT"),
+            h("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 4 } },
+              h(Icon, { name: "mail", size: 11, color: "#94a3b8" }), " " + t.destinataire + "  ",
+              h(Icon, { name: "calendar", size: 11, color: "#94a3b8" }), " " + fmtDate(t.dateEnvoi)
+            )
+          ),
+          h(Button, { variant: "secondary", onClick: function() { alert("Re-telechargement du ZIP : " + t.fichierZip); } }, h(Icon, { name: "download", size: 12, color: "#cbd5e1" }), "Telecharger ZIP")
+        );
+      })
+    )
+  );
+}
+
+// ─── Ecran : Parametres ────────────────────────────────────────────────
+function EcranParametres() {
+  const _emailHook = useState("comptable@cabinet-dupond.nc"); const email = _emailHook[0]; const setEmail = _emailHook[1];
+  const _frequencyHook = useState("mensuel"); const freq = _frequencyHook[0]; const setFreq = _frequencyHook[1];
+
+  return h("div", null,
+    h("h1", { style: { margin: "0 0 4px", fontSize: 22, fontWeight: 800 } }, "Parametres"),
+    h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 20 } }, "Configuration cabinet comptable et regles de routage"),
+    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16 } },
+      h(GlassCard, null,
+        h("h3", { style: { margin: "0 0 14px", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "building", size: 16, color: "#a78bfa" }), "Cabinet comptable"),
+        h(Field, { label: "Email destinataire" }, h("input", { type: "email", value: email, onChange: function(e) { setEmail(e.target.value); }, style: inputStyle })),
+        h("div", { style: { marginTop: 12 } }, h(Field, { label: "Frequence de transmission" },
+          h("select", { value: freq, onChange: function(e) { setFreq(e.target.value); }, style: selectStyle },
+            h("option", { value: "mensuel" }, "Mensuelle (recommande)"),
+            h("option", { value: "bimensuel" }, "Bi-mensuelle"),
+            h("option", { value: "trimestriel" }, "Trimestrielle"),
+            h("option", { value: "demande" }, "A la demande")
+          )
+        )),
+        h("div", { style: { marginTop: 12 } }, h(Field, { label: "Format export" },
+          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            ["CSV", "Excel", "PDF recap", "FEC (format fiscal)"].map(function(f) {
+              return h("button", { key: f, style: { padding: "7px 12px", borderRadius: 6, background: f === "CSV" || f === "PDF recap" ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.05)", border: "1px solid " + (f === "CSV" || f === "PDF recap" ? "rgba(129,140,248,0.45)" : "rgba(255,255,255,0.10)"), color: f === "CSV" || f === "PDF recap" ? "#c4b5fd" : "#cbd5e1", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, f);
+            })
+          )
+        )),
+        h("div", { style: { marginTop: 18, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "flex-end" } },
+          h(Button, null, h(Icon, { name: "save", size: 13, color: "#fff" }), "Enregistrer")
+        )
+      ),
+      h(GlassCard, null,
+        h("h3", { style: { margin: "0 0 14px", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "git-branch", size: 16, color: "#67e8f9" }), "Auto-routage par categorie"),
+        h("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 12 } }, "Pre-affecte automatiquement la categorie selon le fournisseur lors de l'upload."),
+        FOURNISSEURS.slice(0, 6).map(function(four) {
+          const detected = {
+            1: "pieces", 2: "pieces", 3: "carburant", 4: "telecom", 5: "loyer", 6: "assurance"
+          }[four.id];
+          const catInfo = CATEGORIES.find(function(x) { return x.key === detected; });
+          return h("div", { key: four.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.04)" } },
+            h("div", { style: { flex: 1, fontSize: 12.5, fontWeight: 600, color: "#cbd5e1" } }, four.nom),
+            h(Icon, { name: "arrow-right", size: 12, color: "#71717a" }),
+            h("span", { style: { fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5, background: catInfo.color + "20", color: catInfo.color, border: "1px solid " + catInfo.color + "30" } },
+              h(Icon, { name: catInfo.icon, size: 10, color: catInfo.color }), " " + catInfo.label
+            )
+          );
+        }),
+        h("div", { style: { marginTop: 14, padding: 10, borderRadius: 7, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.20)", fontSize: 11.5, color: "#fde68a" } },
+          h(Icon, { name: "info", size: 12, color: "#fde68a" }), " Tu peux modifier l'affectation manuellement dans la fiche du fournisseur."
+        )
+      ),
+      h(GlassCard, null,
+        h("h3", { style: { margin: "0 0 14px", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "shield-check", size: 16, color: "#86efac" }), "Acces utilisateurs"),
+        h("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 12 } }, "Qui peut utiliser cette app ?"),
+        [
+          { email: "sophie@wallislabel.nc", role: "Comptable", primary: true },
+          { email: "tom@wallislabel.nc", role: "Admin (lecture seule)", primary: false },
+          { email: "comptable@cabinet-dupond.nc", role: "Cabinet (lecture historique)", primary: false }
+        ].map(function(u, i) {
+          return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+            h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: u.primary ? "linear-gradient(135deg, #6366f1, #8b5cf6)" : "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 800 } },
+              u.email.substring(0, 1).toUpperCase()
+            ),
+            h("div", { style: { flex: 1, minWidth: 0 } },
+              h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.email),
+              h("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 2 } }, u.role)
+            ),
+            h("button", { style: { background: "transparent", border: "none", color: "#71717a", cursor: "pointer", padding: 4 } }, h(Icon, { name: "more-vertical", size: 14, color: "#71717a" }))
+          );
+        }),
+        h("div", { style: { marginTop: 14, display: "flex", justifyContent: "flex-end" } },
+          h(Button, { variant: "secondary" }, h(Icon, { name: "user-plus", size: 12, color: "#cbd5e1" }), "Inviter utilisateur")
+        )
+      )
+    )
+  );
+}
+
+// ─── Sidebar ───────────────────────────────────────────────────────────
+function Sidebar({ currentPage, onNav, factures }) {
+  const inboxCount = factures.filter(function(f) { return f.statut === "nouvelle" || f.statut === "a_completer"; }).length;
+  const validCount = factures.filter(function(f) { return f.statut === "validee"; }).length;
+  const items = [
+    { key: "accueil", label: "Tableau de bord", icon: "home" },
+    { key: "inbox", label: "Inbox factures", icon: "inbox", badge: inboxCount > 0 ? inboxCount : null, badgeColor: "#fde68a" },
+    { key: "validees", label: "A transmettre", icon: "check-circle", badge: validCount > 0 ? validCount : null, badgeColor: "#86efac" },
+    { key: "transmissions", label: "Transmissions", icon: "send" },
+    { key: "parametres", label: "Parametres", icon: "settings" }
+  ];
+
+  return h("div", { style: {
+    width: 244,
+    background: "rgba(30, 33, 50, 0.65)",
+    backdropFilter: "blur(20px) saturate(180%)",
+    borderRight: "1px solid rgba(255,255,255,0.06)",
+    color: "#fafafa",
+    minHeight: "100dvh",
+    display: "flex",
+    flexDirection: "column",
+    flexShrink: 0
+  } },
+    h("div", { style: { padding: "20px 16px" } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+        h("div", { style: { width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, #22c55e, #16a34a)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 16, boxShadow: "0 4px 14px rgba(34,197,94,0.35)" } },
+          h(Icon, { name: "file-text", size: 18, color: "#fff" })
+        ),
+        h("div", null,
+          h("div", { style: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" } }, "Compta"),
+          h("div", { style: { fontSize: 11.5, color: "#71717a", marginTop: 1 } }, "Wallis-Label SARL")
+        )
+      )
+    ),
+    h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
+      items.map(function(item) {
+        const active = currentPage === item.key;
+        return h("button", { key: item.key, onClick: function() { onNav(item.key); },
+          style: { display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "10px 14px", border: "none", borderRadius: 9, marginBottom: 3, cursor: "pointer", fontSize: 13.5, fontWeight: active ? 700 : 500, background: active ? "linear-gradient(135deg, rgba(129,140,248,0.18), rgba(192,132,252,0.08))" : "transparent", color: active ? "#e0e7ff" : "#cbd5e1", boxShadow: active ? "inset 0 0 0 1px rgba(129,140,248,0.30)" : "none", textAlign: "left", fontFamily: "inherit" },
+          onMouseEnter: function(e) { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; },
+          onMouseLeave: function(e) { if (!active) e.currentTarget.style.background = "transparent"; }
+        },
+          h(Icon, { name: item.icon, size: 16, color: active ? "#a5b4fc" : "#94a3b8" }),
+          h("span", { style: { flex: 1 } }, item.label),
+          item.badge ? h("span", { style: { background: "linear-gradient(135deg, " + item.badgeColor + ", " + item.badgeColor + ")", color: "#1a1530", fontSize: 10.5, fontWeight: 800, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center" } }, item.badge) : null
+        );
+      })
+    ),
+    h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 } },
+        h("div", { style: { width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 800 } }, "S"),
+        h("div", { style: { flex: 1, minWidth: 0 } },
+          h("div", { style: { fontSize: 12, color: "#fafafa", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, "Sophie"),
+          h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 1 } }, "Comptable")
+        )
+      ),
+      h("button", { style: { width: "100%", padding: "7px 12px", background: "rgba(255,255,255,0.04)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit" } },
+        h(Icon, { name: "log-out", size: 12, color: "#cbd5e1" }), "Deconnexion")
+    )
+  );
+}
+
+// ─── App principale ────────────────────────────────────────────────────
+function Toast({ message, type }) {
+  if (!message) return null;
+  const bg = type === "success" ? "linear-gradient(135deg, #22c55e, #16a34a)"
+        : type === "info" ? "linear-gradient(135deg, #6366f1, #818cf8)"
+        : "linear-gradient(135deg, #f43f5e, #e11d48)";
+  return h("div", { style: { position: "fixed", bottom: 24, right: 24, padding: "12px 18px", background: bg, color: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, boxShadow: "0 12px 30px rgba(0,0,0,0.4)", zIndex: 200, display: "flex", alignItems: "center", gap: 8 }, className: "anim-fade-in" },
+    h(Icon, { name: type === "success" ? "check-circle" : "info", size: 15, color: "#fff" }),
+    message
+  );
+}
+
+function App() {
+  const _pageHook = useState("accueil"); const page = _pageHook[0]; const setPage = _pageHook[1];
+  const _facturesHook = useState(FACTURES_INIT); const factures = _facturesHook[0]; const setFactures = _facturesHook[1];
+  const _transmHook = useState(TRANSMISSIONS_INIT); const transmissions = _transmHook[0]; const setTransmissions = _transmHook[1];
+  const _toastHook = useState({ message: "", type: "success" }); const toast = _toastHook[0]; const setToast = _toastHook[1];
+
+  function showToast(message, type) {
+    setToast({ message: message, type: type || "success" });
+    setTimeout(function() { setToast({ message: "", type: type || "success" }); }, 3500);
+  }
+
+  function updateFacture(id, updates) {
+    setFactures(factures.map(function(f) { return f.id === id ? Object.assign({}, f, updates) : f; }));
+  }
+
+  function transmettre(ids) {
+    const concernees = factures.filter(function(f) { return ids.indexOf(f.id) >= 0; });
+    const total = concernees.reduce(function(s, f) { return s + f.ht; }, 0);
+    const newTransm = {
+      id: transmissions.length + 1,
+      dateEnvoi: new Date(2026, 5, 15).toISOString().substring(0, 10),
+      lot: "T2026-06",
+      nbFactures: concernees.length,
+      totalHT: total,
+      destinataire: "comptable@cabinet-dupond.nc",
+      statut: "envoyee",
+      fichierZip: "transmission_2026-06.zip"
+    };
+    setTransmissions([newTransm].concat(transmissions));
+    setFactures(factures.map(function(f) { return ids.indexOf(f.id) >= 0 ? Object.assign({}, f, { statut: "transmise" }) : f; }));
+  }
+
+  return h("div", { style: { display: "flex", height: "100vh", paddingTop: 32 } },
+    h(Sidebar, { currentPage: page, onNav: setPage, factures: factures }),
+    h("div", { style: { flex: 1, overflowY: "auto", padding: "28px 32px" } },
+      page === "accueil" ? h(EcranAccueil, { factures: factures, transmissions: transmissions, onNav: setPage }) :
+      page === "inbox" ? h(EcranInbox, { factures: factures, onChange: updateFacture, showToast: showToast }) :
+      page === "validees" ? h(EcranValidees, { factures: factures, onTransmettre: transmettre, showToast: showToast }) :
+      page === "transmissions" ? h(EcranTransmissions, { transmissions: transmissions }) :
+      page === "parametres" ? h(EcranParametres, null) :
+      null
+    ),
+    h(Toast, { message: toast.message, type: toast.type })
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo Tresorerie Previsionnelle - Wallis-Label</title>
+<link rel="stylesheet" href="https://unpkg.com/lucide-static@latest/font/lucide.css">
+<style>
+  :root {
+    --bg-1: #0f1120;
+    --bg-2: #1a1d33;
+    --card: rgba(36, 40, 60, 0.65);
+    --border: rgba(255,255,255,0.08);
+    --text: #fafafa;
+    --muted: #a1a1aa;
+    --violet: #818cf8;
+    --violet-strong: #6366f1;
+    --green: #22c55e;
+    --amber: #fbbf24;
+    --red: #f43f5e;
+    --blue: #60a5fa;
+    --cyan: #06b6d4;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    background: linear-gradient(135deg, var(--bg-1), var(--bg-2));
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0; padding: 24px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 22px; font-weight: 800; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h1 i { color: var(--cyan); margin-right: 8px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .demo-banner {
+    background: linear-gradient(135deg, rgba(251,191,36,0.15), rgba(251,191,36,0.05));
+    border: 1px solid rgba(251,191,36,0.35);
+    border-radius: 12px; padding: 10px 14px; margin-bottom: 20px;
+    font-size: 12px; color: #fde68a; display: flex; gap: 8px; align-items: start;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; margin-bottom: 16px;
+    backdrop-filter: blur(20px);
+  }
+  .card-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
+  .card-title i { color: var(--violet); font-size: 16px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .kpi-label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; margin-bottom: 4px; }
+  .kpi-value { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; font-family: 'JetBrains Mono', monospace; }
+  .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .kpi.pos { border-color: rgba(34,197,94,0.35); }
+  .kpi.pos .kpi-value { color: #86efac; }
+  .kpi.neg { border-color: rgba(244,63,94,0.35); }
+  .kpi.neg .kpi-value { color: #fda4af; }
+  .kpi.warn { border-color: rgba(251,191,36,0.35); }
+  .kpi.warn .kpi-value { color: #fde68a; }
+  .kpi.info { border-color: rgba(96,165,250,0.35); }
+  .kpi.info .kpi-value { color: #93c5fd; }
+
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chip { padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; transition: all 0.15s; }
+  .chip.on { background: rgba(129,140,248,0.20); color: #a5b4fc; border-color: rgba(129,140,248,0.45); }
+  .chip.off { background: rgba(255,255,255,0.04); color: var(--muted); border-color: var(--border); }
+
+  .chart-wrap { position: relative; background: rgba(0,0,0,0.20); border-radius: 10px; padding: 12px; overflow-x: auto; }
+  svg.chart { display: block; width: 100%; min-width: 800px; height: 380px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; margin-top: 10px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+  .legend-dot.line { height: 3px; border-radius: 2px; }
+
+  .tooltip {
+    position: absolute; pointer-events: none;
+    background: rgba(15,17,32,0.98); border: 1px solid rgba(129,140,248,0.40);
+    border-radius: 8px; padding: 10px 12px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    max-width: 260px; z-index: 10; opacity: 0; transition: opacity 0.1s;
+  }
+  .tooltip.on { opacity: 1; }
+  .tooltip strong { color: #a5b4fc; }
+  .tooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; }
+  .tooltip .tt-row .k { color: var(--muted); }
+  .tooltip .tt-row .v { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+  .tooltip .tt-row .v.pos { color: #86efac; }
+  .tooltip .tt-row .v.neg { color: #fda4af; }
+  .tooltip hr { border: none; border-top: 1px dashed rgba(255,255,255,0.10); margin: 6px 0; }
+
+  .alerts { display: flex; flex-direction: column; gap: 8px; }
+  .alert { padding: 10px 12px; border-radius: 10px; font-size: 12px; display: flex; align-items: center; gap: 10px; }
+  .alert.danger { background: rgba(244,63,94,0.10); border: 1px solid rgba(244,63,94,0.30); color: #fecaca; }
+  .alert.warn { background: rgba(251,191,36,0.10); border: 1px solid rgba(251,191,36,0.30); color: #fde68a; }
+  .alert.info { background: rgba(96,165,250,0.10); border: 1px solid rgba(96,165,250,0.30); color: #93c5fd; }
+
+  .config-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: rgba(255,255,255,0.03); border-radius: 8px; margin-bottom: 8px; font-size: 12px; }
+  .config-row label { color: var(--muted); font-weight: 700; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.4px; }
+  .config-row input[type=number] { padding: 6px 10px; background: rgba(0,0,0,0.30); border: 1px solid rgba(255,255,255,0.10); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 13px; width: 130px; }
+</style>
+</head>
+<body>
+
+<h1><i class="i-line-chart" data-l="line-chart">📈</i>Trésorerie prévisionnelle — 52 semaines glissantes</h1>
+<div class="sub">Basée sur planning chantiers + planning machines + emprunts + charges fixes + salaires + factures fournisseurs (échéance J+30). Solde initial lu depuis le grand livre APP Compta.</div>
+
+<div class="demo-banner">
+  <span>💡</span>
+  <span>Démo interactive. Bouge les filtres, joue avec le solde initial, hover la courbe pour le détail semaine par semaine. Rien n'est branché à Supabase — tout est simulé.</span>
+</div>
+
+<!-- KPIs -->
+<div class="kpi-row">
+  <div class="kpi info">
+    <div class="kpi-label">Solde initial</div>
+    <div class="kpi-value" id="k-solde-init">12.4 MF</div>
+    <div class="kpi-sub">Grand livre compta S+0</div>
+  </div>
+  <div class="kpi pos">
+    <div class="kpi-value" id="k-encaiss">183 MF</div>
+    <div class="kpi-label">Encaissements 12 mois</div>
+    <div class="kpi-sub" id="k-encaiss-sub">Dont 143 MF CA chantiers</div>
+  </div>
+  <div class="kpi neg">
+    <div class="kpi-value" id="k-decaiss">-166 MF</div>
+    <div class="kpi-label">Décaissements 12 mois</div>
+    <div class="kpi-sub" id="k-decaiss-sub">Dont 78 MF salaires + charges</div>
+  </div>
+  <div class="kpi pos" id="k-solde-fin-card">
+    <div class="kpi-label">Solde fin de période</div>
+    <div class="kpi-value" id="k-solde-fin">29.4 MF</div>
+    <div class="kpi-sub" id="k-solde-fin-sub">Delta +17 MF</div>
+  </div>
+  <div class="kpi warn">
+    <div class="kpi-label">Point le plus bas</div>
+    <div class="kpi-value" id="k-min">-2.1 MF</div>
+    <div class="kpi-sub" id="k-min-sub">Sem 18 · 2026-11</div>
+  </div>
+</div>
+
+<!-- Config -->
+<div class="card">
+  <div class="card-title">⚙️ Paramètres</div>
+  <div class="config-row">
+    <label>Solde initial (XPF) :</label>
+    <input type="number" id="cfg-solde" value="12400000" step="100000">
+    <label style="margin-left:20px">CA activités récurrent / mois :</label>
+    <input type="number" id="cfg-ca-rec" value="800000" step="100000">
+  </div>
+  <div class="filter-bar" id="filter-bar"></div>
+</div>
+
+<!-- Courbe principale -->
+<div class="card">
+  <div class="card-title">📊 Évolution trésorerie</div>
+  <div class="chart-wrap" id="chart-wrap">
+    <svg class="chart" id="chart" viewBox="0 0 1200 380"></svg>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot line" style="background:#22c55e"></div>Encaissements cumulés</div>
+    <div class="legend-item"><div class="legend-dot line" style="background:#f43f5e"></div>Décaissements cumulés</div>
+    <div class="legend-item"><div class="legend-dot line" style="background:#818cf8"></div>Solde net cumulé</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(244,63,94,0.20);border:1px solid rgba(244,63,94,0.40)"></div>Zone de trésorerie négative</div>
+  </div>
+</div>
+
+<!-- Alertes -->
+<div class="card">
+  <div class="card-title">⚠️ Alertes</div>
+  <div class="alerts" id="alerts"></div>
+</div>
+
+<!-- Breakdown mensuel -->
+<div class="card">
+  <div class="card-title">📋 Détail mensuel (12 mois)</div>
+  <div style="overflow-x:auto">
+    <table id="breakdown" style="width:100%;border-collapse:collapse;font-size:12px;min-width:900px">
+      <thead>
+        <tr style="background:rgba(0,0,0,0.30)">
+          <th style="padding:8px 10px;text-align:left;color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px">Mois</th>
+          <th style="padding:8px 10px;text-align:right;color:#86efac">CA chantiers</th>
+          <th style="padding:8px 10px;text-align:right;color:#86efac">CA activités</th>
+          <th style="padding:8px 10px;text-align:right;color:#86efac">Créances</th>
+          <th style="padding:8px 10px;text-align:right;color:#fda4af">Salaires+charges</th>
+          <th style="padding:8px 10px;text-align:right;color:#fda4af">Emprunts</th>
+          <th style="padding:8px 10px;text-align:right;color:#fda4af">Charges fixes</th>
+          <th style="padding:8px 10px;text-align:right;color:#fda4af">Fournisseurs</th>
+          <th style="padding:8px 10px;text-align:right;color:#a5b4fc">Solde fin</th>
+        </tr>
+      </thead>
+      <tbody id="breakdown-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ═══ Données fictives (52 semaines) ═══
+const START_DATE = new Date(2026, 6, 24); // aujourd'hui = 24 juillet 2026
+const WEEKS = 52;
+
+// Sources d'encaissement / décaissement configurables
+const SOURCES = [
+  { key: 'ca_chantiers', label: 'CA chantiers', kind: 'in', color: '#22c55e', on: true },
+  { key: 'ca_activites', label: 'CA activités récurrent', kind: 'in', color: '#84cc16', on: true },
+  { key: 'creances', label: 'Créances client', kind: 'in', color: '#10b981', on: true },
+  { key: 'salaires', label: 'Salaires + charges', kind: 'out', color: '#f43f5e', on: true },
+  { key: 'emprunts', label: 'Emprunts', kind: 'out', color: '#e11d48', on: true },
+  { key: 'charges_fixes', label: 'Charges fixes', kind: 'out', color: '#f97316', on: true },
+  { key: 'fournisseurs', label: 'Factures fournisseurs', kind: 'out', color: '#fb7185', on: true },
+];
+
+// Génère les flux hebdo fictifs par source
+function genFluxHebdo(soldeInit, caRecurrentMoisXPF) {
+  const flux = []; // [{week, date, ca_chantiers, ca_activites, ...}]
+  const caRecurrentSem = caRecurrentMoisXPF / 4.33;
+  for (let w = 0; w < WEEKS; w++) {
+    const date = new Date(START_DATE);
+    date.setDate(date.getDate() + w * 7);
+    // CA chantiers : gros pics quand fin de chantier + factures mensuelles
+    let caChantiers = 0;
+    if (w % 4 === 3) caChantiers = 3500000 + Math.sin(w) * 800000; // paiement fin de mois
+    if (w === 12) caChantiers += 8000000; // gros chantier Tiébaghi
+    if (w === 28) caChantiers += 6500000; // Kopeto
+    if (w === 45) caChantiers += 4200000; // Poum
+    if (w > 40) caChantiers *= 0.75; // pipeline plus faible
+
+    // CA activités récurrent
+    const caActivites = caRecurrentSem + (Math.random() - 0.5) * 100000;
+
+    // Créances client (rentrées ponctuelles factures anciennes)
+    let creances = 0;
+    if (w === 2) creances = 2100000;
+    if (w === 5) creances = 850000;
+    if (w === 11) creances = 1500000;
+
+    // Salaires : mensuel en fin de mois
+    const salaires = w % 4 === 3 ? 4800000 : 0;
+
+    // Emprunts : mensuel en début de mois
+    const emprunts = w % 4 === 0 ? 1250000 : 0;
+
+    // Charges fixes : loyer, électricité, expert compta = mensuel
+    const chargesFixes = w % 4 === 1 ? 950000 : 0;
+
+    // Factures fournisseurs : réparties selon mois (mazout, pièces...)
+    let fournisseurs = 0;
+    if (w % 2 === 0) fournisseurs = 1200000 + Math.sin(w * 1.3) * 400000;
+    if (w === 8) fournisseurs += 2500000; // grosse commande
+    if (w === 22) fournisseurs += 1800000;
+    fournisseurs = Math.max(0, fournisseurs);
+
+    flux.push({
+      w: w, date: date,
+      ca_chantiers: caChantiers,
+      ca_activites: caActivites,
+      creances: creances,
+      salaires: salaires,
+      emprunts: emprunts,
+      charges_fixes: chargesFixes,
+      fournisseurs: fournisseurs
+    });
+  }
+  return flux;
+}
+
+let state = {
+  soldeInit: 12400000,
+  caRecurrent: 800000,
+  filters: SOURCES.map(s => s.on),
+  flux: []
+};
+
+function fmtXPF(v) {
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1000000) return sign + (abs / 1000000).toFixed(2) + ' MF';
+  if (abs >= 1000) return sign + Math.round(abs / 1000) + ' k';
+  return sign + Math.round(abs);
+}
+function fmtDateSem(d) {
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+}
+function fmtMonth(d) {
+  return d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+}
+
+function computeCurves() {
+  const flux = state.flux;
+  const encaissCum = [];
+  const decaissCum = [];
+  const soldeCum = [];
+  let ec = 0, dc = 0, sd = state.soldeInit;
+  const active = {};
+  SOURCES.forEach((s, i) => active[s.key] = state.filters[i]);
+  flux.forEach(f => {
+    let semIn = 0, semOut = 0;
+    SOURCES.forEach(s => {
+      if (!active[s.key]) return;
+      const v = f[s.key] || 0;
+      if (s.kind === 'in') semIn += v;
+      else semOut += v;
+    });
+    ec += semIn;
+    dc += semOut;
+    sd += semIn - semOut;
+    encaissCum.push({ w: f.w, date: f.date, in: semIn, out: semOut, delta: semIn - semOut, soldeApres: sd, encaiss: ec, decaiss: dc });
+    soldeCum.push(sd);
+  });
+  return { encaissCum, decaissCum, soldeCum, points: encaissCum };
+}
+
+function renderKpis() {
+  const { points, soldeCum } = computeCurves();
+  const totalIn = points[points.length - 1].encaiss;
+  const totalOut = points[points.length - 1].decaiss;
+  const soldeFin = soldeCum[soldeCum.length - 1];
+  const minSolde = Math.min(...soldeCum);
+  const minIdx = soldeCum.indexOf(minSolde);
+
+  document.getElementById('k-solde-init').textContent = fmtXPF(state.soldeInit);
+  document.getElementById('k-encaiss').textContent = fmtXPF(totalIn);
+  document.getElementById('k-decaiss').textContent = fmtXPF(-totalOut);
+  document.getElementById('k-solde-fin').textContent = fmtXPF(soldeFin);
+  document.getElementById('k-solde-fin-sub').textContent = 'Delta ' + (soldeFin - state.soldeInit >= 0 ? '+' : '') + fmtXPF(soldeFin - state.soldeInit);
+  document.getElementById('k-solde-fin-card').className = 'kpi ' + (soldeFin >= state.soldeInit ? 'pos' : 'neg');
+  document.getElementById('k-min').textContent = fmtXPF(minSolde);
+  document.getElementById('k-min-sub').textContent = 'Semaine ' + (minIdx + 1) + ' · ' + fmtDateSem(points[minIdx].date);
+
+  // Detail CA chantiers (pour sub-info)
+  const caCh = points.reduce((s, p, i) => s + (state.flux[i].ca_chantiers || 0), 0);
+  const sal = points.reduce((s, p, i) => s + (state.flux[i].salaires || 0), 0);
+  document.getElementById('k-encaiss-sub').textContent = 'Dont ' + fmtXPF(caCh) + ' CA chantiers';
+  document.getElementById('k-decaiss-sub').textContent = 'Dont ' + fmtXPF(sal) + ' salaires';
+}
+
+function renderChart() {
+  const svg = document.getElementById('chart');
+  const { points, soldeCum } = computeCurves();
+  const W = 1200, H = 380, pL = 60, pR = 20, pT = 20, pB = 40;
+  const iw = W - pL - pR, ih = H - pT - pB;
+  // Bornes Y : englobe solde et cumuls
+  const allVals = [];
+  points.forEach(p => { allVals.push(p.encaiss); allVals.push(-p.decaiss); });
+  soldeCum.forEach(s => allVals.push(s));
+  const maxV = Math.max.apply(null, allVals);
+  const minV = Math.min.apply(null, allVals);
+  const yTop = Math.ceil(maxV / 10000000) * 10000000;
+  const yBot = Math.floor(minV / 10000000) * 10000000;
+  const yRange = yTop - yBot || 1;
+  function xToPx(i) { return pL + (i / (points.length - 1)) * iw; }
+  function yToPx(v) { return pT + ((yTop - v) / yRange) * ih; }
+  let html = '';
+  // Grid
+  const nTicks = 5;
+  for (let k = 0; k <= nTicks; k++) {
+    const v = yTop - (yTop - yBot) * (k / nTicks);
+    const y = yToPx(v);
+    html += `<line x1="${pL}" y1="${y}" x2="${W-pR}" y2="${y}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>`;
+    html += `<text x="${pL-6}" y="${y+3}" fill="#71717a" font-size="10" text-anchor="end">${fmtXPF(v)}</text>`;
+  }
+  // Zone rouge trésorerie négative
+  const yZero = yToPx(0);
+  html += `<line x1="${pL}" y1="${yZero}" x2="${W-pR}" y2="${yZero}" stroke="rgba(244,63,94,0.40)" stroke-width="1" stroke-dasharray="4 4"/>`;
+  // Zone solde négatif : surligner segments
+  let inNeg = false, segStart = null;
+  soldeCum.forEach((s, i) => {
+    const neg = s < 0;
+    if (neg && !inNeg) { inNeg = true; segStart = i; }
+    else if (!neg && inNeg) {
+      const x1 = xToPx(segStart), x2 = xToPx(i);
+      html += `<rect x="${x1}" y="${pT}" width="${x2-x1}" height="${ih}" fill="rgba(244,63,94,0.10)" stroke="rgba(244,63,94,0.30)"/>`;
+      inNeg = false; segStart = null;
+    }
+  });
+  if (inNeg) {
+    const x1 = xToPx(segStart), x2 = xToPx(points.length - 1);
+    html += `<rect x="${x1}" y="${pT}" width="${x2-x1}" height="${ih}" fill="rgba(244,63,94,0.10)" stroke="rgba(244,63,94,0.30)"/>`;
+  }
+  // Encaissements cumulés (vert)
+  let pE = 'M';
+  points.forEach((p, i) => { pE += (i > 0 ? 'L' : '') + xToPx(i) + ',' + yToPx(p.encaiss); });
+  html += `<path d="${pE}" stroke="#22c55e" stroke-width="2.5" fill="none"/>`;
+  // Décaissements cumulés (rouge, plotté en négatif)
+  let pD = 'M';
+  points.forEach((p, i) => { pD += (i > 0 ? 'L' : '') + xToPx(i) + ',' + yToPx(-p.decaiss); });
+  html += `<path d="${pD}" stroke="#f43f5e" stroke-width="2.5" fill="none"/>`;
+  // Solde cumulé (violet, plus épais)
+  let pS = 'M';
+  soldeCum.forEach((s, i) => { pS += (i > 0 ? 'L' : '') + xToPx(i) + ',' + yToPx(s); });
+  html += `<path d="${pS}" stroke="#818cf8" stroke-width="3.5" fill="none"/>`;
+  // Points hover invisibles
+  points.forEach((p, i) => {
+    html += `<circle cx="${xToPx(i)}" cy="${yToPx(soldeCum[i])}" r="14" fill="transparent" class="pt" data-i="${i}"/>`;
+  });
+  // Labels axe X (tous les 4 semaines)
+  points.forEach((p, i) => {
+    if (i % 4 === 0 || i === points.length - 1) {
+      html += `<text x="${xToPx(i)}" y="${H-pB+18}" fill="#71717a" font-size="10" text-anchor="middle">${fmtDateSem(p.date)}</text>`;
+    }
+  });
+  svg.innerHTML = html;
+  // Tooltip handlers
+  svg.querySelectorAll('.pt').forEach(el => {
+    el.addEventListener('mouseenter', ev => showTooltip(parseInt(ev.target.dataset.i), ev));
+    el.addEventListener('mouseleave', hideTooltip);
+    el.addEventListener('mousemove', ev => positionTooltip(ev));
+  });
+}
+
+function showTooltip(i, ev) {
+  const { points, soldeCum } = computeCurves();
+  const p = points[i];
+  const f = state.flux[i];
+  const tt = document.getElementById('tooltip');
+  let inRows = '', outRows = '';
+  SOURCES.forEach((s, si) => {
+    if (!state.filters[si]) return;
+    const v = f[s.key] || 0;
+    if (v <= 0) return;
+    const html = `<div class="tt-row"><span class="k">${s.label}</span><span class="v ${s.kind === 'in' ? 'pos' : 'neg'}">${s.kind === 'in' ? '+' : '-'}${fmtXPF(v)}</span></div>`;
+    if (s.kind === 'in') inRows += html;
+    else outRows += html;
+  });
+  tt.innerHTML =
+    '<strong>Semaine ' + (i + 1) + ' · ' + fmtDateSem(p.date) + '</strong>' +
+    inRows +
+    (outRows ? '<hr>' + outRows : '') +
+    '<hr>' +
+    '<div class="tt-row"><span class="k">Net semaine</span><span class="v ' + (p.delta >= 0 ? 'pos' : 'neg') + '">' + (p.delta >= 0 ? '+' : '') + fmtXPF(p.delta) + '</span></div>' +
+    '<div class="tt-row"><span class="k">Solde après</span><span class="v ' + (soldeCum[i] >= 0 ? 'pos' : 'neg') + '">' + fmtXPF(soldeCum[i]) + '</span></div>';
+  tt.classList.add('on');
+  positionTooltip(ev);
+}
+function positionTooltip(ev) {
+  const tt = document.getElementById('tooltip');
+  const wrap = document.getElementById('chart-wrap').getBoundingClientRect();
+  const x = ev.clientX - wrap.left + 12;
+  const y = ev.clientY - wrap.top + 12;
+  tt.style.left = Math.min(x, wrap.width - 260) + 'px';
+  tt.style.top = y + 'px';
+}
+function hideTooltip() { document.getElementById('tooltip').classList.remove('on'); }
+
+function renderFilters() {
+  const bar = document.getElementById('filter-bar');
+  bar.innerHTML = '';
+  SOURCES.forEach((s, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'chip ' + (state.filters[i] ? 'on' : 'off');
+    chip.textContent = (s.kind === 'in' ? '+ ' : '− ') + s.label;
+    chip.onclick = () => { state.filters[i] = !state.filters[i]; refresh(); };
+    bar.appendChild(chip);
+  });
+}
+
+function renderAlerts() {
+  const { points, soldeCum } = computeCurves();
+  const alerts = [];
+  // Solde négatif ?
+  let firstNeg = -1;
+  soldeCum.forEach((s, i) => { if (s < 0 && firstNeg < 0) firstNeg = i; });
+  if (firstNeg >= 0) {
+    alerts.push({ level: 'danger', msg: '🚨 Trésorerie négative dès la semaine ' + (firstNeg + 1) + ' (' + fmtDateSem(points[firstNeg].date) + '). Envisager relance clients ou avance de crédit.' });
+  }
+  // Semaine avec plus gros décaissement net
+  const worstIdx = points.map((p, i) => ({ i: i, d: p.delta })).sort((a, b) => a.d - b.d)[0];
+  if (worstIdx.d < -5000000) {
+    alerts.push({ level: 'warn', msg: '⚠️ Plus gros décaissement net semaine ' + (worstIdx.i + 1) + ' : ' + fmtXPF(worstIdx.d) + '. Anticiper trésorerie.' });
+  }
+  // Croissance annuelle
+  const soldeFin = soldeCum[soldeCum.length - 1];
+  const delta = soldeFin - state.soldeInit;
+  alerts.push({ level: delta >= 0 ? 'info' : 'warn', msg: (delta >= 0 ? '✓' : 'ℹ️') + ' Trésorerie ' + (delta >= 0 ? 'projetée en hausse' : 'projetée en baisse') + ' de ' + fmtXPF(delta) + ' sur 12 mois.' });
+  const el = document.getElementById('alerts');
+  el.innerHTML = alerts.map(a => `<div class="alert ${a.level}">${a.msg}</div>`).join('');
+}
+
+function renderBreakdown() {
+  const { points } = computeCurves();
+  // Groupe par mois calendaire
+  const byMonth = {};
+  points.forEach((p, i) => {
+    const d = p.date;
+    const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    if (!byMonth[key]) byMonth[key] = { label: fmtMonth(d), ca_chantiers: 0, ca_activites: 0, creances: 0, salaires: 0, emprunts: 0, charges_fixes: 0, fournisseurs: 0, solde: null };
+    const f = state.flux[i];
+    byMonth[key].ca_chantiers += f.ca_chantiers;
+    byMonth[key].ca_activites += f.ca_activites;
+    byMonth[key].creances += f.creances;
+    byMonth[key].salaires += f.salaires;
+    byMonth[key].emprunts += f.emprunts;
+    byMonth[key].charges_fixes += f.charges_fixes;
+    byMonth[key].fournisseurs += f.fournisseurs;
+    byMonth[key].solde = p.soldeApres;
+  });
+  const rows = Object.keys(byMonth).sort().slice(0, 12).map(k => {
+    const m = byMonth[k];
+    return '<tr style="border-top:1px solid rgba(255,255,255,0.05)">' +
+      '<td style="padding:8px 10px;font-weight:700">' + m.label + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#86efac">' + fmtXPF(m.ca_chantiers) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#86efac">' + fmtXPF(m.ca_activites) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#86efac">' + fmtXPF(m.creances) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#fda4af">-' + fmtXPF(m.salaires) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#fda4af">-' + fmtXPF(m.emprunts) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#fda4af">-' + fmtXPF(m.charges_fixes) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:#fda4af">-' + fmtXPF(m.fournisseurs) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;font-weight:800;color:' + (m.solde >= 0 ? '#86efac' : '#fda4af') + '">' + fmtXPF(m.solde) + '</td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('breakdown-body').innerHTML = rows;
+}
+
+function refresh() {
+  state.flux = genFluxHebdo(state.soldeInit, state.caRecurrent);
+  renderFilters();
+  renderKpis();
+  renderChart();
+  renderAlerts();
+  renderBreakdown();
+}
+
+// Bindings
+document.getElementById('cfg-solde').addEventListener('input', ev => { state.soldeInit = parseInt(ev.target.value) || 0; refresh(); });
+document.getElementById('cfg-ca-rec').addEventListener('input', ev => { state.caRecurrent = parseInt(ev.target.value) || 0; refresh(); });
+
+refresh();
+</script>
+</body>
+</html>

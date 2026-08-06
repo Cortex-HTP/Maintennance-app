@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo - Carnet de bord machine</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(ellipse at top, #312e81 0%, #0a0c12 60%); color: #fafafa; font-family: 'Inter', system-ui, -apple-system, sans-serif; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; padding: 16px 24px; background: rgba(10, 12, 18, 0.7); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .logo-mark { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #818cf8, #c084fc); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; margin-right: 12px; }
+  .logo-title { font-size: 16.5px; font-weight: 700; }
+  .logo-sub { font-size: 11.5px; color: #a1a1aa; margin-top: 2px; }
+
+  .container { max-width: 1100px; margin: 36px auto; padding: 0 24px; }
+  h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .sub { color: #a1a1aa; margin-bottom: 24px; font-size: 14px; }
+
+  /* ── Selecteur machine ── */
+  .machine-picker { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+  .m-btn { padding: 8px 14px; background: rgba(36, 40, 60, 0.55); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: #cbd5e1; font-family: inherit; }
+  .m-btn:hover { background: rgba(36, 40, 60, 0.8); }
+  .m-btn.active { background: linear-gradient(135deg, #6366f1, #818cf8); color: #fff; border-color: rgba(129,140,248,0.5); box-shadow: 0 4px 14px rgba(99,102,241,0.3); }
+
+  /* ── Sections ── */
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 22px; }
+  .tab { padding: 10px 16px; cursor: pointer; font-size: 13px; font-weight: 600; color: #a1a1aa; border-bottom: 2px solid transparent; transition: all .15s; }
+  .tab:hover { color: #cbd5e1; }
+  .tab.active { color: #fafafa; border-bottom-color: #818cf8; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* ── KPI grid ── */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .kpi { background: rgba(30, 33, 50, 0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 18px; }
+  .kpi-lbl { font-size: 11px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .kpi-val { font-size: 26px; font-weight: 800; margin-top: 4px; }
+  .kpi-sub { font-size: 11.5px; color: #71717a; margin-top: 4px; }
+  .kpi-sub.good { color: #86efac; }
+  .kpi-sub.bad { color: #fda4af; }
+  .kpi-sub.warn { color: #fcd34d; }
+
+  /* ── Section cards ── */
+  .card { background: rgba(30, 33, 50, 0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  .card h3 { margin: 0 0 14px; font-size: 14.5px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .card h3 .ico { width: 26px; height: 26px; border-radius: 7px; background: rgba(129,140,248,0.18); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #c4b5fd; }
+
+  /* ── Graphique d'usure ── */
+  .chart-wrap { background: rgba(20,22,35,0.5); border-radius: 10px; padding: 14px; position: relative; min-height: 260px; }
+  .chart-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 12px; font-size: 11.5px; color: #cbd5e1; }
+  .chart-legend > div { display: flex; align-items: center; gap: 6px; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 50%; }
+  svg.chart { width: 100%; height: 220px; }
+
+  /* ── Tableau pannes ── */
+  table.pannes { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.pannes th { text-align: left; padding: 8px 12px; color: #a1a1aa; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); }
+  table.pannes td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  table.pannes tr:hover td { background: rgba(255,255,255,0.02); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; }
+  .badge.curative { background: rgba(244,63,94,0.15); color: #fda4af; }
+  .badge.preventive { background: rgba(34,197,94,0.15); color: #86efac; }
+
+  /* ── Top conso ── */
+  .conso-bar-row { display: grid; grid-template-columns: 1.5fr 3fr 80px; gap: 12px; align-items: center; padding: 8px 0; font-size: 13px; }
+  .conso-bar-bg { background: rgba(255,255,255,0.05); border-radius: 5px; height: 14px; position: relative; overflow: hidden; }
+  .conso-bar-fg { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #818cf8, #c084fc); border-radius: 5px; }
+
+  /* ── Prediction prochaine panne ── */
+  .pred { background: linear-gradient(135deg, rgba(251,191,36,0.12), rgba(251,191,36,0.04)); border: 1px solid rgba(251,191,36,0.3); border-radius: 12px; padding: 18px; display: flex; gap: 14px; align-items: center; }
+  .pred-icon { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #f59e0b, #d97706); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 6px 20px rgba(245,158,11,0.3); }
+  .pred-icon svg { width: 22px; height: 22px; color: #fff; }
+  .pred-text h4 { margin: 0 0 4px; font-size: 14.5px; font-weight: 700; color: #fafafa; }
+  .pred-text p { margin: 0; font-size: 12.5px; color: #cbd5e1; line-height: 1.5; }
+  .pred-text .strong { color: #fcd34d; font-weight: 700; }
+
+  .footer { color: #71717a; font-size: 12px; margin-top: 36px; text-align: center; padding-bottom: 24px; }
+
+  .row-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .row-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo-mark">W</div>
+  <div>
+    <div class="logo-title">Demo : Carnet de bord machine</div>
+    <div class="logo-sub">MTBF, courbe d'usure, prediction prochaine panne</div>
+  </div>
+</div>
+
+<div class="container">
+  <h1>Equipement &rsaquo; Fiche machine</h1>
+  <div class="sub">Selectionne une machine pour voir son carnet de bord complet (avec donnees factices pour la demo)</div>
+
+  <div class="machine-picker" id="picker">
+    <button class="m-btn active" data-mach="FS1">FS1</button>
+    <button class="m-btn" data-mach="FS2">FS2</button>
+    <button class="m-btn" data-mach="D35">D35 (en panne)</button>
+    <button class="m-btn" data-mach="D36">D36</button>
+    <button class="m-btn" data-mach="D37">D37</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="carnet">Carnet de bord</div>
+    <div class="tab" data-tab="hist">Historique horametre</div>
+    <div class="tab" data-tab="pieces">Pieces liees</div>
+  </div>
+
+  <!-- ─── Carnet de bord ─── -->
+  <div class="panel active" data-panel="carnet">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="pred" id="pred"></div>
+
+    <div style="margin-top: 16px;" class="row-2">
+      <div class="card">
+        <h3><span class="ico">U</span>Courbe d'usure</h3>
+        <div class="chart-legend">
+          <div><span class="leg-dot" style="background:#818cf8"></span>Heures cumulees</div>
+          <div><span class="leg-dot" style="background:#f43f5e"></span>Panne curative</div>
+          <div><span class="leg-dot" style="background:#22c55e"></span>Visite preventive</div>
+          <div><span class="leg-dot" style="background:#fbbf24"></span>Prevision</div>
+        </div>
+        <div class="chart-wrap">
+          <svg class="chart" id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3><span class="ico">P</span>Top consommables sur 12 mois</h3>
+        <div id="conso"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span class="ico">H</span>Historique des pannes & interventions</h3>
+      <table class="pannes" id="pannes">
+        <thead><tr><th>Date</th><th>Horametre</th><th>Type</th><th>Description</th><th>Cout</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- placeholder autres onglets -->
+  <div class="panel" data-panel="hist">
+    <div class="card">
+      <h3>Historique horametre (existant)</h3>
+      <p style="margin: 0; color: #a1a1aa; font-size: 13px;">L'onglet existant est conserve tel quel. Cette demo se concentre sur le nouvel onglet "Carnet de bord".</p>
+    </div>
+  </div>
+  <div class="panel" data-panel="pieces">
+    <div class="card">
+      <h3>Pieces liees (existant)</h3>
+      <p style="margin: 0; color: #a1a1aa; font-size: 13px;">Idem.</p>
+    </div>
+  </div>
+
+  <div class="footer">Wallis-Label SARL &middot; Demo carnet de bord &middot; 2026</div>
+</div>
+
+<script>
+// Donnees factices par machine
+var MACHINES = {
+  FS1: {
+    type: 'Foreuse Carotte', marque: 'Atlas Copco', mise: '2019-03',
+    horam: 12450, baseEntretien: 12000, statut: 'En service',
+    pannes: [
+      { date: '2024-12-15', h: 11200, type: 'curative', desc: 'Casse pompe hydraulique', cout: 350000 },
+      { date: '2025-04-22', h: 11800, type: 'preventive', desc: 'Vidange 250h', cout: 45000 },
+      { date: '2025-08-03', h: 12000, type: 'preventive', desc: 'Vidange 250h', cout: 45000 },
+      { date: '2025-11-10', h: 12150, type: 'curative', desc: 'Joint hydraulique', cout: 28000 },
+      { date: '2026-02-05', h: 12320, type: 'preventive', desc: 'Vidange 500h', cout: 95000 }
+    ],
+    conso: [
+      { name: 'Foret diamant DT-110', qty: 8 },
+      { name: 'Tubes carottiers 3m', qty: 18 },
+      { name: 'Joints hydrauliques 1"', qty: 12 },
+      { name: 'Cartouche filtre huile', qty: 4 },
+      { name: 'Tetes 3.5"', qty: 3 },
+      { name: 'Cables 50m', qty: 2 }
+    ]
+  },
+  FS2: {
+    type: 'Foreuse Carotte', marque: 'Atlas Copco', mise: '2020-08', horam: 9800, baseEntretien: 9500, statut: 'En service',
+    pannes: [
+      { date: '2025-03-02', h: 8800, type: 'preventive', desc: 'Vidange 500h', cout: 95000 },
+      { date: '2025-09-18', h: 9400, type: 'preventive', desc: 'Vidange 250h', cout: 45000 }
+    ],
+    conso: [
+      { name: 'Foret diamant DT-110', qty: 6 },
+      { name: 'Tubes carottiers 3m', qty: 14 },
+      { name: 'Joints hydrauliques 1"', qty: 5 },
+      { name: 'Cartouche filtre huile', qty: 3 }
+    ]
+  },
+  D35: {
+    type: 'Aircore', marque: 'Atlas Copco', mise: '2018-06', horam: 18750, baseEntretien: 18000, statut: 'En panne',
+    pannes: [
+      { date: '2025-01-12', h: 17200, type: 'curative', desc: 'Compresseur HS - changement', cout: 1200000 },
+      { date: '2025-05-08', h: 17800, type: 'preventive', desc: 'Vidange 500h', cout: 95000 },
+      { date: '2025-09-21', h: 18300, type: 'curative', desc: 'Casse tete forage', cout: 180000 },
+      { date: '2025-12-03', h: 18650, type: 'curative', desc: 'Joint compresseur', cout: 95000 },
+      { date: '2026-03-14', h: 18750, type: 'curative', desc: 'Suspendu - reparation en cours', cout: 0 }
+    ],
+    conso: [
+      { name: 'Foret carbure D75', qty: 22 },
+      { name: 'Tetes 3.5"', qty: 12 },
+      { name: 'Compresseur (1)', qty: 1 },
+      { name: 'Cartouche filtre huile', qty: 8 }
+    ]
+  },
+  D36: {
+    type: 'Aircore', marque: 'Atlas Copco', mise: '2020-01', horam: 14200, baseEntretien: 14000, statut: 'En service',
+    pannes: [
+      { date: '2025-06-18', h: 13500, type: 'preventive', desc: 'Vidange 500h', cout: 95000 },
+      { date: '2025-11-25', h: 14000, type: 'preventive', desc: 'Vidange 250h', cout: 45000 }
+    ],
+    conso: [
+      { name: 'Foret carbure D75', qty: 14 },
+      { name: 'Tetes 3.5"', qty: 8 },
+      { name: 'Cartouche filtre huile', qty: 4 }
+    ]
+  },
+  D37: {
+    type: 'Aircore', marque: 'Atlas Copco', mise: '2021-09', horam: 8900, baseEntretien: 8500, statut: 'En service',
+    pannes: [
+      { date: '2025-08-30', h: 8400, type: 'preventive', desc: 'Vidange 500h', cout: 95000 }
+    ],
+    conso: [
+      { name: 'Foret carbure D75', qty: 7 },
+      { name: 'Tetes 3.5"', qty: 4 }
+    ]
+  }
+};
+
+function fmtNum(n) { return n.toLocaleString('fr-FR'); }
+function fmtXPF(n) { return fmtNum(Math.round(n)) + ' XPF'; }
+function fmtDateFr(d) {
+  var p = d.split('-');
+  return p[2] + '/' + p[1] + '/' + p[0];
+}
+
+function monthsBetween(yyyymm, today) {
+  var p = yyyymm.split('-');
+  var d = new Date(parseInt(p[0]), parseInt(p[1]) - 1, 1);
+  var months = (today.getFullYear() - d.getFullYear()) * 12 + (today.getMonth() - d.getMonth());
+  return Math.max(months, 1);
+}
+
+function compute(machineKey) {
+  var m = MACHINES[machineKey];
+  var today = new Date(2026, 5, 9); // pour la demo
+  var moisDepuisMES = monthsBetween(m.mise, today);
+
+  var curatives = m.pannes.filter(function(p) { return p.type === 'curative'; });
+  var heuresEntreCuratives = [];
+  for (var i = 1; i < curatives.length; i++) {
+    heuresEntreCuratives.push(curatives[i].h - curatives[i - 1].h);
+  }
+  var avgInterval = heuresEntreCuratives.length > 0 ? heuresEntreCuratives.reduce(function(a, b) { return a + b; }, 0) / heuresEntreCuratives.length : null;
+
+  // MTBF = Mean Time Between Failures = avgInterval (en heures)
+  var lastCurative = curatives.length > 0 ? curatives[curatives.length - 1] : null;
+  var heuresDepuisDernierePanne = lastCurative ? (m.horam - lastCurative.h) : m.horam;
+
+  var nextPredicted = null;
+  if (avgInterval && lastCurative) {
+    nextPredicted = lastCurative.h + avgInterval;
+  }
+
+  var totalCoutMaintenance = m.pannes.reduce(function(s, p) { return s + (p.cout || 0); }, 0);
+
+  return {
+    moisDepuisMES: moisDepuisMES,
+    avgInterval: avgInterval,
+    lastCurative: lastCurative,
+    heuresDepuisDernierePanne: heuresDepuisDernierePanne,
+    nextPredicted: nextPredicted,
+    totalCoutMaintenance: totalCoutMaintenance,
+    nbCuratives: curatives.length,
+    nbPreventives: m.pannes.filter(function(p) { return p.type === 'preventive'; }).length
+  };
+}
+
+function renderKPIs(machineKey) {
+  var m = MACHINES[machineKey];
+  var s = compute(machineKey);
+  var html = '';
+  html += '<div class="kpi"><div class="kpi-lbl">Horametre actuel</div><div class="kpi-val">' + fmtNum(m.horam) + ' h</div><div class="kpi-sub">Mise en service : ' + m.mise + '</div></div>';
+  html += '<div class="kpi"><div class="kpi-lbl">MTBF</div><div class="kpi-val">' + (s.avgInterval ? fmtNum(Math.round(s.avgInterval)) + ' h' : 'N/A') + '</div><div class="kpi-sub">' + (s.nbCuratives > 1 ? 'Heures moyennes entre 2 pannes curatives' : 'Pas assez de donnees') + '</div></div>';
+  var coutHoraire = m.horam > 0 ? Math.round(s.totalCoutMaintenance / m.horam) : 0;
+  html += '<div class="kpi"><div class="kpi-lbl">Cout maintenance</div><div class="kpi-val">' + fmtXPF(s.totalCoutMaintenance) + '</div><div class="kpi-sub">' + fmtNum(coutHoraire) + ' XPF / heure machine</div></div>';
+  var ratioFiab = s.nbPreventives / Math.max(1, s.nbCuratives + s.nbPreventives);
+  html += '<div class="kpi"><div class="kpi-lbl">Ratio preventif</div><div class="kpi-val">' + Math.round(ratioFiab * 100) + '%</div><div class="kpi-sub ' + (ratioFiab > 0.6 ? 'good' : 'warn') + '">' + s.nbPreventives + ' preventif / ' + s.nbCuratives + ' curatif</div></div>';
+  document.getElementById('kpis').innerHTML = html;
+}
+
+function renderPred(machineKey) {
+  var m = MACHINES[machineKey];
+  var s = compute(machineKey);
+  var div = document.getElementById('pred');
+  if (!s.nextPredicted || !s.avgInterval) {
+    div.innerHTML = '<div class="pred-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v.01M12 8v4"/></svg></div><div class="pred-text"><h4>Donnees insuffisantes</h4><p>Au moins 2 pannes curatives sont necessaires pour predire la prochaine. Continue a tracer les interventions.</p></div>';
+    return;
+  }
+  var heuresRestantes = s.nextPredicted - m.horam;
+  var critique = heuresRestantes <= 50;
+  var html = '<div class="pred-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>';
+  html += '<div class="pred-text">';
+  if (heuresRestantes > 0) {
+    html += '<h4>Prochaine panne probable dans <span class="strong">' + fmtNum(Math.round(heuresRestantes)) + ' h</span> (~ horametre ' + fmtNum(Math.round(s.nextPredicted)) + ')</h4>';
+    html += '<p>Base sur la MTBF observee de ' + fmtNum(Math.round(s.avgInterval)) + 'h entre les ' + s.nbCuratives + ' pannes precedentes. Considere planifier une visite preventive avant.</p>';
+  } else {
+    html += '<h4 style="color:#fda4af">Au-dela de la MTBF moyenne (+' + fmtNum(Math.round(-heuresRestantes)) + ' h)</h4>';
+    html += '<p>Cette machine est en sursis statistique. A surveiller de pres ou planifier un controle preventif maintenant.</p>';
+  }
+  html += '</div>';
+  div.innerHTML = html;
+}
+
+function renderChart(machineKey) {
+  var m = MACHINES[machineKey];
+  var s = compute(machineKey);
+  var svg = document.getElementById('chart');
+  svg.innerHTML = '';
+
+  var maxH = m.horam * 1.15;
+  var minH = 0;
+  // Points "heures cumulees" : on simule une progression lineaire depuis 0 jusqu'a horam actuel
+  // X = mois depuis MES, Y = horam
+  var totalMois = s.moisDepuisMES;
+
+  function xFromMois(mois) { return (mois / totalMois) * 580 + 10; }
+  function yFromH(h) { return 200 - (h / maxH) * 180; }
+
+  // Ligne usure
+  var path = 'M ' + xFromMois(0) + ' ' + yFromH(0);
+  path += ' L ' + xFromMois(totalMois) + ' ' + yFromH(m.horam);
+  svg.insertAdjacentHTML('beforeend', '<path d="' + path + '" stroke="#818cf8" stroke-width="2.5" fill="none" />');
+
+  // Ligne prevision
+  if (s.nextPredicted) {
+    var predMois = totalMois + ((s.nextPredicted - m.horam) / m.horam) * totalMois;
+    var predPath = 'M ' + xFromMois(totalMois) + ' ' + yFromH(m.horam) + ' L ' + xFromMois(Math.min(predMois, totalMois * 1.15)) + ' ' + yFromH(Math.min(s.nextPredicted, maxH));
+    svg.insertAdjacentHTML('beforeend', '<path d="' + predPath + '" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6 4" fill="none" />');
+  }
+
+  // Points pannes
+  m.pannes.forEach(function(p) {
+    var pMois = (monthsBetween(m.mise, new Date(p.date)));
+    var color = p.type === 'curative' ? '#f43f5e' : '#22c55e';
+    svg.insertAdjacentHTML('beforeend', '<circle cx="' + xFromMois(pMois) + '" cy="' + yFromH(p.h) + '" r="5" fill="' + color + '" stroke="#0a0c12" stroke-width="2" />');
+  });
+
+  // Point actuel
+  svg.insertAdjacentHTML('beforeend', '<circle cx="' + xFromMois(totalMois) + '" cy="' + yFromH(m.horam) + '" r="6" fill="#fff" stroke="#818cf8" stroke-width="3" />');
+
+  // Axes
+  svg.insertAdjacentHTML('beforeend', '<line x1="10" y1="200" x2="595" y2="200" stroke="rgba(255,255,255,0.1)" />');
+  svg.insertAdjacentHTML('beforeend', '<line x1="10" y1="10" x2="10" y2="200" stroke="rgba(255,255,255,0.1)" />');
+
+  // Labels Y
+  for (var i = 0; i <= 4; i++) {
+    var hVal = (maxH / 4) * i;
+    var yVal = yFromH(hVal);
+    svg.insertAdjacentHTML('beforeend', '<text x="3" y="' + (yVal + 4) + '" font-size="9" fill="#71717a" text-anchor="start">' + fmtNum(Math.round(hVal / 1000)) + 'k</text>');
+  }
+}
+
+function renderConso(machineKey) {
+  var m = MACHINES[machineKey];
+  var maxQty = Math.max.apply(null, m.conso.map(function(c) { return c.qty; }));
+  var html = '';
+  m.conso.forEach(function(c) {
+    var pct = (c.qty / maxQty) * 100;
+    html += '<div class="conso-bar-row">';
+    html += '<div>' + c.name + '</div>';
+    html += '<div class="conso-bar-bg"><div class="conso-bar-fg" style="width:' + pct + '%"></div></div>';
+    html += '<div style="text-align:right; color:#cbd5e1;">' + c.qty + '</div>';
+    html += '</div>';
+  });
+  document.getElementById('conso').innerHTML = html;
+}
+
+function renderPannes(machineKey) {
+  var m = MACHINES[machineKey];
+  var tbody = document.querySelector('#pannes tbody');
+  tbody.innerHTML = '';
+  m.pannes.slice().sort(function(a, b) { return b.date.localeCompare(a.date); }).forEach(function(p) {
+    var row = document.createElement('tr');
+    row.innerHTML =
+      '<td>' + fmtDateFr(p.date) + '</td>' +
+      '<td>' + fmtNum(p.h) + ' h</td>' +
+      '<td><span class="badge ' + p.type + '">' + (p.type === 'curative' ? 'Curative' : 'Preventive') + '</span></td>' +
+      '<td>' + p.desc + '</td>' +
+      '<td>' + (p.cout ? fmtXPF(p.cout) : '-') + '</td>';
+    tbody.appendChild(row);
+  });
+}
+
+function select(machineKey) {
+  document.querySelectorAll('.m-btn').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-mach') === machineKey); });
+  renderKPIs(machineKey);
+  renderPred(machineKey);
+  renderChart(machineKey);
+  renderConso(machineKey);
+  renderPannes(machineKey);
+}
+
+document.querySelectorAll('.m-btn').forEach(function(b) {
+  b.addEventListener('click', function() { select(b.getAttribute('data-mach')); });
+});
+document.querySelectorAll('.tab').forEach(function(t) {
+  t.addEventListener('click', function() {
+    document.querySelectorAll('.tab').forEach(function(x) { x.classList.toggle('active', x === t); });
+    document.querySelectorAll('.panel').forEach(function(p) { p.classList.toggle('active', p.getAttribute('data-panel') === t.getAttribute('data-tab')); });
+  });
+});
+
+select('FS1');
+</script>
+</body>
+</html>

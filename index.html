@@ -15159,6 +15159,10 @@
         });
         return match ? match.id : null;
       }
+      // Jours couverts par un rapport de forage (meme si une affectation explicite
+      // existe deja) : sert a la gomme, qui doit poser un "masque" persistant au
+      // lieu d'une simple suppression, sinon la case se repeint depuis le rapport.
+      var rapportCoverPe = {};
       (ctx.dbRapportsForage || []).forEach(function(r) {
         if (!r.date_rapport || !Array.isArray(r.equipe) || r.equipe.length === 0) return;
         var d = String(r.date_rapport).substring(0, 10);
@@ -15177,6 +15181,7 @@
           }
           if (!pid) return;
           var key = pid + "-" + d;
+          rapportCoverPe[key] = chId;
           var existingAff = affMap[key];
           // Priorite a l'affectation explicite existante, SAUF si c'est un jour ferie :
           // la presence de l'employe dans l'equipe d'un rapport prouve qu'il a travaille,
@@ -15230,6 +15235,28 @@
         var tj = typeJour || "travail";
         var existing = affectations.find(function(a) { return a.personnelId === empId && a.dateAffectation === dateStr; });
         if ((chantierId === "" || chantierId === null) && tj === "travail") {
+          // ── Gomme sur une case issue d'un RAPPORT DE FORAGE ──
+          // L'affectation affichee est alors VIRTUELLE (deduite de l'equipe du
+          // rapport) : il n'y a rien a supprimer en base, la case se repeignait
+          // aussitot et la gomme paraissait inoperante. On enregistre donc une
+          // ligne "masque" (chantier vide) qui prime sur le rapport.
+          if (rapportCoverPe[empId + "-" + dateStr]) {
+            if (existing) {
+              // Deja masquee : rien a faire (evite un aller-retour qui ferait
+              // reapparaitre le rapport a la gomme suivante).
+              if (existing.chantierId == null && (existing.typeJour || "travail") === "travail") return;
+              supabase.from("affectations").update({ chantier_id: null, type_jour: "travail" }).eq("id", existing.id).select().single().then(function(res) {
+                if (res.error) { alert("Erreur: " + res.error.message); return; }
+                setAffectations(affectations.map(function(a) { return a.id === existing.id ? affectationFromDb(res.data) : a; }));
+              });
+            } else {
+              supabase.from("affectations").insert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }).select().single().then(function(res) {
+                if (res.error) { alert("Erreur: " + res.error.message); return; }
+                setAffectations(affectations.concat(affectationFromDb(res.data)));
+              });
+            }
+            return;
+          }
           // Eraser: delete
           if (existing) {
             supabase.from("affectations").delete().eq("id", existing.id).then(function(res) {
@@ -20002,6 +20029,13 @@
       })();
       var joursOuvresEcoules = (function() {
         var jo = 0, d = new Date(now.getFullYear(), now.getMonth(), 1), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        // Meme borne que la periode affichee : avec la barriere "journee non terminee",
+        // periodEnd s'arrete la VEILLE. Proratiser jusqu'a AUJOURD'HUI alors que la
+        // periode compte un jour de moins gonflait le seuil treso projete (x 4/3 un mardi).
+        if (periodEnd && periodEnd.getFullYear() === now.getFullYear() && periodEnd.getMonth() === now.getMonth()) {
+          var pe = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate());
+          if (pe.getTime() < today.getTime()) today = pe;
+        }
         while (d.getTime() <= today.getTime()) { var dow = d.getDay(); if (dow >= 1 && dow <= 5) jo++; d.setDate(d.getDate() + 1); }
         return jo;
       })();
@@ -20083,10 +20117,13 @@
       var periodeEstMoisEnCours = (function() {
         if (!periodStart) return false;
         if (periodStart.getFullYear() !== now.getFullYear() || periodStart.getMonth() !== now.getMonth()) return false;
+        // On compare le MOIS de la borne de fin, et non la date a aujourd'hui.
+        // Avec la barriere "journee non terminee" (avant 17h), periodEnd vaut la
+        // VEILLE : la comparaison stricte a aujourd'hui rendait alors ce test faux
+        // et le seuil de rentabilite retombait sur la periode (3 jours ~ 1000 m)
+        // au lieu du mois projete (~21 jours ~ 6000 m).
         if (periodEnd) {
-          var pe = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate());
-          var td = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-          if (pe.getTime() < td.getTime()) return false;
+          if (periodEnd.getFullYear() !== now.getFullYear() || periodEnd.getMonth() !== now.getMonth()) return false;
         }
         return true;
       })();

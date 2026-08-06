@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Démo — Frais généraux par machine (méthode unifiée v2)</title>
+<style>
+  :root{
+    --bg:#0b0f1a; --panel:#141a2b; --panel2:#1b2338; --border:rgba(255,255,255,0.08);
+    --txt:#e6e9f2; --mut:#9aa3bd; --ind:#818cf8; --ind2:#a5b4fc;
+    --grn:#4ade80; --grnbg:rgba(34,197,94,0.12); --red:#f87171; --redbg:rgba(244,63,94,0.12);
+    --amb:#fbbf24; --ambbg:rgba(251,191,36,0.12); --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 20% -10%, #1a2340 0, transparent 60%),var(--bg);color:var(--txt);font-family:"DM Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;padding:24px 18px 60px}
+  .wrap{max-width:1120px;margin:0 auto}
+  h1{font-size:24px;font-weight:800;margin:0 0 4px;letter-spacing:-0.3px}
+  .sub{color:var(--mut);font-size:13.5px;margin-bottom:18px}
+  .badge{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:999px;letter-spacing:0.4px;vertical-align:middle}
+  .b-real{background:var(--grnbg);color:var(--grn);border:1px solid rgba(34,197,94,0.35)}
+  .b-app{background:rgba(34,211,238,0.14);color:var(--cyan);border:1px solid rgba(34,211,238,0.35)}
+  .b-key{background:rgba(129,140,248,0.15);color:var(--ind2);border:1px solid rgba(129,140,248,0.35)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:16px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+  .tab{padding:7px 14px;border-radius:9px;border:1px solid var(--border);background:var(--panel);color:var(--mut);font-weight:700;font-size:12.5px;cursor:pointer;transition:.15s}
+  .tab.on{background:rgba(129,140,248,0.16);color:var(--ind2);border-color:rgba(129,140,248,0.4)}
+  .pools{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .pool{padding:12px 14px;border-radius:11px;border:1px solid var(--border)}
+  .pool .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);font-weight:700;margin-bottom:5px}
+  .pool .val{font-size:19px;font-weight:800;font-family:ui-monospace,monospace}
+  .pool .pct{font-size:11px;color:var(--mut);margin-top:2px}
+  .p-ovr{background:rgba(148,163,184,0.10);border-color:rgba(148,163,184,0.3)}
+  .p-per{background:rgba(251,191,36,0.08);border-color:rgba(251,191,36,0.25)}
+  .p-dir{background:rgba(34,211,238,0.08);border-color:rgba(34,211,238,0.25)}
+  .p-tot{background:rgba(129,140,248,0.10);border-color:rgba(129,140,248,0.3)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:right;padding:8px 7px;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:700;border-bottom:1px solid var(--border)}
+  th.l,td.l{text-align:left}
+  td{padding:9px 7px;font-family:ui-monospace,monospace;text-align:right;border-bottom:1px solid rgba(255,255,255,0.04)}
+  td.mach{font-weight:800;font-family:"DM Sans",sans-serif;color:var(--ind2)}
+  tr.tot td{border-top:2px solid rgba(129,140,248,0.4);font-weight:800;padding-top:11px}
+  input.m{width:88px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;color:var(--txt);padding:5px 7px;font-family:ui-monospace,monospace;text-align:right;font-size:12.5px}
+  input.m:focus{outline:none;border-color:var(--ind)}
+  .app-col{color:var(--cyan)}
+  .ovr-col{color:#cbd5e1}
+  .costcol{color:var(--red);font-weight:700}
+  .ca{color:var(--grn)}
+  .marge-pos{color:var(--grn);font-weight:800}
+  .marge-neg{color:var(--red);font-weight:800}
+  .switch{display:flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;width:fit-content;margin:2px 0 14px}
+  .switch button{padding:7px 16px;background:transparent;border:none;color:var(--mut);font-weight:700;font-size:12.5px;cursor:pointer}
+  .switch button.on{background:rgba(129,140,248,0.18);color:var(--ind2)}
+  .note{font-size:12px;color:var(--mut);background:rgba(255,255,255,0.03);border-left:3px solid var(--ind);padding:9px 12px;border-radius:0 8px 8px 0;margin-top:12px}
+  .warn{font-size:12px;color:#fde68a;background:var(--ambbg);border-left:3px solid var(--amb);padding:9px 12px;border-radius:0 8px 8px 0;margin-top:10px}
+  h3{font-size:14px;font-weight:800;margin:0 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .legend{font-size:11px;color:var(--mut);margin-top:10px}
+  .legend span{display:inline-flex;align-items:center;gap:5px;margin-right:14px}
+  .dot{width:9px;height:9px;border-radius:3px;display:inline-block}
+  .flip{color:var(--red);font-weight:800}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Frais généraux par machine <span class="badge b-real">frais généraux réels FEC 2026</span></h1>
+  <div class="sub">Le carburant, l'entretien/pièces et le personnel restent sur ta méthode <b>terrain (app)</b>. On ajoute juste la couche que l'app ignore aujourd'hui : les <b>frais généraux</b> réels du FEC (assurances, loyers, import, télécom, banque, taxes), répartis par <b>CA machine</b>. Données réelles Wallis-Label, jan→mar 2026.</div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="card">
+    <h3>1 · D'où vient l'argent des charges <span class="badge b-real">FEC réel</span></h3>
+    <div class="pools" id="pools"></div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--cyan)"></span>Directs (carburant + entretien + personnel) → <b>déjà par machine dans l'app</b></span>
+      <span><span class="dot" style="background:#94a3b8"></span>Frais généraux → <b>la couche à ajouter</b>, répartie par CA</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>2 · Marge par machine — <span id="methLabel">avec frais généraux (unifiée)</span></h3>
+    <div class="switch" id="methodSwitch">
+      <button data-m="new" class="on">Avec frais généraux (unifiée)</button>
+      <button data-m="old">Méthode actuelle (sans frais gén.)</button>
+    </div>
+    <div style="overflow-x:auto">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th class="l">Machine</th>
+          <th>CA <span class="badge b-app" style="font-size:8.5px">app</span></th>
+          <th>Coûts directs terrain <span class="badge b-app" style="font-size:8.5px">app</span></th>
+          <th>Q-part frais gén. <span class="badge b-key" style="font-size:8.5px">FEC/CA</span></th>
+          <th>Coût total</th>
+          <th>Marge nette</th>
+          <th>Marge %</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+      <tfoot id="tfoot"></tfoot>
+    </table>
+    </div>
+    <div class="note" id="reconNote"></div>
+    <div class="warn">
+      Les colonnes <b>CA</b> et <b>coûts directs terrain</b> sont éditables ici (valeurs d'exemple). Dans l'app, elles seront tirées automatiquement : CA des rapports, coûts directs = carburant + entretien/pièces + personnel déjà calculés par machine. Seule la <b>quote-part frais généraux</b> (grise) vient du FEC.
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>3 · Ce que révèle la couche frais généraux</h3>
+    <div id="insight" style="font-size:13.5px"></div>
+  </div>
+</div>
+
+<script>
+// ── Frais généraux RÉELS du FEC (charges classe 6 − personnel 64x − directs machine) ──
+const FEC = {
+  "2026-01": {tot:19524491, fraisGen:10545819, reel:true},
+  "2026-02": {tot:15627489, fraisGen:6429727, reel:true},
+  "2026-03": {tot:13950739, fraisGen:4188716, reel:true}
+};
+// Moyenne mensuelle des frais généraux sur les mois FIABLES (compta à jour).
+// Sert à estimer les mois où la compta n'est pas encore sûre (poste très stable).
+const moisReels = Object.values(FEC).filter(m=>m.reel);
+const fgMoyen = moisReels.reduce((s,m)=>s+m.fraisGen,0)/moisReels.length;
+// Mois ESTIMÉS (compta pas encore à jour) : frais généraux = moyenne des mois fiables.
+FEC["2026-04"] = {tot:null, fraisGen:fgMoyen, reel:false};
+FEC["2026-05"] = {tot:null, fraisGen:fgMoyen, reel:false};
+const MONTH_LABELS = {"2026-01":"Janv (réel)","2026-02":"Févr (réel)","2026-03":"Mars (réel)","2026-04":"Avril (estimé)","2026-05":"Mai (estimé)","cumul":"Cumul Jan→Mar"};
+const FLEET = ["D37","D36","FS01","D29","D39"];
+// Valeurs d'EXEMPLE (éditables) — remplacées par les vraies données app une fois intégré
+const defCA     = {D37:9500000, D36:7200000, FS01:6100000, D29:3400000, D39:2100000};
+const defDirect = {D37:4200000, D36:3100000, FS01:2600000, D29:1500000, D39:900000};
+
+let curMonth = "cumul";
+let method = "new";
+const ca = Object.assign({}, defCA);
+const dir = Object.assign({}, defDirect);
+
+const fmt = n => { n=Math.round(n); const s=n<0?"-":""; n=Math.abs(n);
+  if(n>=1e6) return s+(n/1e6).toFixed(2)+" MF"; if(n>=1e3) return s+Math.round(n/1e3)+" k"; return s+n; };
+
+function isReel(){ return curMonth==="cumul" ? true : FEC[curMonth].reel; }
+function fraisGenMonth(){
+  if(curMonth!=="cumul") return FEC[curMonth].fraisGen;
+  return moisReels.reduce((s,m)=>s+m.fraisGen,0);
+}
+function totMonth(){
+  if(curMonth==="cumul") return moisReels.reduce((s,m)=>s+m.tot,0);
+  return FEC[curMonth].tot; // null si mois estimé
+}
+
+function render(){
+  const fg = fraisGenMonth();
+  const tot = totMonth();
+  const reel = isReel();
+  // badge réel/estimé dans le titre pool
+  const srcBadge = reel
+    ? '<span class="badge b-real">réel FEC</span>'
+    : '<span class="badge" style="background:var(--ambbg);color:#fde68a;border:1px solid rgba(251,191,36,0.4)">estimé (moyenne mois fiables)</span>';
+  document.querySelector("#pools").previousElementSibling.innerHTML = "1 · D'où vient l'argent des charges " + srcBadge;
+  // pools : si mois estimé, on n'a pas le total -> on montre juste le pool frais gén estimé
+  if(reel && tot){
+    document.getElementById("pools").innerHTML =
+      poolCard("Total charges réelles", tot, 100, "p-tot") +
+      poolCard("Directs (déjà app)", tot-fg, (tot-fg)/tot*100, "p-dir") +
+      poolCard("Frais généraux (à répartir)", fg, fg/tot*100, "p-ovr");
+  } else {
+    document.getElementById("pools").innerHTML =
+      poolCard("Frais généraux estimés", fg, null, "p-ovr") +
+      poolCard("Base = moyenne mois fiables", fgMoyen, null, "p-per") +
+      '<div class="pool p-dir"><div class="lbl">Directs (déjà app)</div><div class="val" style="color:var(--cyan)">temps réel</div><div class="pct">non impacté par le retard compta</div></div>';
+  }
+
+  const caTot = FLEET.reduce((s,m)=>s+(ca[m]||0),0) || 1;
+  let rows="", sCA=0,sDir=0,sFg=0,sCost=0,sMarge=0;
+  FLEET.forEach(m=>{
+    const caM = ca[m]||0, dirM = dir[m]||0;
+    const share = caM/caTot;
+    const qFg = method==="new" ? fg*share : 0;
+    const cost = dirM + qFg;
+    const marge = caM - cost;
+    const margePct = caM>0 ? marge/caM*100 : 0;
+    sCA+=caM; sDir+=dirM; sFg+=qFg; sCost+=cost; sMarge+=marge;
+    rows += '<tr>'
+      + '<td class="l mach">'+m+'</td>'
+      + '<td><input class="m" data-ca="'+m+'" value="'+caM+'"></td>'
+      + '<td><input class="m" data-dir="'+m+'" value="'+dirM+'"></td>'
+      + '<td class="ovr-col">'+(method==="new"?fmt(qFg):"—")+'</td>'
+      + '<td class="costcol">'+fmt(cost)+'</td>'
+      + '<td class="'+(marge>=0?'marge-pos':'marge-neg')+'">'+fmt(marge)+'</td>'
+      + '<td class="'+(marge>=0?'marge-pos':'marge-neg')+'">'+(caM>0?margePct.toFixed(1)+"%":"—")+'</td>'
+      + '</tr>';
+  });
+  document.getElementById("tbody").innerHTML = rows;
+  const totMarge = sCA-sCost;
+  document.getElementById("tfoot").innerHTML = '<tr class="tot">'
+    + '<td class="l">TOTAL flotte</td>'
+    + '<td class="ca">'+fmt(sCA)+'</td>'
+    + '<td class="app-col">'+fmt(sDir)+'</td>'
+    + '<td class="ovr-col">'+(method==="new"?fmt(sFg):"—")+'</td>'
+    + '<td class="costcol">'+fmt(sCost)+'</td>'
+    + '<td class="'+(totMarge>=0?'marge-pos':'marge-neg')+'">'+fmt(totMarge)+'</td>'
+    + '<td class="'+(totMarge>=0?'marge-pos':'marge-neg')+'">'+(sCA>0?(totMarge/sCA*100).toFixed(1)+"%":"—")+'</td>'
+    + '</tr>';
+
+  document.getElementById("methLabel").textContent = method==="new"?"avec frais généraux (unifiée)":"méthode actuelle (sans frais gén.)";
+
+  // note réconciliation (approx à cause du décalage pièces achat/usage)
+  const srcTxt = reel ? "réels FEC" : "estimés (moyenne mois fiables)";
+  document.getElementById("reconNote").innerHTML = method==="new"
+    ? "Frais généraux répartis = "+fmt(sFg)+" = 100% du pool ("+fmt(fg)+", "+srcTxt+"). "
+      + (reel
+        ? "Réconciliation avec le total compta <b>approximative</b> : l'écart vient du décalage pièces <b>achetées</b> (FEC) vs <b>montées</b> (terrain) = variation de stock."
+        : "Mois <b>non clôturé par la compta</b> : le pool est estimé à la moyenne des mois fiables (poste stable). Il basculera en réel dès l'import du prochain FEC.")
+    : "Méthode actuelle : les frais généraux ("+fmt(fg)+") ne sont attribués à <b>aucune machine</b> → ils disparaissent du calcul de marge.";
+
+  // insight : comparaison old vs new sur marge %
+  const caTotAll = sCA;
+  const margeOld = caTotAll - sDir;
+  const margeNew = caTotAll - sDir - fg;
+  const pctOld = caTotAll>0 ? margeOld/caTotAll*100 : 0;
+  const pctNew = caTotAll>0 ? margeNew/caTotAll*100 : 0;
+  const partTxt = (reel && tot) ? " ("+Math.round(fg/tot*100)+"% des charges)" : " (estimés, mois non clôturé)";
+  document.getElementById("insight").innerHTML =
+    "Sur ce mois, les frais généraux "+srcTxt+" = <b>"+fmt(fg)+"</b>"+partTxt+" — aujourd'hui <b>invisibles</b> dans ta marge par machine.<br><br>"
+    + "En les intégrant, ta marge globale passe de <b class='marge-pos'>"+pctOld.toFixed(1)+"%</b> (méthode actuelle) à <b class='flip'>"+pctNew.toFixed(1)+"%</b> (réelle). "
+    + "Toute machine dont la marge actuelle est inférieure à sa quote-part de frais généraux <b>bascule en perte</b> une fois le vrai coût de structure ajouté — c'est précisément ce que tu ne vois pas aujourd'hui.<br><br>"
+    + "<span style='color:var(--mut);font-size:12px'>Astuce : bascule sur « Avril (estimé) » — le CA vient du terrain, seuls les frais généraux sont estimés à la moyenne. La marge reste calculable même avec 3 mois de retard compta.</span>";
+}
+
+function poolCard(lbl,val,pct,cls){
+  const sub = pct==null ? '' : '<div class="pct">'+Math.round(pct)+'% des charges</div>';
+  return '<div class="pool '+cls+'"><div class="lbl">'+lbl+'</div><div class="val">'+fmt(val)+'</div>'+sub+'</div>';
+}
+
+const tabsEl = document.getElementById("tabs");
+["cumul","2026-01","2026-02","2026-03","2026-04","2026-05"].forEach(k=>{
+  const b=document.createElement("button"); b.className="tab"+(k===curMonth?" on":""); b.textContent=MONTH_LABELS[k];
+  b.onclick=()=>{curMonth=k;[...tabsEl.children].forEach(c=>c.classList.remove("on"));b.classList.add("on");render();};
+  tabsEl.appendChild(b);
+});
+document.getElementById("methodSwitch").addEventListener("click",e=>{
+  if(e.target.dataset.m){method=e.target.dataset.m;[...e.currentTarget.children].forEach(c=>c.classList.toggle("on",c===e.target));render();}
+});
+document.getElementById("tbl").addEventListener("input",e=>{
+  const t=e.target;
+  if(t.dataset.ca){ ca[t.dataset.ca]=parseFloat(t.value)||0; render(); reFocus('[data-ca="'+t.dataset.ca+'"]'); }
+  if(t.dataset.dir){ dir[t.dataset.dir]=parseFloat(t.value)||0; render(); reFocus('[data-dir="'+t.dataset.dir+'"]'); }
+});
+function reFocus(sel){ const el=document.querySelector(sel); if(el){el.focus();const v=el.value;el.value="";el.value=v;} }
+
+render();
+</script>
+</body>
+</html>
