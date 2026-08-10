@@ -11650,6 +11650,7 @@
       if (ecr.length === 0) return vide;
       var grp = {};
       var dernierMois = null;
+      var grpSolo = 0;
       ecr.forEach(function(e) {
         if (!e || !e.date_ecriture) return;
         if (String(e.compte_code || "").substring(0, 3) !== "512") return;
@@ -11660,7 +11661,13 @@
         if (isNaN(d.getTime())) return;
         if (periodStart && d.getTime() < periodStart.getTime()) return;
         if (periodEnd && d.getTime() > periodEnd.getTime()) return;
-        var cle = (e.journal_code || "") + "|" + (e.piece || "") + "|" + iso;
+        // GARDE-FOU : la neutralisation n'a de sens que si la PIECE est identifiee.
+        // Si journal_code et piece sont absents (colonnes non selectionnees dans le
+        // fetch), la cle retomberait sur la seule date et on neutraliserait a tort
+        // toutes les ecritures du jour entre elles. Dans ce cas, chaque ligne est
+        // traitee seule : on prefere ne rien neutraliser plutot que trop.
+        var ident = String(e.journal_code || "") + "|" + String(e.piece || "");
+        var cle = ident === "|" ? ("__solo__" + iso + "__" + (grpSolo++)) : (ident + "|" + iso);
         if (!grp[cle]) grp[cle] = [];
         grp[cle].push(e);
       });
@@ -11674,7 +11681,8 @@
           cred += parseFloat(e.credit) || 0;
         });
         if (deb === 0 && cred === 0) return;
-        var circ = jc0 === "RAN" ? 0 : Math.min(deb, cred);
+        // Une ligne seule ne peut pas etre un virement interne : pas de neutralisation.
+        var circ = (jc0 === "RAN" || lignes.length < 2) ? 0 : Math.min(deb, cred);
         encaisse += (deb - circ);
         decaisse += (cred - circ);
         nbPieces++;
@@ -31957,8 +31965,13 @@
             var yearFEC = new Date().getFullYear();
             var ecrAll = []; var fromFEC = 0;
             while (ecrAll.length < 50000) {
+              // journal_code + piece sont INDISPENSABLES : ils identifient la piece
+              // comptable, seule cle qui permette de reconnaitre un virement interne
+              // SG <-> BCI (meme piece, un debit 512 et un credit 512). Sans eux, le
+              // regroupement retombe sur la DATE et neutralise a tort toutes les
+              // ecritures du meme jour entre elles -> decaisse effondre, marges faussees.
               var ecrRes = await supabase.from("ecritures_compta")
-                .select("date_ecriture,compte_code,debit,credit,lettrage,libelle")
+                .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                 .in("exercice", [yearFEC - 1, yearFEC])
                 .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
                 .range(fromFEC, fromFEC + 999);
@@ -32158,7 +32171,31 @@
           parametres: function() { supabase.from("parametres").select("*").then(res => { if (res.data) setParametres(res.data); }); },
           interventions: function() { supabase.from("interventions").select("*").then(res => { if (res.data) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] }))); }); },
           rapports_forage: function() { supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(res => { if (res.data) setDbRapportsForage(res.data); }); },
-          releves_horametre: function() { supabase.from("releves_horametre").select("*").then(res => { if (res.data) setReleves(res.data.map(r => releveFromDb(r, eqCodeById))); }); }
+          releves_horametre: function() { supabase.from("releves_horametre").select("*").then(res => { if (res.data) setReleves(res.data.map(r => releveFromDb(r, eqCodeById))); }); },
+          // Planning machines : un engin affecte a un chantier change le previsionnel
+          // de metrage, donc le CA projete et la tresorerie previsionnelle.
+          chantier_equipements: function() { supabase.from("chantier_equipements").select("*").then(res => { if (res.data) setDbChantierEquipements(res.data.map(chantierEquipementFromDb)); }); },
+          // FEC : un import de compta change les frais generaux, les marges cash et
+          // tout le previsionnel de tresorerie. Pagine comme au chargement initial.
+          ecritures_compta: async function() {
+            try {
+              var yFEC = new Date().getFullYear();
+              var acc = []; var offFEC = 0;
+              while (acc.length < 50000) {
+                var r = await supabase.from("ecritures_compta")
+                  .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
+                  .in("exercice", [yFEC - 1, yFEC])
+                  .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+                  .range(offFEC, offFEC + 999);
+                if (r.error || !r.data || r.data.length === 0) break;
+                acc.push.apply(acc, r.data);
+                if (r.data.length < 1000) break;
+                offFEC += 1000;
+              }
+              if (acc.length > 0) setDbEcrCompta(acc);
+            } catch (e) { console.warn("[realtime] ecritures_compta:", e.message); }
+          },
+          consommations_carburant: function() { supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }).then(res => { if (res.data) setDbCarburants(res.data); }); }
         };
         // Throttle : evite de re-fetch trop souvent si plusieurs events arrivent rapidement
         var pending = {};
@@ -32176,8 +32213,27 @@
         channel.subscribe(status => {
           if (status === "SUBSCRIBED") console.log("[realtime] subscribed to all tables");
         });
+        // ── FILET DE SECURITE : rafraichissement au retour sur l'onglet ──
+        // Le temps reel ne remonte QUE les tables publiees cote Supabase (publication
+        // supabase_realtime). Si l'une manque, ou si le navigateur a suspendu le
+        // websocket (mobile en veille, onglet en arriere-plan des heures), l'ecran
+        // resterait fige sans qu'on le sache. On resynchronise donc les tables qui
+        // pilotent les chiffres (chantiers, planning machines, rapports, FEC) chaque
+        // fois que l'onglet redevient visible, avec un garde de 30 s anti-rafale.
+        var dernierResync = Date.now();
+        var TABLES_RESYNC = ["chantiers", "chantier_equipements", "rapports_forage", "saisies", "ecritures_compta"];
+        function resyncSiVisible() {
+          if (document.visibilityState !== "visible") return;
+          if (Date.now() - dernierResync < 30000) return;
+          dernierResync = Date.now();
+          TABLES_RESYNC.forEach(function(t) { schedule(t); });
+        }
+        document.addEventListener("visibilitychange", resyncSiVisible);
+        window.addEventListener("focus", resyncSiVisible);
         return function() {
           Object.keys(pending).forEach(k => { if (pending[k]) clearTimeout(pending[k]); });
+          document.removeEventListener("visibilitychange", resyncSiVisible);
+          window.removeEventListener("focus", resyncSiVisible);
           supabase.removeChannel(channel);
         };
       }, [session]);
