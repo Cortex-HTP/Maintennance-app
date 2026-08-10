@@ -11116,6 +11116,72 @@
       return null;
     }
 
+    // ── CONGES : source de verite unique, partagee par tous les ecrans ──────────
+    // Les demandes de conge sont la SOURCE DE VERITE. On ne depend PAS de leur
+    // report dans la table "affectations" : un conge approuve avant la mise en
+    // place de ce report n'y figure pas, et l'ecran mentirait alors par omission.
+    //
+    // Le demandeur_id des demandes est un hash bigint du code personnel : on
+    // resout via le meme hash que partout ailleurs, avec repli sur l'id direct.
+    //
+    // Retourne { personnel_id: { "AAAA-MM-JJ": { statut, type } } }.
+    // Les week-ends sont ignores (on ne pose pas un conge un samedi). Un conge
+    // APPROUVE prime sur une demande EN ATTENTE le meme jour.
+    function hashCodePersonnel(s) {
+      if (typeof s === "number") return s;
+      if (/^\d+$/.test(String(s))) return parseInt(s, 10);
+      var hx = 0; var str = String(s);
+      for (var i = 0; i < str.length; i++) hx = (hx * 31 + str.charCodeAt(i)) & 0x7fffffff;
+      return hx || 1;
+    }
+    function buildCongesParEmploye(demandes, personnel) {
+      var out = {};
+      var pidByHash = {};
+      (personnel || []).forEach(function(p) {
+        if (!p || p.id == null) return;
+        if (p.code) pidByHash[String(hashCodePersonnel(p.code))] = p.id;
+        pidByHash[String(p.id)] = p.id;
+      });
+      (demandes || []).forEach(function(cg) {
+        if (!cg) return;
+        var pid = pidByHash[String(cg.demandeur_id)];
+        if (pid == null) return;
+        var deb = String(cg.date_debut || "").substring(0, 10);
+        if (!deb) return;
+        var dCur = new Date(deb + "T00:00:00");
+        if (isNaN(dCur.getTime())) return;
+        // Fin = veille de la reprise ; sans reprise, on deroule nombre_jours ouvres
+        var fin = null;
+        if (cg.date_reprise) {
+          fin = new Date(String(cg.date_reprise).substring(0, 10) + "T00:00:00");
+          fin.setDate(fin.getDate() - 1);
+        }
+        var restants = parseInt(cg.nombre_jours) || 1;
+        var safe = 0;
+        while (safe < 120) {
+          if (fin !== null) { if (dCur.getTime() > fin.getTime()) break; }
+          else if (restants <= 0) break;
+          var dow = dCur.getDay();
+          if (dow !== 0 && dow !== 6) {
+            var ds = dCur.getFullYear() + "-" + String(dCur.getMonth() + 1).padStart(2, "0") + "-" + String(dCur.getDate()).padStart(2, "0");
+            if (!out[pid]) out[pid] = {};
+            if (!out[pid][ds] || cg.statut === "approuvee") {
+              out[pid][ds] = { statut: cg.statut, type: cg.type_conge || "conge" };
+            }
+            if (fin === null) restants--;
+          }
+          dCur.setDate(dCur.getDate() + 1);
+          safe++;
+        }
+      });
+      return out;
+    }
+    // Type de badge a afficher pour un conge : maladie -> "maladie", sinon "conge".
+    function congeBadgeType(info) {
+      if (!info) return null;
+      return String(info.type || "").toLowerCase().indexOf("maladie") >= 0 ? "maladie" : "conge";
+    }
+
     // ── CARBURANT FOURNI PAR LE CLIENT ──────────────────────────────────────────
     // Certains chantiers sont conclus "carburant a la charge du client" : les equipes
     // saisissent quand meme les pleins (suivi de consommation, horametres, derives
@@ -15403,49 +15469,10 @@
       // Index : personnel_id -> { "AAAA-MM-JJ": { statut, type } }
       // Le demandeur_id des demandes est un hash bigint du code personnel : on
       // resout via le meme hash que partout ailleurs, avec repli sur l'id direct.
-      var congesParEmpPe = (function() {
-        var out = {};
-        var pidByHash = {};
-        (personnel || []).forEach(function(p) {
-          if (!p || p.id == null) return;
-          if (p.code) pidByHash[String(_strToBigintPe(p.code))] = p.id;
-          pidByHash[String(p.id)] = p.id;
-        });
-        (congesPe || []).forEach(function(cg) {
-          var pid = pidByHash[String(cg.demandeur_id)];
-          if (pid == null) return;
-          var deb = String(cg.date_debut || "").substring(0, 10);
-          if (!deb) return;
-          var dCur = new Date(deb + "T00:00:00");
-          if (isNaN(dCur.getTime())) return;
-          // Fin = veille de la reprise ; sans reprise, on deroule nombre_jours ouvres
-          var fin = null;
-          if (cg.date_reprise) {
-            fin = new Date(String(cg.date_reprise).substring(0, 10) + "T00:00:00");
-            fin.setDate(fin.getDate() - 1);
-          }
-          var restants = parseInt(cg.nombre_jours) || 1;
-          var safe = 0;
-          while (safe < 120) {
-            if (fin !== null) { if (dCur.getTime() > fin.getTime()) break; }
-            else if (restants <= 0) break;
-            var dow = dCur.getDay();
-            // Week-ends ignores (pas de conge pose un samedi/dimanche)
-            if (dow !== 0 && dow !== 6) {
-              var ds = dCur.getFullYear() + "-" + String(dCur.getMonth() + 1).padStart(2, "0") + "-" + String(dCur.getDate()).padStart(2, "0");
-              if (!out[pid]) out[pid] = {};
-              // Un conge APPROUVE prime sur une demande en attente le meme jour
-              if (!out[pid][ds] || cg.statut === "approuvee") {
-                out[pid][ds] = { statut: cg.statut, type: cg.type_conge || "conge" };
-              }
-              if (fin === null) restants--;
-            }
-            dCur.setDate(dCur.getDate() + 1);
-            safe++;
-          }
-        });
-        return out;
-      })();
+      // Source de verite UNIQUE, partagee avec les Primes / Metrage sondeurs :
+      // cf. buildCongesParEmploye au niveau module. Toute evolution de la regle
+      // (week-ends, date_reprise, priorite approuve) se fait la-bas, une seule fois.
+      var congesParEmpPe = buildCongesParEmploye(congesPe, personnel);
       function getCongePe(empId, dateStr) {
         var m = congesParEmpPe[empId];
         return m ? (m[dateStr] || null) : null;
@@ -16758,7 +16785,10 @@
     //      (typique : avril 2026 ou les rapports forage digitaux n'existaient pas
     //      encore). Pour chaque jour de saisie chantier, on liste les employes
     //      affectes a ce chantier ce jour et on leur attribue le metrage du chantier.
-    function MetrageView({ rapports, chantiers, chantiersBySite, period, saisies, affectations, personnel }) {
+    function MetrageView({ rapports, chantiers, chantiersBySite, period, saisies, affectations, personnel, demandesConge }) {
+      // Conges : SOURCE DE VERITE = les demandes (meme helper que le planning employe),
+      // pas leur report dans "affectations" qui peut ne pas avoir tourne.
+      var congesParEmpPr = buildCongesParEmploye(demandesConge, personnel);
       // Construire la liste des jours de la periode (inclusif)
       var days = [];
       var cur = new Date(period.start);
@@ -17013,9 +17043,18 @@
                       days.map(function(day) {
                         var v = data.byDay[day.iso] || 0;
                         var isWE = day.dow === 0 || day.dow === 6;
-                        // Si case vide, priorite : 1) affectation manuelle, 2) saisie du site (avancement)
+                        // Si case vide, priorite : 1) CONGE (source de verite : les demandes),
+                        // 2) affectation manuelle, 3) saisie du site (avancement).
+                        // Le conge passe en premier : c'est un fait valide en RH, il ne doit pas
+                        // dependre de son report dans "affectations" (qui peut ne pas avoir tourne).
                         var badgeType = null;
-                        if (v === 0 && pidForNom) {
+                        var congeInfo = null;
+                        if (v === 0 && pidForNom && !isWE) {
+                          var cgP = congesParEmpPr[pidForNom];
+                          congeInfo = cgP ? (cgP[day.iso] || null) : null;
+                          if (congeInfo) badgeType = congeBadgeType(congeInfo);
+                        }
+                        if (v === 0 && !badgeType && pidForNom) {
                           var aff = affByPidDate[pidForNom + "|" + day.iso];
                           if (aff && aff.type && aff.type !== "travail" && typeShortLabels[aff.type]) {
                             badgeType = aff.type;
@@ -17038,12 +17077,15 @@
                             style: {
                               display: "inline-block", padding: "1px 5px", fontSize: 9, fontWeight: 700,
                               color: typeShortColors[badgeType] || "#94a3b8",
-                              background: (typeShortColors[badgeType] || "#94a3b8") + "22",
-                              border: "1px solid " + (typeShortColors[badgeType] || "#94a3b8") + "55",
+                              background: (typeShortColors[badgeType] || "#94a3b8") + (congeInfo && congeInfo.statut === "en_attente" ? "11" : "22"),
+                              // Conge EN ATTENTE : bordure pointillee, meme convention que le planning
+                              border: (congeInfo && congeInfo.statut === "en_attente" ? "1px dashed " : "1px solid ") + (typeShortColors[badgeType] || "#94a3b8") + "88",
                               borderRadius: 4, letterSpacing: 0.3
                             },
-                            title: badgeType
-                          }, typeShortLabels[badgeType]) : "")
+                            title: congeInfo
+                              ? ((congeInfo.type || "conge") + (congeInfo.statut === "approuvee" ? " approuve" : " EN ATTENTE de validation") + " - source : demande de conge")
+                              : badgeType
+                          }, typeShortLabels[badgeType] + (congeInfo && congeInfo.statut === "en_attente" ? "?" : "")) : "")
                         );
                       }),
                       h("td", { style: Object.assign({}, tdStyle, { fontWeight: 700, color: "#a78bfa", borderLeft: "2px solid rgba(167,139,250,0.3)" }) }, fmtNum(Math.round(data.total)))
@@ -17064,6 +17106,32 @@
       var chantiers = ctx.dbChantiers;
       var saisies = ctx.dbSaisies;
       var affectations = ctx.dbAffectations || [];
+      // ── Demandes de conge : lues DIRECTEMENT (source de verite) ──
+      // Un conge approuve doit apparaitre dans "Metrage sondeurs" comme dans le
+      // planning employe, sans dependre de son report dans "affectations".
+      var _dcPr = useState([]);
+      var demandesConge = _dcPr[0]; var setDemandesConge = _dcPr[1];
+      useEffect(function() {
+        var cancelled = false;
+        function loadDc() {
+          supabase.from("demandes_conge")
+            .select("id,demandeur_id,type_conge,nombre_jours,date_debut,date_reprise,statut")
+            .in("statut", ["en_attente", "approuvee"])
+            .then(function(res) {
+              if (cancelled) return;
+              if (res.error) { console.warn("[primes-conges]", res.error.message); return; }
+              setDemandesConge(res.data || []);
+            });
+        }
+        loadDc();
+        var ch = null;
+        try {
+          ch = supabase.channel("primes_conges_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "demandes_conge" }, loadDc)
+            .subscribe();
+        } catch (e) { console.warn("[primes-conges realtime]", e); }
+        return function() { cancelled = true; if (ch) { try { supabase.removeChannel(ch); } catch (e) {} } };
+      }, []);
       var paliers = ctx.dbPaliers || [];
       var parametres = ctx.parametres;
       // Personnel : on garde les actifs + les ex partis dans les 6 derniers mois
@@ -17730,7 +17798,8 @@
           period: currentPeriod,
           saisies: saisies,
           affectations: affectations,
-          personnel: personnel
+          personnel: personnel,
+          demandesConge: demandesConge
         }) : null,
         // KPIs (onglet Primes)
         primesTab === "primes" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
