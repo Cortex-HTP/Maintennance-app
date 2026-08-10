@@ -9151,11 +9151,60 @@
         return computeRenouvellementStatus(r) !== "Valide";
       }).length;
       var caChantiers = chantiers.reduce(function(sum, c) { return sum + (c.metrage * c.prixMetre); }, 0);
-      // Cout de revient reel au metre (FEC). Utilise pour la marge globale ET les cartes.
+      // Cout de revient reel au metre (FEC). Repli quand la machine n'a pas de donnees.
       var coutMetreFEC = computeCoutMetreFEC(ctx, new Date());
-      // Cout par chantier = depenses saisies si renseignees, sinon cout/m reel FEC x metrage
+      // ── Cout/m PAR CHANTIER via sa machine dominante (meme moteur qu'Avancement) ──
+      // Un cout/m GLOBAL unique appliquait ~3 200 XPF/m a TOUS les chantiers : la marge
+      // affichee ne dependait alors QUE du prix de vente, et Kopeto (vendu 12 285 XPF/m
+      // parce que 4,7x plus lent) ressortait a 74 % - completement irreel. Le cout de
+      // la machine dominante reflete la cadence reelle du terrain.
+      var _cmPlanNow = new Date();
+      var _cmPlanFin = new Date(_cmPlanNow.getFullYear(), _cmPlanNow.getMonth(), 0, 23, 59, 59);
+      var _cmPlanMinMonth = _cmPlanNow.getMonth();
+      (ctx.dbRapportsForage || []).forEach(function(r) {
+        if (!r || !r.date_rapport) return;
+        var d = new Date(String(r.date_rapport).substring(0, 10) + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getFullYear() !== _cmPlanNow.getFullYear()) return;
+        if (d.getMonth() < _cmPlanMinMonth) _cmPlanMinMonth = d.getMonth();
+      });
+      var coutParMachinePlan = computeCoutMachines(ctx, new Date(_cmPlanNow.getFullYear(), _cmPlanMinMonth, 1), _cmPlanFin);
+      // Machine dominante par chantier : celle qui y a fore le plus de metres.
+      // chantier_id explicite en priorite, repli lieu/site pour les rapports importes.
+      var machineDomPlan = (function() {
+        var bySite = buildChantierBySite(chantiers);
+        var byChant = {};
+        (ctx.dbRapportsForage || []).forEach(function(r) {
+          if (!r) return;
+          var chId = r.chantier_id;
+          if (chId == null) {
+            var fb = findChantierByLieuMap(r.lieu, bySite);
+            if (fb) chId = fb.id;
+          }
+          if (chId == null) return;
+          var code = String(r.sondeuse_code || "").toUpperCase().trim();
+          if (!code) return;
+          var ck = String(chId);
+          if (!byChant[ck]) byChant[ck] = {};
+          byChant[ck][code] = (byChant[ck][code] || 0) + (parseFloat(r.total_metres) || 0);
+        });
+        var out = {};
+        Object.keys(byChant).forEach(function(ck) {
+          var best = null, max = -1;
+          Object.keys(byChant[ck]).forEach(function(code) { if (byChant[ck][code] > max) { max = byChant[ck][code]; best = code; } });
+          out[ck] = best;
+        });
+        return out;
+      })();
+      function coutMetreChantierPlan(chId) {
+        var code = machineDomPlan[String(chId)];
+        var info = code ? coutParMachinePlan[code] : null;
+        if (info && info.coutMetre > 0) return info.coutMetre;
+        return coutMetreFEC; // repli : chantier sans rapport (a venir) -> cout/m global
+      }
+      // Cout par chantier = depenses saisies si renseignees, sinon cout/m de SA machine
       var depensesChantiers = chantiers.reduce(function(sum, c) {
-        var cout = (parseFloat(c.depensesPrevues) || 0) > 0 ? parseFloat(c.depensesPrevues) : (coutMetreFEC > 0 ? coutMetreFEC * (c.metrage || 0) : 0);
+        var cmC = coutMetreChantierPlan(c.id);
+        var cout = (parseFloat(c.depensesPrevues) || 0) > 0 ? parseFloat(c.depensesPrevues) : (cmC > 0 ? cmC * (c.metrage || 0) : 0);
         return sum + cout;
       }, 0);
       var margeChantiers = (caChantiers > 0 && depensesChantiers > 0) ? Math.round(((caChantiers - depensesChantiers) / caChantiers) * 100) : null;
@@ -9770,13 +9819,15 @@
         ),
         activeTab === "chantiers" && h("div", null,
           viewMode === "liste" ? (function() {
-            // coutMetreFEC est calcule au niveau du composant (partage avec la marge globale).
+            // coutMetreChantierPlan est calcule au niveau du composant (partage avec la marge globale).
             function renderChantierCard(chantier) {
               var ca = chantier.metrage * chantier.prixMetre;
-              // Cout = depenses saisies si renseignees, sinon cout/m reel FEC x metrage
+              // Cout = depenses saisies si renseignees, sinon cout/m de la MACHINE DOMINANTE
+              // du chantier (meme moteur qu'Avancement) : reflete la cadence du terrain.
+              var coutMetreCarte = coutMetreChantierPlan(chantier.id);
               var coutChantier = (parseFloat(chantier.depensesPrevues) || 0) > 0
                 ? parseFloat(chantier.depensesPrevues)
-                : (coutMetreFEC > 0 ? coutMetreFEC * chantier.metrage : 0);
+                : (coutMetreCarte > 0 ? coutMetreCarte * chantier.metrage : 0);
               var marge = ca - coutChantier;
               var margePercent = ca > 0 && coutChantier > 0 ? Math.round((marge / ca) * 100) : null;
               var statusColor = chantier.statut === "Termine" ? "#64748b" : chantier.statut === "En cours" ? "#d97706" : "#a1a1aa";
@@ -9812,7 +9863,7 @@
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#2563eb" } }, fmtNum(ca) + " XPF")
                   ),
-                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6, cursor: coutMetreFEC > 0 ? "help" : "default" }, title: margePercent != null ? ("Marge = CA - cout (" + ((parseFloat(chantier.depensesPrevues) || 0) > 0 ? "depenses saisies" : "cout reel FEC " + fmtNum(Math.round(coutMetreFEC)) + " XPF/m") + ") = " + fmtNum(Math.round(marge)) + " XPF") : "Cout indisponible (renseigne depenses prevues ou attends les donnees compta)" },
+                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6, cursor: coutMetreCarte > 0 ? "help" : "default" }, title: margePercent != null ? ("Marge = CA - cout (" + ((parseFloat(chantier.depensesPrevues) || 0) > 0 ? "depenses saisies" : (machineDomPlan[String(chantier.id)] ? "cout machine " + machineDomPlan[String(chantier.id)] + " : " + fmtNum(Math.round(coutMetreCarte)) + " XPF/m" : "cout/m global FEC " + fmtNum(Math.round(coutMetreCarte)) + " XPF/m (aucun rapport sur ce chantier)")) + ") = " + fmtNum(Math.round(marge)) + " XPF") : "Cout indisponible (renseigne depenses prevues ou attends les donnees compta)" },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Marge"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: margePercent == null ? "#a1a1aa" : (margePercent >= 0 ? "#059669" : "#dc2626") } }, margePercent == null ? "—" : (margePercent + "%"))
                   )
