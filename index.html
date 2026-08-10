@@ -11655,6 +11655,12 @@
       var chargesIndirVarTotal = coutCarburantVL + coutPersonnelHorsTerrain; // reparti par metres
       var totalCAFlotte = 0;
       Object.keys(sondeusesMap).forEach(function(code) { totalCAFlotte += (sondeusesMap[code].caGenere || 0) + (sondeusesMap[code].caFacturationActivites || 0); });
+      // Total des JOURS-MACHINE de la flotte sur la periode : denominateur de la cle
+      // de repartition des charges de structure (cf. commentaire dans la boucle).
+      var totalJoursFlotte = 0;
+      Object.keys(sondeusesMap).forEach(function(code) {
+        totalJoursFlotte += Object.keys(sondeusesMap[code].joursTravailles || {}).length;
+      });
 
       // ── Cout par machine (identique au "Detail par sondeuse") ──
       var out = {};
@@ -11662,13 +11668,20 @@
         var s = sondeusesMap[code];
         var coutCharges = s.coutPersonnel * 0.40;
         var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
-        var caMachine = (s.caGenere || 0) + (s.caFacturationActivites || 0);
-        var partCA = totalCAFlotte > 0 ? (caMachine / totalCAFlotte) : partMetres;
-        var coutIndirect = chargesIndirVarTotal * partMetres + coutChargesFixesTotal * partCA + coutPrimesMetrageTotal * partMetres;
-        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
-        var caTotal = (s.caGenere || 0) + (s.caFacturationActivites || 0);
         // Jours REELLEMENT travailles par la machine (dates distinctes de rapport)
         var nbJoursM = Object.keys(s.joursTravailles || {}).length;
+        // ── CLE DE REPARTITION DES INDIRECTS : les JOURS-MACHINE ────────────────
+        // Les salaires hors terrain, le carburant VL et les frais generaux courent
+        // au TEMPS, pas au metre : un salaire d'atelier coute pareil que la sondeuse
+        // fasse 200 m ou 43 m dans la journee. Les repartir au METRAGE sous-facturait
+        // massivement les terrains durs : FS1 immobilisait 36 % de la capacite a
+        // Kopeto (17 j sur 47) mais ne recevait que 13 % des charges, d'ou une marge
+        // affichee a 74 % completement irreelle - et Tiebaghi payait la difference.
+        // Les PRIMES restent au metrage : elles sont gagnees au metre (paliers).
+        var partJours = totalJoursFlotte > 0 ? (nbJoursM / totalJoursFlotte) : partMetres;
+        var coutIndirect = (chargesIndirVarTotal + coutChargesFixesTotal) * partJours + coutPrimesMetrageTotal * partMetres;
+        var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        var caTotal = (s.caGenere || 0) + (s.caFacturationActivites || 0);
         out[code] = {
           coutMetre: s.metres > 0 ? coutTotal / s.metres : 0,
           coutTotal: coutTotal,
@@ -20561,17 +20574,21 @@
       var netParJourReel = joursTravailles > 0 ? (entreesTempsReel - depensesTempsReel) / joursTravailles : 0;
       var metresParJourReel = joursTravailles > 0 ? totalMetresAll / joursTravailles : 0;
 
-      // Charges indirectes reparties en 2 cles :
-      //  - Carburant VL + personnel hors-equipe -> AU PRORATA DES METRES (lie a l'activite forage)
-      //  - Frais generaux FEC (coutChargesFixesTotal) -> AU PRORATA DU CA (cout de structure suit le CA)
+      // Charges indirectes : UNE SEULE cle, les JOURS-MACHINE.
+      //  - Carburant VL + personnel hors-equipe + frais generaux FEC courent au TEMPS.
+      //  - Les PRIMES restent au metrage (elles se gagnent au metre, par paliers).
       var sumPersonnelTerrainAll = 0;
       Object.keys(sondeusesMap).forEach(function(code) { sumPersonnelTerrainAll += sondeusesMap[code].coutPersonnel * 1.40; });
       var coutPersonnelHorsTerrain = Math.max(0, coutPersonnelTotal - sumPersonnelTerrainAll);
-      var chargesIndirVarTotal = coutCarburantVL + coutPersonnelHorsTerrain; // reparti par metres
+      var chargesIndirVarTotal = coutCarburantVL + coutPersonnelHorsTerrain;
       var chargesIndirectesTotal = chargesIndirVarTotal + coutChargesFixesTotal; // total (pour agregats)
-      // CA total de la flotte (pour repartir les frais generaux par CA)
       var totalCAFlotte = 0;
       Object.keys(sondeusesMap).forEach(function(code) { totalCAFlotte += (sondeusesMap[code].caGenere || 0) + (sondeusesMap[code].caFacturationActivites || 0); });
+      // Total des JOURS-MACHINE de la flotte : denominateur de la cle de repartition.
+      var totalJoursFlotte = 0;
+      Object.keys(sondeusesMap).forEach(function(code) {
+        totalJoursFlotte += Object.keys(sondeusesMap[code].joursTravailles || {}).length;
+      });
       // Diviseur d'affichage (pour CA/jour et Couts/jour) = jours OUVRABLES Lun-Ven
       // de la periode filtree. Fallback 22 si periode 'all' non definie.
       var joursOuvrablesPeriode = joursOuvres > 0 ? joursOuvres : 22;
@@ -20581,15 +20598,20 @@
         var coutCharges = s.coutPersonnel * 0.40;  // 40% charges patronales sur personnel terrain
         var nbJoursMach = Object.keys(s.joursTravailles || {}).length;
         // Indirects variables (carburant VL, perso hors-equipe) -> prorata METRES.
-        // Frais generaux FEC (structure) -> prorata CA de la machine.
         var partMetres = totalMetresAll > 0 ? (s.metres / totalMetresAll) : 0;
-        var caMachine = (s.caGenere || 0) + (s.caFacturationActivites || 0);
-        var partCA = totalCAFlotte > 0 ? (caMachine / totalCAFlotte) : partMetres;
-        // Indirects = variables (prorata metres) + frais generaux FEC (prorata CA)
-        //            + PRIMES de metrage (prorata metres). Sans les primes, la somme des
-        //            couts machines ne reconciliait pas avec le cout/m global -> une vue
-        //            disait "rentable", l'autre "en perte". Maintenant Sigma(machines) = total.
-        var coutIndirect = chargesIndirVarTotal * partMetres + coutChargesFixesTotal * partCA + coutPrimesMetrageTotal * partMetres;
+        var nbJoursMi = Object.keys(s.joursTravailles || {}).length;
+        // ── CLE DE REPARTITION DES INDIRECTS : les JOURS-MACHINE ────────────────
+        // Les salaires hors terrain, le carburant VL et les frais generaux courent
+        // au TEMPS, pas au metre : un salaire d'atelier coute pareil que la sondeuse
+        // fasse 200 m ou 43 m dans la journee. Les repartir au METRAGE sous-facturait
+        // massivement les terrains durs : FS1 immobilisait 36 % de la capacite a
+        // Kopeto (17 j sur 47) mais ne recevait que 13 % des charges, d'ou une marge
+        // affichee a 74 % completement irreelle - et Tiebaghi payait la difference.
+        // Les PRIMES restent au metrage : elles sont gagnees au metre (paliers).
+        // Sigma(machines) = total est conserve : les parts sommant a 1, la somme des
+        // couts machines reconcilie toujours avec le cout/m global.
+        var partJours = totalJoursFlotte > 0 ? (nbJoursMi / totalJoursFlotte) : partMetres;
+        var coutIndirect = (chargesIndirVarTotal + coutChargesFixesTotal) * partJours + coutPrimesMetrageTotal * partMetres;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
