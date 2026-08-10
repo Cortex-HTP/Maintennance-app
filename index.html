@@ -9195,11 +9195,17 @@
         });
         return out;
       })();
+      // ── VISION CASH : meme recalage qu'Avancement ──
+      // Le cout machine est COMPTABLE ; on le multiplie par le ratio decaisse reel /
+      // cout comptable (virements internes SG<->BCI neutralises) pour previsionner ce
+      // qui SORT DE LA BANQUE. Sans FEC importe : repli comptable, libelle inchange.
+      var ratioCashPlan = computeRatioCashCompta(ctx, new Date(_cmPlanNow.getFullYear(), _cmPlanMinMonth, 1), _cmPlanFin);
       function coutMetreChantierPlan(chId) {
         var code = machineDomPlan[String(chId)];
         var info = code ? coutParMachinePlan[code] : null;
-        if (info && info.coutMetre > 0) return info.coutMetre;
-        return coutMetreFEC; // repli : chantier sans rapport (a venir) -> cout/m global
+        var base = (info && info.coutMetre > 0) ? info.coutMetre : coutMetreFEC; // repli : chantier sans rapport (a venir)
+        if (!(base > 0)) return 0;
+        return ratioCashPlan.aDonnees ? base * ratioCashPlan.ratio : base;
       }
       // Cout par chantier = depenses saisies si renseignees, sinon cout/m de SA machine
       var depensesChantiers = chantiers.reduce(function(sum, c) {
@@ -9756,7 +9762,7 @@
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#a78bfa" }), label: "A provisionner", value: fmtNum(totalAprovisionner), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "file-check", size: 32, color: "#059669" }), label: "Docs a renouveler", value: String(docsARenouveler), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel", value: fmtNum(caChantiers), color: "#d97706" }),
-          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#2563eb" }), label: "Marge %", value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
+          h(KPICard, { icon: h(Icon, { name: ratioCashPlan.aDonnees ? "banknote" : "trending-up", size: 32, color: "#2563eb" }), label: ratioCashPlan.aDonnees ? "Marge cash %" : "Marge %", value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
         ),
         h("div", { style: { marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
           h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
@@ -9863,8 +9869,8 @@
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "CA"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: "#2563eb" } }, fmtNum(ca) + " XPF")
                   ),
-                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6, cursor: coutMetreCarte > 0 ? "help" : "default" }, title: margePercent != null ? ("Marge = CA - cout (" + ((parseFloat(chantier.depensesPrevues) || 0) > 0 ? "depenses saisies" : (machineDomPlan[String(chantier.id)] ? "cout machine " + machineDomPlan[String(chantier.id)] + " : " + fmtNum(Math.round(coutMetreCarte)) + " XPF/m" : "cout/m global FEC " + fmtNum(Math.round(coutMetreCarte)) + " XPF/m (aucun rapport sur ce chantier)")) + ") = " + fmtNum(Math.round(marge)) + " XPF") : "Cout indisponible (renseigne depenses prevues ou attends les donnees compta)" },
-                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Marge"),
+                  h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6, cursor: coutMetreCarte > 0 ? "help" : "default" }, title: margePercent != null ? ("Marge = CA - cout (" + ((parseFloat(chantier.depensesPrevues) || 0) > 0 ? "depenses saisies" : (machineDomPlan[String(chantier.id)] ? ("cout " + (ratioCashPlan.aDonnees ? "CASH " : "") + "machine " + machineDomPlan[String(chantier.id)] + " : " + fmtNum(Math.round(coutMetreCarte)) + " XPF/m" + (ratioCashPlan.aDonnees ? " (comptable x ratio cash " + ratioCashPlan.ratio.toFixed(2) + ")" : "")) : ("cout/m global " + (ratioCashPlan.aDonnees ? "CASH " : "FEC ") + fmtNum(Math.round(coutMetreCarte)) + " XPF/m (aucun rapport sur ce chantier)"))) + ") = " + fmtNum(Math.round(marge)) + " XPF") : "Cout indisponible (renseigne depenses prevues ou attends les donnees compta)" },
+                    h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, ratioCashPlan.aDonnees ? "Marge cash" : "Marge"),
                     h("div", { style: { fontWeight: 700, fontSize: 14, color: margePercent == null ? "#a1a1aa" : (margePercent >= 0 ? "#059669" : "#dc2626") } }, margePercent == null ? "—" : (margePercent + "%"))
                   )
                 ),
@@ -29898,7 +29904,22 @@
       // des millions d'iterations -> interface saccadee.
       var pvFinTs = pvFin.getTime(), pvDebutTs = pvDebut.getTime();
       var coutsMachines = useMemo(function() {
-        return computeCoutMachines(ctx, new Date(pvDebutTs), new Date(pvFinTs));
+        var brut = computeCoutMachines(ctx, new Date(pvDebutTs), new Date(pvFinTs));
+        // ── VISION CASH : le devis doit couvrir ce qui SORT DE LA BANQUE ──
+        // Meme recalage que les marges d'Avancement et du Planning : cout comptable
+        // x ratio decaisse reel / cout comptable (virements internes neutralises).
+        // Sans FEC importe, repli comptable silencieux (ratio = 1).
+        var rc = computeRatioCashCompta(ctx, new Date(pvDebutTs), new Date(pvFinTs));
+        if (!rc.aDonnees || !(rc.ratio > 0)) return brut;
+        var out = {};
+        Object.keys(brut).forEach(function(code) {
+          out[code] = Object.assign({}, brut[code], {
+            coutJour: (brut[code].coutJour || 0) * rc.ratio,
+            coutTotal: (brut[code].coutTotal || 0) * rc.ratio,
+            coutMetre: (brut[code].coutMetre || 0) * rc.ratio
+          });
+        });
+        return out;
       }, [pvDebutTs, pvFinTs, ctx.dbRapportsForage, ctx.dbCarburants, ctx.dbEmprunts, ctx.parametres, ctx.pieces, ctx.dbChantiers, ctx.dbEcrCompta, ctx.equipements, ctx.dbPaliers, ctx.dbAffectations, ctx.dbSaisies, ctx.dbRelevesJourn]);
 
       // Machines avec un cout/jour exploitable ("—" = rapports sans code machine, exclu)
