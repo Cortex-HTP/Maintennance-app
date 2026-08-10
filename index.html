@@ -29910,13 +29910,32 @@
         // x ratio decaisse reel / cout comptable (virements internes neutralises).
         // Sans FEC importe, repli comptable silencieux (ratio = 1).
         var rc = computeRatioCashCompta(ctx, new Date(pvDebutTs), new Date(pvFinTs));
-        if (!rc.aDonnees || !(rc.ratio > 0)) return brut;
+        var ratioPV = (rc.aDonnees && rc.ratio > 0) ? rc.ratio : 1;
+        // Carburant sondeuse par machine sur la MEME periode : sert a l'option
+        // "carburant fourni par le client" (un devis carburant client ne doit pas
+        // facturer le gazole de la machine). Meme recalage cash que le reste.
+        var prixLPV = 175;
+        var pmRowPV = (ctx.parametres || []).find(function(pr) { return pr && (pr.cle === "prix_mazout_litre" || pr.categorie === "prix_mazout_litre"); });
+        if (pmRowPV && pmRowPV.valeur) prixLPV = parseFloat(pmRowPV.valeur) || 175;
+        var fuelByCode = {};
+        (ctx.dbCarburants || []).forEach(function(cb) {
+          if (!cb || !cb.date_consommation) return;
+          var t = new Date(String(cb.date_consommation).substring(0, 10) + "T00:00:00").getTime();
+          if (isNaN(t) || t < pvDebutTs || t > pvFinTs) return;
+          var codeCb = String(cb.sondeuse_code || "").toUpperCase().trim();
+          if (!codeCb) return;
+          fuelByCode[codeCb] = (fuelByCode[codeCb] || 0) + (parseFloat(cb.quantite_l) || 0) * prixLPV;
+        });
         var out = {};
         Object.keys(brut).forEach(function(code) {
+          var njPV = brut[code].joursTravailles || 0;
+          var fuelTot = (fuelByCode[String(code).toUpperCase().trim()] || 0) * ratioPV;
           out[code] = Object.assign({}, brut[code], {
-            coutJour: (brut[code].coutJour || 0) * rc.ratio,
-            coutTotal: (brut[code].coutTotal || 0) * rc.ratio,
-            coutMetre: (brut[code].coutMetre || 0) * rc.ratio
+            coutJour: (brut[code].coutJour || 0) * ratioPV,
+            coutTotal: (brut[code].coutTotal || 0) * ratioPV,
+            coutMetre: (brut[code].coutMetre || 0) * ratioPV,
+            carburantTotal: fuelTot,
+            carburantJour: njPV > 0 ? fuelTot / njPV : 0
           });
         });
         return out;
@@ -29928,9 +29947,9 @@
         .sort();
       // Cout/jour moyen de la flotte = total des couts / total des jours-machine
       var flotte = (function() {
-        var ct = 0, nj = 0;
-        machinesPV.forEach(function(c) { ct += coutsMachines[c].coutTotal; nj += coutsMachines[c].joursTravailles; });
-        return { coutJour: nj > 0 ? ct / nj : 0, jours: nj, coutTotal: ct };
+        var ct = 0, nj = 0, cf = 0;
+        machinesPV.forEach(function(c) { ct += coutsMachines[c].coutTotal; nj += coutsMachines[c].joursTravailles; cf += (coutsMachines[c].carburantTotal || 0); });
+        return { coutJour: nj > 0 ? ct / nj : 0, jours: nj, coutTotal: ct, carburantJour: nj > 0 ? cf / nj : 0 };
       })();
 
       // ── Cadences REELLES par site, en JOURS-MACHINE ──────────────────────
@@ -29980,6 +29999,7 @@
       var _cadences = useState(null); var cadOverride = _cadences[0], setCadOverride = _cadences[1];
       var _mob = useState("800000"); var mobStr = _mob[0], setMobStr = _mob[1];
       var _marge = useState(25); var margePct = _marge[0], setMargePct = _marge[1];
+      var _pvCC = useState(false); var pvCarburantClient = _pvCC[0], setPvCarburantClient = _pvCC[1];
       var _alea = useState(10); var aleaPct = _alea[0], setAleaPct = _alea[1];
 
       var cadences = cadOverride || { f: presetsAuto.f, m: presetsAuto.m, d: presetsAuto.d };
@@ -30012,7 +30032,12 @@
       }
       function cadOk(v) { var n = parseFloat(v); return !isNaN(n) && n > 0 ? n : 0; }
 
-      var res = chiffrePV(metrage, cadence, coutJourRetenu, mobilisation, margePct, aleaPct);
+      // ── Carburant fourni par le CLIENT : on retire le gazole du cout/jour ──
+      var carburantJourSel = machineSel === "__flotte__"
+        ? flotte.carburantJour
+        : (coutsMachines[machineSel] ? coutsMachines[machineSel].carburantJour : flotte.carburantJour);
+      var coutJourEffectif = pvCarburantClient ? Math.max(0, coutJourRetenu - carburantJourSel) : coutJourRetenu;
+      var res = chiffrePV(metrage, cadence, coutJourEffectif, mobilisation, margePct, aleaPct);
       var prixConseille = arrondiCom(res.prix);
       var caTotalPV = prixConseille * metrage;
       var margeXpf = caTotalPV - res.coutTotal;
@@ -30073,7 +30098,28 @@
                 })
               ),
               h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 4, lineHeight: 1.5 } },
-                "Cout/jour tire des donnees reelles : consommables + personnel + charges + emprunt + frais generaux.")
+                "Cout/jour tire des donnees reelles : consommables + personnel + charges + emprunt + frais generaux."),
+              // ── Carburant fourni par le client : meme option que la fiche chantier ──
+              h("div", {
+                onClick: function() { setPvCarburantClient(!pvCarburantClient); },
+                style: {
+                  display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", userSelect: "none",
+                  marginTop: 10, padding: "10px 12px", borderRadius: 10,
+                  background: pvCarburantClient ? "rgba(251,191,36,0.10)" : "rgba(255,255,255,0.03)",
+                  border: "1px solid " + (pvCarburantClient ? "rgba(251,191,36,0.40)" : "rgba(255,255,255,0.08)")
+                }
+              },
+                h("div", { style: { width: 17, height: 17, marginTop: 1, flexShrink: 0, borderRadius: 5, background: pvCarburantClient ? "#fbbf24" : "transparent", border: "2px solid " + (pvCarburantClient ? "#fbbf24" : "#52525b"), display: "flex", alignItems: "center", justifyContent: "center" } },
+                  pvCarburantClient ? h(Icon, { name: "check", size: 11, color: "#1c1917" }) : null
+                ),
+                h("div", null,
+                  h("div", { style: { fontSize: 12.5, fontWeight: 700, color: pvCarburantClient ? "#fde68a" : "#d4d4d8" } }, "Carburant fourni par le client"),
+                  h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 2, lineHeight: 1.45 } },
+                    pvCarburantClient
+                      ? ("Gazole retire du cout : -" + fmtNum(Math.round(carburantJourSel)) + " XPF/j (conso reelle " + (machineSel === "__flotte__" ? "moyenne flotte" : machineSel) + " sur la periode). Cout/jour retenu : " + fmtNum(Math.round(coutJourEffectif)) + " XPF/j.")
+                      : "Le gazole de la sondeuse est compris dans le cout/jour (" + fmtNum(Math.round(carburantJourSel)) + " XPF/j sur la periode).")
+                )
+              )
             ),
             h("div", { style: { marginBottom: 14 } },
               h("label", { style: lblPV }, "Difficulte du terrain (= cadence m/jour)"),
