@@ -11897,8 +11897,51 @@
       var vide = { ratio: 1, decaisse: 0, coutCompta: 0, metres: 0, aDonnees: false };
       var ecr = ctx.dbEcrCompta || [];
       if (ecr.length === 0 || !periodStart || !periodEnd) return vide;
-      // 1) Decaisse reel de la periode, virements internes neutralises
-      var decaisse = computeFluxBanque(ecr, periodStart, periodEnd).decaisse;
+      // 1) Decaisse d'EXPLOITATION de la periode.
+      //    Le numerateur du ratio ne doit PAS contenir les sorties de banque qui ne
+      //    sont pas des couts de production : achat de machine (contrepartie classe 2),
+      //    remboursement du CAPITAL des emprunts (16x - les interets, eux, sont deja
+      //    dans le cout comptable), mouvements de comptes courants d'associes (455).
+      //    Sinon, importer un mois de FEC charge d'investissements fait exploser le
+      //    ratio et bascule TOUTES les marges chantier au negatif d'un coup, alors que
+      //    la production n'a pas change. Ces flux restent comptes dans les tuiles
+      //    banque du bandeau (computeFluxBanque), qui disent le vrai resultat cash.
+      //    On groupe TOUTES les ecritures par piece : une piece qui porte du 512 ET
+      //    une contrepartie 2/16/455 est exclue. Sans piece identifiable, on garde
+      //    la ligne (exploitation par defaut : on prefere trop compter que masquer).
+      var grpR = {};
+      var grpSoloR = 0;
+      ecr.forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        var iso = String(e.date_ecriture).substring(0, 10);
+        var d = new Date(iso + "T00:00:00");
+        if (isNaN(d.getTime()) || d.getTime() < periodStart.getTime() || d.getTime() > periodEnd.getTime()) return;
+        var ident = String(e.journal_code || "") + "|" + String(e.piece || "");
+        var cle = ident === "|" ? ("__solo__" + iso + "__" + (grpSoloR++)) : (ident + "|" + iso);
+        if (!grpR[cle]) grpR[cle] = [];
+        grpR[cle].push(e);
+      });
+      var decaisse = 0;
+      Object.keys(grpR).forEach(function(cle) {
+        var lignes = grpR[cle];
+        var jc0 = String(lignes[0].journal_code || "").toUpperCase();
+        var deb512 = 0, cred512 = 0, horsExploit = false;
+        var n512 = 0;
+        lignes.forEach(function(e) {
+          var code = String(e.compte_code || "");
+          if (code.substring(0, 3) === "512") {
+            deb512 += parseFloat(e.debit) || 0;
+            cred512 += parseFloat(e.credit) || 0;
+            n512++;
+            return;
+          }
+          if (code.charAt(0) === "2" || code.substring(0, 2) === "16" || code.substring(0, 3) === "455") horsExploit = true;
+        });
+        if (deb512 === 0 && cred512 === 0) return;
+        if (horsExploit) return; // investissement / capital emprunt / compte courant
+        var circ = (jc0 === "RAN" || n512 < 2) ? 0 : Math.min(deb512, cred512);
+        decaisse += (cred512 - circ);
+      });
       if (decaisse <= 0) return vide;
       // 2) Cout COMPTABLE de la meme periode = somme des couts machine (meme moteur que
       //    les cards de rentabilite), pour que numerateur et denominateur soient alignes.
@@ -13534,7 +13577,7 @@
             var moisBaseCout = _coutMachDebut.toLocaleDateString("fr-FR", { month: "long" }) + " → " + _coutMachFin.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
             var tipBaseCout = (ratioCashAv.aDonnees
               ? ("Vision TRESORERIE : cout/m de la machine dominante de chaque chantier x ratio cash "
-                 + ratioCashAv.ratio.toFixed(2) + " (decaisse reel / cout comptable).")
+                 + ratioCashAv.ratio.toFixed(2) + " (decaisse d'exploitation / cout comptable - hors investissements, capital d'emprunts et comptes courants).")
               : "Vision COMPTABLE : pas de mouvements bancaires importes, ratio cash indisponible.")
               + "\n\nBase de cout : " + moisBaseCout + " (arretee au dernier mois complet, le FEC du mois en cours n'etant pas encore saisi)."
               + "\n\nCe pourcentage vaut 1 - cout/m / prix/m : forer plus de metres augmente le CA ET le cout"
@@ -14303,8 +14346,9 @@
                         ? ("Cout CASH " + libMach + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m"
                            + "\n\nVision tresorerie : cout comptable " + fmtNum(Math.round(coutMComptaChantier)) + " XPF/m"
                            + " x ratio cash " + ratioCashAv.ratio.toFixed(2)
-                           + "\nRatio = decaisse reel " + fmtNum(Math.round(ratioCashAv.decaisse)) + " XPF"
-                           + " / cout comptable " + fmtNum(Math.round(ratioCashAv.coutCompta)) + " XPF sur la meme periode."
+                           + "\nRatio = decaisse d'exploitation " + fmtNum(Math.round(ratioCashAv.decaisse)) + " XPF"
+                           + " / cout comptable " + fmtNum(Math.round(ratioCashAv.coutCompta)) + " XPF sur la meme periode"
+                           + " (hors investissements, capital d'emprunts et comptes courants d'associes)."
                            + "\n\nLa banque ne ventile pas ses mouvements par chantier : le ratio est global,"
                            + " l'ecart de performance entre machines est conserve.")
                         : ("Cout complet " + libMach + " : " + fmtNum(Math.round(coutMChantier)) + " XPF/m"
@@ -19230,7 +19274,7 @@
             var res = await supabase.from("ecritures_compta")
               .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
               .in("exercice", [yearNow - 1, yearNow])
-              .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+              .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
               .range(from, from + pageSize - 1);
             if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); break; }
             if (!res.data || res.data.length === 0) break;
@@ -32182,7 +32226,7 @@
               var ecrRes = await supabase.from("ecritures_compta")
                 .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                 .in("exercice", [yearFEC - 1, yearFEC])
-                .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+                .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
                 .range(fromFEC, fromFEC + 999);
               if (ecrRes.error) { console.warn("Table ecritures_compta:", ecrRes.error.message); break; }
               if (!ecrRes.data || ecrRes.data.length === 0) break;
@@ -32394,7 +32438,7 @@
                 var r = await supabase.from("ecritures_compta")
                   .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                   .in("exercice", [yFEC - 1, yFEC])
-                  .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%")
+                  .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
                   .range(offFEC, offFEC + 999);
                 if (r.error || !r.data || r.data.length === 0) break;
                 acc.push.apply(acc, r.data);
