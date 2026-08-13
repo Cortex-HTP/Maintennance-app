@@ -23444,11 +23444,19 @@
       // ── Helpers UI ──
       var fmtDate = function(d) {
         if (!d) return "-";
+        // Date CALENDAIRE "AAAA-MM-JJ" : formatage TEXTE direct, sans objet Date.
+        // Le passage par l'horloge decale d'un jour selon le fuseau de la machine
+        // (constate en prod : rapport stocke 2026-08-11 affiche "10/08/2026", d'ou
+        // apercu et detail contradictoires). Regle NC : jamais de parsing horloge
+        // pour une date sans heure. Les timestamps complets gardent l'ancien chemin.
+        var sRaw = String(d);
+        var mIso = sRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (mIso) return mIso[3] + "/" + mIso[2] + "/" + mIso[1];
         try {
           var dt = new Date(d);
-          if (isNaN(dt.getTime())) return String(d);
+          if (isNaN(dt.getTime())) return sRaw;
           return dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
-        } catch(e) { return String(d); }
+        } catch(e) { return sRaw; }
       };
       var fmtDateTime = function(d) {
         if (!d) return "-";
@@ -24910,7 +24918,21 @@
                 { label: "Lieu", value: r.lieu },
                 { label: "Sondeur (responsable)", value: sondeurName },
                 { label: "Chantier", value: chantierLabel(r.chantier_id) },
-                { label: "Total metres", value: (r.total_metres || 0) + " m" },
+                // Total metres : on RECALCULE depuis les sondages et on compare au stocke.
+                // Cas reel (rapport 210) : total_metres 0 en base alors que les sondages
+                // sommaient 50 m -> l'ecran affichait "0 m" en silence. Desormais on
+                // affiche la valeur vraie et on signale l'incoherence.
+                { label: "Total metres", value: (function() {
+                    var stocke = parseFloat(r.total_metres) || 0;
+                    var calc = (Array.isArray(r.sondages) ? r.sondages : []).reduce(function(s, x) {
+                      var de = parseFloat(x.de); var a = parseFloat(x.a);
+                      if (isNaN(de)) de = 0; if (isNaN(a)) a = 0;
+                      return s + Math.max(0, a - de);
+                    }, 0);
+                    calc = Math.round(calc * 10) / 10;
+                    if (r.non_productif || Math.abs(stocke - calc) <= 0.1) return stocke + " m";
+                    return calc + " m — INCOHERENT (stocke : " + stocke + " m). Ouvre Edition et Enregistre pour corriger.";
+                  })() },
                 { label: "Total heures", value: fmtMinsHHmm(r.total_heures) },
                 { label: "Carburant", value: carbTotal > 0 ? carbTotal.toFixed(1) + " L" : "-" },
                 { label: "Controles OK", value: r.controles_ok ? "Oui" : "Non" }
