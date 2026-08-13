@@ -15558,24 +15558,6 @@
       // affichees (en pointille) pour ne pas planifier quelqu'un qui sera absent.
       var _congesPe = useState([]);
       var congesPe = _congesPe[0]; var setCongesPe = _congesPe[1];
-      // Releves d'heures du mois affiche (2e source de presence, cf. plus bas)
-      var _rhPe = useState([]);
-      var relevesHeuresPe = _rhPe[0]; var setRelevesHeuresPe = _rhPe[1];
-      useEffect(function() {
-        var cancelled = false;
-        var deb = year + "-" + String(monthIdx + 1).padStart(2, "0") + "-01";
-        var finJ = new Date(year, monthIdx + 1, 0).getDate();
-        var fin = year + "-" + String(monthIdx + 1).padStart(2, "0") + "-" + String(finJ).padStart(2, "0");
-        supabase.from("releves_heures")
-          .select("personnel_id,date_releve,sondeuse_code,total_minutes,absence_type,statut")
-          .gte("date_releve", deb).lte("date_releve", fin)
-          .then(function(res) {
-            if (cancelled) return;
-            if (res.error) { console.warn("[planning-releves]", res.error.message); return; }
-            setRelevesHeuresPe(res.data || []);
-          });
-        return function() { cancelled = true; };
-      }, [year, monthIdx]);
       useEffect(function() {
         var cancelled = false;
         function loadConges() {
@@ -15632,15 +15614,12 @@
       // existe deja) : sert a la gomme, qui doit poser un "masque" persistant au
       // lieu d'une simple suppression, sinon la case se repeint depuis le rapport.
       var rapportCoverPe = {};
-      var chantierParMachineDatePe = {}; // "CODE|AAAA-MM-JJ" -> chantier_id (via rapports)
       (ctx.dbRapportsForage || []).forEach(function(r) {
         if (!r.date_rapport || !Array.isArray(r.equipe) || r.equipe.length === 0) return;
         var d = String(r.date_rapport).substring(0, 10);
         if (d.substring(0, 7) !== year + "-" + (monthIdx < 9 ? "0" : "") + (monthIdx + 1)) return; // skip si pas dans le mois affiche
         var chId = r.chantier_id || siteToChantierPe(r.lieu);
         if (!chId) return;
-        var codeMachR = String(r.sondeuse_code || "").toUpperCase().trim();
-        if (codeMachR) chantierParMachineDatePe[codeMachR + "|" + d] = chId;
         r.equipe.forEach(function(m) {
           if (!m) return;
           // Resolution du personnel_id : via m.id (code) puis via nom canonique
@@ -15664,44 +15643,11 @@
         });
       });
 
-      // ── 2e source de presence : les RELEVES D'HEURES valides du mois ──
-      // Un releve d'heures signe est une presence REELLE, pas une invention : il
-      // complete le planning quand l'equipe du rapport est incomplete (cas du
-      // 10/08 : Steeve et Ulrick avaient leur releve FS1 mais le rapport n'avait
-      // qu'Arnold dans l'equipe -> ils n'apparaissaient pas au planning).
-      // Le chantier est resolu par la MACHINE du releve ce jour-la (rapport de la
-      // meme sondeuse a la meme date) ; sans rapport ce jour-la on ne peint rien
-      // (on ne devine pas un chantier). Les priorites restent : manuel > rapport
-      // > releve, et le releve n'ecrase jamais un masque de gomme.
-      var pidByHashPe = {};
-      (personnel || []).forEach(function(p) {
-        if (!p || p.id == null) return;
-        if (p.code) pidByHashPe[String(hashCodePersonnel(p.code))] = p.id;
-        pidByHashPe[String(p.id)] = p.id;
-      });
-      (relevesHeuresPe || []).forEach(function(rh) {
-        if (!rh || !rh.date_releve) return;
-        if (rh.statut === "refuse") return;
-        // Jour d'absence (conge, maladie... 0 min) : gere par les demandes de conge
-        if (String(rh.absence_type || "").trim() && !(parseInt(rh.total_minutes) > 0)) return;
-        if (!(parseInt(rh.total_minutes) > 0)) return;
-        var dRh = String(rh.date_releve).substring(0, 10);
-        var pidRh = pidByHashPe[String(rh.personnel_id)];
-        if (pidRh == null) return;
-        var codeM = String(rh.sondeuse_code || "").toUpperCase().trim();
-        var chIdRh = codeM ? chantierParMachineDatePe[codeM + "|" + dRh] : null;
-        if (!chIdRh) return;
-        var keyRh = pidRh + "-" + dRh;
-        rapportCoverPe[keyRh] = chIdRh; // couverture auto : la gomme posera un masque
-        if (affMap[keyRh]) return;      // manuel / rapport / masque prioritaires
-        affMap[keyRh] = { chantierId: chIdRh, typeJour: "travail", auto: true, fromReleve: true };
-      });
-
-      // Sources d'affichage du planning employe : affectations manuelles (affMap)
-      // + rapports de forage + releves d'heures VALIDES rattaches a une machine du
-      // jour. Les anciennes sources implicites "releves_journaliers CSV" et
-      // "heuristique chantier recent (60j)" restent RETIREES : elles inventaient
-      // des presences sans preuve.
+      // Sources d'affichage du planning employe : UNIQUEMENT affectations manuelles (affMap)
+      // + rapports de forage (affMap avec fromRapport). Les anciennes sources implicites
+      // "releves_journaliers CSV" et "heuristique chantier recent (60j)" ont ete RETIREES :
+      // elles inventaient des presences (ex: employes affiches "T" Tiebaghi le vendredi
+      // alors qu'ils ne figuraient sur aucun rapport de forage). Choix metier : rapports + manuel.
 
       function getAffectation(empId, dateStr) {
         var entry = affMap[empId + "-" + dateStr];
