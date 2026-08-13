@@ -22466,6 +22466,7 @@
         Object.keys(personnelMap || {}).forEach(function(k) {
           var p = personnelMap[k];
           if (!p) return;
+          if (p._legacy) return;         // liste historique : resolution seulement, pas de suggestion
           if (!isActiveEmploye(p)) return;
           if (p.roleMecanicien) return;  // sous-traitants exclus des dropdowns employes
           var nomComplet;
@@ -22507,6 +22508,14 @@
       if (rapportEq) {
         var linkedIds = new Set((piecesEquipements || []).filter(function(l) { return String(l.equipement_id) === String(rapportEq.Id); }).map(function(l) { return l.piece_id; }));
         var filtered = (pieces || []).filter(function(p) { return linkedIds.has(p.Id); });
+        // 2e etage : si aucune piece n'est LIEE a la machine, on filtre par le champ
+        // Compatible avant de retomber sur le catalogue complet. Sans ce filtre, une
+        // machine sans liaison affichait les pieces de TOUTES les machines dans
+        // l'autocomplete des consommables (pieces "inconnues" pour l'equipe).
+        if (filtered.length === 0) {
+          var codeEqRf = String(rapportEq.Title || "").trim();
+          filtered = (pieces || []).filter(function(p) { return pieceMatchesEquipement(p.Compatible, codeEqRf); });
+        }
         if (filtered.length > 0) piecesForRapport = filtered;
       }
       return h("div", null,
@@ -23237,7 +23246,11 @@
       var personnelMap = (function() {
         var map = {};
         EMPLOYE_LIST.forEach(function(p) {
-          map[String(strToBigintMA(p.id))] = p;
+          // _legacy : cette liste codee en dur ne sert qu'a RESOUDRE les vieux
+          // releves historiques (ids p1..p18). Elle contient des personnes qui ne
+          // sont plus (ou n'ont jamais ete) du personnel WL : elle ne doit JAMAIS
+          // alimenter les suggestions des dropdowns.
+          map[String(strToBigintMA(p.id))] = Object.assign({ _legacy: true }, p);
         });
         try {
           var row = parametres.find(function(pr) { return pr.categorie === "personnel_data"; });
