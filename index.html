@@ -23316,7 +23316,7 @@
         var CONGES_COLS  = "id,demandeur_id,date_demande,lieu,classification,type_conge,nombre_jours,date_debut,date_reprise,raison,statut,created_at";
         var CMDS_COLS    = "id,demandeur_id,date_demande,tel,chantier_id,machine_lieu,lignes,statut,created_at";
         var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,fait_par_employe,date_fait,confirme_at,created_at";
-        var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,sondages_originaux,activites,remarques,remarques_client,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at";
+        var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,sondages_originaux,activites,remarques,remarques_client,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at,non_productif,motif_non_productif";
 
         Promise.all([
           supabase.from("releves_heures").select(RELEVES_COLS).order("created_at", { ascending: false }),
@@ -24184,7 +24184,10 @@
             h("span", { style: { fontSize: 12, color: "#c7d2fe", fontWeight: 700, marginTop: 2 } }, opts.sender)
           ) : null,
           h("div", { style: { fontSize: 12, color: "#a1a1aa", whiteSpace: "nowrap" } }, opts.right || ""),
-          h("div", null, h("span", { style: statutStyle(opts.statut) }, STATUT_LABEL[opts.statut] || opts.statut || "-"))
+          h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+            // Tag optionnel (ex : NON PRODUCTIF) visible SANS ouvrir le detail
+            opts.tag ? h("span", { title: opts.tagTitle || "", style: { fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.5, background: "rgba(251,191,36,0.15)", color: "#fcd34d", border: "1px solid rgba(251,191,36,0.40)", whiteSpace: "nowrap", cursor: opts.tagTitle ? "help" : "default" } }, opts.tag) : null,
+            h("span", { style: statutStyle(opts.statut) }, STATUT_LABEL[opts.statut] || opts.statut || "-"))
         );
       };
 
@@ -24912,7 +24915,9 @@
             rowHeader({
               avatarText: sondLabel,
               name: sondLabel + " - " + sondeurName,
-              sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.total_metres || 0) + " m / " + fmtMinsHHmm(r.total_heures) + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
+              sub: (r.client ? r.client + (r.lieu ? " / " + r.lieu : "") + " - " : "") + (r.non_productif ? "Journee non productive" + (r.motif_non_productif ? " (" + r.motif_non_productif + ")" : "") + " / " : (r.total_metres || 0) + " m / ") + fmtMinsHHmm(r.total_heures) + (sondages.length ? " - " + sondages.length + " sondage" + (sondages.length > 1 ? "s" : "") : "") + " - Quart " + (r.quart || "?"),
+              tag: r.non_productif ? "Non productif" : null,
+              tagTitle: r.non_productif ? ("Journee declaree NON PRODUCTIVE par l'equipe" + (r.motif_non_productif ? " - motif : " + r.motif_non_productif : "")) : null,
               sender: personnelLabel(r.personnel_id),
               right: r.date_rapport ? "Rapport du " + fmtDate(r.date_rapport) : (r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : "-"),
               statut: r.statut,
@@ -24927,6 +24932,7 @@
                 { label: "Sondeuse", value: sondLabel },
                 { label: "Date rapport", value: fmtDate(r.date_rapport) },
                 { label: "Quart", value: r.quart },
+                r.non_productif ? { label: "Non productif", value: r.motif_non_productif || "oui (sans motif)" } : null,
                 { label: "Client", value: r.client },
                 { label: "Lieu", value: r.lieu },
                 { label: "Sondeur (responsable)", value: sondeurName },
