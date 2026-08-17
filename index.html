@@ -439,6 +439,10 @@
     const STATUT_INT_TO_UI = { termine: "Termine", en_cours: "En cours", planifie: "Planifiee", pas_fait: "Pas fait", partiel: "Partiellement terminee", demande_attente: "Demande en attente", pieces_attente: "Pieces a commander", rejetee: "Rejetee", annulee: "Annulee" };
     // Partiellement terminee : stocke en DB comme "en_cours" (compat enum), reconstitue en UI via gamme
     const STATUT_INT_TO_DB = { "Termine": "termine", "En cours": "en_cours", "Planifiee": "planifie", "Pas fait": "pas_fait", "Partiellement terminee": "en_cours", "Demande en attente": "demande_attente", "Pieces a commander": "pieces_attente", "Rejetee": "rejetee", "Annulee": "annulee" };
+    // Statut de DEMANDE d'intervention correspondant a un statut d'intervention (libelle UI).
+    // Doit rester aligne sur le trigger SQL trg_sync_statut_demande (sql_sync_statut_demande_intervention.sql) :
+    // le trigger fait foi en base, cette table ne sert qu'a refleter le statut dans l'UI sans attendre le realtime.
+    const DEMANDE_STATUT_FROM_INT = { "Planifiee": "planifiee", "En cours": "en_cours", "Partiellement terminee": "en_cours", "Pieces a commander": "en_cours", "Termine": "terminee", "Rejetee": "refusee", "Annulee": "refusee", "Pas fait": "planifiee", "Demande en attente": "planifiee" };
     const STATUT_PLAN_TO_UI = { actif: "Actif", en_retard: "En retard", suspendu: "Suspendu", inactif: "Suspendu" };
     const STATUT_PLAN_TO_DB = { "Actif": "actif", "En retard": "en_retard", "Suspendu": "suspendu" };
 
@@ -506,7 +510,8 @@
         ValidePar: r.valide_par || "",
         ValideLe: r.valide_le || "",
         RejeteMotif: r.rejete_motif || "",
-        CreePar: r.cree_par || ""
+        CreePar: r.cree_par || "",
+        DemandeId: r.demande_id != null ? r.demande_id : null
       };
     }
     function interventionToDb(i, equipementIdByCode) {
@@ -540,7 +545,8 @@
         date_demande: i.DateDemande || null,
         valide_par: i.ValidePar || null,
         valide_le: i.ValideLe || null,
-        rejete_motif: i.RejeteMotif || null
+        rejete_motif: i.RejeteMotif || null,
+        demande_id: i.DemandeId != null ? i.DemandeId : null
       };
     }
     function planFromDb(r) {
@@ -24872,6 +24878,7 @@
                   setPlanifInt({
                     demande: c,
                     form: {
+                      DemandeId: c.id,
                       Title: c.type_panne ? (c.type_panne + (c.immatriculation ? " - " + c.immatriculation : "")) : ("Intervention " + (c.immatriculation || "")),
                       Equipement: eq ? eq.Title : (c.immatriculation || ""),
                       EquipementId: c.equipement_id || null,
@@ -27013,8 +27020,9 @@
           equipements: ctx.equipements || [],
           onClose: function() { setPlanifInt(null); },
           onCreated: function(newInt) {
-            // 1) Marque la demande comme planifiee
-            updateInterventionStatut(planifInt.demande.id, "planifiee");
+            // 1) Reflete tout de suite le statut de la demande dans l'UI (le trigger
+            //    SQL trg_sync_statut_demande fait la meme chose en base ; idempotent)
+            updateInterventionStatut(planifInt.demande.id, DEMANDE_STATUT_FROM_INT[newInt.Statut_Intervention] || "planifiee");
             // 2) Ferme la modale
             setPlanifInt(null);
             if (ctx.showToast) ctx.showToast("Intervention creee et planifiee", "success");
