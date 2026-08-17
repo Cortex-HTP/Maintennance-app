@@ -66,6 +66,7 @@
       font-family: 'Inter', system-ui, -apple-system, sans-serif;
       color: var(--text);
       min-height: 100vh;
+      min-height: 100dvh; /* Safari iOS : hauteur reelle visible (barre URL comprise) */
       /* iOS : empeche le scroll horizontal indesirable + respecte les safe-areas (notch, barre Home) */
       overflow-x: hidden;
       max-width: 100vw;
@@ -86,6 +87,10 @@
     ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
     /* Inputs dark by default */
     input, select, textarea { font-family: inherit; color: var(--text); }
+    /* Les images ne debordent jamais de leur conteneur */
+    img { max-width: 100%; }
+    /* Panneaux de modale : hauteur bornee au viewport VISIBLE (dvh) avec repli vh, scroll fluide iOS */
+    .wl-modal-panel { max-height: 90vh; max-height: 90dvh; -webkit-overflow-scrolling: touch; }
     input::placeholder, textarea::placeholder { color: var(--text-dim); }
     /* Dropdown options : forcer le theme sombre dans le popup natif du select */
     select option { background: #242838; color: #fafafa; padding: 6px 10px; }
@@ -132,6 +137,9 @@
     @media (max-width: 1023px) {
       ::-webkit-scrollbar { width: 6px; height: 6px; }
       body { font-size: 14px; }
+      /* Empeche les inputs de forcer la largeur de leur cellule grid/flex (deborde sinon).
+         Limite aux ecrans etroits pour garantir zero changement sur desktop. */
+      input, select, textarea { min-width: 0; }
     }
 
     /* ─── Responsive : mobile (<640) ─── */
@@ -142,8 +150,22 @@
       .scrollable-x::after { content: "← Faites glisser →"; display: block; text-align: center; font-size: 10px; color: rgba(255,255,255,0.35); padding: 4px 0; }
       /* Reset des grilles 2 colonnes vers 1 colonne sur mobile via une classe utilitaire */
       .grid-2-col-mobile { grid-template-columns: 1fr !important; }
+      /* Grilles composites (lignes d'edition) : 2 colonnes souples sur mobile */
+      .grid-stack-2-mobile { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+      /* Bandeau 14 jours (meteo) : 7 colonnes sur 2 rangees sur mobile */
+      .grid-7-col-mobile { grid-template-columns: repeat(7, minmax(0, 1fr)) !important; }
       /* Sidebar overlay quand drawer ouvert */
       .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); z-index: 998; }
+      /* Safari iOS : font-size >= 16px sur les champs pour eviter l'auto-zoom au focus */
+      input, select, textarea { font-size: 16px !important; }
+      /* Modales : quasi plein ecran visible sur mobile */
+      .wl-modal-panel { max-height: 92vh; max-height: 92dvh; }
+      /* Entete de carte Soumissions : compacte sur mobile */
+      .soum-rowheader { gap: 8px !important; padding: 10px !important; }
+      /* Autorise le retour a la ligne sur mobile pour les textes forces en nowrap */
+      .wrap-mobile { white-space: normal !important; }
+      /* Scroll horizontal seulement sur mobile (sur desktop, overflow visible pour ne pas rogner les ombres) */
+      .scroll-x-mobile { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     }
 
     /* Animation drawer */
@@ -1742,7 +1764,7 @@
             ),
             // Section pieces (expanded)
             isExp && !readOnly ? h("div", { style: { marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.06)" } },
-              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 65px 70px", gap: 6, alignItems: "end" } },
+              h("div", { className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr 65px 70px", gap: 6, alignItems: "end" } },
               // Type
               h("div", null,
                 h("div", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 } }, "Type"),
@@ -1981,7 +2003,7 @@
       var modalPad = bp.isMobile ? 16 : 24;
       var modalWidth = bp.isMobile ? "100%" : "min(" + size + "px, 95vw)";
       return h("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: bp.isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: pad } },
-        h("div", { onClick: (e) => e.stopPropagation(), style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(24px) saturate(180%)", WebkitBackdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: bp.isMobile ? "16px 16px 0 0" : 16, padding: modalPad, maxWidth: bp.isMobile ? "100%" : size, width: modalWidth, maxHeight: bp.isMobile ? "92vh" : "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", color: "#fafafa" } },
+        h("div", { onClick: (e) => e.stopPropagation(), className: "wl-modal-panel", style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(24px) saturate(180%)", WebkitBackdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: bp.isMobile ? "16px 16px 0 0" : 16, padding: modalPad, maxWidth: bp.isMobile ? "100%" : size, width: modalWidth, overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", color: "#fafafa" } },
           h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: bp.isMobile ? 14 : 20, paddingBottom: bp.isMobile ? 12 : 16, borderBottom: "1px solid rgba(255,255,255,0.08)", position: "sticky", top: -modalPad, background: "rgba(36, 40, 60, 0.95)", marginLeft: -modalPad, marginRight: -modalPad, marginTop: -modalPad, padding: modalPad + "px " + modalPad + "px " + (bp.isMobile ? 12 : 16) + "px", zIndex: 2 } },
             h("h2", { style: { fontSize: bp.isMobile ? 16 : 18, fontWeight: 700, color: "#fafafa", margin: 0, letterSpacing: "-0.01em" } }, title),
             h("button", { onClick: onClose, "aria-label": "Fermer", style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", fontSize: 18, cursor: "pointer", color: "#cbd5e1", padding: 0, width: bp.isMobile ? 36 : 30, height: bp.isMobile ? 36 : 30, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "\u00D7")),
@@ -2347,7 +2369,7 @@
               ctList.slice(0, 8).map(function(x) {
                 var over = x.s.level === "overdue";
                 var dstr = String(x.s.date).substring(0, 10).split("-").reverse().join("/");
-                return h("div", { key: x.eq.Id, onClick: function() { onNavigate("fiche-equipement", x.eq); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (over ? "rgba(244,63,94,0.30)" : "rgba(245,158,11,0.25)"), borderRadius: 8, cursor: "pointer" } },
+                return h("div", { key: x.eq.Id, onClick: function() { onNavigate("fiche-equipement", x.eq); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (over ? "rgba(244,63,94,0.30)" : "rgba(245,158,11,0.25)"), borderRadius: 8, cursor: "pointer", flexWrap: "wrap" } },
                   h("div", { style: { fontWeight: 600, fontSize: 13, color: "#fafafa" } }, (x.eq.Title || "") + (x.eq.Nom ? " · " + x.eq.Nom : "")),
                   h("span", { style: { fontSize: 12, fontWeight: 700, color: over ? "#fda4af" : "#fde68a", whiteSpace: "nowrap" } }, over ? ("En retard depuis " + dstr) : ("Le " + dstr + " (dans " + x.s.diffJours + " j)")));
               }))
@@ -2361,7 +2383,7 @@
           h(KPICard, { icon: h(Icon, { name: "clock", size: 22, color: "#ffffff" }), label: "Maintenances proches", value: fmtNum(nbAlertesAnticipees), color: nbAlertesAnticipees > 0 ? "#fbbf24" : "#22c55e" }),
           h(KPICard, { icon: h(Icon, { name: "alert-triangle", size: 22, color: "#ffffff" }), label: "Pieces faibles", value: fmtNum(piecesFaibles), color: "#f43f5e", onClick: () => onNavigate("pieces") }),
           h(KPICard, { icon: h(Icon, { name: "bar-chart-2", size: 22, color: "#ffffff" }), label: "Conformite", value: tauxConf + "%", color: tauxConf >= 80 ? "#22c55e" : "#f43f5e" })),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 20, marginBottom: 20 } },
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "alert-triangle", size: 16, color: "#f43f5e" }, "Alertes urgentes")),
             urgents.length === 0 && detailOverdue.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20 } }, "Aucune alerte") :
@@ -2477,7 +2499,7 @@
       };
       return h("div", null,
         h(FormField, { label: "Titre du plan" }, h("input", { style: inputStyle, value: f.Title, onChange: (e) => upd("Title", e.target.value), onBlur: () => upd("Title", capitalizeFirst(f.Title)), placeholder: "Ex: Plan mensuel" })),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
           h(FormField, { label: "Frequence" }, h("select", { style: selectStyle, value: f.Frequence, onChange: (e) => upd("Frequence", e.target.value) },
             freqs.length === 0 ? h("option", { value: "" }, "(aucun, ajoutez dans Parametres)") : freqs.map((x) => h("option", { key: x, value: x }, x)))),
           h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.Statut, onChange: (e) => upd("Statut", e.target.value) },
@@ -2521,7 +2543,7 @@
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "clipboard-list", size: 20 }, "Plans de maintenance"), subtitle: plans.length + " plans au total", action: h(Button, { onClick: openNew }, "+ Nouveau plan") }),
         h("div", { style: { marginBottom: 16 } }, h(SearchInput, { placeholder: "Rechercher un plan...", value: search, onChange: setSearch })),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 12 } },
           filtered.length === 0 ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun plan trouve")) :
             sortByField(filtered, "Title").map((p) => h(Card, { key: p.Id },
               h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 } },
@@ -2783,7 +2805,7 @@
         finally { setSaving(false); }
       };
       return h("div", null,
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 16 } },
             h(FormField, { label: "Titre / Description" }, h("input", { style: inputStyle, value: f.Title, onChange: (e) => upd("Title", e.target.value), onBlur: () => upd("Title", capitalizeFirst(f.Title)), placeholder: "Ex: Vidange D36" })),
             h(FormField, { label: "Equipement" }, h("select", { style: selectStyle, value: f.Equipement, onChange: (e) => upd("Equipement", e.target.value) },
               h("option", { value: "" }, "-- Selectionner --"),
@@ -2862,7 +2884,7 @@
               h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a" } }, "Rapport mecanicien sous-traitant"),
               isSourceMec ? h("span", { style: { fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 999, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)" } }, "DEMANDE SOUS-TRAITANT") : null
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14, marginBottom: 12 } },
               h(FormField, { label: "Urgence" }, h("select", { style: selectStyle, value: f.Urgence, onChange: function(e) { upd("Urgence", e.target.value); } },
                 h("option", { value: "normale" }, "Normale (sous 7 jours)"),
                 h("option", { value: "elevee" }, "Elevee (sous 48h)"),
@@ -3117,7 +3139,7 @@
       const typesDispos = f.Categorie === "Vehicule" ? typesVL : typesEngin;
       const lockedInput = { ...inputStyle, background: "rgba(255,255,255,0.03)", color: "#71717a", cursor: "not-allowed", opacity: 0.7 };
       return h("div", null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
           h(FormField, { label: "Categorie" }, h("select", { style: selectStyle, value: f.Categorie, onChange: (e) => { const c = e.target.value; upd("Categorie", c); const newList = c === "Vehicule" ? typesVL : typesEngin; upd("Type", newList[0] || ""); } },
             ["Engin", "Vehicule"].map((x) => h("option", { key: x, value: x }, x)))),
           h(FormField, { label: "Code / Immatriculation" }, h("input", { style: inputStyle, value: f.Title, onChange: (e) => upd("Title", e.target.value), onBlur: () => upd("Title", formatImmatNC(f.Title)), placeholder: "Ex: 427 686 NC" })),
@@ -3172,7 +3194,7 @@
         h(PageHeader, { title: h(IconText, { icon: "settings", size: 20 }, "Equipements"), subtitle: equipements.length + " equipements (" + nbEngins + " engins / " + nbVL + " vehicules)", action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
           h(Button, { variant: "secondary", onClick: exportTravauxExcel, title: "Exporter tous les travaux a faire + les consommables a acheter en Excel" }, h(IconText, { icon: "file-down", size: 14 }, "Export travaux (Excel)")),
           h(Button, { onClick: openNew }, "+ Nouvel equipement")) }),
-        h("div", { style: { display: "flex", gap: 8, marginBottom: 16 } },
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" } },
           h("button", { onClick: () => setOnglet("Engin"), style: tabStyle(onglet === "Engin") }, h(IconText, { icon: "hard-hat", size: 14 }, "Engins (" + nbEngins + ")")),
           h("button", { onClick: () => setOnglet("Vehicule"), style: tabStyle(onglet === "Vehicule") }, h(IconText, { icon: "car", size: 14 }, "Vehicules (" + nbVL + ")"))),
         h("div", { style: { marginBottom: 16 } }, h(SearchInput, { placeholder: "Rechercher par code, nom, type...", value: search, onChange: setSearch })),
@@ -3190,7 +3212,7 @@
                   h("h3", { style: { margin: 0, fontSize: 16, fontWeight: 700, color: "#fafafa" } }, typeName),
                   h("span", { style: { background: "rgba(129,140,248,0.15)", color: "#a78bfa", padding: "2px 10px", borderRadius: 12, fontSize: 12, fontWeight: 600, border: "1px solid rgba(129,140,248,0.25)" } }, eqs.length + " equipement" + (eqs.length > 1 ? "s" : "")),
                   h("div", { style: { flex: 1, height: 1, background: "rgba(255,255,255,0.08)" } })),
-                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 } },
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 260px), 1fr))", gap: 12 } },
                   eqs.map(function(eq) {
                     var visitesDues = computeVisitesADeclencher(eq, plans, interventions);
                     var alertesAnticipees = computeAlertesAnticipees(eq, plans, interventions);
@@ -3382,10 +3404,10 @@
             (isAdmin && ct) ? h("button", { onClick: reporterPlusUnAn, style: { padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.06)", color: "#e5e7eb" }, title: "Le CT vient d'etre refait : reporter l'echeance a dans 1 an" }, "CT fait -> +1 an") : null
           );
         }()) : null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 20, marginBottom: 24 } },
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, "Informations generales"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               [["Code", eq.Title], ["Categorie", eq.Categorie || "Engin"], ["Type", eq.Type], ["Marque", eq.Marque || "\u2014"], ["Modele", eq.Modele || "\u2014"], ["Numero de serie", eq.NumeroSerie || "\u2014"], ["Annee", eq.Annee || "\u2014"], ["Localisation", eq.Localisation || "\u2014"], ["Horametre", fmtNum(hmActuel) + " h"], ["KM", fmtNum(kmActuel) + " km"], ["Dernier entretien H", eq.DernierEntretienH ? fmtNum(eq.DernierEntretienH) + " h" : "\u2014"], ["Dernier entretien KM", eq.DernierEntretienKM ? fmtNum(eq.DernierEntretienKM) + " km" : "\u2014"], ["Mise en service", eq.DateMiseEnService || "\u2014"]].map(([label, val]) =>
                 h("div", { key: label },
                   h("div", { style: { fontSize: 11, color: "#71717a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" } }, label),
@@ -3393,7 +3415,7 @@
             h("div", { style: { marginTop: 16 } }, h(StatusBadge, { status: eq.Statut }))),
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, "Statistiques"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, textAlign: "center" } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12, textAlign: "center" } },
               [["#a78bfa", "rgba(167,139,250,0.10)", "rgba(167,139,250,0.20)", fmtNum(eqInterventions.length), "Interventions"], ["#60a5fa", "rgba(96,165,250,0.10)", "rgba(96,165,250,0.20)", fmtNum(preventives.length), "Preventives"], ["#f43f5e", "rgba(244,63,94,0.10)", "rgba(244,63,94,0.20)", fmtNum(curatives.length), "Curatives"], ["#22c55e", "rgba(34,197,94,0.10)", "rgba(34,197,94,0.20)", fmtMoney(coutTotal), "Cout total"]].map(([c, bg, br, v, l]) =>
                 h("div", { key: l, style: { padding: 16, background: bg, borderRadius: 12, border: "1px solid " + br } },
                   h("div", { style: { fontSize: 22, fontWeight: 700, color: c } }, v),
@@ -3445,7 +3467,7 @@
               h(IconText, { icon: "book-open", size: 16, color: "#a78bfa" }, "Carnet de bord")
             ),
             // 4 mini KPIs
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 16 } },
               h("div", { style: { padding: 14, background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 10 } },
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "MTBF"),
                 h("div", { style: { fontSize: 22, fontWeight: 800, color: "#a5b4fc", marginTop: 4 } }, mtbf != null ? fmtNum(mtbf) + " h" : "N/A"),
@@ -3595,7 +3617,7 @@
             cadence != null
               ? h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 14 } }, "Cadence d'usage : " + (cadenceTravail != null ? (cadenceTravail.toFixed(1) + " h/jour travaille (Lun-Jeu) · " + cadence.toFixed(1) + " h/j calendaire") : (cadence.toFixed(1) + " h/jour (moyenne 30j)")))
               : h("div", { style: { fontSize: 11, color: "#fda4af", marginBottom: 14, fontStyle: "italic" } }, "Cadence inconnue - estimation basee sur 8 h/jour ouvre"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 12 } },
               plansForEq.map(function(p) {
                 var m = String(p.Frequence || "").match(/([0-9]+)/);
                 var freqNum = m ? parseInt(m[1], 10) : 0;
@@ -3788,7 +3810,7 @@
                       }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
                     ) : null)))))),
         showReleveModal && h(Modal, { title: "Nouveau releve pour " + eq.Title, onClose: () => setShowReleveModal(false), size: 500 },
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
             h(FormField, { label: "Date" }, h("input", { type: "date", style: inputStyle, value: newReleve.Date, onChange: (e) => setNewReleve((p) => ({ ...p, Date: e.target.value })) })),
             h(FormField, { label: "Technicien" }, h("input", { style: inputStyle, value: newReleve.Technicien, onChange: (e) => setNewReleve((p) => ({ ...p, Technicien: e.target.value })), placeholder: "Nom" })),
             h(FormField, { label: "Horametre (h)" }, h("input", { type: "number", style: inputStyle, value: newReleve.Horametre, onChange: (e) => setNewReleve((p) => ({ ...p, Horametre: e.target.value })), placeholder: "Ex: 8300" })),
@@ -3994,7 +4016,7 @@
           )
         ) : null,
         h(Card, { style: { marginBottom: 16 } },
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 12 } },
             h(SearchInput, { placeholder: "Titre...", value: sT, onChange: setST }),
             h(SearchInput, { placeholder: "Machine...", value: sM, onChange: setSM }),
             h(SearchInput, { placeholder: "Date...", value: sD, onChange: setSD }),
@@ -4296,7 +4318,7 @@
         ),
 
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "clock", size: 32, color: "#a78bfa" }), label: "Heures totales", value: heuresTotales.toFixed(1) + " h", color: "#a78bfa", hint: nbInterv + " interventions" }),
           h(KPICard, { icon: h(Icon, { name: "coins", size: 32, color: "#22c55e" }), label: "A facturer", value: fmtMoney(Math.round(facturable)), color: "#22c55e", hint: (heuresTotales > 0 ? Math.round(facturable / heuresTotales) + " XPF/h moyen" : "") }),
           h(KPICard, { icon: h(Icon, { name: "alert-circle", size: 32, color: "#fbbf24" }), label: "Demandes en attente", value: String(demandesEnAttente.length), color: "#fbbf24", hint: demandesTotal + " demandes au total" }),
@@ -4470,7 +4492,7 @@
         try { await onSave(f); } finally { setSaving(false); }
       };
       return h("div", null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
           h(FormField, { label: "Reference" }, h("input", { style: inputStyle, value: f.Reference, onChange: (e) => upd("Reference", e.target.value), onBlur: () => upd("Reference", f.Reference ? f.Reference.toUpperCase() : ""), placeholder: "Ex: FIL-003" })),
           h(FormField, { label: "Designation" }, h("input", { style: inputStyle, value: f.Designation, onChange: (e) => upd("Designation", e.target.value), onBlur: () => upd("Designation", capitalizeFirst(f.Designation)), placeholder: "Ex: Filtre hydraulique" })),
           h(FormField, { label: "Categorie" }, h("select", { style: selectStyle, value: f.Categorie, onChange: (e) => upd("Categorie", e.target.value) },
@@ -4593,7 +4615,7 @@
           h("div", { style: { background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#fde68a" } },
             h(IconText, { icon: "info", size: 13, color: "#fde68a" }, "Pieces ajoutees au stock depuis une commande materiel mecanicien (saisie libre, hors catalogue). Valide pour ajouter au catalogue, refuse pour supprimer.")
           ),
-          h(Card, { style: { padding: 0, overflow: "hidden" } },
+          h(Card, { style: { padding: 0, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
             h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
               h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
                 ["Reference", "Designation", "Categorie", "Compatible", "Stock", "Actions"].map(function(x, i) {
@@ -4629,7 +4651,7 @@
         unknown.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } },
           h(Icon, { name: "check-circle", size: 32, color: "#86efac" }),
           h("div", { style: { marginTop: 8, fontSize: 14 } }, "Tous les consommables saisis sont deja dans le catalogue."))) :
-        h(Card, { style: { padding: 0, overflow: "hidden" } },
+        h(Card, { style: { padding: 0, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
           h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
             h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
               ["Reference", "Designation", "Saisies", "Qte totale", "Machines", "Derniere", ""].map(function(x, i) {
@@ -5046,7 +5068,7 @@
               h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Prix unitaire (XPF)"),
               h("input", { type: "number", style: inputStyle, value: prix, onChange: function(e) { setPrix(e.target.value); }, placeholder: "Ex: 12500", autoFocus: true })
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } },
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } },
               h("div", null,
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 3 } }, "Date observation"),
                 h("input", { type: "date", style: inputStyle, value: date, onChange: function(e) { setDate(e.target.value); } })
@@ -5220,7 +5242,7 @@
           action: h(Button, { onClick: function() { setEditing({ libelle: "", montant_mensuel: 0, categorie: "Autre", actif: true, notes: "" }); setShowForm(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle charge"))
         }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "calendar", size: 22, color: "#ffffff" }), label: "Total mensuel", value: fmtMoney(totalMensuel), color: "#f97316" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 22, color: "#ffffff" }), label: "Total annuel", value: fmtMoney(totalAnnuel), color: "#f43f5e" }),
           h(KPICard, { icon: h(Icon, { name: "list", size: 22, color: "#ffffff" }), label: "Charges actives", value: String(charges.filter(function(c) { return c.actif !== false; }).length) + " / " + String(charges.length), color: "#818cf8" })
@@ -5230,7 +5252,7 @@
         cats.map(function(cat) {
           var list = byCat[cat];
           var totalCat = list.filter(function(c) { return c.actif !== false; }).reduce(function(s, c) { return s + (parseFloat(c.montant_mensuel) || 0); }, 0);
-          return h(Card, { key: cat, style: { padding: 0, overflow: "hidden", marginBottom: 14 } },
+          return h(Card, { key: cat, style: { padding: 0, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch", marginBottom: 14 } },
             h("div", { style: { padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" } },
               h("h3", { style: { margin: 0, fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#a78bfa" } }, cat + " (" + list.length + ")"),
               h("div", { style: { fontSize: 13, color: "#a1a1aa" } }, "Sous-total : ", h("strong", { style: { color: "#f97316" } }, fmtMoney(totalCat) + " / mois"))
@@ -5427,7 +5449,7 @@
         // Form composer
         h(Card, { style: { marginBottom: 20 } },
           h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#e0e7ff" } }, h(IconText, { icon: "send", size: 14, color: "#818cf8" }, "Nouveau message")),
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 } },
             h("div", null,
               h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Destinataire"),
               h("select", { value: destType, onChange: function(e) { setDestType(e.target.value); setDestPersonnelId(""); }, style: inputStyle },
@@ -6111,7 +6133,7 @@
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les sondeurs ou ajoutees ici (engins + vehicules)", action: h(Button, { onClick: openCreate }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle saisie")) }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Total litres", value: fmtNum(totalL.toFixed(1)) + " L", color: "#86efac" }),
           h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout total", value: fmtMoney(totalCout), color: "#22c55e" }),
           h(KPICard, { icon: h(Icon, { name: "hard-hat", size: 22, color: "#ffffff" }), label: "Engins (sondeuses)", value: fmtNum(totalEnginsL.toFixed(1)) + " L", color: "#fbbf24" }),
@@ -6699,7 +6721,7 @@
             style: { padding: "10px 18px", borderRadius: 10, border: "1px solid " + (gpsEnabled ? "rgba(244,63,94,0.40)" : "rgba(34,197,94,0.50)"), background: gpsEnabled ? "rgba(244,63,94,0.15)" : "linear-gradient(135deg, #16a34a, #22c55e)", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }
           }, gpsEnabled ? "Desactiver" : "Activer la geoloc")
         ),
-        h("div", { style: { display: "grid", gridTemplateColumns: "240px 1fr", gap: 16 } },
+        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "240px 1fr", gap: 16 } },
           // Colonne gauche : categories regroupees par app (Employes / Admin)
           h(Card, { style: { padding: 12 } },
             CATEGORY_GROUPS.map(function(g) {
@@ -6724,7 +6746,7 @@
               : selected === "rf_activites_facturables"
               ? h(ActivitesFacturablesEditor, null)
               : h(React.Fragment, null,
-                  h("div", { style: { display: "flex", gap: 8, marginBottom: 16 } },
+                  h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" } },
                     h("input", { style: { ...inputStyle, flex: 1 }, value: newValeur, placeholder: "Nouvelle valeur...", onChange: (e) => setNewValeur(e.target.value), onKeyDown: (e) => e.key === "Enter" && handleAdd() }),
                     h(Button, { onClick: handleAdd, disabled: saving || !newValeur.trim() }, "+ Ajouter")),
                   liste.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune valeur") :
@@ -6846,7 +6868,7 @@
           h("span", null, "Chaque tarif = un type d'activite (ex: ATTENTE, DEPLACEMENT), un prix horaire (XPF), et une duree minimum en minutes en dessous de laquelle l'activite n'est pas facturee (0 = toujours facturée).")
         ),
         // Formulaire ajout
-        h("div", { style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, marginBottom: 16, padding: 12, background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.20)", borderRadius: 8, alignItems: "end" } },
+        h("div", { className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, marginBottom: 16, padding: 12, background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.20)", borderRadius: 8, alignItems: "end" } },
           h("div", null,
             h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4 } }, "Libellé activité"),
             h("select", { style: Object.assign({}, inputSt, { width: "100%" }), value: newLibelle, onChange: function(e) { setNewLibelle(e.target.value); } },
@@ -6868,7 +6890,7 @@
         tarifs.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun tarif configuré.") :
         h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
           tarifs.map(function(t) {
-            return h("div", { key: t.id, style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, alignItems: "center", padding: "10px 14px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.20)", borderRadius: 8 } },
+            return h("div", { key: t.id, className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "1.5fr 1fr 0.8fr auto", gap: 8, alignItems: "center", padding: "10px 14px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.20)", borderRadius: 8 } },
               h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, t.libelle),
               h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                 h("input", { type: "number", defaultValue: t.prixHoraire, onBlur: function(e) { if (parseFloat(e.target.value) !== t.prixHoraire) handleUpdate(t, "prix", e.target.value); }, style: Object.assign({}, inputSt, { width: "100%", textAlign: "right", fontFamily: "monospace", color: "#86efac", fontWeight: 700 }) }),
@@ -6968,7 +6990,7 @@
                 h("div", { style: { fontWeight: 700, fontSize: 14 } }, entityLabel + " : " + (item.data.Title || item.data.Reference || "")),
                 h("span", { style: { fontSize: 11, color: "#71717a" } }, new Date(item.submittedAt).toLocaleDateString("fr-FR"))
               ),
-              isEditing ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, marginBottom: 10 } },
+              isEditing ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 10, marginBottom: 10 } },
                 keys.map(function(key) {
                   return h("div", { key: key },
                     h("label", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", display: "block", marginBottom: 4 } }, keyLabels[key] || key),
@@ -7140,7 +7162,7 @@
           h(KPICard, { icon: h(Icon, { name: "check-circle", size: 32, color: "#059669" }), label: "Approuvees ce mois", value: String(approvedThisMonth), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "x-circle", size: 32, color: "#dc2626" }), label: "Refusees ce mois", value: String(rejectedThisMonth), color: "#dc2626" })
         ),
-        h("div", { style: { display: "flex", gap: 8, marginBottom: 20 } },
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } },
           h("button", { onClick: function() { setTab("pending"); }, style: tabStyle(tab === "pending") }, h(Icon, { name: "clock", size: 16 }), "En attente (" + pending.length + ")"),
           h("button", { onClick: function() { setTab("history"); }, style: tabStyle(tab === "history") }, h(Icon, { name: "history", size: 16 }), "Historique")
         ),
@@ -7441,7 +7463,7 @@
       var isSousTraitantAuto = _roleMec[0] && _typeContrat[0] === "Auto-entrepreneur";
 
       return h("div", null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 16 } },
           h(FormField, { label: "Nom" }, h("input", { style: Object.assign({}, inputStyle, { textTransform: "uppercase" }), value: _nom[0], onChange: function(e) { _nom[1](e.target.value.toUpperCase()); }, placeholder: "NOM DE FAMILLE" })),
           h(FormField, { label: "Prenom" }, h("input", { style: Object.assign({}, inputStyle, { textTransform: "uppercase" }), value: _prenom[0], onChange: function(e) { _prenom[1](e.target.value.toUpperCase()); }, placeholder: "PRENOM" })),
           h(FormField, { label: "Date de naissance" }, h("input", { type: "date", style: inputStyle, value: _dateNaissance[0], onChange: function(e) { _dateNaissance[1](e.target.value); } })),
@@ -7463,7 +7485,7 @@
             h("div", { style: { fontSize: 14, fontWeight: 800, color: _dateFinContrat[0] ? "#fda4af" : "#cbd5e1" } }, "Fin de contrat"),
             _dateFinContrat[0] ? h("span", { style: { fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(244,63,94,0.18)", color: "#fda4af" } }, "EX-EMPLOYE") : null
           ),
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
             h(FormField, { label: "Date de fin (debauche / licenciement / fin CDD)" }, h("input", { type: "date", style: inputStyle, value: _dateFinContrat[0], onChange: function(e) { _dateFinContrat[1](e.target.value); } })),
             h(FormField, { label: "Motif (optionnel)" }, h("select", { style: selectStyle, value: _motifFin[0], onChange: function(e) { _motifFin[1](e.target.value); } },
               h("option", { value: "" }, "-- Selectionner --"),
@@ -7840,7 +7862,7 @@
         );
 
         var infosContent = h(React.Fragment, null,
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 16 } },
             h("div", { style: { background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 14 } },
               h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 4 } }, "Date de naissance"),
               h("div", { style: { fontSize: 14, fontWeight: 600 } }, formatDate(emp.dateNaissance))
@@ -7961,7 +7983,7 @@
             // Sites et machines
             sitesList.length > 0 ? h("div", { style: { marginBottom: 18 } },
               h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Sites et machines"),
-              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
                 h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                   h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
                     ["Site", "Machines", "Jours", "Metrage"].map(function(x, i) {
@@ -8006,7 +8028,7 @@
             // Liste des rapports
             h("div", null,
               h("div", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Rapports (" + rapports.length + ")"),
-              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+              h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
                 rapports.map(function(r, i) {
                   var sondages = Array.isArray(r.sondages) ? r.sondages.length : 0;
                   return h("div", { key: r.id || i, onClick: function() { setFicheRapportDetail(r); }, style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.04)" : "none", cursor: "pointer", transition: "background 0.1s" }, onMouseOver: function(e) { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }, onMouseOut: function(e) { e.currentTarget.style.background = "transparent"; } },
@@ -8096,7 +8118,7 @@
           h("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 } },
             h("button", { onClick: function() { telechargerRapportPDF(r); }, title: "Telecharger ce rapport en PDF", style: { padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid rgba(129,140,248,0.4)", background: "rgba(99,102,241,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 6 } },
               h(Icon, { name: "file-down", size: 14, color: "#c4b5fd" }), "Exporter PDF")),
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 12 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 8, marginBottom: 12 } },
             infoCell("Sondeuse", r.sondeuse_code),
             infoCell("Client", r.client),
             infoCell("Lieu", r.lieu),
@@ -8505,7 +8527,7 @@
 
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "users", size: 20 }, "Organisation"), subtitle: saving ? "Sauvegarde en cours..." : "Groupes de travail et localisation", action: h("div", { style: { display: "flex", gap: 10 } }, h(Button, { variant: "secondary", onClick: function() { onNavigate("personnel"); } }, h(IconText, { icon: "user-round", size: 14 }, "Personnel")), h(Button, { onClick: addGroup }, h(IconText, { icon: "plus", size: 14 }, "Nouveau groupe"))) }),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 20 } },
           // Left column
           h("div", { style: { display: "flex", flexDirection: "column", gap: 12 } },
             h(Card, null,
@@ -9665,17 +9687,17 @@
         if (f._type === "decl") {
           return h(Modal, { title: f.id ? "Modifier la declaration" : "Nouvelle declaration", onClose: closeModal },
             h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Montant (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.montant, onChange: function(e) { upd("montant", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Recurrence" }, h("select", { style: selectStyle, value: f.recurrence, onChange: function(e) { upd("recurrence", e.target.value); } },
                 ["Mensuel", "Trimestriel", "Semestriel", "Annuel"].map(function(x) { return h("option", { key: x, value: x }, x); })
               ))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Debut periode" }, h("input", { type: "date", style: inputStyle, value: f.dateDebutPeriode || "", onChange: function(e) { upd("dateDebutPeriode", e.target.value); } })),
               h(FormField, { label: "Fin periode" }, h("input", { type: "date", style: inputStyle, value: f.dateFinPeriode || "", onChange: function(e) { upd("dateFinPeriode", e.target.value); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.status, onChange: function(e) { upd("status", e.target.value); } },
                 ["A venir", "Fait"].map(function(x) { return h("option", { key: x, value: x }, x); })
               ))
@@ -9690,7 +9712,7 @@
         if (f._type === "ren") {
           return h(Modal, { title: f.id ? "Modifier le renouvellement" : "Nouveau renouvellement", onClose: closeModal },
             h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Date expiration" }, h("input", { type: "date", style: inputStyle, value: f.dateExpiration || "", onChange: function(e) { upd("dateExpiration", e.target.value); } })),
               h(FormField, { label: "Delai alerte (jours)" }, h("input", { type: "number", style: inputStyle, value: f.delaiAlerte, onChange: function(e) { upd("delaiAlerte", parseInt(e.target.value) || 0); } }))
             ),
@@ -9704,25 +9726,25 @@
         if (f._type === "chant") {
           var caPreview = (f.metrage || 0) * (f.prixMetre || 0);
           return h(Modal, { title: f.id ? "Modifier le chantier" : "Nouveau chantier", onClose: closeModal, size: 650 },
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
               h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
               h(FormField, { label: "Email contact client (secours - les signataires des rapports sont prioritaires)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
               h(FormField, { label: "Jour de cloture facturation" }, h("input", { type: "number", min: 1, max: 31, style: inputStyle, value: f.jourCloture != null ? f.jourCloture : 25, onChange: function(e) { upd("jourCloture", parseInt(e.target.value) || 25); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut || "", onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin || "", onChange: function(e) { upd("dateFin", e.target.value); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Metrage (m)" }, h("input", { type: "number", style: inputStyle, value: f.metrage, onChange: function(e) { upd("metrage", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix au metre (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.prixMetre, onChange: function(e) { upd("prixMetre", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
             ),
             champCarburantClient(f, upd),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Depenses prevues (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
                 ["A venir", "En cours", "Termine"].map(function(x) { return h("option", { key: x, value: x }, x); })
@@ -9758,7 +9780,7 @@
 
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "calendar", size: 20 }, "Planning"), subtitle: "Declarations, Renouvellements et Chantiers", action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouveau")) }),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#a78bfa" }), label: "A provisionner", value: fmtNum(totalAprovisionner), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "file-check", size: 32, color: "#059669" }), label: "Docs a renouveler", value: String(docsARenouveler), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel", value: fmtNum(caChantiers), color: "#d97706" }),
@@ -9783,7 +9805,7 @@
           h(Card, { style: { marginBottom: 16, background: "rgba(251, 191, 36, 0.10)", borderLeft: "4px solid #fbbf24", padding: 16 } },
             h("div", { style: { fontSize: 13, fontWeight: 600, color: "#92400e" } }, "Cumul annuel declarations : " + fmtMoney(decCumul))
           ),
-          viewMode === "liste" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 } },
+          viewMode === "liste" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 260px), 1fr))", gap: 16 } },
             declarations.map(function(decl) {
               return h(Card, { key: decl.id, style: { borderLeft: "4px solid " + (decl.status === "Fait" ? "#059669" : "#d97706") } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 } },
@@ -9804,7 +9826,7 @@
           ) : renderAnnuel()
         ),
         activeTab === "renouvellements" && h("div", null,
-          viewMode === "liste" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 } },
+          viewMode === "liste" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 260px), 1fr))", gap: 16 } },
             renouvellements.map(function(renewal) {
               var status = computeRenouvellementStatus(renewal);
               var statusColor = status === "Valide" ? "#059669" : status === "Expire bientot" ? "#d97706" : "#dc2626";
@@ -9852,7 +9874,7 @@
                     h("button", { onClick: function() { setToDelete({ type: "chant", id: chantier.id, titre: chantier.titre }); }, style: actionBtnStyle, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14, color: "#dc2626" }))
                   )
                 ),
-                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 12, fontSize: 13 } },
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 120px), 1fr))", gap: 8, marginBottom: 12, fontSize: 13 } },
                   h("div", { style: { background: "rgba(255,255,255,0.04)", padding: 10, borderRadius: 6 } },
                     h("div", { style: { color: "#a1a1aa", marginBottom: 4, fontSize: 11 } }, "Metrage"),
                     h("div", { style: { fontWeight: 700, fontSize: 14 } }, fmtNum(chantier.metrage) + " m")
@@ -9880,7 +9902,7 @@
                 )
               );
             }
-            var _gridCh = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 };
+            var _gridCh = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 16 };
             return chantiers.length > 0
               ? h("div", { style: _gridCh }, chantiers.map(renderChantierCard))
               : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier");
@@ -10768,7 +10790,7 @@
             h("div", { style: { fontSize: 22, fontWeight: 700, color: "#fcd34d" } }, alerteRows.length)
           )
         ) : null,
-        rows.length > 0 ? h("div", { style: { maxHeight: 400, overflowY: "auto", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+        rows.length > 0 ? h("div", { style: { maxHeight: 400, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
           h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
             h("thead", { style: { position: "sticky", top: 0, background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(8px)", zIndex: 1 } },
               h("tr", null,
@@ -13435,15 +13457,15 @@
 
         return h(Modal, { onClose: closeModalAv, title: f.id ? "Modifier le chantier" : "Nouveau chantier" },
           h("div", { style: { display: "grid", gap: 12 } },
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
               h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
               h(FormField, { label: "Email contact client (secours - les signataires des rapports sont prioritaires)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
               h(FormField, { label: "Jour de cloture facturation" }, h("input", { type: "number", min: 1, max: 31, style: inputStyle, value: f.jourCloture != null ? f.jourCloture : 25, onChange: function(e) { upd("jourCloture", parseInt(e.target.value) || 25); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Date debut" }, h("input", { type: "date", style: inputStyle, value: f.dateDebut, onChange: function(e) { upd("dateDebut", e.target.value); } })),
               h(FormField, { label: "Date fin" }, h("input", { type: "date", style: inputStyle, value: f.dateFin, onChange: function(e) { upd("dateFin", e.target.value); } }))
             ),
@@ -13507,7 +13529,7 @@
             });
           }
           return h("div", { onClick: function() { setVitPopover(null); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300, padding: 16 } },
-            h("div", { onClick: function(e) { e.stopPropagation(); }, style: { background: "rgba(28,30,42,0.98)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: 22, maxWidth: 540, width: "100%", boxShadow: "0 24px 70px rgba(0,0,0,0.55)" } },
+            h("div", { onClick: function(e) { e.stopPropagation(); }, className: "wl-modal-panel", style: { background: "rgba(28,30,42,0.98)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: 22, maxWidth: 540, width: "100%", overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 24px 70px rgba(0,0,0,0.55)" } },
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
                 h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   h(Icon, { name: "zap", size: 18, color: "#a5b4fc" }),
@@ -13516,7 +13538,7 @@
                 h("button", { onClick: function() { setVitPopover(null); }, style: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "inline-flex" } }, h(Icon, { name: "x", size: 18, color: "#a1a1aa" }))
               ),
               h("div", { style: { fontSize: 11.5, color: "#71717a", marginBottom: 18 } }, "Metrage realise / jours travailles (m/j) et / semaines (m/sem)."),
-              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 } },
+              h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 } },
                 h("div", null,
                   h("div", { style: { fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } }, "Moyenne / jour"),
                   _rowsRender(rowsJour, _mj, "#c7d2fe")
@@ -13529,7 +13551,7 @@
             )
           );
         }()) : null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#a78bfa" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#059669" }), label: "Avancement global", value: avancementGlobal + "%", color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "move", size: 32, color: "#d97706" }), label: "Metrage realise", value: fmtNum(totalRealiseAll) + " m", color: "#d97706" }),
@@ -13655,7 +13677,7 @@
                     h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")
                   ),
                   // Ligne objectif / realisation / avancement site
-                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 10 } },
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 12, marginBottom: 10 } },
                     h("div", null,
                       h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Objectif site"),
                       ctxAv.isAdmin ? h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
@@ -14510,7 +14532,7 @@
                           if (v >= 1000) return Math.round(v / 1000) + " k";
                           return String(Math.round(v));
                         }
-                        return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 } },
+                        return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 8 } },
                           KpiTile({
                             icon: "zap", accent: "#a78bfa",
                             label: "Vitesse actuelle",
@@ -15031,7 +15053,7 @@
             function _fdate(s) { if (!s) return "-"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
             return h("details", { style: { marginTop: 24 } },
               h("summary", { style: { cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#6ee7b7", padding: "6px 0", userSelect: "none" } }, "Termines (" + _term.length + ")"),
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12, marginTop: 12, opacity: 0.85 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 12, marginTop: 12, opacity: 0.85 } },
                 _term.map(function(c) {
                   var real = getRealise(c.id);
                   var obj = c.metrage || 0;
@@ -15073,7 +15095,7 @@
                     h("span", { style: { fontSize: 17, fontWeight: 800, color: "#fafafa" } }, grp.site),
                     h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginLeft: "auto", textTransform: "uppercase", letterSpacing: 0.5 } }, grp.chantiers.length + " machines")
                   ),
-                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 } },
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 12 } },
                     h("div", null,
                       h("div", { style: { fontSize: 10, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Objectif site"),
                       ctxAv.isAdmin ? h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
@@ -15340,7 +15362,7 @@
                     h("div", { style: { fontSize: 11, fontWeight: 800, color: margePrev >= 0 ? "#a5b4fc" : "#fda4af", textTransform: "uppercase", letterSpacing: 1.2 }, title: ratioCashAv.aDonnees ? ("Vision TRESORERIE : metres a produire pour couvrir les DECAISSEMENTS attribues au chantier.\n\nCout cash " + fmtNum(Math.round(coutMPrev)) + " XPF/m = cout comptable " + fmtNum(Math.round(coutMetreChantier(chantier.id))) + " XPF/m x ratio cash " + ratioCashAv.ratio.toFixed(2) + ".") : "Vision comptable (pas encore de mouvements bancaires importes)." },
                       "Point mort estime" + (ratioCashAv.aDonnees ? " · cash" : ""))
                   ),
-                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 8 } },
+                  h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 160px), 1fr))", gap: 14, marginBottom: 8 } },
                     // Point mort total
                     h("div", null,
                       h("div", { style: { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Total a faire"),
@@ -15366,7 +15388,7 @@
                   h("div", { style: { fontSize: 10, color: "#71717a", borderTop: "1px solid rgba(99,102,241,0.15)", paddingTop: 8 } }, "Cout estime " + fmtNum(coutTotalEstime) + " XPF · " + Math.round(coutMetreGlobalEstime) + " XPF/m moyen 90j (personnel + charges patronales + charges fixes + emprunts + carburant + primes + consommables)")
                 ) : null,
 
-                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 } },
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 160px), 1fr))", gap: 10 } },
                   h("div", { style: { background: "rgba(167,139,250,0.08)", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(167,139,250,0.18)" } },
                     h("div", { style: { fontSize: 10, fontWeight: 800, color: "#c4b5fd", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 } }, "Metrage prevu"),
                     h("div", { style: { fontSize: 20, fontWeight: 900, color: "#fafafa", fontFamily: "monospace" } }, fmtNum(metragePrev) + " m"),
@@ -15809,7 +15831,7 @@
           subtitle: "Selectionnez un chantier puis peignez le calendrier"
         }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "users", size: 32, color: "#a78bfa" }), label: "Employes", value: String(personnel.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#059669" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "calendar-check", size: 32, color: "#d97706" }), label: "Affectations ce mois", value: String(totalAffectations), color: "#d97706" })
@@ -16201,7 +16223,7 @@
           subtitle: "Mutualises au prorata sur toutes les machines actives (calcul cout au metre)"
         }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 16, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "landmark", size: 32, color: "#818cf8" }), label: "Emprunts actifs", value: String(emprunts.filter(function(e) { return e.statut === "actif"; }).length), color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#f59e0b" }), label: "Mensualites totales / mois", value: fmtNum(Math.round(totalMensActifs)) + " XPF", color: "#f59e0b" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#a78bfa" }), label: "Capital initial cumule", value: fmtNum(Math.round(totalCapital)) + " XPF", color: "#a78bfa" }),
@@ -16373,13 +16395,13 @@
       var inputStyle = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
 
       return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
-        h("div", { style: { background: "rgba(36, 40, 60, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: 28, maxWidth: 560, width: "100%", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 12px 60px rgba(0,0,0,0.6)" } },
+        h("div", { className: "wl-modal-panel", style: { background: "rgba(36, 40, 60, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: 28, maxWidth: 560, width: "100%", overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 12px 60px rgba(0,0,0,0.6)" } },
           h("div", { style: { fontSize: 17, fontWeight: 700, color: "#fafafa", marginBottom: 20 } }, editing ? "Modifier l'emprunt" : "Nouvel emprunt"),
           h("div", { style: { marginBottom: 14 } },
             h("label", { style: labelStyle }, "Libelle *"),
             h("input", { type: "text", value: form.libelle, onChange: function(e) { update("libelle", e.target.value); }, placeholder: "ex: Pret BCI Sondeuse D38", style: inputStyle, required: true })
           ),
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
             h("div", null,
               h("label", { style: labelStyle }, "Montant total (XPF)"),
               h("input", { type: "number", min: 0, step: 1000, value: form.montant_total, onChange: function(e) { update("montant_total", e.target.value); }, style: inputStyle })
@@ -16389,7 +16411,7 @@
               h("input", { type: "number", min: 0, step: 0.01, value: form.taux_interet, onChange: function(e) { update("taux_interet", e.target.value); }, style: inputStyle })
             )
           ),
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
             h("div", null,
               h("label", { style: labelStyle }, "Duree (mois)"),
               h("input", { type: "number", min: 0, step: 1, value: form.duree_mois, onChange: function(e) { update("duree_mois", e.target.value); }, style: inputStyle })
@@ -16402,7 +16424,7 @@
           h("div", { style: { fontSize: 11, color: "#a78bfa", marginBottom: 8, fontStyle: "italic" } },
             "Astuce : remplis 2 des 3 champs (debut, fin, duree), le 3e se calcule automatiquement."
           ),
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
             h("div", null,
               h("label", { style: labelStyle }, "Date debut"),
               h("input", { type: "date", value: form.date_debut, onChange: function(e) { update("date_debut", e.target.value); }, style: inputStyle })
@@ -16584,7 +16606,7 @@
           h(Button, { variant: "secondary", onClick: exportCSV }, h(IconText, { icon: "download", size: 14 }, "Export CSV"))
         ),
         // KPIs synth du pret
-        selected ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 } },
+        selected ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 16 } },
           h("div", { style: { padding: 12, background: "rgba(36, 40, 60, 0.85)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)" } },
             h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Capital emprunte"),
             h("div", { style: { fontSize: 17, fontWeight: 700, color: "#fafafa", marginTop: 4 } }, fmtNum(Math.round(selected.montant_total || 0)) + " XPF")
@@ -16677,7 +16699,7 @@
 
       return h("div", null,
         // KPIs synth
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "calendar-days", size: 32, color: "#818cf8" }), label: "Total a payer sur 24 mois", value: fmtNum(Math.round(totalCumul)) + " XPF", color: "#818cf8" }),
           h(KPICard, { icon: h(Icon, { name: "trending-up", size: 32, color: "#f59e0b" }), label: "Mensualite ce mois", value: fmtNum(Math.round(monthsData[0].total)) + " XPF", color: "#f59e0b" }),
           h(KPICard, { icon: h(Icon, { name: "trending-down", size: 32, color: "#86efac" }), label: "Fins de prets a venir", value: String(monthsData.reduce(function(s, m) { return s + m.finishing.length; }, 0)), color: "#86efac" })
@@ -16801,7 +16823,7 @@
 
       return h("div", null,
         // Mode selector
-        h("div", { style: { display: "flex", gap: 8, marginBottom: 20 } },
+        h("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } },
           h("button", { onClick: function() { setMode("anticipe"); },
             style: { padding: "10px 16px", border: "none", background: mode === "anticipe" ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.04)", color: "#fafafa", cursor: "pointer", fontSize: 13, fontWeight: 600, borderRadius: 8, fontFamily: "inherit" }
           }, h(IconText, { icon: "fast-forward", size: 14 }, "Remboursement anticipe")),
@@ -16814,7 +16836,7 @@
           actifs.length === 0 ? h("div", { style: { padding: 30, color: "#71717a", textAlign: "center" } }, "Aucun pret actif a simuler.") :
           h("div", { style: { background: "rgba(36, 40, 60, 0.85)", borderRadius: 12, border: "1px solid var(--border)", padding: 20 } },
             h("div", { style: { fontSize: 14, fontWeight: 700, color: "#e5e7eb", marginBottom: 16 } }, "Que se passe-t-il si je rembourse une partie par anticipation ?"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 } },
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 } },
               h("div", null,
                 h("label", { style: labelStyle }, "Pret a simuler"),
                 h("select", { value: selectedId, onChange: function(e) { setSelectedId(e.target.value); }, style: inputStyle },
@@ -16828,7 +16850,7 @@
             ),
             sim1 ? h("div", { style: { background: "rgba(124,58,237,0.10)", border: "1px solid rgba(167,139,250,0.3)", borderRadius: 10, padding: 16 } },
               h("div", { style: { fontSize: 13, fontWeight: 700, color: "#a5b4fc", marginBottom: 12 } }, "Resultat de la simulation"),
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 } },
                 h("div", null,
                   h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase" } }, "Capital restant avant"),
                   h("div", { style: { fontSize: 16, fontWeight: 700, color: "#fafafa" } }, fmtNum(Math.round(sim1.capRestant)) + " XPF")
@@ -16851,7 +16873,7 @@
         ) : h("div", null,
           h("div", { style: { background: "rgba(36, 40, 60, 0.85)", borderRadius: 12, border: "1px solid var(--border)", padding: 20 } },
             h("div", { style: { fontSize: 14, fontWeight: 700, color: "#e5e7eb", marginBottom: 16 } }, "Que se passe-t-il si je rajoute un nouvel emprunt ?"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 } },
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 } },
               h("div", null,
                 h("label", { style: labelStyle }, "Montant (XPF)"),
                 h("input", { type: "number", min: 0, step: 100000, value: newE.montant, onChange: function(e) { setNewE(Object.assign({}, newE, { montant: e.target.value })); }, placeholder: "ex: 10000000", style: inputStyle })
@@ -16867,7 +16889,7 @@
             ),
             sim2Mens > 0 ? h("div", { style: { background: "rgba(124,58,237,0.10)", border: "1px solid rgba(167,139,250,0.3)", borderRadius: 10, padding: 16 } },
               h("div", { style: { fontSize: 13, fontWeight: 700, color: "#a5b4fc", marginBottom: 12 } }, "Impact du nouvel emprunt"),
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 } },
                 h("div", null,
                   h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase" } }, "Mensualite nouvel emprunt"),
                   h("div", { style: { fontSize: 16, fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(sim2Mens)) + " XPF")
@@ -17916,7 +17938,7 @@
           demandesConge: demandesConge
         }) : null,
         // KPIs (onglet Primes)
-        primesTab === "primes" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 } },
+        primesTab === "primes" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#a78bfa" }), label: "Prime totale payable", value: fmtNum(Math.round(grandTotal)) + " XPF", color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "users", size: 32, color: "#059669" }), label: "Employes primes", value: String(recapList.length), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "calculator", size: 32, color: "#d97706" }), label: "Prime moyenne", value: fmtNum(Math.round(avgPrime)) + " XPF", color: "#d97706" }),
@@ -17937,7 +17959,7 @@
           )
         ),
         // ── Tableau recapitulatif par employe (toutes sites) ──
-        primesTab === "primes" && h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", marginBottom: 24, boxShadow: "var(--shadow-sm)" } },
+        primesTab === "primes" && h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch", marginBottom: 24, boxShadow: "var(--shadow-sm)" } },
           h("div", { style: { padding: "16px 16px 0", fontSize: 14, fontWeight: 700, color: "#e5e7eb" } }, "Recapitulatif par employe - " + selectedMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
           recapList.length === 0 ?
             h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontSize: 13 } }, "Aucune prime calculee pour cette periode") :
@@ -18020,7 +18042,7 @@
         // Detail table for selected site
         primesTab === "primes" && (!displaySite ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun site configure.") :
         primeData.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", background: "rgba(36, 40, 60, 0.45)", backdropFilter: "blur(12px)", borderRadius: 8, border: "1px solid var(--border)" } }, "Aucune prime pour ce site sur cette periode.") :
-        h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", boxShadow: "var(--shadow-sm)" } },
+        h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch", boxShadow: "var(--shadow-sm)" } },
           h("table", { style: { width: "100%", borderCollapse: "collapse" } },
             h("thead", null,
               h("tr", null,
@@ -18515,11 +18537,11 @@
 
         return h(Modal, { onClose: closeModal, title: f.id ? "Modifier l'utilisateur" : "Nouvel utilisateur" },
           h("div", { style: { display: "grid", gap: 12 } },
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Nom complet" }, h("input", { style: inputStyle, value: f.nom, onChange: function(e) { upd("nom", e.target.value); } })),
               h(FormField, { label: "Email" }, h("input", { type: "email", style: inputStyle, value: f.email, onChange: function(e) { upd("email", e.target.value); } }))
             ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Role" }, h("select", { style: selectStyle, value: f.role, onChange: function(e) {
                 var newRole = e.target.value;
                 upd("role", newRole);
@@ -18554,7 +18576,7 @@
                   h("button", { onClick: deselectAllPages, style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" } }, "Tout deselectionner")
                 )
               ),
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 6 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 6 } },
                 ALL_PAGES.filter(function(page) {
                   // Hide admin-only pages for non-admin roles
                   if (f.role !== "Administrateur" && page.adminOnly) return false;
@@ -18581,7 +18603,7 @@
                       h(Icon, { name: "key-round", size: 14, color: "#f9a8d4" }),
                       h("span", null, "Detail Soumissions employes - quelles sections cet utilisateur peut traiter ?")
                     ),
-                    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 } },
+                    h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 6 } },
                       SOUMISSIONS_SUBPAGES.map(function(sub) {
                         var subChecked = (f.pagesAutorisees || []).indexOf(sub.key) >= 0;
                         return h("label", { key: sub.key, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: subChecked ? "rgba(236,72,153,0.12)" : "rgba(0,0,0,0.30)", border: "1px solid " + (subChecked ? "rgba(236,72,153,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#e5e7eb", transition: "all 0.15s" } },
@@ -18624,7 +18646,7 @@
           )
         }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 24 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "users", size: 32, color: "#a78bfa" }), label: "Total utilisateurs", value: String(users.length), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "user-check", size: 32, color: "#059669" }), label: "Actifs", value: String(users.filter(function(u) { return u.statut === "Actif"; }).length), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "user-x", size: 32, color: "#dc2626" }), label: "Inactifs / Suspendus", value: String(users.filter(function(u) { return u.statut !== "Actif"; }).length), color: "#dc2626" })
@@ -18755,7 +18777,7 @@
       };
 
       return h("div", null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
           h(FormField, { label: "Titre / Objet" },
             h("input", { style: inputStyle, value: f.titre, onChange: (e) => upd("titre", e.target.value), placeholder: "Ex: Remplacement pompe hydraulique D36" })),
           h(FormField, { label: "Categorie" },
@@ -18947,7 +18969,7 @@
         h(PageHeader, { title: h(IconText, { icon: "wallet", size: 20 }, "Demandes de financement"), subtitle: isAdmin ? demandes.length + " demande" + (demandes.length > 1 ? "s" : "") + " au total" : "Vos demandes personnelles",
           action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle demande")) }),
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 20 } },
           h(KPICard, { icon: h(Icon, { name: "send", size: 22, color: "#ffffff" }), label: "En attente", value: String(enAttente), color: enAttente > 0 ? "#fbbf24" : "#22c55e" }),
           h(KPICard, { icon: h(Icon, { name: "hourglass", size: 22, color: "#ffffff" }), label: "Montant en attente", value: fmtMoney(montantEnAttente), color: montantEnAttente > 0 ? "#fbbf24" : "#22c55e" }),
           h(KPICard, { icon: h(Icon, { name: "check-circle", size: 22, color: "#ffffff" }), label: "Approuvees", value: String(counts.approuvee), color: "#22c55e" }),
@@ -20919,7 +20941,7 @@
         )) :
         h(React.Fragment, null,
           // KPIs
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 14 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14, marginBottom: 14 } },
             kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total", "Annuel projete : " + Math.round(metragesAnnuelProj).toLocaleString("fr-FR") + " m" + (nbChantiersPlanifies > 0 ? " (planning)" : " (extrapolation)")),
             kpiCard("green", "coins", fmtCaCompact(caYTD + caFactYTD) + " XPF", "CA " + now.getFullYear() + " (" + daysElapsed + "j)", "Metrage : " + fmtCaCompact(caYTD) + " + Activites : " + fmtCaCompact(caFactYTD) + " XPF · Periode (" + periodLabelShort + ") : " + fmtCaCompact(caPeriode) + " XPF"),
             kpiCard("red", "trending-up", fmtCaCompact(caAnnuelProj) + " XPF", "CA annuel projete", (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? " - mois : " + fmtCaCompact(caProjPeriode) + " XPF" : " - " + periodLabelShort + " : " + fmtCaCompact(caPeriode) + " XPF")),
@@ -20964,7 +20986,7 @@
                 )
               ),
               withMarge.length === 0 ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20, fontSize: 13, margin: 0 } }, "Aucune machine avec CA sur cette periode.") :
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 10 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 360px), 1fr))", gap: 10 } },
                 withMarge.map(function(x, i) {
                   var st = rankColSt(i, withMarge.length);
                   // Marge TRESO/jour : CA/jour - cout CASH impute (cout treso au metre x m/j)
@@ -21090,7 +21112,7 @@
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
           //  ci-dessus est la reference.)
           // Evolution + Activites
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: Object.assign({}, sectionStyle, { display: "flex", flexDirection: "column" }) },
               h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trending-up", size: 16, color: "#a78bfa" }), isMonthlyView ? "Evolution metrage mensuel" : "Evolution metrage journalier"),
               chartData.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12, flex: 1 } }, "Pas assez de donnees") :
@@ -21328,7 +21350,7 @@
             )
           ),
           // Top consommables + Top sondeurs
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: sectionStyle },
               h("h3", { style: Object.assign({}, sectionTitleStyle, { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }) },
                 h("span", { style: { display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "package-x", size: 16, color: "#a78bfa" }), "Top consommables utilises"),
@@ -21918,7 +21940,7 @@
               ),
               (function() {
                 var soldeAujourdhui = soldeManuel != null ? soldeManuel : (nbEcrBanque > 0 ? soldeBanqueLive : (trMois[now2.getMonth()] ? trMois[now2.getMonth()].solde : soldeInit));
-                return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 14 } },
+                return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 8, marginBottom: 14 } },
                 h("div", { style: { padding: "10px 12px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", borderRadius: 8 } },
                   h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Solde aujourd'hui"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: soldeAujourdhui >= 0 ? "#c7d2fe" : "#fda4af", fontFamily: "monospace" } }, fmtCaTr(soldeAujourdhui) + " XPF"),
@@ -22036,7 +22058,7 @@
                       var det = x.detail || {};
                       var detailRow = expanded ? h("tr", { key: "d" + i, style: { background: "rgba(0,0,0,0.20)" } },
                         h("td", { colSpan: 6, style: { padding: "10px 16px" } },
-                          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 } },
+                          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 } },
                             // Colonne encaissements
                             h("div", null,
                               h("div", { style: { fontSize: 10, color: "#86efac", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 8, borderBottom: "1px solid rgba(34,197,94,0.30)", paddingBottom: 4 } }, "Encaissements"),
@@ -22284,7 +22306,7 @@
         return h("div", { style: { marginBottom: 12 } }, h("label", { style: labelS }, label), content);
       }
       return h(Modal, { title: "Edition releve d'heures #" + releve.id, onClose: onClose, size: 600 },
-        h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
           row("Date", h("input", { type: "date", style: inputS, value: f.date_releve, onChange: function(e) { upd("date_releve", e.target.value); } })),
           row("Employe", h("select", { style: inputS, value: f.personnel_id, onChange: function(e) { upd("personnel_id", e.target.value); } },
             personnel.map(function(p) { return h("option", { key: p.id, value: p.id }, (p.prenom || "") + " " + (p.nom || "")); })
@@ -22556,7 +22578,7 @@
 
           // ── Section Chantier ──
           h("h3", { style: sectionTitleStyle }, h(Icon, { name: "briefcase", size: 14, color: "#a78bfa" }), "Chantier"),
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 12 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 12 } },
             h("label", { style: labelStyleEdit }, "Client", h("input", { type: "text", value: form.client, onChange: function(e) { update("client", e.target.value); }, style: inputStyleEdit })),
             h("label", { style: labelStyleEdit }, "Lieu (chantier)", (function() {
               var titres = [], seen = {};
@@ -22608,7 +22630,7 @@
           h("h3", { style: sectionTitleStyle }, h(Icon, { name: "users", size: 14, color: "#a78bfa" }), "Equipe (" + (form.equipe || []).length + ")"),
           (form.equipe || []).map(function(m, idx) {
             var isSondeur = m.isSondeur || (m.role && String(m.role).toLowerCase() === "sondeur");
-            return h("div", { key: "eq-" + idx, style: { display: "grid", gridTemplateColumns: "auto 1fr 1fr 90px auto", alignItems: "center", gap: 10, padding: 10, background: isSondeur ? "rgba(245,158,11,0.08)" : "rgba(99,102,241,0.06)", border: "1px solid " + (isSondeur ? "rgba(245,158,11,0.30)" : "rgba(129,140,248,0.30)"), borderRadius: 8, marginBottom: 6 } },
+            return h("div", { key: "eq-" + idx, className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "auto 1fr 1fr 90px auto", alignItems: "center", gap: 10, padding: 10, background: isSondeur ? "rgba(245,158,11,0.08)" : "rgba(99,102,241,0.06)", border: "1px solid " + (isSondeur ? "rgba(245,158,11,0.30)" : "rgba(129,140,248,0.30)"), borderRadius: 8, marginBottom: 6 } },
               h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: isSondeur ? "linear-gradient(135deg,#f59e0b,#f97316)" : "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 800, fontSize: 11 } }, ((m.nom || "?").split(" ").map(function(w) { return w[0]; }).filter(Boolean).slice(0, 2).join("")).toUpperCase()),
               h("input", { type: "text", list: "rf-personnel-list", value: m.nom || "", placeholder: "Nom", onChange: function(e) {
                 var v = e.target.value;
@@ -22790,7 +22812,7 @@
             // Le commentaire (a.commentaire_facturable) est texte libre lie a la decision.
             var fact = a.facturable;
             return h("div", { key: "ac-" + idx, style: { marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
-              h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 80px auto", gap: 8, alignItems: "center" } },
+              h("div", { className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr 80px auto", gap: 8, alignItems: "center" } },
                 h("select", { value: a.libelle || "FORATION", onChange: function(e) { updateList("activites", idx, "libelle", e.target.value); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, fontWeight: 600 }) },
                   RF_TYPES_ACTIVITE.map(function(t) { return h("option", { key: t, value: t }, t); }),
                   a.libelle && RF_TYPES_ACTIVITE.indexOf(a.libelle) < 0 ? h("option", { key: "_custom", value: a.libelle }, a.libelle) : null
@@ -22840,7 +22862,7 @@
           h("h3", { style: sectionTitleStyle }, h(Icon, { name: "package-x", size: 14, color: "#a78bfa" }), "Consommables perdus / casses (" + (form.consommables_perdus || []).length + ")"),
           (form.consommables_perdus || []).length === 0 ? h("p", { style: { color: "#a1a1aa", fontStyle: "italic", fontSize: 12, marginBottom: 8 } }, "Aucun") :
           (form.consommables_perdus || []).map(function(c, idx) {
-            return h("div", { key: "co-" + idx, style: { display: "grid", gridTemplateColumns: "2fr 1fr 80px auto", gap: 8, alignItems: "center", marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
+            return h("div", { key: "co-" + idx, className: "grid-stack-2-mobile", style: { display: "grid", gridTemplateColumns: "2fr 1fr 80px auto", gap: 8, alignItems: "center", marginBottom: 6, padding: 8, background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8 } },
               h("input", { type: "text", list: "rf-pieces-list", value: c.designation || c.nom || "", placeholder: "Designation", onChange: function(e) {
                 var v = e.target.value;
                 updateList("consommables_perdus", idx, "designation", v);
@@ -22949,7 +22971,7 @@
             "Cree a partir de la demande #" + demande.id + (demande.urgence ? " (urgence " + demande.urgence + ")" : "") + " - les champs ci-dessous sont pre-remplis et modifiables."
           )
         ),
-        h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
           // Titre (full width)
           h("div", { style: { gridColumn: "1 / -1" } },
             h("label", { style: labelS }, "Titre de l'intervention *"),
@@ -24171,7 +24193,7 @@
         // Si on a un sender (envoye par), on insere une colonne centrale ; sinon 4 colonnes classiques.
         var hasSender = !!opts.sender;
         var gridCols = hasSender ? "auto 1fr auto auto auto" : "auto 1fr auto auto";
-        return h("div", { style: { display: "grid", gridTemplateColumns: gridCols, alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
+        return h("div", { className: "soum-rowheader", style: { display: "grid", gridTemplateColumns: gridCols, alignItems: "center", gap: 14, padding: "12px 14px", background: "rgba(0,0,0,0.20)", border: "1px solid " + (opts.isExpanded ? "rgba(129,140,248,0.50)" : "rgba(255,255,255,0.07)"), borderRadius: 10, marginBottom: opts.isExpanded ? 4 : 8, cursor: "pointer", transition: "border-color 0.15s" },
           onClick: opts.onClick },
           h("div", { style: { width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: avatarFontSize, color: "white", flexShrink: 0, padding: "0 4px", textAlign: "center", lineHeight: 1 } }, avatarTxt),
           h("div", { style: { minWidth: 0 } },
@@ -24179,12 +24201,12 @@
             h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2 } }, opts.sub)
           ),
           // Envoye par (centre)
-          hasSender ? h("div", { style: { fontSize: 11, color: "#a1a1aa", whiteSpace: "nowrap", display: "flex", flexDirection: "column", alignItems: "flex-end", borderLeft: "1px solid rgba(255,255,255,0.06)", paddingLeft: 14 } },
+          hasSender ? h("div", { className: "wrap-mobile", style: { fontSize: 11, color: "#a1a1aa", whiteSpace: "nowrap", display: "flex", flexDirection: "column", alignItems: "flex-end", borderLeft: "1px solid rgba(255,255,255,0.06)", paddingLeft: 14, minWidth: 0, overflow: "hidden" } },
             h("span", { style: { fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 } }, "Envoye par"),
             h("span", { style: { fontSize: 12, color: "#c7d2fe", fontWeight: 700, marginTop: 2 } }, opts.sender)
           ) : null,
-          h("div", { style: { fontSize: 12, color: "#a1a1aa", whiteSpace: "nowrap" } }, opts.right || ""),
-          h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+          h("div", { className: "wrap-mobile", style: { fontSize: 12, color: "#a1a1aa", whiteSpace: "nowrap", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" } }, opts.right || ""),
+          h("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" } },
             // Tag optionnel (ex : NON PRODUCTIF) visible SANS ouvrir le detail
             opts.tag ? h("span", { title: opts.tagTitle || "", style: { fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.5, background: "rgba(251,191,36,0.15)", color: "#fcd34d", border: "1px solid rgba(251,191,36,0.40)", whiteSpace: "nowrap", cursor: opts.tagTitle ? "help" : "default" } }, opts.tag) : null,
             h("span", { style: statutStyle(opts.statut) }, STATUT_LABEL[opts.statut] || opts.statut || "-"))
@@ -24196,7 +24218,7 @@
         return h("div", { style: { padding: 20, background: "rgba(99,102,241,0.04)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 10, marginBottom: 12, marginTop: -4 } }, children);
       };
       var detailGrid = function(items) {
-        return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12, fontSize: 13 } },
+        return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12, marginBottom: 12, fontSize: 13 } },
           items.filter(function(it) { return it && it.value != null && it.value !== ""; }).map(function(it, i) {
             return h("div", { key: i },
               h("div", { style: { color: "#a1a1aa", fontSize: 11, marginBottom: 2 } }, it.label),
@@ -24758,7 +24780,7 @@
                           )
                         )
                       ),
-                      photos.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))", gap: 6, marginTop: 8 } },
+                      photos.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 72px), 1fr))", gap: 6, marginTop: 8 } },
                         photos.map(function(url, pi) {
                           return h("a", { key: pi, href: url, target: "_blank", rel: "noopener", style: { display: "block" } },
                             h("img", { src: url, alt: "P" + (pi + 1), style: { width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 6, border: "1px solid rgba(255,255,255,0.10)" } })
@@ -24831,7 +24853,7 @@
               c.description ? h("div", null, sectionTitle("Description"), h("div", { style: { fontSize: 13, color: "#cbd5e1", padding: 12, background: "rgba(0,0,0,0.20)", borderRadius: 8, whiteSpace: "pre-wrap" } }, c.description)) : null,
               photos.length > 0 ? h("div", null,
                 sectionTitle("Photos (" + photos.length + ")"),
-                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8 } },
+                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 120px), 1fr))", gap: 8 } },
                   photos.map(function(p, i) {
                     var url = typeof p === "string" ? p : (p && p.url) || "";
                     return h("a", { key: i, href: url, target: "_blank", rel: "noopener", style: { display: "block" } },
@@ -25692,7 +25714,7 @@
             )
           ),
           // KPIs
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 } },
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 10, marginBottom: 16 } },
             h("div", { style: { background: "rgba(129,140,248,0.10)", border: "1px solid rgba(129,140,248,0.30)", borderRadius: 10, padding: "10px 14px" } },
               h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Employes"),
               h("div", { style: { fontSize: 18, fontWeight: 800, color: "#c4b5fd" } }, nbEmployes)
@@ -26119,7 +26141,7 @@
           }),
           // Modal apercu du detail par jour
           apercuVal ? h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 700 },
-            h("div", { style: { maxHeight: 420, overflowY: "auto" } },
+            h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
                 h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
                   ["Date", "Machine(s)", "Metrage (m)", "Heures", "Attente (h)"].map(function(cName, ci) {
@@ -26698,7 +26720,7 @@
           // Resume par machine
           machinesList.length > 0 ? h("div", null,
             sectionTitle("Resume par machine"),
-            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                 h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
                   ["Machine", "Jours", "Metrage", "Moy/j", "Sondages", "Sondeur principal"].map(function(x, i) {
@@ -26721,7 +26743,7 @@
           // Resume par site
           sitesList.length > 0 ? h("div", null,
             sectionTitle("Resume par site / chantier"),
-            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden" } },
+            h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, overflow: "hidden", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
               h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
                 h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.04)", textAlign: "left" } },
                   ["Site", "Jours", "Metrage", "Machines", "Sondeurs"].map(function(x, i) {
@@ -26882,7 +26904,7 @@
           action: h(Button, { onClick: function() { setRefreshFlag(refreshFlag + 1); }, variant: "secondary" }, h(IconText, { icon: "refresh-cw", size: 14 }, "Actualiser"))
         }),
         // KPIs - cliquables comme onglets
-        kpis.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 } },
+        kpis.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14, marginBottom: 24 } },
           kpis.map(function(k) {
             var active = tab === k.key;
             return h("div", { key: k.key, onClick: function() { setTab(k.key); },
@@ -26905,7 +26927,7 @@
             // Filtres + switch vue (Liste/Recap pour Rapports)
             h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
               // Switch vue (Liste / Recap mensuel) pour Rapports ET Releves
-              (tab === "soumissions_rapports" || tab === "soumissions_releves") ? h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2, marginRight: 8 } },
+              (tab === "soumissions_rapports" || tab === "soumissions_releves") ? h("div", { className: "scroll-x-mobile", style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 999, padding: 2, marginRight: 8, maxWidth: "100%" } },
                 (tab === "soumissions_releves" ? ["liste", "a_verifier", "recap_mensuel"] : ["liste", "recap_mensuel", "validation_client"]).map(function(v) {
                   var isRel = tab === "soumissions_releves";
                   var active = isRel ? relevesView === v : rapportsView === v;
@@ -26916,7 +26938,7 @@
                   // Vues d'alerte : rouge quand il y a des elements a traiter
                   var alerte = (v === "a_verifier" && nbRelevesAVerifier > 0) || (v === "validation_client" && nbValRefus > 0);
                   return h("button", { key: v, onClick: function() { isRel ? setRelevesView(v) : setRapportsView(v); },
-                    style: { padding: "5px 13px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "none", background: active ? (alerte ? "linear-gradient(135deg, #e11d48, #f43f5e)" : "linear-gradient(135deg, #6366f1, #818cf8)") : "transparent", color: active ? "#ffffff" : (alerte ? "#fda4af" : "#a1a1aa"), boxShadow: active ? (alerte ? "0 2px 8px rgba(244,63,94,0.30)" : "0 2px 8px rgba(99,102,241,0.30)") : "none" } }, label);
+                    style: { padding: "5px 13px", borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "none", whiteSpace: "nowrap", flexShrink: 0, background: active ? (alerte ? "linear-gradient(135deg, #e11d48, #f43f5e)" : "linear-gradient(135deg, #6366f1, #818cf8)") : "transparent", color: active ? "#ffffff" : (alerte ? "#fda4af" : "#a1a1aa"), boxShadow: active ? (alerte ? "0 2px 8px rgba(244,63,94,0.30)" : "0 2px 8px rgba(99,102,241,0.30)") : "none" } }, label);
                 })
               ) : null,
               // Filtres statut (masques en mode recap mensuel)
@@ -27009,7 +27031,7 @@
               pieceEmplacements.map(function(e) { return h("option", { key: e, value: e }); })
             ),
             h("p", { style: { fontSize: 12, color: "#a1a1aa", margin: 0 } }, "Cet article n'existe pas encore dans Pieces detachees. Complete les infos puis Enregistrer pour l'ajouter au catalogue."),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12 } },
               h(FormField, { label: "Reference *" }, h("input", { style: inputStyle, value: newPiece.Reference, onChange: function(e) { updNewPiece("Reference", e.target.value.toUpperCase()); }, placeholder: "Ex: FIL-003" })),
               h(FormField, { label: "Designation *" }, h("input", { style: inputStyle, value: newPiece.Designation, onChange: function(e) { updNewPiece("Designation", e.target.value); } })),
               h(FormField, { label: "Categorie" }, h("select", { style: selectStyle, value: newPiece.Categorie || "", onChange: function(e) { updNewPiece("Categorie", e.target.value); } },
@@ -27083,7 +27105,7 @@
 
       return h("div", null,
         h("h2", { style: { fontSize: 20, fontWeight: 700, color: "#fafafa", marginBottom: 14 } }, h(IconText, { icon: "user-round", size: 18, color: "#a78bfa" }, "Mon profil")),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 16, marginBottom: 20 } },
           h("div", { style: card },
             h("div", { style: lbl }, "Nom"),
             h("div", { style: val }, (me && me.nom) || "(non defini cote app_users)"),
@@ -27415,7 +27437,7 @@
 
       return h("div", null,
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 160px), 1fr))", gap: 12, marginBottom: 20 } },
           h("div", { style: { padding: 14, background: "rgba(220, 38, 38, 0.10)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: 10 } },
             h("div", { style: { fontSize: 11, color: "#fca5a5", textTransform: "uppercase", fontWeight: 700 } }, "Critiques"),
             h("div", { style: { fontSize: 22, fontWeight: 800, color: "#fca5a5", marginTop: 4 } }, nbCritiques)),
@@ -27571,7 +27593,7 @@
       var inputSt = { padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", width: "100%", boxSizing: "border-box" };
       return h("div", null, fab,
         h("div", { onClick: function() { setOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 200, display: "flex", justifyContent: "center", paddingTop: "5vh", padding: 16 } },
-          h("div", { onClick: function(e) { e.stopPropagation(); }, style: { background: "rgba(28,30,42,0.98)", borderRadius: 12, maxWidth: 560, width: "100%", maxHeight: "88vh", overflow: "auto", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 24px 60px rgba(0,0,0,0.6)" } },
+          h("div", { onClick: function(e) { e.stopPropagation(); }, className: "wl-modal-panel", style: { background: "rgba(28,30,42,0.98)", borderRadius: 12, maxWidth: 560, width: "100%", overflow: "auto", WebkitOverflowScrolling: "touch", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 24px 60px rgba(0,0,0,0.6)" } },
             // Header + tabs
             h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)" } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
@@ -28343,7 +28365,7 @@
         h(PageHeader, { title: h(IconText, { icon: "shopping-cart", size: 20 }, "Achats previsionnels"), subtitle: "Materiel necessaire pour les plans de maintenance a venir" }),
 
         // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
           KpiTile({ icon: "package", accent: "#a78bfa", label: "References necessaires", value: totalRefs, hint: inCatalogue + " en catalogue" }),
           KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Refs en deficit", value: besoins.filter(function(b) { return b.pieceCatalogue && (parseFloat(b.pieceCatalogue.Stock) || 0) < b.qtyTotal; }).length, hint: "stock insuffisant" }),
           KpiTile({ icon: "wallet", accent: "#fbbf24", label: "Cout estime", value: totalCost > 1000000 ? (totalCost / 1000000).toFixed(1) + " MF" : Math.round(totalCost / 1000) + " k", hint: "XPF a debourser" })
@@ -28739,7 +28761,7 @@
               h(Icon, { name: "info", size: 11, color: "#a5b4fc" }), " Reorganise l'ordre des pages avec les fleches. Images + PDF combinables en 1 seul PDF."
             ) : null
           ) : null,
-          h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
+          h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
             h(FormField, { label: "Date d'emission (optionnel)" }, h("input", { type: "date", value: dateEmission, onChange: function(e) { setDateEmission(e.target.value); }, style: inputStyle })),
             h(FormField, { label: "Date d'expiration (optionnel)" }, h("input", { type: "date", value: dateExpir, onChange: function(e) { setDateExpir(e.target.value); }, style: inputStyle }))
           ),
@@ -28970,7 +28992,7 @@
         h(PageHeader, { title: h(IconText, { icon: "folder-lock", size: 20 }, "Coffre-fort RH"), subtitle: isRH ? "Documents administratifs des employes" : "Mes documents administratifs et signatures en attente" }),
 
         // KPIs (RH seulement)
-        isRH ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 } },
+        isRH ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
           KpiTile({ icon: "folder", accent: "#a78bfa", label: "Documents stockes", value: totalDocs, hint: "sur " + personnelList.length + " employes" }),
           KpiTile({ icon: "clock", accent: "#fbbf24", label: "Expirent <30j", value: expiringSoon, hint: "permis / medecine / habilitations" }),
           KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Deja expires", value: expired, hint: "a renouveler en urgence" }),
@@ -28978,7 +29000,7 @@
         ) : null,
 
         loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } }, "Chargement des documents...") :
-        h("div", { style: { display: "grid", gridTemplateColumns: isRH ? "320px 1fr" : "1fr", gap: 16 } },
+        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: isRH ? "320px 1fr" : "1fr", gap: 16 } },
           // Sidebar employes (RH seulement)
           isRH ? h("div", Object.assign({}, { style: Object.assign({}, sectionStyle, { padding: 14, maxHeight: 700, overflowY: "auto" }) }),
             // Toggle Actifs / Anciens
@@ -29053,7 +29075,7 @@
                 h("div", { style: { fontWeight: 600, marginBottom: 4 } }, "Aucun document"),
                 h("div", { style: { fontSize: 12 } }, isRH ? "Clique sur 'Ajouter un document' pour commencer." : "Aucun document n'a encore ete ajoute pour vous.")
               ) :
-              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 } },
+              h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 12 } },
                 docsForSelected.map(function(d) {
                   var info = getRhDocTypeInfo(d.type_document);
                   var expired = d.date_expiration && new Date(d.date_expiration) < now;
@@ -29725,7 +29747,7 @@
           h("div", { style: sectionStyle },
             h("div", { style: sectionTitle }, h(Icon, { name: "settings", size: 16, color: "#fde68a" }), "Pannes potentielles (machines actives)"),
             data.machinesActives.length === 0 ? h("div", { style: { color: "#94a3b8", fontSize: 13, padding: 8 } }, "Aucune machine detectee sur ce chantier dans les releves.")
-            : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 } },
+            : h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 } },
               data.machinesActives.map(function(m) {
                 var eq = m.equipement;
                 var mh = parseFloat(eq.Horametre) || 0;
@@ -29783,7 +29805,7 @@
               var jourLabels = ["D", "L", "M", "M", "J", "V", "S"];
               var metragePrev14j = nbProductifsMeteo * (data.vitesseForecast || data.vitesse14j);
               return h("div", null,
-                h("div", { style: { display: "grid", gridTemplateColumns: "repeat(14, 1fr)", gap: 4, marginBottom: 12 } },
+                h("div", { className: "grid-7-col-mobile", style: { display: "grid", gridTemplateColumns: "repeat(14, 1fr)", gap: 4, marginBottom: 12 } },
                   weatherDays.map(function(w, i) {
                     var bg = w.isWE ? "rgba(100,116,139,0.10)" : w.intemp ? "rgba(59,130,246,0.15)" : "rgba(251,191,36,0.10)";
                     var bd = w.isWE ? "rgba(100,116,139,0.20)" : w.intemp ? "rgba(59,130,246,0.30)" : "rgba(251,191,36,0.25)";
@@ -29808,7 +29830,7 @@
           // ─ Section 4 : Stats ─
           h("div", { style: sectionStyle },
             h("div", { style: sectionTitle }, h(Icon, { name: "bar-chart", size: 16, color: "#86efac" }), "Statistiques du chantier"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h("div", { style: cardStyle },
                 h("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 6 } }, "Productivite"),
                 h("div", { style: lineStyle }, h("span", null, "Realise / Prevu"), h("span", { style: { fontWeight: 600 } }, fmtNum(Math.round(data.realise)) + " / " + fmtNum(chantier.metrage) + " m")),
@@ -29910,7 +29932,7 @@
         h("p", { style: { color: "#a1a1aa", marginBottom: 20 } }, "Verification automatique depuis le 1er juin (Lun-Ven) jusqu'a hier. La page Avancement sert de reference : seuls les jours productifs (cellule renseignee avec une valeur > 0) declenchent une verification. Pour chaque (chantier, machine, jour productif), il faut au minimum : 1 rapport de forage et 3 releves d'heures."),
 
         // Resume
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 12, marginBottom: 22 } },
           h("div", { style: { padding: 16, background: "rgba(30, 33, 50, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 } },
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6 } }, "Manquements"),
             h("div", { style: { fontSize: 28, fontWeight: 700, color: totalManquements > 0 ? "#fb7185" : "#86efac", marginTop: 4 } }, totalManquements)
@@ -30168,7 +30190,7 @@
             String(pvFin.getDate()).padStart(2, "0") + "/" + String(pvFin.getMonth() + 1).padStart(2, "0") + "/" + pvFin.getFullYear() + ") : " +
             fmtNum(Math.round(flotte.coutTotal)) + " XPF sur " + flotte.jours + " jours-machine.")
         ),
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16 } },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))", gap: 16 } },
           // ── ENTREES ──
           h(Card, null,
             h("h3", { style: { margin: "0 0 14px", fontSize: 14, fontWeight: 800, color: "#cbd5e1", textTransform: "uppercase", letterSpacing: 0.4 } }, h(IconText, { icon: "sliders-horizontal", size: 15 }, "Le chantier a chiffrer")),
@@ -30257,7 +30279,7 @@
                   h("div", { style: { marginTop: 6, fontWeight: 700 } }, !metrageOk ? "Renseigne le metrage a forer" : "Renseigne la cadence (m/jour)"),
                   h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 4 } }, "Le prix ne peut pas etre calcule sans cette valeur.")
                 ),
-            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginTop: 14 } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 120px), 1fr))", gap: 10, marginTop: 14 } },
               [["Duree chantier", saisieOk ? res.jours.toFixed(1) + " j" : "—", "#7dd3fc"],
                ["Cout total", saisieOk ? fmtNum(Math.round(res.coutTotal)) : "—", "#fda4af"],
                ["Cout au metre", saisieOk ? fmtNum(Math.round(res.coutMetre)) : "—", "#fda4af"],
@@ -31806,7 +31828,7 @@
           onClick: function(e) { if (e.target === e.currentTarget) setOpen(false); },
           style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }
         },
-          h("div", { style: { width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "scroll", scrollbarGutter: "stable", background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 20, color: "#fafafa" } },
+          h("div", { className: "wl-modal-panel", style: { width: "100%", maxWidth: 480, overflowY: "scroll", WebkitOverflowScrolling: "touch", scrollbarGutter: "stable", background: "rgba(36, 40, 60, 0.95)", backdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 20, color: "#fafafa" } },
             h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
                 h(Icon, { name: "receipt", size: 22, color: "#10b981" }),
@@ -31888,7 +31910,7 @@
                 ocrStatus !== "running" && photo ? h("button", { type: "button", onClick: function() { runOcrAndFill(pdfPreviewUrl || photo, { force: true }); }, style: { background: "transparent", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#cbd5e1", cursor: "pointer", fontFamily: "inherit" } }, "Re-analyser") : null
               ),
               // Detail champ par champ
-              ocrStatus === "done" ? h("div", { style: { marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 4, fontSize: 11 } },
+              ocrStatus === "done" ? h("div", { style: { marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 130px), 1fr))", gap: 4, fontSize: 11 } },
                 [
                   { key: "fournisseur", label: "Fournisseur" },
                   { key: "dateFacture", label: "Date" },
