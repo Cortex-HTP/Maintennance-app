@@ -25951,6 +25951,104 @@
         var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
         return { lignes: lignes, totaux: totaux, signataires: signataires, signatairesSansEmail: Object.keys(sigSansMail) };
       };
+      // ── Detail FACTURATION par jour pour l'apercu Validation client ──
+      // Memes colonnes et memes calculs que l'export "Releve detaille par jour"
+      // du Recap mensuel : 1 ligne par jour x machine, metrage facturable
+      // (sondages NON FACTURABLE exclus), AIRCORE/MFT, heures machine et
+      // foration, heures par activite facturable. Contrairement a l'export,
+      // on GARDE toutes les lignes (y compris non productives / a zero) :
+      // l'apercu sert a VERIFIER la periode, pas a facturer.
+      var buildDetailValidation = function(chantier, debut, fin) {
+        var siteUp = String(chantier.site || "").toUpperCase().trim();
+        var titreUp = String(chantier.titre || "").toUpperCase().trim();
+        var t2mV = function(t) { if (!t) return 0; var p = String(t).split(":"); return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0); };
+        var durBtwV = function(d, f) { if (!d || !f) return 0; var m = t2mV(f) - t2mV(d); if (m < 0) m += 24 * 60; return m; };
+        var facturablesV = {};
+        (ctx.parametres || []).forEach(function(p) {
+          if (p.categorie === "rf_activites_facturables") facturablesV[String(p.valeur).toUpperCase()] = true;
+        });
+        var isFactV = function(lib) { return !!facturablesV[String(lib || "").toUpperCase()]; };
+        var joursFrV = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+        var isoWeekV = function(d) {
+          var dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+          var dayNum = dt.getUTCDay() || 7;
+          dt.setUTCDate(dt.getUTCDate() + 4 - dayNum);
+          var yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+          return Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+        };
+        var sumTypeV = function(r, typeFilter) {
+          var total = 0;
+          (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+            if (String(s.type || "").toUpperCase() !== typeFilter) return;
+            var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+            var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+            total += Math.max(0, a - de);
+          });
+          return total;
+        };
+        var periodRapsV = (raps || []).filter(function(r) {
+          var d = String(r.date_rapport || "").substring(0, 10);
+          if (!d || d < debut || d > fin) return false;
+          return r.chantier_id != null ? String(r.chantier_id) === String(chantier.id)
+            : (function() { var lu = String(r.lieu || "").toUpperCase().trim(); return !!lu && (lu === siteUp || lu === titreUp); })();
+        });
+        // Colonnes activites dynamiques : libelles FACTURABLES presents dans la periode
+        var actColsV = {};
+        periodRapsV.forEach(function(r) {
+          (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+            if (a && a.libelle && isFactV(a.libelle)) actColsV[String(a.libelle).toUpperCase()] = true;
+          });
+        });
+        var actColsList = Object.keys(actColsV).sort();
+        var rows = periodRapsV.map(function(r) {
+          var dStr = String(r.date_rapport || "").substring(0, 10);
+          var pd = dStr.split("-");
+          var dObj = new Date(parseInt(pd[0]), parseInt(pd[1]) - 1, parseInt(pd[2]));
+          var equipe = Array.isArray(r.equipe) ? r.equipe : [];
+          var sondeurMember = equipe.find(function(m) {
+            return m && (m.isSondeur === true || (m.role && String(m.role).toLowerCase().indexOf("sondeur") >= 0 && String(m.role).toLowerCase().indexOf("aide") < 0));
+          });
+          var totMR = parseFloat(r.total_metres) || 0;
+          var nonFactMR = 0;
+          (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+            if (estCommNonFact(s.commentaire)) {
+              var deN = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+              var aN = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+              nonFactMR += Math.max(0, aN - deN);
+            }
+          });
+          var row = {
+            date: dStr,
+            semaine: isoWeekV(dObj),
+            jour: joursFrV[dObj.getDay()],
+            sondeuse: String(r.sondeuse_code || "").toUpperCase().trim(),
+            sondeur: String((sondeurMember ? (sondeurMember.nom || "") : (equipe[0] && equipe[0].nom ? equipe[0].nom : "")) || "").toUpperCase().trim(),
+            metrage: Math.max(0, totMR - nonFactMR),
+            brut: totMR,
+            aircore: sumTypeV(r, "AIRCORE"),
+            mft: sumTypeV(r, "MFT"),
+            hmo: (parseFloat(r.total_heures) || 0) / 60,
+            hm: 0,
+            actHours: {},
+            nonProductif: !!r.non_productif,
+            motifNonProductif: r.motif_non_productif || ""
+          };
+          (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+            if (!a || !a.debut || !a.fin) return;
+            var lib = String(a.libelle || "").toUpperCase();
+            if (lib === "FORATION") row.hm += durBtwV(a.debut, a.fin) / 60;
+            if (isFactV(lib)) row.actHours[lib] = (row.actHours[lib] || 0) + (durBtwV(a.debut, a.fin) / 60);
+          });
+          return row;
+        }).sort(function(a, b) { return a.date === b.date ? a.sondeuse.localeCompare(b.sondeuse) : a.date.localeCompare(b.date); });
+        var totaux = { metrage: 0, brut: 0, aircore: 0, mft: 0, hmo: 0, hm: 0, actHours: {} };
+        rows.forEach(function(row) {
+          totaux.metrage += row.metrage; totaux.brut += row.brut; totaux.aircore += row.aircore;
+          totaux.mft += row.mft; totaux.hmo += row.hmo; totaux.hm += row.hm;
+          actColsList.forEach(function(a) { totaux.actHours[a] = (totaux.actHours[a] || 0) + (row.actHours[a] || 0); });
+        });
+        return { rows: rows, actCols: actColsList, totaux: totaux };
+      };
       // Emails de signataire DEJA CONNUS en base pour ce chantier (tous rapports
       // charges, meme hors periode), puis pour la MEME personne vue ailleurs.
       // Evite de redemander une saisie manuelle quand l'adresse existe deja.
@@ -26146,42 +26244,108 @@
               )
             );
           }),
-          // Modal apercu du detail par jour
-          apercuVal ? h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 700 },
-            h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
-              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
-                h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
-                  ["Date", "Machine(s)", "Metrage (m)", "Heures", "Attente (h)"].map(function(cName, ci) {
-                    return h("th", { key: cName, style: { padding: "8px 10px", fontSize: 10.5, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", textAlign: ci < 2 ? "left" : "right", borderBottom: "1px solid rgba(255,255,255,0.07)" } }, cName);
-                  })
-                )),
-                h("tbody", null,
-                  ((apercuVal.snapshot && apercuVal.snapshot.lignes) || []).map(function(l, li) {
-                    return h("tr", { key: li },
-                      h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, fmtD(l.date)),
-                      h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: "#a78bfa" } }, l.machines),
-                      h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, l.metrage.toLocaleString("fr-FR")),
-                      h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, l.heures.toLocaleString("fr-FR")),
-                      h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, (l.attente || 0).toLocaleString("fr-FR"))
-                    );
-                  }),
-                  (function() {
-                    var t = (apercuVal.snapshot && apercuVal.snapshot.totaux) || { metrage: 0, heures: 0, attente: 0 };
-                    return h("tr", { style: { fontWeight: 800, background: "rgba(99,102,241,0.08)" } },
-                      h("td", { style: { padding: "8px 10px" }, colSpan: 2 }, "TOTAL"),
-                      h("td", { style: { padding: "8px 10px", textAlign: "right", color: "#a5b4fc" } }, t.metrage.toLocaleString("fr-FR")),
-                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, t.heures.toLocaleString("fr-FR")),
-                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, (t.attente || 0).toLocaleString("fr-FR"))
-                    );
-                  })()
-                )
-              )
-            ),
-            apercuVal.v && apercuVal.v.signature_png ? h("div", { style: { marginTop: 12 } },
+          // Modal apercu du detail par jour : memes colonnes que l'export
+          // "Releve detaille par jour" du Recap mensuel (detail facturation)
+          apercuVal ? (function() {
+            var det = buildDetailValidation(apercuVal.chantier, apercuVal.periode.debut, apercuVal.periode.fin);
+            var snapTot = (apercuVal.snapshot && apercuVal.snapshot.totaux) || { metrage: 0, heures: 0, attente: 0 };
+            var snapLignes = (apercuVal.snapshot && apercuVal.snapshot.lignes) || [];
+            var fige = apercuVal.statut === "envoye" || apercuVal.statut === "valide" || apercuVal.statut === "facture";
+            // Releve fige dont les rapports ne sont plus charges en memoire (fetch
+            // limite) : on retombe sur le snapshot stocke, jamais sur un tableau vide.
+            var snapFallback = fige && det.rows.length === 0 && snapLignes.length > 0;
+            var brutR = Math.round(det.totaux.brut * 10) / 10;
+            var heuresR = Math.round(det.totaux.hmo * 10) / 10;
+            var nonFactR = Math.round((det.totaux.brut - det.totaux.metrage) * 10) / 10;
+            // Rapports modifies depuis l'envoi ? (compare au snapshot fige ; tolerance
+            // large car le snapshot arrondit JOUR PAR JOUR et le detail arrondit une
+            // seule fois en fin de somme - sans ca, faux positifs d'arrondi)
+            var snapDiff = fige && !snapFallback && (Math.abs(brutR - (snapTot.metrage || 0)) > 1 || Math.abs(heuresR - (snapTot.heures || 0)) > 0.5);
+            var headCols = ["Date", "Jour", "Sem.", "Sondeuse", "Sondeur", "Metrage fact. (m)", "AIRCORE (m)", "MFT (m)", "H. machine", "H. foration"].concat(det.actCols);
+            var nbLeft = 5; // colonnes texte alignees a gauche
+            var fmtNum2 = function(v) { return v ? (Math.round(v * 100) / 100).toLocaleString("fr-FR") : ""; };
+            var tdS = function(right, extra) { return Object.assign({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: right ? "right" : "left", whiteSpace: "nowrap" }, extra || {}); };
+            var signatureBlock = apercuVal.v && apercuVal.v.signature_png ? h("div", { style: { marginTop: 12 } },
               h("div", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 6 } }, "Signature du client"),
               h("img", { src: apercuVal.v.signature_png, style: { maxWidth: 260, background: "white", borderRadius: 8, padding: 6 } })
-            ) : null
-          ) : null
+            ) : null;
+            if (snapFallback) {
+              return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 700 },
+                h("div", { style: { marginBottom: 10, fontSize: 11.5, color: "#a1a1aa" } }, "Les rapports detailles de cette periode ne sont plus charges en memoire : affichage du releve fige tel qu'envoye au client."),
+                h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
+                  h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+                    h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
+                      ["Date", "Machine(s)", "Metrage (m)", "Heures", "Attente (h)"].map(function(cName, ci) {
+                        return h("th", { key: cName, style: { padding: "8px 10px", fontSize: 10.5, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", textAlign: ci < 2 ? "left" : "right", borderBottom: "1px solid rgba(255,255,255,0.07)" } }, cName);
+                      })
+                    )),
+                    h("tbody", null,
+                      snapLignes.map(function(l, li) {
+                        return h("tr", { key: li },
+                          h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)" } }, fmtD(l.date)),
+                          h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: "#a78bfa" } }, l.machines),
+                          h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, (l.metrage || 0).toLocaleString("fr-FR")),
+                          h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, (l.heures || 0).toLocaleString("fr-FR")),
+                          h("td", { style: { padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right" } }, (l.attente || 0).toLocaleString("fr-FR"))
+                        );
+                      }),
+                      h("tr", { style: { fontWeight: 800, background: "rgba(99,102,241,0.08)" } },
+                        h("td", { style: { padding: "8px 10px" }, colSpan: 2 }, "TOTAL"),
+                        h("td", { style: { padding: "8px 10px", textAlign: "right", color: "#a5b4fc" } }, (snapTot.metrage || 0).toLocaleString("fr-FR")),
+                        h("td", { style: { padding: "8px 10px", textAlign: "right" } }, (snapTot.heures || 0).toLocaleString("fr-FR")),
+                        h("td", { style: { padding: "8px 10px", textAlign: "right" } }, (snapTot.attente || 0).toLocaleString("fr-FR"))
+                      )
+                    )
+                  )
+                ),
+                signatureBlock
+              );
+            }
+            return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 1000 },
+              snapDiff ? h("div", { style: { marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.35)", fontSize: 12, color: "#fde68a" } },
+                "Les rapports ont change depuis l'envoi : le releve envoye au client totalisait " + (snapTot.metrage || 0).toLocaleString("fr-FR") + " m / " + (snapTot.heures || 0).toLocaleString("fr-FR") + " h. Le detail ci-dessous reflete les rapports ACTUELS.") : null,
+              h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+                  h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.25)" } },
+                    headCols.map(function(cName, ci) {
+                      return h("th", { key: cName + ci, style: { padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", textAlign: ci < nbLeft ? "left" : "right", borderBottom: "1px solid rgba(255,255,255,0.07)", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#1a1d2e", zIndex: 1 } }, cName);
+                    })
+                  )),
+                  h("tbody", null,
+                    det.rows.length === 0 ? h("tr", null, h("td", { colSpan: headCols.length, style: { padding: 20, textAlign: "center", color: "#71717a" } }, "Aucun rapport sur la periode")) : null,
+                    det.rows.map(function(l, li) {
+                      return h("tr", { key: li, style: l.nonProductif ? { background: "rgba(251,191,36,0.05)" } : null },
+                        h("td", { style: tdS(false) }, fmtD(l.date)),
+                        h("td", { style: tdS(false, { textTransform: "capitalize" }) }, l.jour,
+                          l.nonProductif ? h("span", { title: l.motifNonProductif || "Journee non productive", style: { marginLeft: 6, fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 999, textTransform: "uppercase", letterSpacing: 0.4, background: "rgba(251,191,36,0.15)", color: "#fcd34d", border: "1px solid rgba(251,191,36,0.40)", cursor: l.motifNonProductif ? "help" : "default" } }, "Non productif") : null),
+                        h("td", { style: tdS(false, { color: "#71717a" }) }, "S" + l.semaine),
+                        h("td", { style: tdS(false, { color: "#a78bfa", fontWeight: 700 }) }, l.sondeuse || "-"),
+                        h("td", { style: tdS(false, { color: "#a1a1aa" }) }, l.sondeur || "-"),
+                        h("td", { style: tdS(true, { color: "#a5b4fc", fontWeight: 700 }) }, fmtNum2(l.metrage)),
+                        h("td", { style: tdS(true) }, fmtNum2(l.aircore)),
+                        h("td", { style: tdS(true) }, fmtNum2(l.mft)),
+                        h("td", { style: tdS(true) }, fmtNum2(l.hmo)),
+                        h("td", { style: tdS(true) }, fmtNum2(l.hm)),
+                        det.actCols.map(function(a) { return h("td", { key: a, style: tdS(true) }, fmtNum2(l.actHours[a] || 0)); })
+                      );
+                    }),
+                    det.rows.length > 0 ? h("tr", { style: { fontWeight: 800, background: "rgba(99,102,241,0.08)" } },
+                      h("td", { style: { padding: "8px 10px" }, colSpan: nbLeft }, "TOTAL"),
+                      h("td", { style: { padding: "8px 10px", textAlign: "right", color: "#a5b4fc" } }, fmtNum2(det.totaux.metrage)),
+                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, fmtNum2(det.totaux.aircore)),
+                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, fmtNum2(det.totaux.mft)),
+                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, fmtNum2(det.totaux.hmo)),
+                      h("td", { style: { padding: "8px 10px", textAlign: "right" } }, fmtNum2(det.totaux.hm)),
+                      det.actCols.map(function(a) { return h("td", { key: a, style: { padding: "8px 10px", textAlign: "right" } }, fmtNum2(det.totaux.actHours[a] || 0)); })
+                    ) : null
+                  )
+                )
+              ),
+              nonFactR > 0.05 ? h("div", { style: { marginTop: 8, fontSize: 11.5, color: "#a1a1aa" } },
+                "Metrage brut du releve client : " + brutR.toLocaleString("fr-FR") + " m, dont " + nonFactR.toLocaleString("fr-FR") + " m marques NON FACTURABLE (exclus de la colonne Metrage fact.).") : null,
+              signatureBlock
+            );
+          })() : null
         );
       };
 
