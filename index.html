@@ -1024,11 +1024,17 @@
       var externalChIds = [];
       chantiers.forEach(function(cX) { if (cX && cX.site === site) externalChIds.push(cX.id); });
       if (externalChIds.length === 0) externalChIds = siteChIds;
+      // Jours ou le SITE a reellement tourne (rapport du site OU saisie
+      // Avancement avec du metrage). Sert au rattrapage hors fenetre d'emploi :
+      // un jour sans aucune activite du site (ex: vendredi non travaille,
+      // semaine de 4 jours) ne doit rien crediter du tout.
+      var siteWorkDaySet = {};
       externalChIds.forEach(function(cid) {
         var grille = saisies[cid] || {};
         Object.keys(grille).forEach(function(dG) {
           var tG = getSaisieType(grille[dG]);
           if (tG === "panne" || tG === "intemperies" || tG === "non_productif") externalDaySet[dG] = true;
+          if ((parseFloat(getSaisieVal(grille[dG])) || 0) > 0) siteWorkDaySet[dG] = true;
         });
       });
       affectations.forEach(function(a2) {
@@ -1048,8 +1054,11 @@
         if (onSite2) externalDaySet[a2.dateAffectation] = true;
       });
       rapportsCtx.forEach(function(rNp) {
-        if (!rNp || !rNp.non_productif || !rNp.date_rapport) return;
-        if (siteOfRapport(rNp) === site) externalDaySet[String(rNp.date_rapport).substring(0, 10)] = true;
+        if (!rNp || !rNp.date_rapport) return;
+        if (siteOfRapport(rNp) !== site) return;
+        var dNp = String(rNp.date_rapport).substring(0, 10);
+        siteWorkDaySet[dNp] = true;
+        if (rNp.non_productif) externalDaySet[dNp] = true;
       });
 
       var results = [];
@@ -1124,9 +1133,13 @@
               var chForSaisie = chId || (siteCh.length > 0 ? siteCh[0].id : null);
               var saisieFallback = chForSaisie ? (saisies[chForSaisie] || {})[dateStr] : null;
               var sVFb = saisieFallback ? (typeof saisieFallback === "object" ? (parseFloat(saisieFallback.valeur) || 0) : (parseFloat(saisieFallback) || 0)) : 0;
-              rattrapage = sVFb > 0 ? Math.min(sVFb, siteMoyenne) : siteMoyenne;
+              // Site sans AUCUNE activite ce jour (ex: conge pose un vendredi,
+              // semaine de 4 jours) -> jour IGNORE : ni metres ni jour. Sinon la
+              // prime monte (moyenne offerte) ou baisse (0 m + 1 j) a tort.
+              rattrapage = sVFb > 0 ? Math.min(sVFb, siteMoyenne)
+                : (siteWorkDaySet[dateStr] ? siteMoyenne : null);
             }
-            adjMetrage += rattrapage; adjJours += 1;
+            if (rattrapage !== null) { adjMetrage += rattrapage; adjJours += 1; }
           } else if (effectiveType === "maladie") { adjJours += 1; }
           else {
             var dayMetrage = 0;
@@ -1162,9 +1175,17 @@
               if (dow2 !== 0 && dow2 !== 6 && !feriesSetHE2[dStr2]) {
                 var machineHE2 = getMachineEmpForDate(emp.id, dStr2);
                 var metrageMachineHE2 = machineHE2 ? getMetrageMachineForDate(machineHE2, dStr2) : null;
-                var rattrapageHE2 = (metrageMachineHE2 !== null) ? Math.min(metrageMachineHE2, siteMoyenne) : siteMoyenne;
-                adjMetrage += rattrapageHE2;
-                adjJours += 1;
+                var rattrapageHE2;
+                if (externalDaySet[dStr2]) { rattrapageHE2 = siteMoyenne; }
+                else if (metrageMachineHE2 !== null) { rattrapageHE2 = Math.min(metrageMachineHE2, siteMoyenne); }
+                else if (siteWorkDaySet[dStr2]) { rattrapageHE2 = siteMoyenne; }
+                // Aucun rapport ni saisie du site ce jour (ex: vendredi non
+                // travaille, semaine de 4 jours) -> jour IGNORE : ni metres ni jour.
+                else { rattrapageHE2 = null; }
+                if (rattrapageHE2 !== null) {
+                  adjMetrage += rattrapageHE2;
+                  adjJours += 1;
+                }
               }
             }
             dCur.setDate(dCur.getDate() + 1);
@@ -17539,11 +17560,16 @@
         // conge credite la moyenne complete au lieu d'etre plafonne au realise
         // (qui vaut 0 a cause de la panne, pas a cause de l'absence).
         var externalDaySet = {};
+        // Jours ou le SITE a reellement tourne (rapport ou saisie avec metrage) :
+        // un jour sans aucune activite (ex: vendredi non travaille) ne credite
+        // RIEN dans le rattrapage hors fenetre d'emploi. Meme regle que le helper.
+        var siteWorkDaySet = {};
         siteChIds.forEach(function(cid) {
           var grille = saisies[cid] || {};
           Object.keys(grille).forEach(function(dG) {
             var tG = getSaisieType(grille[dG]);
             if (tG === "panne" || tG === "intemperies" || tG === "non_productif") externalDaySet[dG] = true;
+            if ((parseFloat(getSaisieVal(grille[dG])) || 0) > 0) siteWorkDaySet[dG] = true;
           });
         });
         (affectations || []).forEach(function(a2) {
@@ -17563,8 +17589,11 @@
           if (onSite2) externalDaySet[a2.dateAffectation] = true;
         });
         (rapportsCtx || []).forEach(function(rNp) {
-          if (!rNp || !rNp.non_productif || !rNp.date_rapport) return;
-          if (siteOfRapport(rNp) === site) externalDaySet[String(rNp.date_rapport).substring(0, 10)] = true;
+          if (!rNp || !rNp.date_rapport) return;
+          if (siteOfRapport(rNp) !== site) return;
+          var dNp = String(rNp.date_rapport).substring(0, 10);
+          siteWorkDaySet[dNp] = true;
+          if (rNp.non_productif) externalDaySet[dNp] = true;
         });
 
         personnel.forEach(function(emp) {
@@ -17700,16 +17729,26 @@
                 if (sVFb > 0) {
                   rattrapage = Math.min(sVFb, siteMoyenne);
                   rattrSource = "saisie chantier (" + sVFb + " m, plafonne a " + siteMoyenne + ")";
-                } else {
-                  // Ultime fallback : moyenne site
+                } else if (siteWorkDaySet[dateStr]) {
+                  // Le site a tourne (rapport d'une autre machine) mais la machine
+                  // de l'employe est inconnue -> moyenne site (ancien fallback).
                   rattrapage = siteMoyenne;
-                  rattrSource = "fallback moyenne site (aucun rapport ni saisie)";
+                  rattrSource = "moyenne site (le site a tourne, machine de l'employe inconnue)";
+                } else {
+                  // Site sans AUCUNE activite ce jour (ex: conge pose un vendredi,
+                  // semaine de 4 jours) -> jour IGNORE : ni metres ni jour. Sinon
+                  // la prime monte (moyenne offerte) ou baisse (0 m + 1 j) a tort.
+                  rattrapage = null;
                 }
               }
-              adjMetrage += rattrapage;
-              adjJours += 1;
-              joursParType[effectiveType] += 1;
-              daysDetail.push({ date: dateStr, type: effectiveType, machine: machineEmp || null, metrage: rattrapage, source: rattrSource });
+              if (rattrapage !== null) {
+                adjMetrage += rattrapage;
+                adjJours += 1;
+                joursParType[effectiveType] += 1;
+                daysDetail.push({ date: dateStr, type: effectiveType, machine: machineEmp || null, metrage: rattrapage, source: rattrSource });
+              } else {
+                daysDetail.push({ date: dateStr, type: effectiveType, machine: null, metrage: 0, source: "conge un jour sans activite du site (jour non travaille) - IGNORE (0 m, 0 j)" });
+              }
             } else if (effectiveType === "maladie") {
               adjJours += 1;
               joursParType.maladie += 1;
@@ -17776,10 +17815,28 @@
                 if (dow !== 0 && dow !== 6 && !feriesSetHE[dStr]) {
                   var machineHE = getMachineEmpForDate(emp.id, dStr);
                   var metrageMachineHE = machineHE ? getMetrageMachineForDate(machineHE, dStr) : null;
-                  var rattrapageHE = (metrageMachineHE !== null) ? Math.min(metrageMachineHE, siteMoyenne) : siteMoyenne;
-                  adjMetrage += rattrapageHE;
-                  adjJours += 1;
-                  daysDetail.push({ date: dStr, type: "hors-emploi", machine: machineHE || null, metrage: rattrapageHE, source: metrageMachineHE !== null ? ("hors fenetre emploi - machine " + machineHE + " (" + metrageMachineHE + " m, plafonne)") : "hors fenetre emploi - moyenne site" });
+                  var rattrapageHE;
+                  var srcHE;
+                  if (externalDaySet[dStr]) {
+                    rattrapageHE = siteMoyenne;
+                    srcHE = "hors fenetre emploi - jour panne/cause externe -> moyenne complete";
+                  } else if (metrageMachineHE !== null) {
+                    rattrapageHE = Math.min(metrageMachineHE, siteMoyenne);
+                    srcHE = "hors fenetre emploi - machine " + machineHE + " (" + metrageMachineHE + " m, plafonne)";
+                  } else if (siteWorkDaySet[dStr]) {
+                    rattrapageHE = siteMoyenne;
+                    srcHE = "hors fenetre emploi - moyenne site (le site a tourne ce jour)";
+                  } else {
+                    // Aucun rapport ni saisie du site ce jour (ex: vendredi non
+                    // travaille, semaine de 4 jours) -> jour IGNORE : ni metres ni jour.
+                    rattrapageHE = null;
+                    daysDetail.push({ date: dStr, type: "hors-emploi", machine: null, metrage: 0, source: "aucun rapport ni saisie du site ce jour (jour non travaille) - IGNORE (0 m, 0 j)" });
+                  }
+                  if (rattrapageHE !== null) {
+                    adjMetrage += rattrapageHE;
+                    adjJours += 1;
+                    daysDetail.push({ date: dStr, type: "hors-emploi", machine: machineHE || null, metrage: rattrapageHE, source: srcHE });
+                  }
                 }
               }
               dCursor.setDate(dCursor.getDate() + 1);
