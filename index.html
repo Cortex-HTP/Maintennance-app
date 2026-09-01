@@ -26407,6 +26407,53 @@
             .catch(function(e) { setSendingValId(null); alert("Erreur reseau : " + (e && e.message)); });
         });
       };
+      // ── Renvoi d'un rapport CORRIGE au client ──
+      // Apres modification d'un rapport par l'admin : si la journee fait l'objet
+      // d'une correction demandee par le client (validation mensuelle REFUSEE
+      // avec corrections sur cette date), on propose de renvoyer le rapport
+      // corrige pour verification et re-signature (bandeau "Rapport corrige"
+      // dans l'email + nouveau lien de signature).
+      var proposerRenvoiRapportCorrige = function(rapport) {
+        try {
+          var dateR = String(rapport.date_rapport || "").substring(0, 10);
+          if (!dateR) return;
+          var chIdR = rapport.chantier_id != null ? String(rapport.chantier_id) : null;
+          var lieuU = String(rapport.lieu || "").toUpperCase().trim();
+          var vMatch = (vals || []).find(function(v) {
+            if (v.statut !== "refuse") return false;
+            if (!Array.isArray(v.corrections) || v.corrections.length === 0) return false;
+            var chOk = false;
+            if (chIdR != null && String(v.chantier_id) === chIdR) chOk = true;
+            else if (!chIdR && lieuU) {
+              var cV = (dbChantiers || []).find(function(c) { return String(c.id) === String(v.chantier_id); });
+              if (cV) {
+                var sU = String(cV.site || "").toUpperCase().trim();
+                var tU = String(cV.titre || "").toUpperCase().trim();
+                chOk = (sU && (sU === lieuU || sU.indexOf(lieuU) >= 0 || lieuU.indexOf(sU) >= 0)) || (tU && tU === lieuU);
+              }
+            }
+            if (!chOk) return false;
+            return v.corrections.some(function(cor) { return String(cor.date || "").substring(0, 10) === dateR; });
+          });
+          if (!vMatch) return;
+          var fmtDd = dateR.split("-").reverse().join("/");
+          if (!confirm("Cette journee (" + fmtDd + (rapport.sondeuse_code ? " - " + rapport.sondeuse_code : "") + ") fait l'objet d'une correction demandee par le client" + (vMatch.validataire_nom ? " (" + vMatch.validataire_nom + ")" : "") + ".\n\nRenvoyer CE rapport corrige au client pour verification et re-signature ?\n(Si la correction visait une autre machine du meme jour, reponds Annuler.)")) return;
+          supabase.auth.getSession().then(function(s) {
+            var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
+            if (!tkn) { alert("Session expiree, reconnecte-toi."); return; }
+            fetch(EMPLOYES_API_BASE + "/api/send-rapport", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
+              body: JSON.stringify({ rapportId: rapport.id, correction: true })
+            }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+              .then(function(out) {
+                if (!out.ok || !out.j || !out.j.ok) { alert("Renvoi impossible : " + ((out.j && out.j.error) || "erreur serveur")); return; }
+                if (showToast) showToast("Rapport corrige renvoye au client (" + (out.j.destinataires || 0) + " destinataire(s))", "success");
+              })
+              .catch(function(e) { alert("Erreur reseau : " + (e && e.message)); });
+          });
+        } catch (e) {}
+      };
       var renderValidationClient = function() {
         var moisSel = valPeriode || moisDefautVal;
         var moisObj = moisRecentsVal.find(function(x) { return x.mois === moisSel; }) || moisRecentsVal[0];
@@ -27332,6 +27379,8 @@
           onSaved: function(updated) {
             setRaps(raps.map(function(x) { return x.id === updated.id ? updated : x; }));
             setEditingRapportId(null);
+            // Journee visee par une correction client ? -> proposer le renvoi
+            proposerRenvoiRapportCorrige(updated);
           }
         });
       }
