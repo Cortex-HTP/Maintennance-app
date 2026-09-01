@@ -1060,6 +1060,11 @@
         siteWorkDaySet[dNp] = true;
         if (rNp.non_productif) externalDaySet[dNp] = true;
       });
+      // Jours feries (poses au planning) : exclus du comptage des jours absents
+      var feriesSetSite = {};
+      affectations.forEach(function(aF) {
+        if ((aF.typeJour || "") === "ferie" && aF.dateAffectation) feriesSetSite[aF.dateAffectation] = true;
+      });
 
       var results = [];
       personnel.forEach(function(emp) {
@@ -1215,9 +1220,54 @@
           adjJours += 1;
           nbTravailViaRapport += 1;
         });
+        // ── JOURS ABSENTS : site en activite, employe nulle part ──
+        // Un jour lundi-jeudi ou le site a tourne sans l'employe (ni rapport,
+        // ni affectation, ni conge/panne declares) compte comme un CONGE NON
+        // DECLARE : min(realise de sa machine, moyenne) - la moyenne au maximum.
+        // Sans ca, un employe present 1 seul (bon) jour du mois a un m/h de
+        // sprint applique a tout le mois -> prime enorme (cas Aubert 17/08).
+        var empAffDatesAll = {};
+        affectations.forEach(function(aA) {
+          if (aA.personnelId === emp.id && aA.dateAffectation) empAffDatesAll[aA.dateAffectation] = true;
+        });
+        var empRapDatesAll = {};
+        (empRapportsList[emp.id] || []).forEach(function(rA) { if (rA.date) empRapDatesAll[rA.date] = true; });
+        var dCurAbs = typeof periodStart === "string" ? new Date(periodStart + "T00:00:00") : new Date(periodStart);
+        var dEndAbs = typeof periodEnd === "string" ? new Date(periodEnd + "T00:00:00") : new Date(periodEnd);
+        while (dCurAbs <= dEndAbs) {
+          var dStrAbs = dCurAbs.getFullYear() + "-" + String(dCurAbs.getMonth() + 1).padStart(2, "0") + "-" + String(dCurAbs.getDate()).padStart(2, "0");
+          var dowAbs = dCurAbs.getDay();
+          if (dowAbs >= 1 && dowAbs <= 4 && !feriesSetSite[dStrAbs] && inEmpWindow(dStrAbs)
+              && !datesComptees[dStrAbs] && !empAffDatesAll[dStrAbs]) {
+            var credAbs = null;
+            if (empRapDatesAll[dStrAbs]) {
+              // Rapport sur un AUTRE site ce jour : rattrapage moyenne, comme les
+              // affectations "ailleurs" (evite la prime explosee sur site secondaire)
+              credAbs = siteMoyenne;
+            } else if (externalDaySet[dStrAbs]) {
+              credAbs = siteMoyenne;
+            } else {
+              var machAbs = getMachineEmpForDate(emp.id, dStrAbs);
+              var vAbs = machAbs ? getMetrageMachineForDate(machAbs, dStrAbs) : null;
+              if (vAbs !== null) { credAbs = Math.min(vAbs, siteMoyenne); }
+              else if (siteWorkDaySet[dStrAbs]) { credAbs = siteMoyenne; }
+              // sinon : site a l'arret ce jour -> ignore
+            }
+            if (credAbs !== null) {
+              adjMetrage += credAbs;
+              adjJours += 1;
+              datesComptees[dStrAbs] = true;
+            }
+          }
+          dCurAbs.setDate(dCurAbs.getDate() + 1);
+        }
         affectations.forEach(function(a) {
           if (a.personnelId !== emp.id) return;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return;
+          // Jour deja compte (affectation site / completion rapport / absent) ou
+          // hors fenetre d'emploi (gere par le bloc CDD) : jamais re-credite ici.
+          if (datesComptees[a.dateAffectation]) return;
+          if (!inEmpWindow(a.dateAffectation)) return;
           var tj = a.typeJour || "travail";
           if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
           var alreadyOnSite = false;
@@ -17650,6 +17700,11 @@
           siteWorkDaySet[dNp] = true;
           if (rNp.non_productif) externalDaySet[dNp] = true;
         });
+        // Jours feries (poses au planning) : exclus du comptage des jours absents
+        var feriesSetSite = {};
+        (affectations || []).forEach(function(aF) {
+          if ((aF.typeJour || "") === "ferie" && aF.dateAffectation) feriesSetSite[aF.dateAffectation] = true;
+        });
 
         personnel.forEach(function(emp) {
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
@@ -17930,6 +17985,50 @@
             daysDetail.push({ date: r.date, type: "travail (via rapport)", machine: r.sondeuse, metrage: dayMetrage, source: "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee" });
           });
 
+          // ── JOURS ABSENTS : site en activite, employe nulle part ──
+          // Un jour lundi-jeudi ou le site a tourne sans l'employe (ni rapport,
+          // ni affectation, ni conge/panne declares) compte comme un CONGE NON
+          // DECLARE : min(realise de sa machine, moyenne) - la moyenne au maximum.
+          // Sans ca, un employe present 1 seul (bon) jour du mois a un m/h de
+          // sprint applique a tout le mois -> prime enorme (cas Aubert 17/08).
+          // Miroir exact de calcPrimesForSiteHelper.
+          var empAffDatesAll = {};
+          (affectations || []).forEach(function(aA) {
+            if (aA.personnelId === emp.id && aA.dateAffectation) empAffDatesAll[aA.dateAffectation] = true;
+          });
+          var empRapDatesAll = {};
+          (empRapportsList[emp.id] || []).forEach(function(rA) { if (rA.date) empRapDatesAll[rA.date] = true; });
+          var dCurAbs = typeof period.start === "string" ? new Date(period.start + "T00:00:00") : new Date(period.start);
+          var dEndAbs = typeof period.end === "string" ? new Date(period.end + "T00:00:00") : new Date(period.end);
+          while (dCurAbs <= dEndAbs) {
+            var dStrAbs = dCurAbs.getFullYear() + "-" + String(dCurAbs.getMonth() + 1).padStart(2, "0") + "-" + String(dCurAbs.getDate()).padStart(2, "0");
+            var dowAbs = dCurAbs.getDay();
+            if (dowAbs >= 1 && dowAbs <= 4 && !feriesSetSite[dStrAbs] && dateEnvelopeEmploye(dStrAbs)
+                && !datesDejaComptees[dStrAbs] && !empAffDatesAll[dStrAbs]) {
+              var credAbs = null; var srcAbs = null; var machNomAbs = null;
+              if (empRapDatesAll[dStrAbs]) {
+                // Rapport sur un AUTRE site ce jour : rattrapage moyenne, comme les
+                // affectations "ailleurs" (evite la prime explosee sur site secondaire)
+                credAbs = siteMoyenne; srcAbs = "jour sur un autre site (rapport) - rattrapage moyenne";
+              } else if (externalDaySet[dStrAbs]) {
+                credAbs = siteMoyenne; srcAbs = "absent un jour panne/cause externe - moyenne complete";
+              } else {
+                var machAbs = getMachineEmpForDate(emp.id, dStrAbs);
+                var vAbs = machAbs ? getMetrageMachineForDate(machAbs, dStrAbs) : null;
+                if (vAbs !== null) { credAbs = Math.min(vAbs, siteMoyenne); srcAbs = "absent - machine " + machAbs + " ce jour (" + vAbs + " m, plafonne a " + siteMoyenne + ")"; machNomAbs = machAbs; }
+                else if (siteWorkDaySet[dStrAbs]) { credAbs = siteMoyenne; srcAbs = "absent - le site a tourne (machine inconnue) - moyenne"; }
+                // sinon : site a l'arret ce jour (ex: vendredi) -> ignore
+              }
+              if (credAbs !== null) {
+                adjMetrage += credAbs;
+                adjJours += 1;
+                datesDejaComptees[dStrAbs] = true;
+                daysDetail.push({ date: dStrAbs, type: "absent", machine: machNomAbs, metrage: credAbs, source: srcAbs });
+              }
+            }
+            dCurAbs.setDate(dCurAbs.getDate() + 1);
+          }
+
           // ── DIAGNOSTIC : liste TOUTES les affectations de la periode pour cet emp,
           //    et note celles qui n'ont PAS ete traitees ci-dessus. Aide a diagnostiquer
           //    les cas ou une affectation ne compte pas (chantier null, typeJour bizarre,
@@ -17978,6 +18077,10 @@
           (affectations || []).forEach(function(a) {
             if (a.personnelId !== emp.id) return;
             if (!isDateInPeriod(a.dateAffectation, period.start, period.end)) return;
+            // Jour deja compte (affectation site / completion rapport / absent) ou
+            // hors fenetre d'emploi (gere par le bloc CDD) : jamais re-credite ici.
+            if (datesDejaComptees[a.dateAffectation]) return;
+            if (!dateEnvelopeEmploye(a.dateAffectation)) return;
             var tj = a.typeJour || "travail";
             if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
             // Determiner si l'affectation est sur ce site (auquel cas deja traitee)
