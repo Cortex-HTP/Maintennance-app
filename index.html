@@ -1010,6 +1010,48 @@
         return (v != null) ? v : null;
       }
 
+      // ── Jours a cause EXTERNE sur ce site (panne / intemperies / non productif) ──
+      // Sert au rattrapage CONGE : si la machine a fait 0 m ce jour-la PARCE QUE
+      // c'etait un jour de panne, plafonner le conge au realise n'a pas de sens
+      // (le present marque en panne credite la moyenne, le conge doit faire pareil).
+      // Detection par 3 signaux : saisie grille chantier typee, affectation d'un
+      // autre employe du site en panne/intemperies/non productif, rapport non
+      // productif rattache au site.
+      var externalDaySet = {};
+      // Perimetre : TOUS les chantiers du site quel que soit leur statut (meme
+      // regle que l'ecran Primes) - une panne posee sur un sous-chantier 'A
+      // venir' du site compte aussi. Repli sur siteChIds si deps.chantiers vide.
+      var externalChIds = [];
+      chantiers.forEach(function(cX) { if (cX && cX.site === site) externalChIds.push(cX.id); });
+      if (externalChIds.length === 0) externalChIds = siteChIds;
+      externalChIds.forEach(function(cid) {
+        var grille = saisies[cid] || {};
+        Object.keys(grille).forEach(function(dG) {
+          var tG = getSaisieType(grille[dG]);
+          if (tG === "panne" || tG === "intemperies" || tG === "non_productif") externalDaySet[dG] = true;
+        });
+      });
+      affectations.forEach(function(a2) {
+        var t2 = a2.typeJour || "";
+        if (t2 !== "panne" && t2 !== "intemperies" && t2 !== "non_productif") return;
+        // Borne a la periode calculee : seuls ces jours peuvent croiser un conge
+        // de la periode, et ca evite de payer la resolution de site hors sujet.
+        if (!a2.dateAffectation || !isDateInPeriodFn(a2.dateAffectation, periodStart, periodEnd)) return;
+        var onSite2 = false;
+        if (a2.chantierId && externalChIds.indexOf(a2.chantierId) >= 0) onSite2 = true;
+        else if (!a2.chantierId) {
+          var lastW2 = affectations.filter(function(af) {
+            return af.personnelId === a2.personnelId && af.chantierId && af.dateAffectation < a2.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
+          }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
+          if (lastW2.length > 0 && chantierToSite[lastW2[0].chantierId] === site) onSite2 = true;
+        }
+        if (onSite2) externalDaySet[a2.dateAffectation] = true;
+      });
+      rapportsCtx.forEach(function(rNp) {
+        if (!rNp || !rNp.non_productif || !rNp.date_rapport) return;
+        if (siteOfRapport(rNp) === site) externalDaySet[String(rNp.date_rapport).substring(0, 10)] = true;
+      });
+
       var results = [];
       personnel.forEach(function(emp) {
         var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
@@ -1073,7 +1115,11 @@
             var machineEmp = getMachineEmpForDate(emp.id, dateStr);
             var metrageMachine = machineEmp ? getMetrageMachineForDate(machineEmp, dateStr) : null;
             var rattrapage;
-            if (metrageMachine !== null) { rattrapage = Math.min(metrageMachine, siteMoyenne); }
+            // Jour a cause externe (panne/intemperies/non productif sur le site) :
+            // le realise du jour est casse par la panne, pas par l'absence -> moyenne
+            // complete, comme pour les presents marques en panne.
+            if (externalDaySet[dateStr]) { rattrapage = siteMoyenne; }
+            else if (metrageMachine !== null) { rattrapage = Math.min(metrageMachine, siteMoyenne); }
             else {
               var chForSaisie = chId || (siteCh.length > 0 ? siteCh[0].id : null);
               var saisieFallback = chForSaisie ? (saisies[chForSaisie] || {})[dateStr] : null;
@@ -17488,6 +17534,39 @@
           return (v != null) ? v : null;
         }
 
+        // ── Jours a cause EXTERNE sur ce site (panne / intemperies / non productif) ──
+        // Meme regle que calcPrimesForSiteHelper (module) : un jour de panne, le
+        // conge credite la moyenne complete au lieu d'etre plafonne au realise
+        // (qui vaut 0 a cause de la panne, pas a cause de l'absence).
+        var externalDaySet = {};
+        siteChIds.forEach(function(cid) {
+          var grille = saisies[cid] || {};
+          Object.keys(grille).forEach(function(dG) {
+            var tG = getSaisieType(grille[dG]);
+            if (tG === "panne" || tG === "intemperies" || tG === "non_productif") externalDaySet[dG] = true;
+          });
+        });
+        (affectations || []).forEach(function(a2) {
+          var t2 = a2.typeJour || "";
+          if (t2 !== "panne" && t2 !== "intemperies" && t2 !== "non_productif") return;
+          // Borne a la periode calculee : seuls ces jours peuvent croiser un conge
+          // de la periode, et ca evite de payer la resolution de site hors sujet.
+          if (!a2.dateAffectation || !isDateInPeriod(a2.dateAffectation, period.start, period.end)) return;
+          var onSite2 = false;
+          if (a2.chantierId && siteChIds.indexOf(a2.chantierId) >= 0) onSite2 = true;
+          else if (!a2.chantierId) {
+            var lastW2 = (affectations || []).filter(function(af) {
+              return af.personnelId === a2.personnelId && af.chantierId && af.dateAffectation < a2.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
+            }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
+            if (lastW2.length > 0 && chantierToSite[lastW2[0].chantierId] === site) onSite2 = true;
+          }
+          if (onSite2) externalDaySet[a2.dateAffectation] = true;
+        });
+        (rapportsCtx || []).forEach(function(rNp) {
+          if (!rNp || !rNp.non_productif || !rNp.date_rapport) return;
+          if (siteOfRapport(rNp) === site) externalDaySet[String(rNp.date_rapport).substring(0, 10)] = true;
+        });
+
         personnel.forEach(function(emp) {
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
@@ -17605,7 +17684,12 @@
               var metrageMachine = machineEmp ? getMetrageMachineForDate(machineEmp, dateStr) : null;
               var rattrapage;
               var rattrSource;
-              if (metrageMachine !== null) {
+              if (externalDaySet[dateStr]) {
+                // Jour de panne/cause externe sur le site : le realise est casse par
+                // la panne, pas par l'absence -> moyenne complete, comme les presents.
+                rattrapage = siteMoyenne;
+                rattrSource = "jour panne/cause externe sur le site -> moyenne complete " + siteMoyenne + " m (pas de plafonnement au realise)";
+              } else if (metrageMachine !== null) {
                 rattrapage = Math.min(metrageMachine, siteMoyenne);
                 rattrSource = "machine " + machineEmp + " ce jour (" + metrageMachine + " m, plafonne a " + siteMoyenne + ")";
               } else {
