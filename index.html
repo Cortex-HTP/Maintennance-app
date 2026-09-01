@@ -17210,6 +17210,10 @@
         chomage: "#94a3b8", non_productif: "#fbbf24", intemperies: "#22d3ee", maladie: "#f472b6",
         arret: "#71717a"
       };
+      // Fiche personnel par id : sert au marquage automatique "Np hors contrat"
+      // (avant embauche / apres fin de contrat), comme au Planning Employes.
+      var persByIdMx = {};
+      (personnel || []).forEach(function(p) { if (p && p.id != null) persByIdMx[p.id] = p; });
 
       var siteOrder = Object.keys(sitesData).sort();
       var thStyle = { padding: "6px 8px", fontSize: 10, fontWeight: 700, color: "#e5e7eb", borderBottom: "2px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", whiteSpace: "nowrap", textAlign: "center" };
@@ -17276,6 +17280,17 @@
                             badgeType = siteT;
                           }
                         }
+                        // 4) Jour HORS PERIODE DE CONTRAT (avant embauche / apres fin) :
+                        // meme marquage Np automatique qu'au Planning Employes, sur les
+                        // jours travailles uniquement (lundi-jeudi, semaine de 4 jours).
+                        var hcTip = null;
+                        if (!badgeType && v === 0 && pidForNom && day.dow >= 1 && day.dow <= 4) {
+                          var empMx = persByIdMx[pidForNom];
+                          var dEmbMx = empMx && empMx.dateEmbauche ? String(empMx.dateEmbauche).substring(0, 10) : null;
+                          var dFinMx = empMx && empMx.dateFinContrat ? String(empMx.dateFinContrat).substring(0, 10) : null;
+                          if (dEmbMx && day.iso < dEmbMx) { badgeType = "non_productif"; hcTip = "Pas encore embauche - arrive le " + dEmbMx.split("-").reverse().join("/"); }
+                          else if (dFinMx && day.iso >= dFinMx) { badgeType = "non_productif"; hcTip = "Contrat termine le " + dFinMx.split("-").reverse().join("/"); }
+                        }
                         return h("td", { key: day.iso, style: Object.assign({}, tdStyle, {
                           color: v > 0 ? "#86efac" : (isWE ? "#52525b" : "#52525b"),
                           background: isWE ? "rgba(0,0,0,0.10)" : "transparent",
@@ -17293,7 +17308,7 @@
                             },
                             title: congeInfo
                               ? ((congeInfo.type || "conge") + (congeInfo.statut === "approuvee" ? " approuve" : " EN ATTENTE de validation") + " - source : demande de conge")
-                              : badgeType
+                              : (hcTip || badgeType)
                           }, typeShortLabels[badgeType] + (congeInfo && congeInfo.statut === "en_attente" ? "?" : "")) : "")
                         );
                       }),
