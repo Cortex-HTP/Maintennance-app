@@ -1090,7 +1090,14 @@
           }
           return false;
         });
-        if (empAffOnSite.length === 0) return;
+        // Porte d'entree : au moins une affectation planning sur le site OU au
+        // moins un rapport du site avec l'employe dans l'equipe (les rapports
+        // sont la source de verite - ex: present dans un rapport mais jamais
+        // reporte dans la table affectations).
+        var empHasRapportOnSite = (empRapportsList[emp.id] || []).some(function(rj) {
+          return rj.site === site && isDateInPeriodFn(rj.date, periodStart, periodEnd) && inEmpWindow(rj.date);
+        });
+        if (empAffOnSite.length === 0 && !empHasRapportOnSite) return;
 
         var empReleves = releves.filter(function(r) {
           if (!r.dateReleve) return false;
@@ -1107,9 +1114,12 @@
         });
 
         var adjMetrage = 0, adjJours = 0;
+        var datesComptees = {};
+        var nbTravailViaRapport = 0;
         empAffOnSite.forEach(function(a) {
           var tj = a.typeJour || "travail";
           var dateStr = a.dateAffectation;
+          datesComptees[dateStr] = true;
           var chId = a.chantierId;
           var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
           var saisieType = saisieEntry ? getSaisieType(saisieEntry) : "normal";
@@ -1191,6 +1201,20 @@
             dCur.setDate(dCur.getDate() + 1);
           }
         }
+        // ── COMPLETION VIA RAPPORTS : un jour ou l'employe figure dans l'equipe
+        // d'un rapport du site sans affectation planning compte comme travail
+        // (les rapports sont la source de verite). Miroir de l'ecran Primes.
+        (empRapportsList[emp.id] || []).forEach(function(rj) {
+          if (rj.site !== site) return;
+          if (!isDateInPeriodFn(rj.date, periodStart, periodEnd)) return;
+          if (!inEmpWindow(rj.date)) return;
+          if (datesComptees[rj.date]) return;
+          datesComptees[rj.date] = true;
+          var vRj = getMetrageMachineForDate(rj.sondeuse, rj.date);
+          adjMetrage += (vRj != null) ? vRj : 0;
+          adjJours += 1;
+          nbTravailViaRapport += 1;
+        });
         affectations.forEach(function(a) {
           if (a.personnelId !== emp.id) return;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return;
@@ -1218,7 +1242,10 @@
         });
 
         var nbTravailReel = empAffOnSite.filter(function(a) { return (a.typeJour || "travail") === "travail"; }).length;
-        if (nbTravailReel === 0) return;
+        // Les jours "travail via rapport" (completion) comptent aussi comme du
+        // travail reel : un employe present uniquement dans les rapports du site
+        // (aucune affectation planning) a droit a sa prime.
+        if (nbTravailReel + nbTravailViaRapport === 0) return;
         if (adjJours === 0) return;
         var mhRealise = adjMetrage / (adjJours * 9);
         var coef = lookupCoefficient(paliers, site, mhRealise);
@@ -17670,7 +17697,14 @@
             }
             return false;
           });
-          if (empAffOnSite.length === 0) return; // pas d'affectation sur ce site = pas de prime
+          // Porte d'entree : au moins une affectation planning sur le site OU au
+          // moins un rapport du site avec l'employe dans l'equipe (les rapports
+          // sont la source de verite - ex: Christophe Aubert, present dans un
+          // rapport mais jamais reporte dans la table affectations).
+          var empHasRapportOnSite = (empRapportsList[emp.id] || []).some(function(rj) {
+            return rj.site === site && isDateInPeriod(rj.date, period.start, period.end) && dateEnvelopeEmploye(rj.date);
+          });
+          if (empAffOnSite.length === 0 && !empHasRapportOnSite) return;
 
           // 2) Recupere les releves+rapports de l'employe (pour le metrage des jours travail)
           //    Indexes par date pour lookup rapide. Filtre aussi par fenetre d'emploi.
@@ -17878,6 +17912,7 @@
           //    sa presence.
           var datesDejaComptees = {};
           daysDetail.forEach(function(d) { datesDejaComptees[d.date] = true; });
+          var nbTravailViaRapport = 0;
           var empRapports = empRapportsList[emp.id] || [];
           empRapports.forEach(function(r) {
             if (r.site !== site) return;
@@ -17889,6 +17924,7 @@
             var dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
             adjMetrage += dayMetrage;
             adjJours += 1;
+            nbTravailViaRapport += 1;
             joursParType.travail += 1;
             datesDejaComptees[r.date] = true;
             daysDetail.push({ date: r.date, type: "travail (via rapport)", machine: r.sondeuse, metrage: dayMetrage, source: "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee" });
@@ -17976,7 +18012,9 @@
           var nbTravailReel = empAffOnSite.filter(function(a) {
             return (a.typeJour || "travail") === "travail";
           }).length;
-          if (nbTravailReel === 0) return;
+          // Les jours "travail via rapport" (completion) comptent aussi : un
+          // employe present uniquement dans les rapports du site a droit a sa prime.
+          if (nbTravailReel + nbTravailViaRapport === 0) return;
 
           if (adjJours === 0) return;
           var mhRealise = adjMetrage / (adjJours * 9);
