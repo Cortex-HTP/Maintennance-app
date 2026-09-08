@@ -23648,9 +23648,12 @@
         if (refreshFlag === 0) setLoading(true);
         // Cols light : on exclut les signatures base64 (lourdes) du fetch en boucle.
         // Elles sont charges a la demande quand l'utilisateur expand une ligne (cf. fetchSignatures()).
-        // statut + valide_at sont des colonnes ajoutees post-deploiement par migration SQL.
-        // On utilise * pour rester tolerant si la migration n'a pas encore tourne.
-        var RELEVES_COLS = "*";
+        // signature_png EXCLUE du fetch en boucle : 538 releves x ~26 Ko de base64
+        // = ~14 Mo re-telecharges a chaque evenement realtime + toutes les 2 min.
+        // Sur connexion moyenne le refetch expirait -> data vide -> la liste des
+        // releves "disparaissait d'un coup" (constate 2026-09-09). La signature
+        // est chargee a l'expand via loadSignatures('h', id).
+        var RELEVES_COLS = "id,numero,personnel_id,date_releve,sondeuse_code,equipement_id,fonction,heure_debut,heure_fin,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,remarques,submitted_at,source,created_at,envoye_at,envoye_a,statut,valide_at,ia_triage";
         var CONGES_COLS  = "id,demandeur_id,date_demande,lieu,classification,type_conge,nombre_jours,date_debut,date_reprise,raison,statut,created_at";
         var CMDS_COLS    = "id,demandeur_id,date_demande,tel,chantier_id,machine_lieu,lignes,statut,created_at";
         var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,fait_par_employe,date_fait,confirme_at,created_at";
@@ -23682,8 +23685,11 @@
           if (results[4].error) console.warn("[soumissions] rapports:", results[4].error.message);
           if (results[5] && results[5].error) console.warn("[soumissions] carburant:", results[5].error.message);
           if (results[6] && results[6].error) console.warn("[soumissions] cmd materiel mec:", results[6].error.message);
-          setRels(results[0].data || []);
-          setConges(results[1].data || []);
+          // Une reponse en ERREUR ne doit JAMAIS vider une liste deja affichee
+          // (cause des releves qui "disparaissaient d'un coup") : en cas d'erreur
+          // sur une table, on GARDE l'etat courant (le warn ci-dessus trace).
+          if (!results[0].error) setRels(results[0].data || []);
+          if (!results[1].error) setConges(results[1].data || []);
           // Fusionne les 2 sources : bons_commande (sondeurs) + commandes_materiel_mec (mecanos).
           // On normalise les commandes mecano au format attendu par renderCommandes/applyFilter :
           // id, statut, lignes, created_at + un flag _source pour le rendu specifique.
@@ -23710,14 +23716,15 @@
           var allCmds = bonsCmd.concat(cmdsMec).sort(function(a, b) {
             return new Date(b.created_at || 0) - new Date(a.created_at || 0);
           });
-          setCmds(allCmds);
-          setInts(results[3].data || []);
-          setRaps(results[4].data || []);
-          setCarbs((results[5] && results[5].data) || []);
+          // Commandes : 2 sources fusionnees -> on n'ecrase que si les DEUX ont repondu
+          if (!results[2].error && !(results[6] && results[6].error)) setCmds(allCmds);
+          if (!results[3].error) setInts(results[3].data || []);
+          if (!results[4].error) setRaps(results[4].data || []);
+          if (!(results[5] && results[5].error)) setCarbs((results[5] && results[5].data) || []);
           if (results[7] && results[7].error) console.warn("[soumissions] validations:", results[7].error.message);
-          setVals((results[7] && results[7].data) || []);
+          else setVals((results[7] && results[7].data) || []);
           if (results[8] && results[8].error) console.warn("[soumissions] destinataires:", results[8].error.message);
-          setDestChantier((results[8] && results[8].data) || []);
+          else setDestChantier((results[8] && results[8].data) || []);
           setLoading(false);
         }).catch(function(err) {
           if (cancelled) return;
