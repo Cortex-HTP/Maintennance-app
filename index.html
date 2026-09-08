@@ -25587,6 +25587,7 @@
                 r.statut !== "valide_admin" && r.statut !== "demande_modification" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
                 r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
                 actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingRapportId(r.id); } }),
+                canEditSoumissions ? actionBtn({ label: "Renvoyer au client", icon: "send", color: "neutral", onClick: function() { renvoyerRapportManuel(r); } }) : null,
                 canEditSoumissions ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteRapport(r); } }) : null
               )
             ]) : null
@@ -26420,13 +26421,15 @@
       // avec corrections sur cette date), on propose de renvoyer le rapport
       // corrige pour verification et re-signature (bandeau "Rapport corrige"
       // dans l'email + nouveau lien de signature).
-      var proposerRenvoiRapportCorrige = function(rapport) {
+      // Detection : la journee de ce rapport est-elle visee par une correction
+      // client (validation mensuelle REFUSEE avec une correction sur cette date) ?
+      var correctionClientPourRapport = function(rapport) {
         try {
           var dateR = String(rapport.date_rapport || "").substring(0, 10);
-          if (!dateR) return;
+          if (!dateR) return null;
           var chIdR = rapport.chantier_id != null ? String(rapport.chantier_id) : null;
           var lieuU = String(rapport.lieu || "").toUpperCase().trim();
-          var vMatch = (vals || []).find(function(v) {
+          return (vals || []).find(function(v) {
             if (v.statut !== "refuse") return false;
             if (!Array.isArray(v.corrections) || v.corrections.length === 0) return false;
             var chOk = false;
@@ -26441,25 +26444,48 @@
             }
             if (!chOk) return false;
             return v.corrections.some(function(cor) { return String(cor.date || "").substring(0, 10) === dateR; });
-          });
-          if (!vMatch) return;
-          var fmtDd = dateR.split("-").reverse().join("/");
-          if (!confirm("Cette journee (" + fmtDd + (rapport.sondeuse_code ? " - " + rapport.sondeuse_code : "") + ") fait l'objet d'une correction demandee par le client" + (vMatch.validataire_nom ? " (" + vMatch.validataire_nom + ")" : "") + ".\n\nRenvoyer CE rapport corrige au client pour verification et re-signature ?\n(Si la correction visait une autre machine du meme jour, reponds Annuler.)")) return;
-          supabase.auth.getSession().then(function(s) {
-            var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
-            if (!tkn) { alert("Session expiree, reconnecte-toi."); return; }
-            fetch(EMPLOYES_API_BASE + "/api/send-rapport", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
-              body: JSON.stringify({ rapportId: rapport.id, correction: true })
-            }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
-              .then(function(out) {
-                if (!out.ok || !out.j || !out.j.ok) { alert("Renvoi impossible : " + ((out.j && out.j.error) || "erreur serveur")); return; }
-                if (showToast) showToast("Rapport corrige renvoye au client (" + (out.j.destinataires || 0) + " destinataire(s))", "success");
-              })
-              .catch(function(e) { alert("Erreur reseau : " + (e && e.message)); });
-          });
-        } catch (e) {}
+          }) || null;
+        } catch (e) { return null; }
+      };
+      // Envoi effectif via send-rapport (JWT admin). correction=true ajoute le
+      // bandeau "RAPPORT CORRIGE" dans l'email ; nouveau lien de signature dans
+      // les deux cas.
+      var envoyerRapportAuClient = function(rapport, correction) {
+        supabase.auth.getSession().then(function(s) {
+          var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
+          if (!tkn) { alert("Session expiree, reconnecte-toi."); return; }
+          fetch(EMPLOYES_API_BASE + "/api/send-rapport", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
+            body: JSON.stringify({ rapportId: rapport.id, correction: !!correction })
+          }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+            .then(function(out) {
+              if (!out.ok || !out.j || !out.j.ok) { alert("Renvoi impossible : " + ((out.j && out.j.error) || "erreur serveur")); return; }
+              if (showToast) showToast((correction ? "Rapport corrige renvoye" : "Rapport renvoye") + " au client (" + (out.j.destinataires || 0) + " destinataire(s))", "success");
+            })
+            .catch(function(e) { alert("Erreur reseau : " + (e && e.message)); });
+        });
+      };
+      // Apres modification d'un rapport : proposition AUTOMATIQUE de renvoi si
+      // la journee est visee par une correction client.
+      var proposerRenvoiRapportCorrige = function(rapport) {
+        var vMatch = correctionClientPourRapport(rapport);
+        if (!vMatch) return;
+        var dateR = String(rapport.date_rapport || "").substring(0, 10);
+        var fmtDd = dateR.split("-").reverse().join("/");
+        if (!confirm("Cette journee (" + fmtDd + (rapport.sondeuse_code ? " - " + rapport.sondeuse_code : "") + ") fait l'objet d'une correction demandee par le client" + (vMatch.validataire_nom ? " (" + vMatch.validataire_nom + ")" : "") + ".\n\nRenvoyer CE rapport corrige au client pour verification et re-signature ?\n(Si la correction visait une autre machine du meme jour, reponds Annuler.)")) return;
+        envoyerRapportAuClient(rapport, true);
+      };
+      // Renvoi MANUEL depuis le detail d'un rapport (bouton "Renvoyer au client") :
+      // email perdu, relance, etc. Passe en mode corrige si une correction client
+      // vise cette journee, envoi standard sinon.
+      var renvoyerRapportManuel = function(rapport) {
+        var vMatch = correctionClientPourRapport(rapport);
+        var dateR = String(rapport.date_rapport || "").substring(0, 10);
+        var fmtDd = dateR ? dateR.split("-").reverse().join("/") : "?";
+        var pre = vMatch ? "Cette journee fait l'objet d'une correction client : l'email partira marque RAPPORT CORRIGE.\n\n" : "";
+        if (!confirm(pre + "Renvoyer le rapport " + (rapport.sondeuse_code || "") + " du " + fmtDd + " au client pour signature ?\n(Nouveau lien de signature, envoye aux destinataires configures du chantier.)")) return;
+        envoyerRapportAuClient(rapport, !!vMatch);
       };
       var renderValidationClient = function() {
         var moisSel = valPeriode || moisDefautVal;
