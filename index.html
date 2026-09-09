@@ -17414,6 +17414,217 @@
     }
 
     // ─── EcranPrimes ──────────────────────────────────────────────────
+    // ─── Prime sur le BENEFICE (ecran de TEST) ───────────────────────────────
+    // Modele valide avec Tomy (sept. 2026) : benefice mensuel AVANT mensualites
+    // d'emprunts (CA facturable - salaires x1,40 - carburant - pieces - frais
+    // generaux FEC), franchise decomposee (part emprunts / investissements /
+    // risque / coussin), taux sur le surplus. Les emprunts ne sont comptes
+    // QU'UNE fois : dans la franchise, jamais dans les couts.
+    // Ecran de SIMULATION : aucun versement, aucune ecriture - il sert a tester
+    // le modele sur les mois reels avant decision. Reglages en localStorage.
+    function PrimeBeneficeView({ rapports, chantiers, personnel, carburants, interventions, emprunts, ecritures, parametres }) {
+      // Prix du litre : MEME source que Rentabilite/Previsionnel (parametre
+      // prix_mazout_litre, repli 175 XPF/L) - pas de valeur en dur divergente.
+      var prixMazoutParam = 175;
+      (parametres || []).forEach(function(p) {
+        if (p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre")) {
+          var vP = parseFloat(p.valeur);
+          if (vP > 0) prixMazoutParam = vP;
+        }
+      });
+      var DEFAUT = { frEmprunts: 7, frInvest: 1, frRisque: 2, frCoussin: 1, taux: 10, prixLitre: prixMazoutParam, fgOverride: "", methode: "cumul" };
+      var _cfg = useState(function() {
+        try {
+          var s = JSON.parse(localStorage.getItem("wl_prime_benefice_cfg"));
+          if (s && typeof s === "object") return Object.assign({}, DEFAUT, s);
+        } catch (e) {}
+        return DEFAUT;
+      });
+      var cfg = _cfg[0]; var setCfg = _cfg[1];
+      function updCfg(k, v) {
+        var n = Object.assign({}, cfg); n[k] = v; setCfg(n);
+        try { localStorage.setItem("wl_prime_benefice_cfg", JSON.stringify(n)); } catch (e) {}
+      }
+      var now = new Date();
+      var year = now.getFullYear();
+      var curM = now.getMonth();
+      var MOIS_FR = ["Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin", "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre"];
+
+      // Resolution chantier d'un rapport (id direct, sinon site/titre par lieu)
+      var chById = {}, chBySiteKey = {};
+      (chantiers || []).forEach(function(c) {
+        chById[String(c.id)] = c;
+        if (c.site) chBySiteKey[String(c.site).toUpperCase().trim()] = c;
+        if (c.titre && !chBySiteKey[String(c.titre).toUpperCase().trim()]) chBySiteKey[String(c.titre).toUpperCase().trim()] = c;
+      });
+      function chOfRap(r) {
+        if (r.chantier_id != null && chById[String(r.chantier_id)]) return chById[String(r.chantier_id)];
+        var lu = String(r.lieu || "").toUpperCase().trim();
+        if (!lu) return null;
+        if (chBySiteKey[lu]) return chBySiteKey[lu];
+        var ks = Object.keys(chBySiteKey);
+        for (var i = 0; i < ks.length; i++) {
+          if (ks[i].indexOf(lu) >= 0 || lu.indexOf(ks[i]) >= 0) return chBySiteKey[ks[i]];
+        }
+        return null;
+      }
+
+      // Frais generaux reels par mois (pool elargi FEC) ; repli moyenne, et
+      // override manuel possible (en MF) si le FEC n'est pas a jour.
+      var fgInfo = computeFraisGenerauxFEC(ecritures || [], now);
+      var fgOverrideMF = cfg.fgOverride !== "" && !isNaN(parseFloat(cfg.fgOverride)) ? parseFloat(cfg.fgOverride) : null;
+
+      // Mensualites d'emprunts actives (info : justifie la part emprunts de la franchise)
+      var mensualitesActives = (emprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
+        .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+
+      // ── Agregation mensuelle de l'annee en cours ──
+      var moisData = [];
+      for (var mi = 0; mi <= curM; mi++) {
+        var mk = year + "-" + (mi + 1 < 10 ? "0" : "") + (mi + 1);
+        var agg = { mi: mi, mk: mk, metres: 0, ca: 0, litres: 0, pieces: 0, msal: 0, nbEmp: 0 };
+        (rapports || []).forEach(function(r) {
+          if (!r || String(r.date_rapport || "").substring(0, 7) !== mk) return;
+          var ch = chOfRap(r);
+          var m2 = parseFloat(r.total_metres) || 0;
+          agg.metres += m2;
+          // ctx.dbChantiers est MAPPE (chantierFromDb) : champ camelCase prixMetre
+          agg.ca += m2 * (ch ? (parseFloat(ch.prixMetre) || 0) : 0);
+        });
+        (carburants || []).forEach(function(cb) {
+          if (!cb || String(cb.date_consommation || "").substring(0, 7) !== mk) return;
+          agg.litres += parseFloat(cb.quantite_l) || 0;
+        });
+        (interventions || []).forEach(function(iv) {
+          if (!iv || String(iv.Date_Intervention || "").substring(0, 7) !== mk) return;
+          agg.pieces += parseFloat(iv.Cout) || 0;
+        });
+        var finM = mk + "-28";
+        (personnel || []).forEach(function(p) {
+          if (!p || !p.salaire) return;
+          var emb = p.dateEmbauche ? String(p.dateEmbauche).substring(0, 10) : null;
+          var finC = p.dateFinContrat ? String(p.dateFinContrat).substring(0, 10) : null;
+          if (emb && emb > finM) return;
+          if (finC && finC < mk + "-01") return;
+          agg.msal += parseFloat(p.salaire) || 0;
+          agg.nbEmp += 1;
+        });
+        var fgMois = fgOverrideMF != null ? fgOverrideMF * 1000000
+          : (fgInfo.reliableIdx.indexOf(mi) >= 0 ? fgInfo.fgParMois[mi] : fgInfo.poolMoyenMensuel);
+        agg.salaires = agg.msal * 1.40;
+        agg.carb = agg.litres * (parseFloat(cfg.prixLitre) || 0);
+        agg.fg = fgMois;
+        agg.fgReel = fgOverrideMF == null && fgInfo.reliableIdx.indexOf(mi) >= 0;
+        // Benefice AVANT emprunts : les emprunts sont dans la FRANCHISE, pas ici
+        agg.benefice = agg.ca - agg.salaires - agg.carb - agg.pieces - agg.fg;
+        moisData.push(agg);
+      }
+
+      var franchise = ((parseFloat(cfg.frEmprunts) || 0) + (parseFloat(cfg.frInvest) || 0) + (parseFloat(cfg.frRisque) || 0) + (parseFloat(cfg.frCoussin) || 0)) * 1000000;
+      var taux = (parseFloat(cfg.taux) || 0) / 100;
+
+      // ── Enveloppes selon la methode ──
+      // Le MOIS EN COURS est affiche (grise) mais EXCLU du compteur et des
+      // totaux : son CA est partiel alors que ses salaires/frais generaux sont
+      // pleins -> benefice structurellement faux tant que le mois n'est pas clos.
+      var cumulB = 0, verse = 0, nbMoisClos = 0;
+      moisData.forEach(function(m) {
+        m.enCours = m.mi === curM;
+        if (m.enCours) { m.enveloppe = 0; m.parEmploye = 0; return; }
+        nbMoisClos += 1;
+        cumulB += m.benefice;
+        if (cfg.methode === "sec") {
+          m.enveloppe = taux * Math.max(0, m.benefice - franchise);
+        } else {
+          var droits = taux * Math.max(0, cumulB - franchise * nbMoisClos);
+          m.enveloppe = Math.max(0, droits - verse);
+        }
+        verse += m.enveloppe;
+        m.parEmploye = m.nbEmp > 0 ? m.enveloppe / m.nbEmp : 0;
+      });
+      var totEnv = 0, totB = 0;
+      moisData.forEach(function(m) { if (!m.enCours) { totEnv += m.enveloppe; totB += m.benefice; } });
+
+      var fmtMFv = function(v) { return (Math.round(v / 10000) / 100).toLocaleString("fr-FR") + " MF"; };
+      var inputSt = { width: 74, background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 8px", color: "#fff", fontSize: 13, fontFamily: "monospace", textAlign: "right" };
+      var lblSt = { fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, display: "block", marginBottom: 4 };
+      var thSt = { padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", textAlign: "right", borderBottom: "1px solid rgba(255,255,255,0.08)", whiteSpace: "nowrap" };
+      var tdSt = { padding: "7px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "right", fontFamily: "monospace", fontSize: 12.5, whiteSpace: "nowrap" };
+
+      function numField(label, key, step) {
+        return h("div", null,
+          h("label", { style: lblSt }, label),
+          h("input", { type: "number", step: step || 0.5, value: cfg[key], style: inputSt, onChange: function(e) { updCfg(key, e.target.value); } })
+        );
+      }
+
+      return h("div", null,
+        h(Card, { style: { marginBottom: 14 } },
+          h("div", { style: { fontSize: 12, color: "#fde68a", background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.30)", borderRadius: 8, padding: "8px 12px", marginBottom: 14 } },
+            "ECRAN DE TEST - aucune prime n'est versee ni enregistree. Le benefice est calcule AVANT mensualites d'emprunts (elles sont couvertes par la part emprunts de la franchise, pour ne pas les compter deux fois). Mensualites actives actuelles : " + fmtNum(Math.round(mensualitesActives)) + " XPF/mois."),
+          !fgInfo.aDonnees && fgOverrideMF == null ? h("div", { style: { fontSize: 12, color: "#fda4af", background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.35)", borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontWeight: 700 } },
+            "ATTENTION : aucun mois fiable dans le FEC importe - les frais generaux sont a 0 et le benefice est SUREVALUE. Force une valeur dans \"Frais gen. force\" (ex: 2) ou importe le FEC a jour avant de tirer des conclusions.") : null,
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 130px), 1fr))", gap: 12, alignItems: "end" } },
+            numField("Part emprunts (MF)", "frEmprunts"),
+            numField("Part investissements (MF)", "frInvest"),
+            numField("Part risque (MF)", "frRisque"),
+            numField("Coussin treso (MF)", "frCoussin"),
+            numField("Taux de partage (%)", "taux", 1),
+            numField("Prix litre gazole (XPF)", "prixLitre", 5),
+            h("div", null,
+              h("label", { style: lblSt }, "Frais gen. force (MF, vide = FEC)"),
+              h("input", { type: "number", step: 0.25, value: cfg.fgOverride, placeholder: "auto", style: inputSt, onChange: function(e) { updCfg("fgOverride", e.target.value); } })
+            ),
+            h("div", null,
+              h("label", { style: lblSt }, "Methode"),
+              h("select", { value: cfg.methode, style: Object.assign({}, inputSt, { width: 130, textAlign: "left" }), onChange: function(e) { updCfg("methode", e.target.value); } },
+                h("option", { value: "cumul" }, "Compteur cumule"),
+                h("option", { value: "sec" }, "Mensuel sec")
+              )
+            )
+          ),
+          h("div", { style: { marginTop: 12, fontSize: 12.5, color: "#a5b4fc", fontWeight: 700 } },
+            "Franchise totale : " + fmtMFv(franchise) + " / mois - le partage ne demarre qu'au-dela.")
+        ),
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 190px), 1fr))", gap: 12, marginBottom: 14 } },
+          h(KPICard, { icon: h(Icon, { name: "trending-up", size: 28, color: "#86efac" }), label: "Benefice " + year + " (avant emprunts)", value: fmtMFv(totB), color: "#22c55e" }),
+          h(KPICard, { icon: h(Icon, { name: "gift", size: 28, color: "#a78bfa" }), label: "Enveloppe " + year + " (net)", value: fmtMFv(totEnv), color: "#a78bfa" }),
+          h(KPICard, { icon: h(Icon, { name: "wallet", size: 28, color: "#fbbf24" }), label: "Cout employeur (x1,40)", value: fmtMFv(totEnv * 1.40), color: "#d97706" }),
+          h(KPICard, { icon: h(Icon, { name: "percent", size: 28, color: "#67e8f9" }), label: "Part du benefice partagee", value: totB > 0 ? (Math.round(totEnv * 1.40 / totB * 1000) / 10) + " %" : "-", color: "#06b6d4" })
+        ),
+        h(Card, null,
+          h("div", { style: { overflowX: "auto", WebkitOverflowScrolling: "touch" } },
+            h("table", { style: { width: "100%", borderCollapse: "collapse" } },
+              h("thead", null, h("tr", null,
+                ["Mois", "Metres", "CA facturable", "Salaires x1,40", "Carburant", "Pieces", "Frais gen.", "Benefice", "Enveloppe", "Par employe"].map(function(c2, ci2) {
+                  return h("th", { key: c2, style: Object.assign({}, thSt, ci2 === 0 ? { textAlign: "left" } : {}) }, c2);
+                })
+              )),
+              h("tbody", null,
+                moisData.map(function(m) {
+                  var enCours = m.mi === curM;
+                  return h("tr", { key: m.mk, style: enCours ? { opacity: 0.55 } : null },
+                    h("td", { style: Object.assign({}, tdSt, { textAlign: "left", fontFamily: "inherit", fontWeight: 700, color: "#e5e7eb" }) }, MOIS_FR[m.mi] + (enCours ? " (en cours)" : "")),
+                    h("td", { style: tdSt }, Math.round(m.metres).toLocaleString("fr-FR")),
+                    h("td", { style: tdSt }, fmtMFv(m.ca)),
+                    h("td", { style: tdSt }, fmtMFv(m.salaires)),
+                    h("td", { style: tdSt }, fmtMFv(m.carb)),
+                    h("td", { style: tdSt }, fmtMFv(m.pieces)),
+                    h("td", { style: Object.assign({}, tdSt, m.fgReel ? {} : { color: "#fbbf24" }), title: m.fgReel ? "Frais generaux REELS du mois (FEC)" : "Estimation (moyenne des mois fiables du FEC, ou valeur forcee)" }, fmtMFv(m.fg) + (m.fgReel ? "" : " *")),
+                    h("td", { style: Object.assign({}, tdSt, { fontWeight: 800, color: m.benefice >= 0 ? "#86efac" : "#fda4af" }) }, fmtMFv(m.benefice)),
+                    h("td", { style: Object.assign({}, tdSt, { fontWeight: 800, color: m.enveloppe > 0 ? "#a78bfa" : "#71717a" }) }, m.enveloppe > 0 ? fmtMFv(m.enveloppe) : "-"),
+                    h("td", { style: Object.assign({}, tdSt, { color: m.parEmploye > 0 ? "#c4b5fd" : "#71717a" }) }, m.parEmploye > 0 ? (fmtNum(Math.round(m.parEmploye)) + " XPF (÷" + m.nbEmp + ")") : "-")
+                  );
+                })
+              )
+            )
+          ),
+          h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 10, lineHeight: 1.6 } },
+            "* = frais generaux estimes (mois sans FEC fiable). Par employe = part moyenne (enveloppe ÷ effectif sous contrat du mois) ; la version definitive fera moitie part egale + moitie prorata des jours travailles. Compteur cumule : un mois sous la franchise gele les versements jusqu'a rattrapage, sans jamais reprendre ce qui est verse.")
+        )
+      );
+    }
+
     function EcranPrimes() {
       var ctx = useAppData();
       var isAdmin = ctx.isAdmin;
@@ -18228,7 +18439,8 @@
         h("div", { style: { display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.08)", overflowX: "auto" } },
           [
             { key: "primes", label: "Primes", icon: "trophy" },
-            { key: "metrage", label: "Metrage sondeurs", icon: "ruler" }
+            { key: "metrage", label: "Metrage sondeurs", icon: "ruler" },
+            { key: "benefice", label: "Prime benefice (test)", icon: "trending-up" }
           ].map(function(t) {
             var active = primesTab === t.key;
             return h("button", { key: t.key, onClick: function() { setPrimesTab(t.key); },
@@ -18252,6 +18464,21 @@
           affectations: affectations,
           personnel: personnel,
           demandesConge: demandesConge
+        }) : null,
+        // Onglet Prime benefice : SIMULATION du modele valide (test, rien n'est verse)
+        primesTab === "benefice" ? h(PrimeBeneficeView, {
+          rapports: ctx.dbRapportsForage || [],
+          chantiers: chantiers || [],
+          // Liste complete SAUF mecanos sous-traitants (roleMecanicien) : ils sont
+          // factures a l'heure et leur cout est deja dans le pool de frais generaux
+          // (classe 6) -> les compter ici serait un double compte. Les salaries
+          // "Autre" (mecanicien salarie, chauffeur...) restent inclus.
+          personnel: loadPersonnelFromParametres(ctx.parametres || []).filter(function(p) { return !p.roleMecanicien; }),
+          parametres: ctx.parametres || [],
+          carburants: ctx.dbCarburants || [],
+          interventions: ctx.interventions || [],
+          emprunts: ctx.dbEmprunts || [],
+          ecritures: ctx.dbEcrCompta || []
         }) : null,
         // KPIs (onglet Primes)
         primesTab === "primes" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 16, marginBottom: 24 } },
