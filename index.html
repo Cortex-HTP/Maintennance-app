@@ -21276,6 +21276,13 @@
             var withMarge = sondeusesDetail.filter(function(s) { return s.nbJoursTravailles > 0 && s.caTotal > 0 && s.joursInactive <= 7; })
               .slice().sort(function(a, b) { return b.margeJour - a.margeJour; });
             var hiddenInactive = sondeusesDetail.filter(function(s) { return s.nbJoursTravailles > 0 && s.caTotal > 0 && s.joursInactive > 7; }).length;
+            // Cout TRESO propre a CHAQUE machine : le cash decaisse de la periode est
+            // reparti au prorata du COUT COMPLET de chaque machine (carburant, equipe,
+            // indirects ventiles), pas au prorata des metres. Avant : le meme cout
+            // treso au metre etait applique a toutes les machines, ce qui gommait
+            // leurs differences de structure de couts (constate par Tomy 2026-09-09).
+            var coutComptaMachines = sondeusesDetail.reduce(function(s2, m2) { return s2 + (m2.coutTotal || 0); }, 0);
+            var ratioTresoMachines = (decaissTresoPeriode != null && coutComptaMachines > 0) ? (decaissTresoPeriode / coutComptaMachines) : null;
             function rankColSt(i, total) {
               if (total <= 1) return { color: "#a5b4fc", bg: "rgba(99,102,241,0.15)" };
               var pct = i / (total - 1);
@@ -21297,7 +21304,7 @@
                     h(Icon, { name: "target", size: 16, color: "#c4b5fd" }),
                     "Rentabilite par machine - marge nette/jour"
                   ),
-                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA/jour - couts DIRECTS/jour (conso + personnel equipe + charges patronales, ÷ jours travailles) - couts INDIRECTS/jour (emprunts + charges fixes + hors-equipe, au prorata metres ÷ jours ouvrables du mois). La marge TRESO utilise le CASH decaisse (cout treso/m x metres/jour) au lieu des charges comptables."),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Marge/jour = CA/jour - couts DIRECTS/jour (conso + personnel equipe + charges patronales, ÷ jours travailles) - couts INDIRECTS/jour (emprunts + charges fixes + hors-equipe, au prorata metres ÷ jours ouvrables du mois). La marge TRESO utilise le CASH decaisse, reparti au prorata du cout complet de CHAQUE machine (cout machine x ratio cash), au lieu des charges comptables."),
                   hiddenInactive > 0 ? h("div", { style: { fontSize: 10.5, color: "#fdba74", marginTop: 4, fontStyle: "italic" } }, hiddenInactive + " machine" + (hiddenInactive > 1 ? "s" : "") + " masquee" + (hiddenInactive > 1 ? "s" : "") + " (inactive" + (hiddenInactive > 1 ? "s" : "") + " depuis plus de 7 jours)") : null
                 )
               ),
@@ -21305,8 +21312,10 @@
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 360px), 1fr))", gap: 10 } },
                 withMarge.map(function(x, i) {
                   var st = rankColSt(i, withMarge.length);
-                  // Marge TRESO/jour : CA/jour - cout CASH impute (cout treso au metre x m/j)
-                  var margeTresoJour = coutTresoMetre != null ? (x.caJour - coutTresoMetre * x.metresJour) : null;
+                  // Marge TRESO/jour : CA/jour - cout CASH de LA machine
+                  // (cout complet compta de la machine x ratio cash global)
+                  var coutTresoJourM = ratioTresoMachines != null ? (x.coutJour * ratioTresoMachines) : null;
+                  var margeTresoJour = coutTresoJourM != null ? (x.caJour - coutTresoJourM) : null;
                   return h("div", { key: x.code, style: { background: st.bg, border: "1px solid " + st.color, borderRadius: 10, padding: "12px 14px" } },
                     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 } },
                       h("div", { style: { fontWeight: 800, fontSize: 15, color: "#fafafa", fontFamily: "monospace" } }, x.code),
@@ -21337,7 +21346,7 @@
                         h("div", { style: { fontWeight: 900, color: st.color, fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(x.margeJour) + " /j")
                       ),
                       // Marge TRESO : vision CASH (ce que la machine laisse en tresorerie)
-                      margeTresoJour != null ? h("div", { style: { padding: "8px 10px", background: margeTresoJour >= 0 ? "rgba(6,182,212,0.12)" : "rgba(244,63,94,0.12)", border: "1px solid " + (margeTresoJour >= 0 ? "rgba(6,182,212,0.40)" : "rgba(244,63,94,0.40)"), borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge TRESO = CA/jour - cout CASH impute a la machine\n\nCout treso global : " + fmtNum(Math.round(coutTresoMetre)) + " XPF/m (decaissements de la periode ÷ metrage total)\nx " + Math.round(x.metresJour) + " m/j = " + fmtNum(Math.round(coutTresoMetre * x.metresJour)) + " XPF/jour\n\nCA/jour : " + fmtNum(Math.round(x.caJour)) + " XPF\n─────────\nMarge treso : " + fmtNum(Math.round(margeTresoJour)) + " XPF/jour\n\nVision CASH : ce que la machine laisse (ou coute) en tresorerie par jour travaille, emprunts et virements internes traites comme dans le previsionnel treso." },
+                      margeTresoJour != null ? h("div", { style: { padding: "8px 10px", background: margeTresoJour >= 0 ? "rgba(6,182,212,0.12)" : "rgba(244,63,94,0.12)", border: "1px solid " + (margeTresoJour >= 0 ? "rgba(6,182,212,0.40)" : "rgba(244,63,94,0.40)"), borderRadius: 8, textAlign: "center", cursor: "help" }, title: "Marge TRESO = CA/jour - cout CASH de LA machine\n\nCout complet machine : " + fmtNum(Math.round(x.coutJour)) + " XPF/jour (compta : conso + equipe + indirects ventiles)\nx ratio cash " + (Math.round(ratioTresoMachines * 100) / 100) + " (decaissements periode ÷ couts compta machines)\n= " + fmtNum(Math.round(coutTresoJourM)) + " XPF/jour decaisses\n\nCA/jour : " + fmtNum(Math.round(x.caJour)) + " XPF\n─────────\nMarge treso : " + fmtNum(Math.round(margeTresoJour)) + " XPF/jour\n\nVision CASH : le cash de la periode est reparti selon la structure de couts REELLE de chaque machine (pas le meme cout au metre pour toutes) ; emprunts et virements internes traites comme dans le previsionnel treso." },
                         h("div", { style: { color: "#a1a1aa", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 } }, "Marge treso/jour"),
                         h("div", { style: { fontWeight: 900, color: margeTresoJour >= 0 ? "#67e8f9" : "#fda4af", fontFamily: "monospace", fontSize: 15, lineHeight: 1.15 } }, fmtCaShort(margeTresoJour) + " /j")
                       ) : null
