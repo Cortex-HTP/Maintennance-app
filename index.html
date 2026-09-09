@@ -585,12 +585,30 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, prixMetreParType: r.prix_metre_par_type || {}, pmtEnBase: !!(r.prix_metre_par_type && Object.keys(r.prix_metre_par_type).length), depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
       var lon = c.longitude !== "" && c.longitude !== null && c.longitude !== undefined ? parseFloat(c.longitude) : null;
-      return { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, jour_cloture_facturation: Math.min(Math.max(parseInt(c.jourCloture) || 25, 1), 31), date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon, carburant_client: c.carburantClient === true };
+      var ret = { titre: c.titre, client: (c.client || "").trim() || null, email_contact: (c.emailContact || "").trim() || null, jour_cloture_facturation: Math.min(Math.max(parseInt(c.jourCloture) || 25, 1), 31), date_debut: c.dateDebut || null, date_fin: c.dateFin || null, metrage: parseInt(c.metrage) || 0, prix_metre: parseInt(c.prixMetre) || 0, prix_attente: parseInt(c.prixAttente) || 0, depenses_prevues: parseInt(c.depensesPrevues) || 0, statut: c.statut || "A venir", site: c.site || "", latitude: isNaN(lat) ? null : lat, longitude: isNaN(lon) ? null : lon, carburant_client: c.carburantClient === true };
+      // N'envoie la grille par type QUE si elle contient des prix, ou si elle
+      // existait en base (pour pouvoir l'effacer). Sinon un chantier ordinaire
+      // echouerait en PGRST204 tant que wallis_patch_prix_par_type.sql n'est
+      // pas joue (colonne inconnue) — la sauvegarde doit rester possible.
+      var pmt = chantierPrixParTypeToDb(c);
+      if (pmt !== null || c.pmtEnBase === true) ret.prix_metre_par_type = pmt;
+      return ret;
+    }
+    // Nettoie la grille de prix par type de forage : ne garde que les prix > 0.
+    // null si aucune ligne (le champ jsonb reste vide -> tout au prix general).
+    function chantierPrixParTypeToDb(c) {
+      var src = c.prixMetreParType || {};
+      var out = {}; var n = 0;
+      Object.keys(src).forEach(function(k) {
+        var v = parseInt(src[k]);
+        if (v > 0) { out[String(k).toUpperCase().trim()] = v; n++; }
+      });
+      return n > 0 ? out : null;
     }
     // Petit badge "client" affiche a cote du nom d'un chantier (Avancement,
     // Previsionnel, Planning, cartes...). Retourne null si pas de client.
@@ -598,6 +616,38 @@
       var cl = ch && ch.client ? String(ch.client).trim() : "";
       if (!cl) return null;
       return h("span", { style: Object.assign({ fontSize: 10.5, fontWeight: 700, color: "#7dd3fc", background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", borderRadius: 999, padding: "1px 8px", marginLeft: 8, whiteSpace: "nowrap", verticalAlign: "middle", letterSpacing: 0.3 }, extraStyle || {}) }, cl);
+    }
+    // Grille "prix du metre par type de forage" du formulaire chantier.
+    // Partage par les 2 formulaires (Chantiers et Avancement). Champ vide =
+    // le type est facture au "Prix au metre" general. Utilise par la
+    // facturation Cortex (ventilation du metrage valide par type de sondage).
+    var TYPES_FORAGE_PRIX = ["AIRCORE", "RC", "DIAMOND", "CAROTTE", "MFT", "AUTRE"];
+    function champPrixParType(f, upd) {
+      var vals = f.prixMetreParType || {};
+      var types = TYPES_FORAGE_PRIX.slice();
+      Object.keys(vals).forEach(function(t) { if (types.indexOf(t) < 0) types.push(t); });
+      var inSty = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+      return h("div", { style: { padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" } },
+        h("div", { style: { fontSize: 12, fontWeight: 700, color: "#a5b4fc", marginBottom: 3 } }, "Prix du metre par type de forage (XPF)"),
+        h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 10 } }, "Chaque type peut avoir son prix (ex. MFT # AIRCORE) - la facture ventile le metrage valide par type. Champ vide = prix au metre general ci-dessus."),
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 130px), 1fr))", gap: 10 } },
+          types.map(function(t) {
+            return h("div", { key: t },
+              h("div", { style: { fontSize: 10.5, fontWeight: 700, color: "#a1a1aa", marginBottom: 4, letterSpacing: "0.04em" } }, t),
+              h("input", {
+                type: "number", style: inSty, placeholder: "general",
+                value: vals[t] != null && vals[t] !== "" ? vals[t] : "",
+                onChange: function(e) {
+                  var v = e.target.value;
+                  var next = Object.assign({}, f.prixMetreParType || {});
+                  if (v === "") { delete next[t]; } else { next[t] = parseInt(v) || 0; }
+                  upd("prixMetreParType", next);
+                }
+              })
+            );
+          })
+        )
+      );
     }
     // Interrupteur "carburant fourni par le client" du formulaire chantier.
     // Partage par les 2 formulaires (Chantiers et Avancement) pour rester identiques.
@@ -9893,6 +9943,7 @@
               h(FormField, { label: "Prix au metre (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.prixMetre, onChange: function(e) { upd("prixMetre", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
             ),
+            champPrixParType(f, upd),
             champCarburantClient(f, upd),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Depenses prevues (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
@@ -13625,6 +13676,7 @@
               h(FormField, { label: "Depenses prevues" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
             ),
+            champPrixParType(f, upd),
             champCarburantClient(f, upd),
             h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
               statuts.map(function(s) { return h("option", { key: s, value: s }, s); })
