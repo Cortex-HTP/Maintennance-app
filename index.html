@@ -8802,6 +8802,13 @@
       var _mc = useState("engin");
       var maintCateg = _mc[0]; var setMaintCateg = _mc[1];
 
+      // ── Edition PRECISE d'une affectation engin->chantier (mode crayon) ──
+      // Complement du drag & drop : saisie des dates exactes au clavier, et
+      // creation sans glisser (utile sur tablette). null = ferme ;
+      // { id: null } = creation ; { id: N } = modification.
+      var _ece = useState(null);
+      var editCE = _ece[0]; var setEditCE = _ece[1];
+
       // ── Preview de la date pendant un drag/resize ──
       var _dpv = useState({ active: false, label: "", x: 0, y: 0 });
       var dragPreview = _dpv[0]; var setDragPreview = _dpv[1];
@@ -10162,6 +10169,36 @@
             addCE({ chantierId: chantierId, equipementId: eqId, dateDebut: formatDateISO(range.start), dateFin: formatDateISO(range.end), dureeMaintenanceJours: 1, notes: "" });
           }
 
+          // ── Enregistrement du mode crayon (creation ou modification precise) ──
+          // Meme regle que le drag : AUCUN chevauchement avec une autre affectation
+          // du meme engin (on refuse au lieu de rogner silencieusement).
+          function updEditCE(k, v) { setEditCE(Object.assign({}, editCE, (function() { var o = {}; o[k] = v; return o; })())); }
+          function saveEditCE() {
+            if (!editCE) return;
+            if (!editCE.equipementId || !editCE.chantierId || !editCE.dateDebut || !editCE.dateFin) { alert("Engin, chantier et dates obligatoires."); return; }
+            if (editCE.dateFin < editCE.dateDebut) { alert("La date de fin est avant la date de debut."); return; }
+            var busyE = getBusyIntervalsForEngine(ceList, editCE.equipementId, editCE.id);
+            var sE = parseDate(editCE.dateDebut).getTime();
+            var eE = parseDate(editCE.dateFin).getTime();
+            var conflit = null;
+            busyE.forEach(function(b) { if (!conflit && sE <= b.end.getTime() && eE >= b.start.getTime()) conflit = b; });
+            if (conflit) {
+              alert("Chevauchement : cet engin est deja affecte du " + formatDateFr(formatDateISO(conflit.start)) + " au " + formatDateFr(formatDateISO(conflit.end)) + ".\nAjuste d'abord l'autre affectation (ou change les dates).");
+              return;
+            }
+            if (editCE.id != null) {
+              if (!ctx.updateChantierEquipement) { alert("Enregistrement indisponible (contexte non charge). Recharge la page."); return; }
+              var origCE = ceList.find(function(x) { return x.id === editCE.id; }) || {};
+              ctx.updateChantierEquipement(editCE.id, Object.assign({}, origCE, { chantierId: editCE.chantierId, equipementId: editCE.equipementId, dateDebut: editCE.dateDebut, dateFin: editCE.dateFin }));
+            } else {
+              if (!addCE) { alert("Enregistrement indisponible (contexte non charge). Recharge la page."); return; }
+              addCE({ chantierId: editCE.chantierId, equipementId: editCE.equipementId, dateDebut: editCE.dateDebut, dateFin: editCE.dateFin, dureeMaintenanceJours: 1, notes: "" });
+            }
+            setEditCE(null);
+          }
+          // Engins proposes dans la fenetre : toutes categories confondues, tries
+          var eqOptionsCE = equipements.slice().sort(function(a2, b2) { return String(a2.Title || "").localeCompare(String(b2.Title || "")); });
+
           var rowHeightCE = 42;
           var bandHeightCE = 24;
 
@@ -10265,9 +10302,17 @@
                         style: { borderBottom: "2px solid rgba(255,255,255,0.08)" } },
                         // En-tete chantier
                         h("div", { style: { display: "flex", alignItems: "center", background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
-                          h("div", { style: { width: 240, flexShrink: 0, padding: "8px 12px", boxSizing: "border-box" } },
-                            h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
-                            h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin))
+                          h("div", { style: { width: 240, flexShrink: 0, padding: "8px 12px", boxSizing: "border-box", display: "flex", alignItems: "center", gap: 6 } },
+                            h("div", { style: { flex: 1, minWidth: 0 } },
+                              h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
+                              h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin))
+                            ),
+                            // Affectation SANS glisser : ouvre la saisie precise (mode crayon)
+                            h("button", {
+                              onClick: function() { setEditCE({ id: null, chantierId: ch.id, equipementId: "", dateDebut: String(ch.dateDebut || "").substring(0, 10), dateFin: String(ch.dateFin || "").substring(0, 10) }); },
+                              title: "Affecter un engin a ce chantier (saisie precise, sans glisser)",
+                              style: { flexShrink: 0, width: 24, height: 24, border: "1px solid rgba(129,140,248,0.45)", borderRadius: 6, background: "rgba(99,102,241,0.15)", color: "#a5b4fc", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }
+                            }, h(Icon, { name: "plus", size: 13, color: "#a5b4fc" }))
                           ),
                           h("div", { style: { position: "relative", flex: 1, height: 22 } },
                             // Bande indicative du chantier
@@ -10315,13 +10360,27 @@
                                           e.preventDefault();
                                           if (confirm("Retirer " + eq.Title + " du chantier " + ch.titre + " ?")) deleteCE(a.id);
                                         },
-                                        title: tooltip,
+                                        // Double-clic = edition precise (toujours accessible, meme
+                                        // quand la bande est trop courte pour afficher le crayon)
+                                        onDoubleClick: function(e) {
+                                          e.stopPropagation();
+                                          setEditCE({ id: a.id, chantierId: a.chantierId, equipementId: a.equipementId, dateDebut: String(a.dateDebut || "").substring(0, 10), dateFin: String(a.dateFin || "").substring(0, 10) });
+                                        },
+                                        title: tooltip + " - Double-clic : modifier les dates",
                                         style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: bandColor.gradient, borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
                                         h("div", { onMouseDown: function(e) { if (e.button !== 0) return; e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, title: "Glisser pour ajuster la date de debut", style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 14, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.4)", borderRight: "1px solid rgba(0,0,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", gap: 2 } },
                                           h("div", { style: { width: 2, height: 12, background: "white", borderRadius: 1, pointerEvents: "none" } }),
                                           h("div", { style: { width: 2, height: 12, background: "white", borderRadius: 1, pointerEvents: "none" } })
                                         ),
                                         aWidthPct > 4 ? h("span", { style: { padding: "0 18px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: "0 1px 2px rgba(0,0,0,0.25)", pointerEvents: "none" } }, eq.Title) : null,
+                                        // Bouton crayon : edition PRECISE (dates au clavier, changement de
+                                        // chantier/engin). Masque sur les bandes trop courtes (double-clic reste dispo).
+                                        aWidthPct > 6 ? h("button", {
+                                          onMouseDown: function(e) { e.stopPropagation(); },
+                                          onClick: function(e) { e.stopPropagation(); setEditCE({ id: a.id, chantierId: a.chantierId, equipementId: a.equipementId, dateDebut: String(a.dateDebut || "").substring(0, 10), dateFin: String(a.dateFin || "").substring(0, 10) }); },
+                                          title: "Modifier cette affectation (saisie precise des dates)",
+                                          style: { position: "absolute", right: 38, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, border: "none", borderRadius: 8, background: "rgba(0,0,0,0.35)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, zIndex: 5 }
+                                        }, h(Icon, { name: "pencil", size: 9, color: "white" })) : null,
                                         // Bouton supprimer (entre nom et poignee droite)
                                         h("button", {
                                           onMouseDown: function(e) { e.stopPropagation(); },
@@ -10364,7 +10423,37 @@
                 h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#a1a1aa" } }, h("div", { style: { width: 10, height: 14, background: "#eab308", border: "2px solid white" } }), "Alerte"),
                 todayPctLocal >= 0 ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#a1a1aa", marginLeft: "auto" } }, h("div", { style: { width: 2, height: 12, background: "#7c3aed" } }), "Aujourd'hui") : null
               )
-            )
+            ),
+            // ── Fenetre d'edition precise (mode crayon / bouton +) ──
+            editCE ? h(Modal, { title: editCE.id != null ? "Modifier l'affectation" : "Affecter un engin", onClose: function() { setEditCE(null); }, size: 480 },
+              h("div", { style: { display: "grid", gap: 4 } },
+                h(FormField, { label: "Engin *" },
+                  h("select", { style: selectStyle, value: editCE.equipementId || "", onChange: function(e) { updEditCE("equipementId", e.target.value); } },
+                    h("option", { value: "" }, "-- choisir un engin --"),
+                    eqOptionsCE.map(function(eq2) { return h("option", { key: eq2.Id, value: eq2.Id }, eq2.Title + (eq2.Nom && eq2.Nom !== eq2.Title ? " - " + eq2.Nom : "")); })
+                  )
+                ),
+                h(FormField, { label: "Chantier *" },
+                  h("select", { style: selectStyle, value: editCE.chantierId != null ? String(editCE.chantierId) : "", onChange: function(e) { updEditCE("chantierId", parseInt(e.target.value, 10)); } },
+                    activeChantiers.map(function(ch2) { return h("option", { key: ch2.id, value: String(ch2.id) }, ch2.titre + (ch2.site && ch2.site !== ch2.titre ? " - " + ch2.site : "") + " (" + formatDateFr(ch2.dateDebut) + " > " + formatDateFr(ch2.dateFin) + ")"); })
+                  )
+                ),
+                h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                  h(FormField, { label: "Debut *" }, h("input", { type: "date", style: inputStyle, value: editCE.dateDebut || "", onChange: function(e) { updEditCE("dateDebut", e.target.value); } })),
+                  h(FormField, { label: "Fin *" }, h("input", { type: "date", style: inputStyle, value: editCE.dateFin || "", onChange: function(e) { updEditCE("dateFin", e.target.value); } }))
+                ),
+                h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10 } },
+                  "La tablette de l'engin montrera ce chantier sur cette periode (le jour meme : uniquement le chantier planifie du jour)."),
+                h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" } },
+                  editCE.id != null ? h(Button, { variant: "danger", onClick: function() {
+                    var eqD = eqOptionsCE.find(function(x) { return x.Id === editCE.equipementId; });
+                    if (confirm("Retirer " + (eqD ? eqD.Title : "cet engin") + " de ce chantier ?")) { if (deleteCE) deleteCE(editCE.id); setEditCE(null); }
+                  } }, "Retirer") : null,
+                  h(Button, { variant: "secondary", onClick: function() { setEditCE(null); } }, "Annuler"),
+                  h(Button, { onClick: saveEditCE }, "Enregistrer")
+                )
+              )
+            ) : null
           );
         }()),
         showModal && renderModalForm(),
