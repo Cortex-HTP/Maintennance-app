@@ -9081,6 +9081,9 @@
         info.startX = e.clientX;
         info.tab = tab;
         info.annuel = true;
+        // Distingue le CLIC (ouvre l'edition precise) du vrai DRAG : passe a
+        // true des que le mouvement atteint au moins 1 jour.
+        info.moved = false;
         info.containerWidth = timelineEl.offsetWidth;
         info.totalDaysYear = totalDaysYear;
 
@@ -9114,6 +9117,7 @@
             deltaDays = Math.round(deltaX / 28);
           }
           if (deltaDays === 0) return;
+          info.moved = true;
           var st = stateRef.current;
           var month = st.currentMonth;
           var daysInMonth = info.daysInMonth;
@@ -9274,7 +9278,16 @@
           var info = dragRef.current;
           if (info.dragging) {
             // Persistance + verification non-chevauchement pour les affectations engin <-> chantier
-            if (info.tab === "chantier-equipement" && info.itemId != null) {
+            if (info.tab === "chantier-equipement" && info.itemId != null && !info.moved) {
+              // CLIC sans mouvement = ouvrir l'edition precise (solution pour les
+              // bandes trop petites ou le crayon n'a pas la place de s'afficher ;
+              // fonctionne aussi au doigt sur tablette). Un appui sur une poignee
+              // de redimensionnement sans mouvement ne fait rien.
+              if (info.dragType === "move") {
+                var ceClick = (stateRef.current.chantierEquipements || []).find(function(x) { return x.id === info.itemId; });
+                if (ceClick) setEditCE({ id: ceClick.id, chantierId: ceClick.chantierId, equipementId: ceClick.equipementId, dateDebut: String(ceClick.dateDebut || "").substring(0, 10), dateFin: String(ceClick.dateFin || "").substring(0, 10) });
+              }
+            } else if (info.tab === "chantier-equipement" && info.itemId != null) {
               var setCEFin = ctx.setDbChantierEquipements;
               var ceListFin = stateRef.current.chantierEquipements || [];
               var aFin = ceListFin.find(function(x) { return x.id === info.itemId; });
@@ -10366,7 +10379,7 @@
                                           e.stopPropagation();
                                           setEditCE({ id: a.id, chantierId: a.chantierId, equipementId: a.equipementId, dateDebut: String(a.dateDebut || "").substring(0, 10), dateFin: String(a.dateFin || "").substring(0, 10) });
                                         },
-                                        title: tooltip + " - Double-clic : modifier les dates",
+                                        title: tooltip + " - Clic : modifier les dates",
                                         style: { position: "absolute", left: aLeftPct + "%", top: (rowHeightCE - bandHeightCE) / 2, width: aWidthPct + "%", minWidth: 8, height: bandHeightCE, background: bandColor.gradient, borderRadius: 4, color: "white", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: isDraggingCE ? "0 4px 12px rgba(0,0,0,0.25)" : "0 1px 3px rgba(0,0,0,0.15)", cursor: "grab", zIndex: 2 } },
                                         h("div", { onMouseDown: function(e) { if (e.button !== 0) return; e.stopPropagation(); handleDragStartAnnuel(e, a.id, "resize-start", "chantier-equipement"); }, title: "Glisser pour ajuster la date de debut", style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 14, cursor: "ew-resize", zIndex: 4, background: "rgba(255,255,255,0.4)", borderRight: "1px solid rgba(0,0,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", gap: 2 } },
                                           h("div", { style: { width: 2, height: 12, background: "white", borderRadius: 1, pointerEvents: "none" } }),
