@@ -359,6 +359,169 @@
       } catch (err) { alert("Erreur PDF rapport : " + (err && err.message || err)); }
     }
 
+    // Telecharge un bon de commande en PDF (client-side jsPDF) : entete + infos
+    // demandeur + tableau des articles (avec suivi envoye/reste si des envois
+    // partiels existent) + notes + signature. Couvre les 2 sources (sondeur/mecano).
+    // info = { name, chant } resolus par l'appelant (les labels personnel/chantier
+    // vivent dans EcranSoumissions).
+    function telechargerBonCommandePDF(c, info) {
+      try {
+        if (!c) return;
+        var jsPDFctor = window.jspdf && window.jspdf.jsPDF;
+        if (!jsPDFctor) { alert("Librairie PDF non chargee, reessaie dans un instant."); return; }
+        var isMec = c._source === "mecanicien";
+        var lignes = Array.isArray(c.lignes) ? c.lignes : [];
+        // Helpers quantites (memes regles que l'ecran Soumissions : qty d'abord,
+        // variantes historiques ensuite, virgule FR toleree)
+        function bcNum(v) {
+          if (v == null || v === "") return null;
+          var n = parseFloat(String(v).replace(",", "."));
+          return isNaN(n) || n < 0 ? null : n;
+        }
+        function bcQty(l) {
+          var n = bcNum(l.qty);
+          if (n === null) n = bcNum(l.quantite);
+          if (n === null) n = bcNum(l.qte);
+          return n === null ? 0 : n;
+        }
+        function bcEnvoye(l) { var n = bcNum(l.envoye); return n === null ? 0 : n; }
+        function bcFmt(v) {
+          var n = bcNum(v);
+          if (n === null) n = 0;
+          return Math.round(n * 100) / 100 === Math.round(n) ? String(Math.round(n)) : String(Math.round(n * 100) / 100).replace(".", ",");
+        }
+        function frDate(s) { if (!s) return "-"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
+        // Timestamps (created_at) : conversion via l'horloge LOCALE du navigateur
+        // (NC = UTC+11). Couper l'ISO UTC afficherait la veille avant 11h.
+        function frInstant(ts) { if (!ts) return "-"; var d = new Date(ts); return isNaN(d.getTime()) ? "-" : d.toLocaleDateString("fr-FR"); }
+        var STATUT_FR = { soumis: "Soumis", soumise: "Soumise", traite: "Traite", traitee: "Traitee", envoye_fournisseur: "Envoye au fournisseur", refuse: "Refuse", refusee: "Refusee" };
+        var numBon = isMec ? (c._rawId != null ? c._rawId : c.id) : c.id;
+        var hasEnvois = lignes.some(function(l) { return bcEnvoye(l) > 0; });
+
+        var doc = new jsPDFctor({ unit: "pt", format: "a4" });
+        var pageW = doc.internal.pageSize.getWidth();
+        var pageH = doc.internal.pageSize.getHeight();
+        var margin = 40, y = margin;
+        function ensureSpace(hh) { if (y + hh > pageH - margin) { doc.addPage(); y = margin; } }
+        // Entete
+        doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.setTextColor(30, 30, 30);
+        doc.text("WALLIS LABEL", margin, y);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(120, 120, 120);
+        doc.text(isMec ? "Commande materiel mecanicien" : "Bon de commande", pageW - margin, y, { align: "right" });
+        y += 20;
+        doc.setDrawColor(46, 94, 140); doc.setLineWidth(1.2); doc.line(margin, y, pageW - margin, y); y += 18;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(30, 30, 30);
+        doc.text("Bon de commande n° " + numBon + " du " + (isMec || !c.date_demande ? frInstant(c.created_at) : frDate(c.date_demande)), margin, y); y += 20;
+        function infoLine(label, value) {
+          if (value == null || value === "") return;
+          ensureSpace(16);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(110, 110, 110);
+          doc.text(String(label).toUpperCase(), margin, y);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(20, 20, 20);
+          doc.text(String(value), margin + 120, y);
+          y += 16;
+        }
+        if (isMec) {
+          infoLine("Mecanicien", info && info.name);
+          infoLine("Code", c.mecanicien_code);
+          infoLine("Intervention liee", c.intervention_id != null ? "#" + c.intervention_id : null);
+          infoLine("Urgence", c.urgence ? String(c.urgence).toUpperCase() : null);
+          infoLine("Cree le", c.created_at ? frInstant(c.created_at) : null);
+        } else {
+          infoLine("Demandeur", info && info.name);
+          infoLine("Telephone", c.tel);
+          infoLine("Chantier", info && info.chant);
+          infoLine("Machine / Lieu", c.machine_lieu);
+          infoLine("Date demande", frDate(c.date_demande));
+        }
+        infoLine("Statut", STATUT_FR[c.statut] || c.statut);
+        y += 6;
+        function sectionTitle(t) {
+          ensureSpace(26);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(46, 94, 140);
+          doc.text(t, margin, y); y += 5;
+          doc.setDrawColor(200, 210, 220); doc.setLineWidth(0.6); doc.line(margin, y, pageW - margin, y); y += 13;
+        }
+        if (isMec && c.description) {
+          sectionTitle("Description");
+          doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+          doc.splitTextToSize(String(c.description), pageW - 2 * margin).forEach(function(ln) { ensureSpace(13); doc.text(ln, margin, y); y += 13; });
+          y += 6;
+        }
+        if (lignes.length > 0) {
+          sectionTitle("Articles demandes (" + lignes.length + ")");
+          // Colonnes : designation a gauche ; a droite Qte, puis Envoye/Reste si
+          // des envois partiels existent (suivi magasin), sinon Qte seule.
+          var xQte = hasEnvois ? pageW - margin - 150 : pageW - margin;
+          var xEnv = pageW - margin - 75;
+          var xReste = pageW - margin;
+          var wDesign = (hasEnvois ? xQte - 60 : xQte - 70) - margin;
+          ensureSpace(14);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(110, 110, 110);
+          doc.text("DESIGNATION", margin, y);
+          doc.text(hasEnvois ? "QTE DEM." : "QTE", xQte, y, { align: "right" });
+          if (hasEnvois) { doc.text("ENVOYE", xEnv, y, { align: "right" }); doc.text("RESTE", xReste, y, { align: "right" }); }
+          y += 5;
+          doc.setDrawColor(220, 225, 230); doc.setLineWidth(0.5); doc.line(margin, y, pageW - margin, y); y += 12;
+          lignes.forEach(function(l, i) {
+            var designation = l.designation || l.description || "-";
+            var refStr = l.reference || l.ref || "";
+            var unit = l.unite || l.unit || (l.isLiquide ? "L" : "");
+            var qty = bcQty(l);
+            var env = bcEnvoye(l);
+            var reste = Math.max(0, qty - env);
+            var desLines = doc.splitTextToSize(String(designation) + (refStr ? "  [" + refStr + "]" : ""), wDesign);
+            ensureSpace(desLines.length * 13 + (l.autreInfo ? 12 : 0) + 4);
+            doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+            desLines.forEach(function(ln, li) {
+              doc.text(ln, margin, y + li * 13);
+            });
+            var qtyTxt = qty > 0 ? bcFmt(qty) + (unit ? " " + unit : "") : "-";
+            doc.text(qtyTxt, xQte, y, { align: "right" });
+            if (hasEnvois) {
+              doc.text(qty > 0 || env > 0 ? bcFmt(env) : "-", xEnv, y, { align: "right" });
+              doc.setFont("helvetica", "bold");
+              doc.setTextColor(reste > 0 ? 180 : 30, reste > 0 ? 90 : 130, reste > 0 ? 10 : 60);
+              doc.text(qty > 0 ? bcFmt(reste) + (unit ? " " + unit : "") : "-", xReste, y, { align: "right" });
+            }
+            y += desLines.length * 13;
+            if (l.autreInfo) {
+              doc.setFont("helvetica", "italic"); doc.setFontSize(9); doc.setTextColor(120, 120, 120);
+              doc.splitTextToSize(String(l.autreInfo), wDesign).forEach(function(ln) { ensureSpace(12); doc.text(ln, margin + 8, y); y += 12; });
+            }
+            if (i < lignes.length - 1) {
+              ensureSpace(8);
+              doc.setDrawColor(235, 238, 242); doc.setLineWidth(0.4); doc.line(margin, y - 4, pageW - margin, y - 4);
+            }
+            y += 4;
+          });
+          y += 8;
+        }
+        if (isMec && c.notes_admin) {
+          sectionTitle("Notes admin");
+          doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+          doc.splitTextToSize(String(c.notes_admin), pageW - 2 * margin).forEach(function(ln) { ensureSpace(13); doc.text(ln, margin, y); y += 13; });
+          y += 6;
+        }
+        if (!isMec && c.signature_png) {
+          sectionTitle("Signature du demandeur");
+          ensureSpace(70);
+          try { doc.addImage(c.signature_png, "PNG", margin, y, 150, 60); y += 68; } catch (imgErr) {}
+        }
+        // Pied de page sur chaque page (date LOCALE, pas de coupe ISO UTC)
+        var nbPages = doc.internal.getNumberOfPages();
+        var genereLe = new Date().toLocaleDateString("fr-FR");
+        for (var pg = 1; pg <= nbPages; pg++) {
+          doc.setPage(pg);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150, 150, 150);
+          doc.text("Wallis Label - genere le " + genereLe, margin, pageH - 20);
+          doc.text("Page " + pg + " / " + nbPages, pageW - margin, pageH - 20, { align: "right" });
+        }
+        var fname = ("bon_commande_" + numBon + (info && info.name ? "_" + info.name : "") + ".pdf").replace(/[^a-zA-Z0-9_.\-]/g, "_");
+        doc.save(fname);
+      } catch (err) { alert("Erreur PDF bon de commande : " + (err && err.message || err)); }
+    }
+
     // Email admin : seul ce compte peut modifier l'horametre et supprimer des releves
     const ADMIN_EMAIL = "tom.wallislabel@gmail.com";
 
@@ -25512,6 +25675,11 @@
                 envDraft[String(c.id)] ? h("span", { style: { fontSize: 11, color: "#fde68a", fontWeight: 700 } }, "Modifications non enregistrees") : null
               ) : null,
               h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" } },
+                actionBtn({ label: "Telecharger PDF", icon: "download", color: "neutral", onClick: function() {
+                  // Le PDF n'imprime que les envois ENREGISTRES : on previent si une saisie est en cours
+                  if (envDraft[String(c.id)] && !confirm("Des envois saisis ne sont pas enregistres : le PDF ne les inclura pas. Continuer ?")) return;
+                  telechargerBonCommandePDF(c, { name: name, chant: chant });
+                } }),
                 c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Marquer traite", icon: "check", color: "green", onClick: function() { updateCommandeStatut(c.id, "traite"); setExpanded(null); } }) : null,
                 (c.statut === "soumis" || c.statut === "soumise" || c.statut === "traite") ? actionBtn({ label: "Envoye au fournisseur", icon: "send", color: "indigo", onClick: function() { updateCommandeStatut(c.id, "envoye_fournisseur"); } }) : null,
                 c.statut === "soumis" || c.statut === "soumise" ? actionBtn({ label: "Refuser", icon: "x", color: "red", onClick: function() { if (confirm("Refuser cette commande ?")) { updateCommandeStatut(c.id, "refuse"); setExpanded(null); } } }) : null,
