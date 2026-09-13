@@ -11955,7 +11955,10 @@
           if (!e || e.statut !== "actif") return;
           if (e.mutualise === false) return;
           var db = e.date_debut ? new Date(e.date_debut) : null;
-          var df = e.date_fin ? new Date(e.date_fin) : null;
+          // Fin EFFECTIVE (remboursements anticipes) : un pret solde en avance
+          // cesse d'etre impute au cout au metre des le mois suivant
+          var dfEffM = getDateFinEffectiveEmprunt(e);
+          var df = dfEffM ? new Date(dfEffM) : null;
           if (db && db > lastDay) return;
           if (df && df < firstDay) return;
           totalMens += parseFloat(e.mensualite) || 0;
@@ -11990,7 +11993,9 @@
             if (e.mutualise !== false) return;
             if (!e.equipement_id) return;
             var db = e.date_debut ? new Date(e.date_debut) : null;
-            var df = e.date_fin ? new Date(e.date_fin) : null;
+            // Fin EFFECTIVE (remboursements anticipes), comme pour les mutualises
+            var dfEffD = getDateFinEffectiveEmprunt(e);
+            var df = dfEffD ? new Date(dfEffD) : null;
             if (db && db > lastDay) return;
             if (df && df < firstDay) return;
             var mens = parseFloat(e.mensualite) || 0;
@@ -16567,6 +16572,9 @@
       var toDelete = _toDelete[0]; var setToDelete = _toDelete[1];
       var _tab = useState("liste");
       var tab = _tab[0]; var setTab = _tab[1];
+      // Emprunt dont on gere les remboursements anticipes (modale)
+      var _rembFor = useState(null);
+      var rembFor = _rembFor[0]; var setRembFor = _rembFor[1];
 
       // Helper : calcul mensualite d'un pret a annuites constantes
       // M = C * (t/12) / (1 - (1 + t/12)^(-n))
@@ -16649,6 +16657,22 @@
         ctx.setDbEmprunts(emprunts.filter(function(e) { return e.id !== id; }));
         ctx.showToast("Emprunt supprime", "success");
         setToDelete(null);
+      }
+
+      // Enregistre la liste complete des remboursements anticipes d'un emprunt.
+      // Si le capital restant tombe a zero, le statut passe automatiquement
+      // en "rembourse" (l'emprunt sort du cout au metre et des mensualites).
+      async function saveRemboursements(emprunt, liste) {
+        var payload = { remboursements: liste };
+        var soldeApres = getCapitalRestantAujourdhui(Object.assign({}, emprunt, { remboursements: liste }));
+        // Garde : un emprunt sans montant saisi renvoie restant 0 -> ne pas le basculer a tort
+        var passeRembourse = emprunt.statut === "actif" && liste.length > 0 && soldeApres <= 0.5 && (parseFloat(emprunt.montant_total) || 0) > 0;
+        if (passeRembourse) payload.statut = "rembourse";
+        var res = await supabase.from("emprunts").update(payload).eq("id", emprunt.id).select().single();
+        if (res.error) { ctx.showToast("Erreur: " + res.error.message, "error"); return; }
+        ctx.setDbEmprunts(emprunts.map(function(e) { return e.id === emprunt.id ? Object.assign({}, e, res.data) : e; }));
+        ctx.showToast(passeRembourse ? "Remboursements enregistres - pret SOLDE, statut passe en Rembourse" : "Remboursements anticipes enregistres", "success");
+        setRembFor(null);
       }
 
       // Stats
@@ -16742,6 +16766,13 @@
                 emprunts.map(function(e) {
                   var eq = e.equipement_id ? (ctx.equipements || []).find(function(x) { return x.Id === e.equipement_id; }) : null;
                   var restant = getCapitalRestantAujourdhui(e);
+                  // Plafonne au capital emprunte : buildAmortissement n'absorbe jamais plus
+                  var totalAnticipes = Math.min(
+                    getRemboursementsAnticipes(e).reduce(function(s, r) { return s + (parseFloat(r.montant) || 0); }, 0),
+                    parseFloat(e.montant_total) || Infinity
+                  );
+                  var finEffective = getDateFinEffectiveEmprunt(e);
+                  var finRaccourcie = finEffective && e.date_fin && finEffective < e.date_fin;
                   return h("tr", { key: e.id, style: { transition: "background 0.15s" }, onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(255,255,255,0.02)"; }, onMouseLeave: function(ev) { ev.currentTarget.style.background = "transparent"; } },
                     h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, color: "#fafafa" }) }, e.libelle || "—"),
                     h("td", { style: tdStyle },
@@ -16751,13 +16782,23 @@
                     ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtNum(Math.round(e.montant_total || 0)) + " XPF"),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: "#a5b4fc" }) }, fmtNum(Math.round(e.mensualite || 0)) + " XPF"),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: restant > 0 ? "#fcd34d" : "#86efac" }) }, fmtNum(Math.round(restant)) + " XPF"),
-                    h("td", { style: tdStyle }, (e.date_debut ? new Date(e.date_debut).toLocaleDateString("fr-FR") : "—") + " → " + (e.date_fin ? new Date(e.date_fin).toLocaleDateString("fr-FR") : "—")),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: restant > 0 ? "#fcd34d" : "#86efac" }) },
+                      fmtNum(Math.round(restant)) + " XPF",
+                      totalAnticipes > 0 ? h("div", { style: { fontSize: 10, fontWeight: 600, color: "#86efac", marginTop: 2 }, title: "Remboursements anticipes deja verses (duree raccourcie)" }, "Anticipes : " + fmtNum(Math.round(totalAnticipes)) + " XPF") : null
+                    ),
+                    h("td", { style: tdStyle },
+                      (e.date_debut ? new Date(e.date_debut).toLocaleDateString("fr-FR") : "—") + " → ",
+                      finRaccourcie ? h("span", { title: "Fin raccourcie par remboursement(s) anticipe(s) - fin initiale : " + new Date(e.date_fin).toLocaleDateString("fr-FR") },
+                        h("span", { style: { textDecoration: "line-through", color: "#71717a", marginRight: 5 } }, new Date(e.date_fin).toLocaleDateString("fr-FR")),
+                        h("span", { style: { color: "#86efac", fontWeight: 600 } }, new Date(finEffective).toLocaleDateString("fr-FR"))
+                      ) : (e.date_fin ? new Date(e.date_fin).toLocaleDateString("fr-FR") : "—")
+                    ),
                     h("td", { style: tdStyle },
                       h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 700, color: statutColors[e.statut] || "#a1a1aa", background: (statutColors[e.statut] || "#a1a1aa") + "22", border: "1px solid " + (statutColors[e.statut] || "#a1a1aa") + "55", borderRadius: 999 } }, statutLabels[e.statut] || e.statut)
                     ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) },
                       isAdmin ? h("div", { style: { display: "inline-flex", gap: 4 } },
+                        h("button", { onClick: function() { setRembFor(e); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#fbbf24" }, title: "Remboursements anticipes" }, h(Icon, { name: "fast-forward", size: 15, color: "#fbbf24" })),
                         h("button", { onClick: function() { openEdit(e); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
                         h("button", { onClick: function() { setToDelete(e); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
                       ) : null
@@ -16773,6 +16814,8 @@
           : null,
         // Form Modal
         showForm ? h(EmpruntForm, { editing: editing, onSave: saveEmprunt, onCancel: closeForm, calcMensualite: calcMensualite, calcDateFin: calcDateFin, calcDateDebut: calcDateDebut, calcDureeMois: calcDureeMois }) : null,
+        // Modale remboursements anticipes
+        rembFor ? h(EmpruntRemboursementsModal, { emprunt: rembFor, onSave: saveRemboursements, onCancel: function() { setRembFor(null); } }) : null,
         // Delete confirm
         toDelete ? h(ConfirmDialog, {
           title: "Supprimer cet emprunt ?",
@@ -16941,16 +16984,147 @@
       );
     }
 
+    // ─── Modale remboursements anticipes (modale) ───────────────────────
+    // Gere la liste jsonb "remboursements" d'un emprunt : ajout / retrait,
+    // avec apercu de l'impact (duree gagnee, interets economises, nouvelle fin).
+    // Convention : mensualite constante, duree raccourcie.
+    function EmpruntRemboursementsModal({ emprunt, onSave, onCancel }) {
+      var dNow = new Date();
+      var todayIso = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
+      var _liste = useState(getRemboursementsAnticipes(emprunt));
+      var liste = _liste[0]; var setListe = _liste[1];
+      var _draft = useState({ date: todayIso, montant: "", note: "" });
+      var draft = _draft[0]; var setDraft = _draft[1];
+
+      // Impact : amortissement AVEC la liste en cours vs SANS aucun anticipe
+      var empAvec = Object.assign({}, emprunt, { remboursements: liste, statut: "actif" });
+      var empSans = Object.assign({}, emprunt, { remboursements: [], statut: "actif" });
+      var amortAvec = buildAmortissement(empAvec);
+      var amortSans = buildAmortissement(empSans);
+      var interetsAvec = amortAvec.reduce(function(s, r) { return s + r.interet; }, 0);
+      var interetsSans = amortSans.reduce(function(s, r) { return s + r.interet; }, 0);
+      var gainInterets = Math.max(0, interetsSans - interetsAvec);
+      var gainDuree = Math.max(0, amortSans.length - amortAvec.length);
+      var restantApres = getCapitalRestantAujourdhui(empAvec);
+      var finApres = amortAvec.length > 0 ? amortAvec[amortAvec.length - 1].date : (emprunt.date_fin || null);
+      var totalListe = liste.reduce(function(s, r) { return s + (parseFloat(r.montant) || 0); }, 0);
+
+      function frD(s) { if (!s) return "—"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
+      function addRemb() {
+        var m = parseFloat(String(draft.montant).replace(",", ".")) || 0;
+        if (!draft.date) { alert("Choisis la date du remboursement."); return; }
+        if (m <= 0) { alert("Saisis un montant positif."); return; }
+        var next = liste.concat([{ date: draft.date, montant: Math.round(m), note: draft.note || "" }])
+          .sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
+        setListe(next);
+        setDraft({ date: todayIso, montant: "", note: "" });
+      }
+      function removeRemb(idx) { setListe(liste.filter(function(x, i) { return i !== idx; })); }
+
+      var labelStyle = { display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 };
+      var inputStyle = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+
+      return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+        h("div", { className: "wl-modal-panel", style: { background: "rgba(36, 40, 60, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: 28, maxWidth: 620, width: "100%", overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 12px 60px rgba(0,0,0,0.6)" } },
+          h("div", { style: { fontSize: 17, fontWeight: 700, color: "#fafafa", marginBottom: 4 } },
+            h(IconText, { icon: "fast-forward", size: 17, color: "#fbbf24" }, "Remboursements anticipes")),
+          h("div", { style: { fontSize: 13, color: "#a1a1aa", marginBottom: 16 } }, emprunt.libelle || "—"),
+          h("div", { style: { fontSize: 11, color: "#a78bfa", marginBottom: 16, fontStyle: "italic" } },
+            "Convention : la mensualite reste identique et la duree du pret se raccourcit. Si la banque a plutot reduit ta mensualite, modifie la mensualite de l'emprunt (crayon)."),
+          // Liste des remboursements enregistres
+          liste.length === 0 ? h("div", { style: { padding: 16, textAlign: "center", color: "#71717a", fontSize: 13, background: "rgba(0,0,0,0.20)", borderRadius: 8, marginBottom: 14 } },
+            "Aucun remboursement anticipe sur ce pret."
+          ) : h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: "4px 12px", marginBottom: 14 } },
+            liste.map(function(r, i) {
+              return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: i < liste.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" } },
+                h(Icon, { name: "banknote", size: 14, color: "#86efac" }),
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("span", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, fmtNum(Math.round(parseFloat(r.montant) || 0)) + " XPF"),
+                  h("span", { style: { fontSize: 12, color: "#a1a1aa", marginLeft: 8 } }, "le " + frD(r.date)),
+                  r.note ? h("div", { style: { fontSize: 11, color: "#cbd5e1", fontStyle: "italic" } }, r.note) : null
+                ),
+                h("button", { onClick: function() { removeRemb(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Retirer ce remboursement" }, h(Icon, { name: "x", size: 14, color: "#f43f5e" }))
+              );
+            })
+          ),
+          // Ajout d'un remboursement
+          h("div", { style: { padding: 12, background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 8, marginBottom: 16 } },
+            h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#fde68a", marginBottom: 10 } }, "Ajouter un remboursement anticipe"),
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 } },
+              h("div", null,
+                h("label", { style: labelStyle }, "Date du versement"),
+                h("input", { type: "date", value: draft.date, onChange: function(e) { setDraft(Object.assign({}, draft, { date: e.target.value })); }, style: inputStyle })
+              ),
+              h("div", null,
+                h("label", { style: labelStyle }, "Montant (XPF)"),
+                h("input", { type: "number", min: 0, step: 10000, value: draft.montant, onChange: function(e) { setDraft(Object.assign({}, draft, { montant: e.target.value })); }, placeholder: "ex: 1000000", style: inputStyle })
+              )
+            ),
+            h("div", { style: { marginBottom: 10 } },
+              h("label", { style: labelStyle }, "Note (optionnel)"),
+              h("input", { type: "text", value: draft.note, onChange: function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }, placeholder: "ex: prime SLN, vente vehicule...", style: inputStyle })
+            ),
+            h(Button, { variant: "secondary", onClick: addRemb }, h(IconText, { icon: "plus", size: 14 }, "Ajouter a la liste"))
+          ),
+          // Apercu de l'impact
+          liste.length > 0 ? h("div", { style: { background: "rgba(124,58,237,0.10)", border: "1px solid rgba(167,139,250,0.3)", borderRadius: 10, padding: 14, marginBottom: 16 } },
+            h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#a5b4fc", marginBottom: 10 } }, "Impact sur le pret"),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 10 } },
+              h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Total anticipe"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#86efac" } }, fmtNum(Math.round(totalListe)) + " XPF")
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Restant du aujourd'hui"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: restantApres > 0 ? "#fcd34d" : "#86efac" } }, fmtNum(Math.round(restantApres)) + " XPF")
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Duree gagnee"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#a78bfa" } }, gainDuree + " mois")
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Interets economises"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#fcd34d" } }, fmtNum(Math.round(gainInterets)) + " XPF")
+              ),
+              h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Nouvelle fin de pret"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#fafafa" } }, frD(finApres))
+              )
+            ),
+            restantApres <= 0.5 && (parseFloat(emprunt.montant_total) || 0) > 0 ? h("div", { style: { marginTop: 10, fontSize: 12, fontWeight: 700, color: "#86efac" } },
+              h(IconText, { icon: "check-circle", size: 13, color: "#86efac" }, "Pret entierement solde : a l'enregistrement, le statut passera automatiquement en Rembourse.")) : null
+          ) : null,
+          h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end" } },
+            h(Button, { variant: "secondary", onClick: onCancel }, "Annuler"),
+            h(Button, { variant: "primary", onClick: function() { onSave(emprunt, liste); } }, "Enregistrer")
+          )
+        )
+      );
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // OUTILS D'ANALYSE EMPRUNTS
     // ═══════════════════════════════════════════════════════════════════
+
+    // Helper : liste PROPRE des remboursements anticipes d'un emprunt
+    // (colonne jsonb "remboursements" : [{ date, montant, note }]), tries par date.
+    function getRemboursementsAnticipes(emprunt) {
+      var arr = emprunt && Array.isArray(emprunt.remboursements) ? emprunt.remboursements : [];
+      return arr.filter(function(r) { return r && (parseFloat(r.montant) || 0) > 0 && r.date; })
+        .slice().sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
+    }
 
     // Helper : tableau d'amortissement pour un pret (annuites constantes)
     // Pour chaque mois k=1..N :
     //   interet     = capital_restant * tm
     //   capital_pay = mensualite - interet
     //   capital_restant -= capital_pay
-    // Retourne [{ numero, date, mensualite, interet, capital, restant }]
+    // Les REMBOURSEMENTS ANTICIPES (jsonb) sont injectes a leur date : le capital
+    // baisse AVANT le calcul des interets de l'echeance suivante. Convention
+    // bancaire par defaut : la mensualite reste identique, la DUREE se raccourcit
+    // (si la banque a plutot reduit la mensualite, modifier la mensualite de
+    // l'emprunt a la main). Retourne [{ numero, date, mensualite, interet,
+    // capital, anticipe, restant }] ; le tableau s'arrete quand le capital est solde.
     function buildAmortissement(emprunt) {
       if (!emprunt) return [];
       var C = parseFloat(emprunt.montant_total) || 0;
@@ -16962,31 +17136,53 @@
       var restant = C;
       var rows = [];
       var startDate = emprunt.date_debut ? new Date(emprunt.date_debut) : new Date();
+      var rembs = getRemboursementsAnticipes(emprunt);
+      var ri = 0;
       for (var k = 1; k <= n; k++) {
-        var interet = restant * tm;
-        var capital = M - interet;
-        if (k === n) {
-          // Ajuster derniere echeance pour solder le capital exactement
-          capital = restant;
-          interet = M - capital;
-          if (interet < 0) interet = 0;
-        }
-        restant = Math.max(0, restant - capital);
         var d = new Date(startDate);
         d.setMonth(d.getMonth() + k);
+        var dateIso = d.toISOString().slice(0, 10);
+        // Remboursements anticipes tombes avant (ou a) cette echeance
+        var anticipe = 0;
+        while (ri < rembs.length && String(rembs[ri].date).substring(0, 10) <= dateIso) {
+          var mR = Math.min(parseFloat(rembs[ri].montant) || 0, restant);
+          anticipe += mR;
+          restant -= mR;
+          ri++;
+        }
+        if (restant <= 0.5 && anticipe > 0) {
+          // Solde entierement par l'anticipe : l'echeance ne porte que ce mouvement
+          rows.push({ numero: k, date: dateIso, mensualite: 0, interet: 0, capital: 0, anticipe: anticipe, restant: 0 });
+          break;
+        }
+        var interet = restant * tm;
+        var capital = M - interet;
+        var mens = M;
+        if (k === n || capital >= restant) {
+          // Derniere echeance (terme normal OU capital solde en avance) :
+          // ajustee pour solder exactement le capital
+          capital = restant;
+          mens = capital + interet;
+        }
+        restant = Math.max(0, restant - capital);
         rows.push({
           numero: k,
-          date: d.toISOString().slice(0, 10),
-          mensualite: M,
+          date: dateIso,
+          mensualite: mens,
           interet: interet,
           capital: capital,
+          anticipe: anticipe,
           restant: restant
         });
+        if (restant <= 0) break;
       }
       return rows;
     }
 
     // Helper : capital restant du a aujourd'hui pour un emprunt actif
+    // (remboursements anticipes inclus : ceux deja absorbes par une echeance
+    // passee sont dans le tableau d'amortissement ; ceux verses APRES la
+    // derniere echeance passee sont deduits immediatement).
     function getCapitalRestantAujourdhui(emprunt) {
       if (!emprunt) return 0;
       var total = parseFloat(emprunt.montant_total) || 0;
@@ -17000,12 +17196,40 @@
       moisEcoules = Math.max(0, moisEcoules);
       var n = parseInt(emprunt.duree_mois) || 0;
       if (n === 0) return total;
-      if (moisEcoules >= n) return 0;
-      if (moisEcoules <= 0) return total;
       var amort = buildAmortissement(emprunt);
-      if (amort.length === 0) return total;
-      var idx = Math.min(moisEcoules - 1, amort.length - 1);
-      return amort[idx].restant;
+      var restant, refDate;
+      if (moisEcoules <= 0 || amort.length === 0) {
+        restant = total;
+        refDate = "";
+      } else {
+        var idx = Math.min(moisEcoules - 1, amort.length - 1);
+        restant = amort[idx].restant;
+        refDate = amort[idx].date;
+      }
+      // Anticipes deja verses mais pas encore absorbes par une echeance passee
+      // (date LOCALE construite a la main : pas de toISOString sur un jour NC)
+      var todayIso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+      getRemboursementsAnticipes(emprunt).forEach(function(r) {
+        var dIso = String(r.date).substring(0, 10);
+        if (dIso <= todayIso && dIso > refDate) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
+      });
+      if (moisEcoules >= n) return 0; // terme depasse : pret solde
+      return restant;
+    }
+
+    // Helper : date de fin EFFECTIVE d'un emprunt. Sans remboursement anticipe,
+    // c'est date_fin telle quelle. Avec, c'est la date de la derniere echeance
+    // du tableau d'amortissement (la duree se raccourcit, mensualite constante).
+    // Utilisee par l'echeancier, l'alerte fin de pret et le cout au metre.
+    function getDateFinEffectiveEmprunt(emprunt) {
+      if (!emprunt) return null;
+      var dfBase = emprunt.date_fin || null;
+      if (getRemboursementsAnticipes(emprunt).length === 0) return dfBase;
+      var amort = buildAmortissement(emprunt);
+      if (amort.length === 0) return dfBase;
+      var dLast = amort[amort.length - 1].date;
+      if (!dfBase) return dLast;
+      return dLast < dfBase ? dLast : dfBase;
     }
 
     // Helper : nombre d'emprunts actifs arrivant a terme dans les 30 jours
@@ -17015,8 +17239,9 @@
       var seuil = new Date(); seuil.setDate(seuil.getDate() + 30);
       return emprunts.filter(function(e) {
         if (e.statut !== "actif") return false;
-        if (!e.date_fin) return false;
-        var df = new Date(e.date_fin);
+        var dfEff = getDateFinEffectiveEmprunt(e);
+        if (!dfEff) return false;
+        var df = new Date(dfEff);
         return df >= today && df <= seuil;
       }).length;
     }
@@ -17037,15 +17262,16 @@
       var totalInterets = rows.reduce(function(s, r) { return s + r.interet; }, 0);
       var totalCapital = rows.reduce(function(s, r) { return s + r.capital; }, 0);
       var totalCout = totalInterets + totalCapital;
+      var totalAnticipes = rows.reduce(function(s, r) { return s + (r.anticipe || 0); }, 0);
 
       // Courbe : capital restant par mois
       var maxRestant = rows.length > 0 ? rows[0].mensualite ? (parseFloat(selected.montant_total) || 0) : 0 : 0;
       if (maxRestant === 0 && rows.length > 0) maxRestant = rows[0].restant + rows[0].capital;
 
       function exportCSV() {
-        var lines = ["Numero;Date;Mensualite;Interets;Capital rembourse;Capital restant du"];
+        var lines = ["Numero;Date;Mensualite;Interets;Capital rembourse;Anticipe;Capital restant du"];
         rows.forEach(function(r) {
-          lines.push([r.numero, r.date, Math.round(r.mensualite), Math.round(r.interet), Math.round(r.capital), Math.round(r.restant)].join(";"));
+          lines.push([r.numero, r.date, Math.round(r.mensualite), Math.round(r.interet), Math.round(r.capital), Math.round(r.anticipe || 0), Math.round(r.restant)].join(";"));
         });
         var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
         var url = URL.createObjectURL(blob);
@@ -17089,7 +17315,12 @@
           h("div", { style: { padding: 12, background: "rgba(36, 40, 60, 0.85)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)" } },
             h("div", { style: { fontSize: 11, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Cout / capital"),
             h("div", { style: { fontSize: 17, fontWeight: 700, color: "#a78bfa", marginTop: 4 } }, selected.montant_total > 0 ? (totalInterets / selected.montant_total * 100).toFixed(1) + " %" : "—")
-          )
+          ),
+          totalAnticipes > 0 ? h("div", { style: { padding: 12, background: "rgba(251,191,36,0.08)", borderRadius: 10, border: "1px solid rgba(251,191,36,0.30)" } },
+            h("div", { style: { fontSize: 11, color: "#fde68a", textTransform: "uppercase", letterSpacing: 0.5 } }, "Rembourse par anticipation"),
+            h("div", { style: { fontSize: 17, fontWeight: 700, color: "#fbbf24", marginTop: 4 } }, fmtNum(Math.round(totalAnticipes)) + " XPF"),
+            h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 2 } }, "Duree raccourcie : fin " + new Date(rows[rows.length - 1].date).toLocaleDateString("fr-FR", { year: "numeric", month: "short" }))
+          ) : null
         ) : null,
         // Tableau d'amortissement
         rows.length === 0 ? h("div", { style: { padding: 20, textAlign: "center", color: "#71717a", fontSize: 13 } }, "Donnees insuffisantes pour calculer l'amortissement (verifie capital, taux, duree, mensualite)") :
@@ -17102,17 +17333,20 @@
                 h("th", { style: thAm }, "Mensualite"),
                 h("th", { style: thAm }, "Interets"),
                 h("th", { style: thAm }, "Capital paye"),
+                totalAnticipes > 0 ? h("th", { style: Object.assign({}, thAm, { color: "#fde68a" }) }, "Anticipe") : null,
                 h("th", { style: thAm }, "Restant du")
               )
             ),
             h("tbody", null,
               rows.map(function(r) {
-                return h("tr", { key: r.numero },
+                var hasAnt = (r.anticipe || 0) > 0;
+                return h("tr", { key: r.numero, style: hasAnt ? { background: "rgba(251,191,36,0.08)" } : null },
                   h("td", { style: Object.assign({}, tdAmL, { color: "#a1a1aa" }) }, r.numero),
                   h("td", { style: tdAmL }, new Date(r.date).toLocaleDateString("fr-FR", { year: "numeric", month: "short" })),
                   h("td", { style: tdAm }, fmtNum(Math.round(r.mensualite))),
                   h("td", { style: Object.assign({}, tdAm, { color: "#fcd34d" }) }, fmtNum(Math.round(r.interet))),
                   h("td", { style: Object.assign({}, tdAm, { color: "#86efac" }) }, fmtNum(Math.round(r.capital))),
+                  totalAnticipes > 0 ? h("td", { style: Object.assign({}, tdAm, { color: "#fbbf24", fontWeight: hasAnt ? 700 : 400 }) }, hasAnt ? fmtNum(Math.round(r.anticipe)) : "—") : null,
                   h("td", { style: Object.assign({}, tdAm, { fontWeight: 600 }) }, fmtNum(Math.round(r.restant)))
                 );
               })
@@ -17137,7 +17371,9 @@
         (emprunts || []).forEach(function(e) {
           if (e.statut !== "actif") return;
           var db = e.date_debut ? new Date(e.date_debut) : null;
-          var df = e.date_fin ? new Date(e.date_fin) : null;
+          // Fin EFFECTIVE : un remboursement anticipe raccourcit le pret
+          var dfEff = getDateFinEffectiveEmprunt(e);
+          var df = dfEff ? new Date(dfEff) : null;
           if (db && db > lastDay) return;
           if (df && df < d) return;
           total += parseFloat(e.mensualite) || 0;
@@ -17237,17 +17473,20 @@
       var selected = actifs.find(function(e) { return String(e.id) === String(selectedId); });
       var sim1 = null;
       if (selected && parseFloat(montant) > 0) {
-        // Calcul du capital restant du a aujourd'hui (approximatif : moitie de l'amortissement)
-        // Pour simplifier on fait : restant = capital * (mois_restants / mois_total)
+        // Capital restant REEL a aujourd'hui (meme helper que la liste : integre
+        // les remboursements anticipes deja enregistres sur ce pret)
         var dStart = selected.date_debut ? new Date(selected.date_debut) : new Date();
         var today = new Date();
         var moisEcoules = Math.max(0, (today.getFullYear() - dStart.getFullYear()) * 12 + (today.getMonth() - dStart.getMonth()));
         var n = parseInt(selected.duree_mois) || 0;
-        var moisRestants = Math.max(0, n - moisEcoules);
-        // Approximation simple : capital restant moyen au prorata (pour annuites constantes)
+        var capRestant = getCapitalRestantAujourdhui(selected);
+        // Mois restants EFFECTIFS : echeances futures du tableau d'amortissement
+        // (raccourci par les anticipes), repli sur duree - mois ecoules
         var amort = buildAmortissement(selected);
-        var idxNow = Math.min(moisEcoules, amort.length - 1);
-        var capRestant = amort.length > 0 ? amort[idxNow].restant + amort[idxNow].capital : 0;
+        var todaySimIso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+        var moisRestants = amort.length > 0
+          ? amort.filter(function(r) { return r.date > todaySimIso; }).length
+          : Math.max(0, n - moisEcoules);
         var rembAntic = parseFloat(montant) || 0;
         if (rembAntic > capRestant) rembAntic = capRestant;
         var nouvCapital = capRestant - rembAntic;
@@ -21084,7 +21323,9 @@
           if (!e || e.statut !== "actif") return;
           if (e.mutualise === false) return;
           var db = e.date_debut ? new Date(e.date_debut) : null;
-          var df = e.date_fin ? new Date(e.date_fin) : null;
+          // Fin EFFECTIVE (remboursements anticipes) - miroir du moteur module
+          var dfEffM2 = getDateFinEffectiveEmprunt(e);
+          var df = dfEffM2 ? new Date(dfEffM2) : null;
           if (db && db > lastDay) return;
           if (df && df < firstDay) return;
           totalMens += parseFloat(e.mensualite) || 0;
@@ -21123,7 +21364,9 @@
             if (e.mutualise !== false) return;
             if (!e.equipement_id) return;
             var db = e.date_debut ? new Date(e.date_debut) : null;
-            var df = e.date_fin ? new Date(e.date_fin) : null;
+            // Fin EFFECTIVE (remboursements anticipes) - miroir du moteur module
+            var dfEffD2 = getDateFinEffectiveEmprunt(e);
+            var df = dfEffD2 ? new Date(dfEffD2) : null;
             if (db && db > lastDay) return;
             if (df && df < firstDay) return;
             var mens = parseFloat(e.mensualite) || 0;
