@@ -4,9 +4,11 @@
 -- A executer dans Supabase > SQL Editor
 -- ============================================================
 -- Ajoute la colonne jsonb qui stocke la liste des remboursements
--- anticipes d'un emprunt : [{ "date": "2026-09-14", "montant": 1000000, "note": "..." }]
+-- anticipes d'un emprunt :
+--   [{ "date": "2026-09-14", "montant": 1000000, "note": "...", "mode": "duree" | "mensualite" }]
 -- L'app admin (ecran Emprunts, bouton avance-rapide) lit/ecrit cette liste.
--- Convention moteur : mensualite constante, duree raccourcie.
+-- mode "duree" (defaut)  : mensualite constante, le pret se termine plus tot
+-- mode "mensualite"      : duree conservee, mensualite recalculee sur le capital restant
 
 alter table emprunts
   add column if not exists remboursements jsonb not null default '[]'::jsonb;

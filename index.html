@@ -11961,7 +11961,8 @@
           var df = dfEffM ? new Date(dfEffM) : null;
           if (db && db > lastDay) return;
           if (df && df < firstDay) return;
-          totalMens += parseFloat(e.mensualite) || 0;
+          // Mensualite EFFECTIVE du mois (mode "mensualite" = traite reduite)
+          totalMens += getMensualiteEffectiveEmprunt(e, yyyymm + "-01");
         });
         if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
         var nowE = new Date();
@@ -11998,7 +11999,8 @@
             var df = dfEffD ? new Date(dfEffD) : null;
             if (db && db > lastDay) return;
             if (df && df < firstDay) return;
-            var mens = parseFloat(e.mensualite) || 0;
+            // Mensualite EFFECTIVE du mois (mode "mensualite" = traite reduite)
+            var mens = getMensualiteEffectiveEmprunt(e, yyyymm + "-01");
             if (mens <= 0) return;
             mensParEq[e.equipement_id] = (mensParEq[e.equipement_id] || 0) + mens;
           });
@@ -13113,7 +13115,7 @@
           var fgInfoAv = computeFraisGenerauxFEC(ctxAv.dbEcrCompta || [], new Date());
           var fgAvActif = fgInfoAv.aDonnees;
           var chargesFixesMensuel = fgAvActif ? fgInfoAv.poolMoyenMensuel : chargesFixesManuel90;
-          var empruntsMensuel = (ctxAv.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+          var empruntsMensuel = (ctxAv.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
           var nbMois90j = 3; // 90j = 3 mois
           var coutPersonnel90j = masseSalarialeMensuelle * 1.40 * nbMois90j;
           var coutChargesFixes90j = chargesFixesMensuel * nbMois90j;
@@ -16675,8 +16677,8 @@
         setRembFor(null);
       }
 
-      // Stats
-      var totalMensActifs = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+      // Stats (mensualite EFFECTIVE : integre les anticipes en mode "mensualite")
+      var totalMensActifs = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
       var totalCapital = emprunts.filter(function(e) { return e.statut === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.montant_total) || 0); }, 0);
 
       // Taux d'endettement operationnel : mensualites actives / CA mensuel moyen (3 derniers mois)
@@ -16773,6 +16775,8 @@
                   );
                   var finEffective = getDateFinEffectiveEmprunt(e);
                   var finRaccourcie = finEffective && e.date_fin && finEffective < e.date_fin;
+                  var mensEff = getMensualiteEffectiveEmprunt(e, null);
+                  var mensReduite = Math.round(mensEff) < Math.round(parseFloat(e.mensualite) || 0);
                   return h("tr", { key: e.id, style: { transition: "background 0.15s" }, onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(255,255,255,0.02)"; }, onMouseLeave: function(ev) { ev.currentTarget.style.background = "transparent"; } },
                     h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, color: "#fafafa" }) }, e.libelle || "—"),
                     h("td", { style: tdStyle },
@@ -16781,7 +16785,12 @@
                         h("span", { style: { display: "inline-flex", alignItems: "center", padding: "3px 10px", fontSize: 11, fontWeight: 600, color: "#86efac", background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.35)", borderRadius: 999 } }, h(IconText, { icon: "share-2", size: 11, color: "#86efac" }, "Mutualise"))
                     ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtNum(Math.round(e.montant_total || 0)) + " XPF"),
-                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: "#a5b4fc" }) }, fmtNum(Math.round(e.mensualite || 0)) + " XPF"),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: "#a5b4fc" }) },
+                      mensReduite ? h("span", { title: "Mensualite reduite par remboursement anticipe (mode mensualite) - initiale : " + fmtNum(Math.round(e.mensualite || 0)) + " XPF" },
+                        h("div", { style: { textDecoration: "line-through", color: "#71717a", fontSize: 11, fontWeight: 500 } }, fmtNum(Math.round(e.mensualite || 0)) + " XPF"),
+                        h("div", { style: { color: "#86efac" } }, fmtNum(Math.round(mensEff)) + " XPF")
+                      ) : fmtNum(Math.round(e.mensualite || 0)) + " XPF"
+                    ),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 600, color: restant > 0 ? "#fcd34d" : "#86efac" }) },
                       fmtNum(Math.round(restant)) + " XPF",
                       totalAnticipes > 0 ? h("div", { style: { fontSize: 10, fontWeight: 600, color: "#86efac", marginTop: 2 }, title: "Remboursements anticipes deja verses (duree raccourcie)" }, "Anticipes : " + fmtNum(Math.round(totalAnticipes)) + " XPF") : null
@@ -16993,7 +17002,7 @@
       var todayIso = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
       var _liste = useState(getRemboursementsAnticipes(emprunt));
       var liste = _liste[0]; var setListe = _liste[1];
-      var _draft = useState({ date: todayIso, montant: "", note: "" });
+      var _draft = useState({ date: todayIso, montant: "", note: "", mode: "duree" });
       var draft = _draft[0]; var setDraft = _draft[1];
 
       // Impact : amortissement AVEC la liste en cours vs SANS aucun anticipe
@@ -17008,16 +17017,25 @@
       var restantApres = getCapitalRestantAujourdhui(empAvec);
       var finApres = amortAvec.length > 0 ? amortAvec[amortAvec.length - 1].date : (emprunt.date_fin || null);
       var totalListe = liste.reduce(function(s, r) { return s + (parseFloat(r.montant) || 0); }, 0);
+      // Nouvelle mensualite apres le dernier remboursement (mode "mensualite") :
+      // la ligne d'injection porte deja la mensualite recalculee
+      var hasModeMens = liste.some(function(r) { return r.mode === "mensualite"; });
+      var mensApres = null;
+      if (hasModeMens) {
+        for (var ia = amortAvec.length - 1; ia >= 0; ia--) {
+          if ((amortAvec[ia].anticipe || 0) > 0) { mensApres = amortAvec[ia].mensualite; break; }
+        }
+      }
 
       function frD(s) { if (!s) return "—"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
       function addRemb() {
         var m = parseFloat(String(draft.montant).replace(",", ".")) || 0;
         if (!draft.date) { alert("Choisis la date du remboursement."); return; }
         if (m <= 0) { alert("Saisis un montant positif."); return; }
-        var next = liste.concat([{ date: draft.date, montant: Math.round(m), note: draft.note || "" }])
+        var next = liste.concat([{ date: draft.date, montant: Math.round(m), note: draft.note || "", mode: draft.mode === "mensualite" ? "mensualite" : "duree" }])
           .sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
         setListe(next);
-        setDraft({ date: todayIso, montant: "", note: "" });
+        setDraft({ date: todayIso, montant: "", note: "", mode: draft.mode });
       }
       function removeRemb(idx) { setListe(liste.filter(function(x, i) { return i !== idx; })); }
 
@@ -17030,7 +17048,7 @@
             h(IconText, { icon: "fast-forward", size: 17, color: "#fbbf24" }, "Remboursements anticipes")),
           h("div", { style: { fontSize: 13, color: "#a1a1aa", marginBottom: 16 } }, emprunt.libelle || "—"),
           h("div", { style: { fontSize: 11, color: "#a78bfa", marginBottom: 16, fontStyle: "italic" } },
-            "Convention : la mensualite reste identique et la duree du pret se raccourcit. Si la banque a plutot reduit ta mensualite, modifie la mensualite de l'emprunt (crayon)."),
+            "Chaque remboursement choisit son effet : reduire la DUREE (mensualite identique, le pret se termine plus tot) ou reduire la MENSUALITE (duree identique, traite recalculee sur le capital restant)."),
           // Liste des remboursements enregistres
           liste.length === 0 ? h("div", { style: { padding: 16, textAlign: "center", color: "#71717a", fontSize: 13, background: "rgba(0,0,0,0.20)", borderRadius: 8, marginBottom: 14 } },
             "Aucun remboursement anticipe sur ce pret."
@@ -17041,6 +17059,8 @@
                 h("div", { style: { flex: 1, minWidth: 0 } },
                   h("span", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, fmtNum(Math.round(parseFloat(r.montant) || 0)) + " XPF"),
                   h("span", { style: { fontSize: 12, color: "#a1a1aa", marginLeft: 8 } }, "le " + frD(r.date)),
+                  h("span", { style: { display: "inline-block", marginLeft: 8, padding: "1px 8px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, letterSpacing: 0.3, background: r.mode === "mensualite" ? "rgba(56,189,248,0.15)" : "rgba(167,139,250,0.15)", color: r.mode === "mensualite" ? "#7dd3fc" : "#c4b5fd", border: "1px solid " + (r.mode === "mensualite" ? "rgba(56,189,248,0.40)" : "rgba(167,139,250,0.40)") } },
+                    r.mode === "mensualite" ? "MENSUALITE REDUITE" : "DUREE REDUITE"),
                   r.note ? h("div", { style: { fontSize: 11, color: "#cbd5e1", fontStyle: "italic" } }, r.note) : null
                 ),
                 h("button", { onClick: function() { removeRemb(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Retirer ce remboursement" }, h(Icon, { name: "x", size: 14, color: "#f43f5e" }))
@@ -17058,6 +17078,28 @@
               h("div", null,
                 h("label", { style: labelStyle }, "Montant (XPF)"),
                 h("input", { type: "number", min: 0, step: 10000, value: draft.montant, onChange: function(e) { setDraft(Object.assign({}, draft, { montant: e.target.value })); }, placeholder: "ex: 1000000", style: inputStyle })
+              )
+            ),
+            // Choix de l'effet du remboursement
+            h("div", { style: { marginBottom: 10 } },
+              h("label", { style: labelStyle }, "Effet du remboursement"),
+              h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
+                h("button", { type: "button", onClick: function() { setDraft(Object.assign({}, draft, { mode: "duree" })); },
+                  style: { padding: "10px 12px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    background: draft.mode !== "mensualite" ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
+                    border: draft.mode !== "mensualite" ? "1px solid rgba(167,139,250,0.55)" : "1px solid rgba(255,255,255,0.10)" } },
+                  h("div", { style: { fontSize: 12.5, fontWeight: 700, color: draft.mode !== "mensualite" ? "#c4b5fd" : "#a1a1aa" } },
+                    h(IconText, { icon: "calendar-minus", size: 13, color: draft.mode !== "mensualite" ? "#c4b5fd" : "#71717a" }, "Baisser la duree")),
+                  h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 3 } }, "Mensualite identique, le pret se termine plus tot")
+                ),
+                h("button", { type: "button", onClick: function() { setDraft(Object.assign({}, draft, { mode: "mensualite" })); },
+                  style: { padding: "10px 12px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    background: draft.mode === "mensualite" ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.03)",
+                    border: draft.mode === "mensualite" ? "1px solid rgba(56,189,248,0.55)" : "1px solid rgba(255,255,255,0.10)" } },
+                  h("div", { style: { fontSize: 12.5, fontWeight: 700, color: draft.mode === "mensualite" ? "#7dd3fc" : "#a1a1aa" } },
+                    h(IconText, { icon: "trending-down", size: 13, color: draft.mode === "mensualite" ? "#7dd3fc" : "#71717a" }, "Baisser la mensualite")),
+                  h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 3 } }, "Duree identique, traite recalculee sur le capital restant")
+                )
               )
             ),
             h("div", { style: { marginBottom: 10 } },
@@ -17082,6 +17124,11 @@
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Duree gagnee"),
                 h("div", { style: { fontSize: 15, fontWeight: 700, color: "#a78bfa" } }, gainDuree + " mois")
               ),
+              mensApres != null ? h("div", null,
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Nouvelle mensualite"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#7dd3fc" } }, mensApres > 0 ? fmtNum(Math.round(mensApres)) + " XPF" : "Pret solde"),
+                mensApres > 0 ? h("div", { style: { fontSize: 10, color: "#71717a" } }, "avant : " + fmtNum(Math.round(parseFloat(emprunt.mensualite) || 0)) + " XPF") : null
+              ) : null,
               h("div", null,
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Interets economises"),
                 h("div", { style: { fontSize: 15, fontWeight: 700, color: "#fcd34d" } }, fmtNum(Math.round(gainInterets)) + " XPF")
@@ -17120,11 +17167,13 @@
     //   capital_pay = mensualite - interet
     //   capital_restant -= capital_pay
     // Les REMBOURSEMENTS ANTICIPES (jsonb) sont injectes a leur date : le capital
-    // baisse AVANT le calcul des interets de l'echeance suivante. Convention
-    // bancaire par defaut : la mensualite reste identique, la DUREE se raccourcit
-    // (si la banque a plutot reduit la mensualite, modifier la mensualite de
-    // l'emprunt a la main). Retourne [{ numero, date, mensualite, interet,
-    // capital, anticipe, restant }] ; le tableau s'arrete quand le capital est solde.
+    // baisse AVANT le calcul des interets de l'echeance suivante. Chaque
+    // remboursement porte un MODE :
+    //   - "duree" (defaut)   : mensualite constante, la DUREE se raccourcit
+    //   - "mensualite"       : duree conservee, la MENSUALITE est recalculee
+    //     (annuites constantes sur le capital reduit et les echeances restantes)
+    // Retourne [{ numero, date, mensualite, interet, capital, anticipe,
+    // restant }] ; le tableau s'arrete quand le capital est solde.
     function buildAmortissement(emprunt) {
       if (!emprunt) return [];
       var C = parseFloat(emprunt.montant_total) || 0;
@@ -17142,9 +17191,28 @@
         var d = new Date(startDate);
         d.setMonth(d.getMonth() + k);
         var dateIso = d.toISOString().slice(0, 10);
-        // Remboursements anticipes tombes avant (ou a) cette echeance
+        // Remboursements anticipes tombes avant (ou a) cette echeance.
+        // Mode "mensualite" : la duree CIBLE du recalcul est la duree effective
+        // du pret juste AVANT ce remboursement (bornee au terme contractuel).
+        // Un remb "duree" anterieur ayant deja raccourci le pret, on ne
+        // ré-etale JAMAIS sur le terme d'origine (ca rallongerait le pret).
         var anticipe = 0;
+        var recalcMens = false;
+        var nbCibleMens = 0;
         while (ri < rembs.length && String(rembs[ri].date).substring(0, 10) <= dateIso) {
+          if (rembs[ri].mode === "mensualite" && restant > 0 && M > 0) {
+            // Echeances restantes (k comprise) au rythme ACTUEL, avant ce remb
+            var nbEff = n - k + 1;
+            if (tm > 0 && M > restant * tm) {
+              var nbCalc = Math.ceil(Math.log(M / (M - restant * tm)) / Math.log(1 + tm) - 1e-9);
+              if (nbCalc < nbEff) nbEff = Math.max(1, nbCalc);
+            } else if (tm === 0) {
+              var nbCalc0 = Math.ceil(restant / M - 1e-9);
+              if (nbCalc0 < nbEff) nbEff = Math.max(1, nbCalc0);
+            }
+            recalcMens = true;
+            nbCibleMens = nbEff;
+          }
           var mR = Math.min(parseFloat(rembs[ri].montant) || 0, restant);
           anticipe += mR;
           restant -= mR;
@@ -17155,10 +17223,16 @@
           rows.push({ numero: k, date: dateIso, mensualite: 0, interet: 0, capital: 0, anticipe: anticipe, restant: 0 });
           break;
         }
+        if (recalcMens && restant > 0 && nbCibleMens > 0) {
+          // Nouvelle annuite constante sur la duree cible -> la duree ne bouge pas
+          M = tm > 0 ? restant * tm / (1 - Math.pow(1 + tm, -nbCibleMens)) : restant / nbCibleMens;
+        }
         var interet = restant * tm;
         var capital = M - interet;
         var mens = M;
-        if (k === n || capital >= restant) {
+        // Tolerance 0,5 XPF : une annuite recalculee laisse un residu flottant
+        // (~1e-7) qui creerait une echeance fantome d'un centime
+        if (k === n || capital >= restant - 0.5) {
           // Derniere echeance (terme normal OU capital solde en avance) :
           // ajustee pour solder exactement le capital
           capital = restant;
@@ -17230,6 +17304,30 @@
       var dLast = amort[amort.length - 1].date;
       if (!dfBase) return dLast;
       return dLast < dfBase ? dLast : dfBase;
+    }
+
+    // Helper : mensualite EFFECTIVE d'un emprunt a une date donnee (dateIso
+    // "yyyy-mm-dd" ; null = aujourd'hui). Differe de emprunt.mensualite
+    // uniquement si un remboursement anticipe en mode "mensualite" est passe
+    // par la (la mensualite recalculee s'applique aux echeances suivantes).
+    // Retourne la mensualite de la premiere echeance a venir a cette date.
+    function getMensualiteEffectiveEmprunt(emprunt, dateIso) {
+      if (!emprunt) return 0;
+      var base = parseFloat(emprunt.mensualite) || 0;
+      var rembs = getRemboursementsAnticipes(emprunt);
+      var hasModeMens = rembs.some(function(r) { return r.mode === "mensualite"; });
+      if (!hasModeMens) return base;
+      var amort = buildAmortissement(emprunt);
+      if (amort.length === 0) return base;
+      var ref = dateIso;
+      if (!ref) {
+        var dN = new Date();
+        ref = dN.getFullYear() + "-" + String(dN.getMonth() + 1).padStart(2, "0") + "-" + String(dN.getDate()).padStart(2, "0");
+      }
+      for (var i = 0; i < amort.length; i++) {
+        if (amort[i].date >= ref) return amort[i].mensualite;
+      }
+      return amort[amort.length - 1].mensualite;
     }
 
     // Helper : nombre d'emprunts actifs arrivant a terme dans les 30 jours
@@ -17368,6 +17466,7 @@
         var total = 0;
         var actifs = 0;
         var finishing = []; // emprunts se terminant ce mois
+        var moisIso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01";
         (emprunts || []).forEach(function(e) {
           if (e.statut !== "actif") return;
           var db = e.date_debut ? new Date(e.date_debut) : null;
@@ -17376,7 +17475,8 @@
           var df = dfEff ? new Date(dfEff) : null;
           if (db && db > lastDay) return;
           if (df && df < d) return;
-          total += parseFloat(e.mensualite) || 0;
+          // Mensualite EFFECTIVE du mois (mode "mensualite" = traite reduite)
+          total += getMensualiteEffectiveEmprunt(e, moisIso);
           actifs += 1;
           if (df && df.getFullYear() === d.getFullYear() && df.getMonth() === d.getMonth()) {
             finishing.push(e);
@@ -17491,7 +17591,8 @@
         if (rembAntic > capRestant) rembAntic = capRestant;
         var nouvCapital = capRestant - rembAntic;
         var t = (parseFloat(selected.taux_interet) || 0) / 100 / 12;
-        var M = parseFloat(selected.mensualite) || 0;
+        // Mensualite effective (integre un eventuel anticipe mode "mensualite")
+        var M = getMensualiteEffectiveEmprunt(selected, null);
         // Nouvelle duree = log(M / (M - nouvCapital*t)) / log(1+t)
         var nouvDuree = moisRestants;
         if (t > 0 && M > nouvCapital * t) {
@@ -17521,7 +17622,7 @@
       var sim2Mens = calcMensualite(newE.montant, newE.taux, newE.duree);
       var sim2Cout = sim2Mens * (parseInt(newE.duree) || 0);
       var sim2Interets = sim2Cout - (parseFloat(newE.montant) || 0);
-      var totalActuel = actifs.reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+      var totalActuel = actifs.reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
       var totalNouveau = totalActuel + sim2Mens;
 
       var inputStyle = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
@@ -18032,7 +18133,7 @@
 
       // Mensualites d'emprunts actives (info : justifie la part emprunts de la franchise)
       var mensualitesActives = (emprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
-        .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+        .reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
 
       // ── Agregation mensuelle de l'annee en cours ──
       var moisData = [];
@@ -21328,7 +21429,8 @@
           var df = dfEffM2 ? new Date(dfEffM2) : null;
           if (db && db > lastDay) return;
           if (df && df < firstDay) return;
-          totalMens += parseFloat(e.mensualite) || 0;
+          // Mensualite EFFECTIVE du mois (mode "mensualite" = traite reduite)
+          totalMens += getMensualiteEffectiveEmprunt(e, yyyymm + "-01");
         });
         if (totalMens <= 0) { empruntCacheMutByMois[yyyymm] = 0; return 0; }
         // Mois EN COURS : prorater la mensualite a la fraction du mois ecoulee, sinon on
@@ -21369,7 +21471,8 @@
             var df = dfEffD2 ? new Date(dfEffD2) : null;
             if (db && db > lastDay) return;
             if (df && df < firstDay) return;
-            var mens = parseFloat(e.mensualite) || 0;
+            // Mensualite EFFECTIVE du mois (mode "mensualite" = traite reduite)
+            var mens = getMensualiteEffectiveEmprunt(e, yyyymm + "-01");
             if (mens <= 0) return;
             mensParEq[e.equipement_id] = (mensParEq[e.equipement_id] || 0) + mens;
           });
@@ -21721,7 +21824,7 @@
           return y === curY && new Date(y, m + 1, 0).getTime() < now.getTime() && reelParMois[mkk] > 0;
         });
         var decaissMoyenReel = moisFiables.length > 0 ? (moisFiables.reduce(function(s, mkk) { return s + reelParMois[mkk]; }, 0) / moisFiables.length) : 0;
-        var baseTheo = (masseSalarialeMensuelle || 0) * 1.40 + ((fgInfo && fgInfo.aDonnees) ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles) + (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+        var baseTheo = (masseSalarialeMensuelle || 0) * 1.40 + ((fgInfo && fgInfo.aDonnees) ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles) + (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; }).reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
         var mkNow = curY + "-" + String(now.getMonth() + 1).padStart(2, "0");
         var pEndRef = periodEnd || now;
         var total = 0, any = false, cur = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1), lastM = new Date(pEndRef.getFullYear(), pEndRef.getMonth(), 1).getTime(), safe = 0;
@@ -22640,7 +22743,7 @@
             });
 
             var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
-              .reduce(function(s, e) { return s + (parseFloat(e.mensualite) || 0); }, 0);
+              .reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
             // Tresorerie : frais generaux STRUCTURE seule (entretien/pieces exclus car deja
             // projetes via les factures fournisseurs 401 a J+30 -> evite le double-compte).
             var chargesFixesMens = fgInfo.aDonnees ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles;
