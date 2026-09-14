@@ -23691,7 +23691,7 @@
       );
     }
 
-    function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, piecesEquipements, onClose, onSaved, showToast }) {
+    function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, piecesEquipements, onClose, onSaved, showToast, correctionsClient, correctionsValidataire }) {
       // Types dynamiques : lus depuis parametres (categories rf_types_sondage / rf_types_activite)
       var _parametres = useAppData().parametres || [];
       var listFromParametres = function(categorie, fallback) {
@@ -23932,6 +23932,28 @@
               h("div", null, "Ce rapport est deja signe par le client. Modifier les donnees ne supprime pas automatiquement la signature - a faire manuellement si la modification est materielle (passe par 'Re-mettre soumis' ensuite).")
             )
           : null,
+
+        // Modifications demandees par le CLIENT (validation mensuelle refusee) :
+        // affichees pendant TOUTE l'edition pour corriger sans aller-retour
+        Array.isArray(correctionsClient) && correctionsClient.length > 0 ? h("div", { style: { background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.40)", borderRadius: 10, padding: "12px 14px", marginBottom: 18 } },
+          h("div", { style: { fontSize: 12.5, fontWeight: 800, color: "#fbbf24", display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
+            h(Icon, { name: "alert-circle", size: 14, color: "#fbbf24" }),
+            "Modifications demandees par le client" + (correctionsValidataire ? " (" + correctionsValidataire + ")" : "") + " pour cette journee"),
+          correctionsClient.map(function(cor, ci) {
+            var estPasseC = cor.champ === "passe";
+            var lblChC = cor.champ === "metrage" ? "Metrage" : cor.champ === "heures" ? "Heures" : estPasseC ? "Ajout de passe" : "Attente";
+            return h("div", { key: ci, style: { borderLeft: "3px solid #d97706", background: "rgba(0,0,0,0.20)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" } },
+              h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#fbbf24", whiteSpace: "nowrap" } }, (estPasseC ? "Ajout" : "Correction") + " — " + lblChC),
+              h("span", null,
+                cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, String(cor.avant)) : null,
+                h("span", { style: { color: "#4ade80", fontWeight: 800 } }, estPasseC ? ("+" + String(cor.apres) + " m") : String(cor.apres))),
+              cor.commentaire ? h("span", { style: { fontStyle: "italic", color: "#cbd5e1" } }, "« " + String(cor.commentaire) + " »") : null,
+              estPasseC ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa" } }, "→ bouton « + Ajouter une passe » sous le forage concerne") : null
+            );
+          }),
+          h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } },
+            "Le releve client ne distingue pas la machine : ces demandes visent la journee du chantier (verifie qu'elles concernent bien CE rapport). A l'enregistrement, le renvoi du rapport corrige au client te sera propose automatiquement.")
+        ) : null,
 
         h("div", { style: { background: "rgba(36,40,60,0.85)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 24, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
 
@@ -24582,6 +24604,9 @@
       var _vals = useState([]); var vals = _vals[0]; var setVals = _vals[1];
       var _valPeriode = useState(null); var valPeriode = _valPeriode[0]; var setValPeriode = _valPeriode[1];
       var _apercuVal = useState(null); var apercuVal = _apercuVal[0]; var setApercuVal = _apercuVal[1];
+      // Choix du rapport a corriger quand PLUSIEURS machines ont un rapport le
+      // jour vise par une correction client (la correction ne porte que la date)
+      var _corPick = useState(null); var corPick = _corPick[0]; var setCorPick = _corPick[1];
       var _sendingValId = useState(null); var sendingValId = _sendingValId[0]; var setSendingValId = _sendingValId[1];
       var _destChantier = useState([]); var destChantier = _destChantier[0]; var setDestChantier = _destChantier[1];
       // Dans le recap mensuel : "synthese" (par employe x sondeuse) ou "detail_jour" (1 ligne par date/employe)
@@ -27501,6 +27526,31 @@
           }) || null;
         } catch (e) { return null; }
       };
+      // Rapports candidats pour une correction client : meme jour + meme
+      // chantier que la validation (par id, repli lieu/site comme
+      // correctionClientPourRapport). La correction ne porte pas la machine.
+      var rapportsPourCorrection = function(v, cor) {
+        var dCor = String(cor && cor.date || "").substring(0, 10);
+        if (!dCor) return [];
+        return (raps || []).filter(function(r) {
+          if (String(r.date_rapport || "").substring(0, 10) !== dCor) return false;
+          if (r.chantier_id != null) return String(r.chantier_id) === String(v.chantier_id);
+          var cV = (dbChantiers || []).find(function(c) { return String(c.id) === String(v.chantier_id); });
+          if (!cV) return false;
+          var lieuU = String(r.lieu || "").toUpperCase().trim();
+          var sU = String(cV.site || "").toUpperCase().trim();
+          var tU = String(cV.titre || "").toUpperCase().trim();
+          return (sU && lieuU && (sU === lieuU || sU.indexOf(lieuU) >= 0 || lieuU.indexOf(sU) >= 0)) || (tU && tU === lieuU);
+        });
+      };
+      // Clic sur une demande de modification client -> ouvre directement le
+      // rapport du jour en Edition complete (choix de la machine si plusieurs)
+      var ouvrirRapportPourCorrection = function(v, cor) {
+        var list = rapportsPourCorrection(v, cor);
+        if (list.length === 0) { alert("Aucun rapport trouve pour cette journee sur ce chantier (verifie l'onglet Rapports)."); return; }
+        if (list.length === 1) { setEditingRapportId(list[0].id); return; }
+        setCorPick({ v: v, cor: cor, rapports: list });
+      };
       // Envoi effectif via send-rapport (JWT admin). correction=true ajoute le
       // bandeau "RAPPORT CORRIGE" dans l'email ; nouveau lien de signature dans
       // les deux cas.
@@ -27566,6 +27616,30 @@
         };
         var fmtD = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[2] + "/" + s[1] + "/" + s[0] : "-"; };
         return h("div", null,
+          // Plusieurs machines ont un rapport le jour vise par la correction :
+          // l'admin choisit lequel ouvrir en Edition complete
+          corPick ? h(Modal, { title: "Quel rapport corriger ?", onClose: function() { setCorPick(null); }, size: 520 },
+            h("div", { style: { fontSize: 12.5, color: "#cbd5e1", marginBottom: 12 } },
+              "Plusieurs rapports existent le " + fmtD(corPick.cor.date) + " sur ce chantier. La demande du client : ",
+              h("strong", { style: { color: "#fbbf24" } }, (corPick.cor.champ === "passe" ? "Ajout de passe +" + String(corPick.cor.apres) + " m" : (corPick.cor.champ || "") + " -> " + String(corPick.cor.apres))),
+              corPick.cor.commentaire ? h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, " « " + String(corPick.cor.commentaire) + " »") : null
+            ),
+            corPick.rapports.map(function(r) {
+              return h("button", { key: r.id,
+                onClick: function() { setCorPick(null); setEditingRapportId(r.id); },
+                style: { display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 10, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", color: "#e5e7eb" },
+                onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(129,140,248,0.12)"; },
+                onMouseLeave: function(ev) { ev.currentTarget.style.background = "rgba(255,255,255,0.04)"; } },
+                h(Icon, { name: "truck", size: 16, color: "#a5b4fc" }),
+                h("div", { style: { flex: 1 } },
+                  h("div", { style: { fontSize: 13.5, fontWeight: 800 } }, r.sondeuse_code || "Machine ?"),
+                  h("div", { style: { fontSize: 11.5, color: "#a1a1aa" } }, (r.personnel_id != null ? personnelLabel(r.personnel_id) : "Sondeur ?") + " - quart " + (r.quart || "?"))
+                ),
+                h("div", { style: { fontSize: 13, fontWeight: 800, color: "#f9a8d4" } }, (parseFloat(r.total_metres) || 0).toFixed(1) + " m"),
+                h(Icon, { name: "chevron-right", size: 14, color: "#71717a" })
+              );
+            })
+          ) : null,
           // Barre mois + explication
           h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 } },
             h("label", { style: { fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5 } }, "Mois de facturation"),
@@ -27651,13 +27725,22 @@
                 v.corrections.map(function(cor, ci) {
                   var estPasse = cor.champ === "passe";
                   var lblCh = cor.champ === "metrage" ? "Metrage" : cor.champ === "heures" ? "Heures" : estPasse ? "Ajout de passe" : "Attente";
-                  return h("div", { key: ci, style: { borderLeft: "3px solid #d97706", background: "rgba(245,158,11,0.06)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" } },
+                  // Ligne CLIQUABLE : ouvre le rapport du jour en Edition complete
+                  // (les modifs demandees y restent affichees pendant la correction)
+                  return h("div", { key: ci,
+                    onClick: function() { ouvrirRapportPourCorrection(v, cor); },
+                    title: "Ouvrir le rapport de cette journee en Edition complete pour appliquer la demande" + (estPasse ? " (bouton + Ajouter une passe sous le forage concerne)" : ""),
+                    onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(245,158,11,0.14)"; },
+                    onMouseLeave: function(ev) { ev.currentTarget.style.background = "rgba(245,158,11,0.06)"; },
+                    style: { borderLeft: "3px solid #d97706", background: "rgba(245,158,11,0.06)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", cursor: "pointer", transition: "background 0.15s" } },
                     h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#fbbf24", whiteSpace: "nowrap" } }, (estPasse ? "Ajout" : "Correction") + " — " + lblCh + " — " + fmtD(cor.date)),
                     h("span", null,
                       cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, String(cor.avant)) : null,
                       h("span", { style: { color: "#4ade80", fontWeight: 800 } }, estPasse ? ("+" + String(cor.apres) + " m") : String(cor.apres))),
                     h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, "« " + String(cor.commentaire || "") + " »"),
-                    h("span", { style: { fontSize: 10.5, color: "#71717a" } }, v.validataire_nom || "Client")
+                    h("span", { style: { fontSize: 10.5, color: "#71717a" } }, v.validataire_nom || "Client"),
+                    h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", whiteSpace: "nowrap" } },
+                      h(Icon, { name: "edit-3", size: 11, color: "#a5b4fc" }), "Corriger le rapport")
                   );
                 })
               ) : null,
@@ -28455,6 +28538,11 @@
             h(Button, { onClick: function() { setEditingRapportId(null); }, variant: "secondary" }, "Retour")
           );
         }
+        // Corrections client visant CETTE journee (validation mensuelle refusee) :
+        // affichees dans l'editeur pendant toute la correction
+        var vCorrEdit = correctionClientPourRapport(rapportEnEdition);
+        var dateEditR = String(rapportEnEdition.date_rapport || "").substring(0, 10);
+        var corrsEdit = vCorrEdit ? (vCorrEdit.corrections || []).filter(function(c2) { return String(c2.date || "").substring(0, 10) === dateEditR; }) : [];
         return h(RapportEditView, {
           rapport: rapportEnEdition,
           personnelMap: personnelMap,
@@ -28462,6 +28550,8 @@
           equipements: equipements,
           pieces: pieces,
           piecesEquipements: ctx.piecesEquipements || [],
+          correctionsClient: corrsEdit,
+          correctionsValidataire: vCorrEdit ? (vCorrEdit.validataire_nom || "Client") : null,
           showToast: showToast,
           onClose: function() { setEditingRapportId(null); },
           onSaved: function(updated) {
