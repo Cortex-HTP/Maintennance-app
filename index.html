@@ -16637,7 +16637,11 @@
           statut: form.statut || "actif",
           mutualise: form.mutualise !== false,
           equipement_id: (form.mutualise === false && form.equipement_id) ? form.equipement_id : null,
-          notes: form.notes || ""
+          notes: form.notes || "",
+          // Recalage banque : part assurance de la traite + capital constate
+          assurance_mensuelle: parseFloat(form.assurance_mensuelle) || 0,
+          capital_ref: (form.capital_ref === "" || form.capital_ref == null) ? null : (parseFloat(form.capital_ref) || 0),
+          capital_ref_date: form.capital_ref_date || null
         };
         var res;
         if (editing && editing.id) {
@@ -16854,7 +16858,10 @@
         statut: (editing && editing.statut) || "actif",
         mutualise: editing ? (editing.mutualise !== false) : true,
         equipement_id: (editing && editing.equipement_id) || "",
-        notes: (editing && editing.notes) || ""
+        notes: (editing && editing.notes) || "",
+        assurance_mensuelle: (editing && editing.assurance_mensuelle) || "",
+        capital_ref: (editing && editing.capital_ref != null) ? editing.capital_ref : "",
+        capital_ref_date: (editing && editing.capital_ref_date) || ""
       });
       var form = _form[0]; var setForm = _form[1];
 
@@ -16907,6 +16914,11 @@
 
       function handleSave() {
         if (!form.libelle) { alert("Le libelle est obligatoire"); return; }
+        var assurF = parseFloat(form.assurance_mensuelle) || 0;
+        var mensF = parseFloat(form.mensualite) || 0;
+        if (assurF > 0 && mensF > 0 && assurF >= mensF) { alert("L'assurance doit etre INFERIEURE a la mensualite (c'est la part de la traite qui n'amortit pas le capital)."); return; }
+        var hasRefVal = form.capital_ref !== "" && form.capital_ref != null;
+        if (hasRefVal !== !!form.capital_ref_date) { alert("Recalage banque : renseigne le capital constate ET sa date (les deux champs vont ensemble)."); return; }
         onSave(form);
       }
 
@@ -16972,6 +16984,31 @@
                 })
               )
             ) : null
+          ),
+          // Recalage sur le tableau d'amortissement de la banque : la traite
+          // reelle contient souvent une assurance (qui n'amortit pas), et le
+          // capital restant reel peut differer de la theorie (reports, frais).
+          h("div", { style: { marginBottom: 14, padding: 12, background: "rgba(56,189,248,0.06)", border: "1px solid rgba(56,189,248,0.25)", borderRadius: 8 } },
+            h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#7dd3fc", marginBottom: 4 } },
+              h(IconText, { icon: "landmark", size: 13, color: "#7dd3fc" }, "Recalage sur le tableau banque (optionnel)")),
+            h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginBottom: 10 } },
+              "Si la traite contient une assurance, ou si le capital restant reel differe (reports d'echeances...), renseigne ces champs : tous les calculs (restant du, remboursements anticipes) se caleront sur le tableau de la banque."),
+            h("div", { style: { marginBottom: 10 } },
+              h("label", { style: labelStyle }, "Dont assurance / frais dans la mensualite (XPF/mois)"),
+              h("input", { type: "number", min: 0, step: 100, value: form.assurance_mensuelle, onChange: function(e) { update("assurance_mensuelle", e.target.value); }, placeholder: "ex: 49591 (n'amortit pas le capital)", style: inputStyle })
+            ),
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
+              h("div", null,
+                h("label", { style: labelStyle }, "Capital restant constate (XPF)"),
+                h("input", { type: "number", min: 0, step: 1000, value: form.capital_ref, onChange: function(e) { update("capital_ref", e.target.value); }, placeholder: "releve sur le tableau banque", style: inputStyle })
+              ),
+              h("div", null,
+                h("label", { style: labelStyle }, "Constate a la date du"),
+                h("input", { type: "date", value: form.capital_ref_date, onChange: function(e) { update("capital_ref_date", e.target.value); }, style: inputStyle })
+              )
+            ),
+            h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 8, fontStyle: "italic" } },
+              "Le constate est repute AVANT un remboursement anticipe date du meme jour. Une date future ne s'appliquera qu'a partir de ce jour-la. Si la banque a reporte des echeances AU-DELA de la date de fin, allonge aussi la duree / date de fin.")
           ),
           h("div", { style: { marginBottom: 14 } },
             h("label", { style: labelStyle }, "Statut"),
@@ -17161,6 +17198,13 @@
         .slice().sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
     }
 
+    // Helper : l'emprunt porte-t-il un recalage banque (capital restant
+    // constate a une date) ?
+    function empruntHasAncre(emprunt) {
+      var c = parseFloat(emprunt && emprunt.capital_ref);
+      return !isNaN(c) && c >= 0 && !!(emprunt && emprunt.capital_ref_date);
+    }
+
     // Helper : tableau d'amortissement pour un pret (annuites constantes)
     // Pour chaque mois k=1..N :
     //   interet     = capital_restant * tm
@@ -17182,15 +17226,49 @@
       var M = parseFloat(emprunt.mensualite) || 0;
       if (C <= 0 || n <= 0 || M <= 0) return [];
       var tm = t / 12;
+      // Part de la traite qui N'AMORTIT PAS le capital (assurance, frais) :
+      // sans elle, une traite banque "assurance incluse" amortit trop vite
+      // dans l'app -> capital restant sous-evalue (constate Tomy 2026-09,
+      // traite recalculee 439k au lieu de 685k sur le tableau banque).
+      var assur = parseFloat(emprunt.assurance_mensuelle) || 0;
+      if (assur < 0 || assur >= M) assur = 0;
+      var Mam = M - assur; // part capital + interets de la traite
+      // Ancrage banque : capital restant CONSTATE a une date (repris du
+      // tableau d'amortissement de la banque). Absorbe reports d'echeances,
+      // frais et tout ecart entre la theorie et la realite. Le constate est
+      // repute AVANT un remboursement anticipe date du meme jour.
+      var ancreCap = parseFloat(emprunt.capital_ref);
+      var ancreDate = emprunt.capital_ref_date ? String(emprunt.capital_ref_date).substring(0, 10) : null;
+      var hasAncre = !isNaN(ancreCap) && ancreCap >= 0 && !!ancreDate;
+      if (hasAncre) {
+        // Une ancre FUTURE (ligne a venir du tableau banque) ne s'applique
+        // qu'a partir de sa date : d'ici la elle est ignoree PARTOUT, sinon
+        // elle filtrerait les remboursements passes sans etre appliquee
+        var dNb = new Date();
+        var todayIsoB = dNb.getFullYear() + "-" + String(dNb.getMonth() + 1).padStart(2, "0") + "-" + String(dNb.getDate()).padStart(2, "0");
+        if (ancreDate > todayIsoB) hasAncre = false;
+      }
+      var ancreFaite = false;
       var restant = C;
       var rows = [];
       var startDate = emprunt.date_debut ? new Date(emprunt.date_debut) : new Date();
       var rembs = getRemboursementsAnticipes(emprunt);
+      // Les remboursements STRICTEMENT anterieurs a l'ancrage sont deja
+      // dans le constate banque : ne pas les rejouer
+      if (hasAncre) rembs = rembs.filter(function(r) { return String(r.date).substring(0, 10) >= ancreDate; });
       var ri = 0;
       for (var k = 1; k <= n; k++) {
         var d = new Date(startDate);
         d.setMonth(d.getMonth() + k);
         var dateIso = d.toISOString().slice(0, 10);
+        // Recalage banque : s'applique a la premiere echeance suivant la date
+        // du constat, AVANT les remboursements anticipes de la meme fenetre
+        var ancre = false;
+        if (hasAncre && !ancreFaite && ancreDate <= dateIso) {
+          restant = ancreCap;
+          ancreFaite = true;
+          ancre = true;
+        }
         // Remboursements anticipes tombes avant (ou a) cette echeance.
         // Mode "mensualite" : la duree CIBLE du recalcul est la duree effective
         // du pret juste AVANT ce remboursement (bornee au terme contractuel).
@@ -17200,14 +17278,14 @@
         var recalcMens = false;
         var nbCibleMens = 0;
         while (ri < rembs.length && String(rembs[ri].date).substring(0, 10) <= dateIso) {
-          if (rembs[ri].mode === "mensualite" && restant > 0 && M > 0) {
+          if (rembs[ri].mode === "mensualite" && restant > 0 && Mam > 0) {
             // Echeances restantes (k comprise) au rythme ACTUEL, avant ce remb
             var nbEff = n - k + 1;
-            if (tm > 0 && M > restant * tm) {
-              var nbCalc = Math.ceil(Math.log(M / (M - restant * tm)) / Math.log(1 + tm) - 1e-9);
+            if (tm > 0 && Mam > restant * tm) {
+              var nbCalc = Math.ceil(Math.log(Mam / (Mam - restant * tm)) / Math.log(1 + tm) - 1e-9);
               if (nbCalc < nbEff) nbEff = Math.max(1, nbCalc);
             } else if (tm === 0) {
-              var nbCalc0 = Math.ceil(restant / M - 1e-9);
+              var nbCalc0 = Math.ceil(restant / Mam - 1e-9);
               if (nbCalc0 < nbEff) nbEff = Math.max(1, nbCalc0);
             }
             recalcMens = true;
@@ -17218,25 +17296,26 @@
           restant -= mR;
           ri++;
         }
-        if (restant <= 0.5 && anticipe > 0) {
-          // Solde entierement par l'anticipe : l'echeance ne porte que ce mouvement
-          rows.push({ numero: k, date: dateIso, mensualite: 0, interet: 0, capital: 0, anticipe: anticipe, restant: 0 });
+        if (restant <= 0.5 && (anticipe > 0 || ancre)) {
+          // Solde entierement par l'anticipe (ou constate banque a zero) :
+          // l'echeance ne porte que ce mouvement
+          rows.push({ numero: k, date: dateIso, mensualite: 0, interet: 0, capital: 0, anticipe: anticipe, restant: 0, ancre: ancre });
           break;
         }
         if (recalcMens && restant > 0 && nbCibleMens > 0) {
           // Nouvelle annuite constante sur la duree cible -> la duree ne bouge pas
-          M = tm > 0 ? restant * tm / (1 - Math.pow(1 + tm, -nbCibleMens)) : restant / nbCibleMens;
+          Mam = tm > 0 ? restant * tm / (1 - Math.pow(1 + tm, -nbCibleMens)) : restant / nbCibleMens;
         }
         var interet = restant * tm;
-        var capital = M - interet;
-        var mens = M;
+        var capital = Mam - interet;
+        var mens = Mam + assur;
         // Tolerance 0,5 XPF : une annuite recalculee laisse un residu flottant
         // (~1e-7) qui creerait une echeance fantome d'un centime
         if (k === n || capital >= restant - 0.5) {
           // Derniere echeance (terme normal OU capital solde en avance) :
           // ajustee pour solder exactement le capital
           capital = restant;
-          mens = capital + interet;
+          mens = capital + interet + assur;
         }
         restant = Math.max(0, restant - capital);
         rows.push({
@@ -17246,7 +17325,8 @@
           interet: interet,
           capital: capital,
           anticipe: anticipe,
-          restant: restant
+          restant: restant,
+          ancre: ancre
         });
         if (restant <= 0) break;
       }
@@ -17280,14 +17360,29 @@
         restant = amort[idx].restant;
         refDate = amort[idx].date;
       }
-      // Anticipes deja verses mais pas encore absorbes par une echeance passee
       // (date LOCALE construite a la main : pas de toISOString sur un jour NC)
       var todayIso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+      // Recalage banque plus recent que la derniere echeance passee : le
+      // constate remplace la valeur theorique. Il est repute AVANT les
+      // remboursements anticipes dates du meme jour (deduits dans la foulee).
+      var ancreCapR = parseFloat(emprunt.capital_ref);
+      var ancreDateR = emprunt.capital_ref_date ? String(emprunt.capital_ref_date).substring(0, 10) : null;
+      // Ancre future = inerte (miroir de buildAmortissement)
+      var hasAncreR = !isNaN(ancreCapR) && ancreCapR >= 0 && !!ancreDateR && ancreDateR <= todayIso;
+      if (hasAncreR && ancreDateR > refDate) {
+        restant = ancreCapR;
+        refDate = ancreDateR;
+        getRemboursementsAnticipes(emprunt).forEach(function(r) {
+          if (String(r.date).substring(0, 10) === ancreDateR) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
+        });
+      }
+      // Anticipes deja verses mais pas encore absorbes par une echeance passee
       getRemboursementsAnticipes(emprunt).forEach(function(r) {
         var dIso = String(r.date).substring(0, 10);
+        if (hasAncreR && dIso < ancreDateR) return; // deja inclus dans le constate
         if (dIso <= todayIso && dIso > refDate) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
       });
-      if (moisEcoules >= n) return 0; // terme depasse : pret solde
+      if (moisEcoules >= n && !hasAncreR) return 0; // terme depasse : pret solde
       return restant;
     }
 
@@ -17298,7 +17393,7 @@
     function getDateFinEffectiveEmprunt(emprunt) {
       if (!emprunt) return null;
       var dfBase = emprunt.date_fin || null;
-      if (getRemboursementsAnticipes(emprunt).length === 0) return dfBase;
+      if (getRemboursementsAnticipes(emprunt).length === 0 && !empruntHasAncre(emprunt)) return dfBase;
       var amort = buildAmortissement(emprunt);
       if (amort.length === 0) return dfBase;
       var dLast = amort[amort.length - 1].date;
@@ -17359,7 +17454,10 @@
       var rows = selected ? buildAmortissement(selected) : [];
       var totalInterets = rows.reduce(function(s, r) { return s + r.interet; }, 0);
       var totalCapital = rows.reduce(function(s, r) { return s + r.capital; }, 0);
-      var totalCout = totalInterets + totalCapital;
+      // Cout total = tout ce qui sort reellement : mensualites (assurance
+      // incluse) + remboursements anticipes. Sans assurance ni anticipe,
+      // c'est exactement capital + interets (comme avant).
+      var totalCout = rows.reduce(function(s, r) { return s + r.mensualite + (r.anticipe || 0); }, 0);
       var totalAnticipes = rows.reduce(function(s, r) { return s + (r.anticipe || 0); }, 0);
 
       // Courbe : capital restant par mois
@@ -17438,7 +17536,9 @@
             h("tbody", null,
               rows.map(function(r) {
                 var hasAnt = (r.anticipe || 0) > 0;
-                return h("tr", { key: r.numero, style: hasAnt ? { background: "rgba(251,191,36,0.08)" } : null },
+                return h("tr", { key: r.numero,
+                    style: hasAnt ? { background: "rgba(251,191,36,0.08)" } : (r.ancre ? { background: "rgba(56,189,248,0.08)" } : null),
+                    title: r.ancre ? "Recalage banque : capital restant constate applique a cette echeance" : undefined },
                   h("td", { style: Object.assign({}, tdAmL, { color: "#a1a1aa" }) }, r.numero),
                   h("td", { style: tdAmL }, new Date(r.date).toLocaleDateString("fr-FR", { year: "numeric", month: "short" })),
                   h("td", { style: tdAm }, fmtNum(Math.round(r.mensualite))),
@@ -17591,8 +17691,12 @@
         if (rembAntic > capRestant) rembAntic = capRestant;
         var nouvCapital = capRestant - rembAntic;
         var t = (parseFloat(selected.taux_interet) || 0) / 100 / 12;
-        // Mensualite effective (integre un eventuel anticipe mode "mensualite")
+        // Mensualite effective (integre un eventuel anticipe mode "mensualite"),
+        // HORS assurance : elle n'amortit pas le capital, la compter fausserait
+        // la duree simulee et gonflerait les "interets economises"
         var M = getMensualiteEffectiveEmprunt(selected, null);
+        var assurSim = parseFloat(selected.assurance_mensuelle) || 0;
+        if (assurSim > 0 && assurSim < M) M = M - assurSim;
         // Nouvelle duree = log(M / (M - nouvCapital*t)) / log(1+t)
         var nouvDuree = moisRestants;
         if (t > 0 && M > nouvCapital * t) {

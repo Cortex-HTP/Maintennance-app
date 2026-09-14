@@ -13,5 +13,24 @@
 alter table emprunts
   add column if not exists remboursements jsonb not null default '[]'::jsonb;
 
+-- ============================================================
+-- Recalage sur le tableau d'amortissement de la BANQUE (2026-09-14)
+-- ============================================================
+-- assurance_mensuelle : part de la traite qui N'AMORTIT PAS le capital
+--   (assurance emprunteur, frais). Sans elle l'app amortit trop vite et
+--   sous-evalue le capital restant (constate : traite recalculee 439k
+--   au lieu de 685k sur le vrai tableau banque).
+-- capital_ref + capital_ref_date : capital restant du CONSTATE sur le
+--   tableau de la banque a une date -> tous les calculs se recalent dessus
+--   (absorbe reports d'echeances, frais, ecarts theorie/realite).
+--   Le constate est repute AVANT un remboursement anticipe du meme jour.
+
+alter table emprunts
+  add column if not exists assurance_mensuelle numeric not null default 0;
+alter table emprunts
+  add column if not exists capital_ref numeric;
+alter table emprunts
+  add column if not exists capital_ref_date date;
+
 -- Verification :
--- select id, libelle, remboursements from emprunts order by id;
+-- select id, libelle, mensualite, assurance_mensuelle, capital_ref, capital_ref_date, remboursements from emprunts order by id;
