@@ -23,7 +23,8 @@ alter table emprunts
 -- capital_ref + capital_ref_date : capital restant du CONSTATE sur le
 --   tableau de la banque a une date -> tous les calculs se recalent dessus
 --   (absorbe reports d'echeances, frais, ecarts theorie/realite).
---   Le constate est repute AVANT un remboursement anticipe du meme jour.
+--   Convention : on recopie une LIGNE du tableau banque, la somme restant
+--   due est reputee APRES l'echeance et les remboursements de ce jour-la.
 
 alter table emprunts
   add column if not exists assurance_mensuelle numeric not null default 0;

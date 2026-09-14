@@ -17008,7 +17008,7 @@
               )
             ),
             h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 8, fontStyle: "italic" } },
-              "Le constate est repute AVANT un remboursement anticipe date du meme jour. Une date future ne s'appliquera qu'a partir de ce jour-la. Si la banque a reporte des echeances AU-DELA de la date de fin, allonge aussi la duree / date de fin.")
+              "Recopie une LIGNE du tableau banque : date d'echeance + somme restant due. Cette somme est reputee APRES l'echeance et les remboursements de ce jour-la (convention des tableaux banque). Une date future ne s'appliquera qu'a partir de ce jour-la. Taux variable ou echeances reportees : mets aussi a jour le taux et la duree / date de fin.")
           ),
           h("div", { style: { marginBottom: 14 } },
             h("label", { style: labelStyle }, "Statut"),
@@ -17233,10 +17233,12 @@
       var assur = parseFloat(emprunt.assurance_mensuelle) || 0;
       if (assur < 0 || assur >= M) assur = 0;
       var Mam = M - assur; // part capital + interets de la traite
-      // Ancrage banque : capital restant CONSTATE a une date (repris du
-      // tableau d'amortissement de la banque). Absorbe reports d'echeances,
-      // frais et tout ecart entre la theorie et la realite. Le constate est
-      // repute AVANT un remboursement anticipe date du meme jour.
+      // Ancrage banque : capital restant CONSTATE a une date (recopie d'une
+      // LIGNE du tableau d'amortissement de la banque). Absorbe reports
+      // d'echeances, frais et tout ecart theorie/realite. Convention tableau
+      // banque : la "somme restant due" d'une ligne est APRES l'echeance et
+      // les remboursements de ce jour-la -> le constate s'applique STRICTEMENT
+      // apres sa date (pas de re-paiement de l'echeance du jour).
       var ancreCap = parseFloat(emprunt.capital_ref);
       var ancreDate = emprunt.capital_ref_date ? String(emprunt.capital_ref_date).substring(0, 10) : null;
       var hasAncre = !isNaN(ancreCap) && ancreCap >= 0 && !!ancreDate;
@@ -17253,18 +17255,18 @@
       var rows = [];
       var startDate = emprunt.date_debut ? new Date(emprunt.date_debut) : new Date();
       var rembs = getRemboursementsAnticipes(emprunt);
-      // Les remboursements STRICTEMENT anterieurs a l'ancrage sont deja
-      // dans le constate banque : ne pas les rejouer
-      if (hasAncre) rembs = rembs.filter(function(r) { return String(r.date).substring(0, 10) >= ancreDate; });
+      // Les remboursements anterieurs OU EGAUX a la date du constate sont
+      // deja dans la somme restant due de la ligne banque : ne pas les rejouer
+      if (hasAncre) rembs = rembs.filter(function(r) { return String(r.date).substring(0, 10) > ancreDate; });
       var ri = 0;
       for (var k = 1; k <= n; k++) {
         var d = new Date(startDate);
         d.setMonth(d.getMonth() + k);
         var dateIso = d.toISOString().slice(0, 10);
-        // Recalage banque : s'applique a la premiere echeance suivant la date
-        // du constat, AVANT les remboursements anticipes de la meme fenetre
+        // Recalage banque : s'applique a la premiere echeance STRICTEMENT
+        // posterieure a la ligne constatee (cette ligne est deja payee)
         var ancre = false;
-        if (hasAncre && !ancreFaite && ancreDate <= dateIso) {
+        if (hasAncre && !ancreFaite && ancreDate < dateIso) {
           restant = ancreCap;
           ancreFaite = true;
           ancre = true;
@@ -17362,24 +17364,21 @@
       }
       // (date LOCALE construite a la main : pas de toISOString sur un jour NC)
       var todayIso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
-      // Recalage banque plus recent que la derniere echeance passee : le
-      // constate remplace la valeur theorique. Il est repute AVANT les
-      // remboursements anticipes dates du meme jour (deduits dans la foulee).
+      // Recalage banque au moins aussi recent que la derniere echeance passee :
+      // le constate (somme restant due de la ligne banque = APRES l'echeance
+      // et les remboursements de ce jour-la) remplace la valeur theorique.
       var ancreCapR = parseFloat(emprunt.capital_ref);
       var ancreDateR = emprunt.capital_ref_date ? String(emprunt.capital_ref_date).substring(0, 10) : null;
       // Ancre future = inerte (miroir de buildAmortissement)
       var hasAncreR = !isNaN(ancreCapR) && ancreCapR >= 0 && !!ancreDateR && ancreDateR <= todayIso;
-      if (hasAncreR && ancreDateR > refDate) {
+      if (hasAncreR && ancreDateR >= refDate) {
         restant = ancreCapR;
         refDate = ancreDateR;
-        getRemboursementsAnticipes(emprunt).forEach(function(r) {
-          if (String(r.date).substring(0, 10) === ancreDateR) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
-        });
       }
       // Anticipes deja verses mais pas encore absorbes par une echeance passee
       getRemboursementsAnticipes(emprunt).forEach(function(r) {
         var dIso = String(r.date).substring(0, 10);
-        if (hasAncreR && dIso < ancreDateR) return; // deja inclus dans le constate
+        if (hasAncreR && dIso <= ancreDateR) return; // deja inclus dans le constate
         if (dIso <= todayIso && dIso > refDate) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
       });
       if (moisEcoules >= n && !hasAncreR) return 0; // terme depasse : pret solde
