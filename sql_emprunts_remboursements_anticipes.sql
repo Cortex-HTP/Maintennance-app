@@ -5,8 +5,10 @@
 -- ============================================================
 -- Ajoute la colonne jsonb qui stocke la liste des remboursements
 -- anticipes d'un emprunt :
---   [{ "date": "2026-09-14", "montant": 1000000, "note": "...", "mode": "duree" | "mensualite" }]
+--   [{ "date": "2026-09-14", "montant": 4500000, "frais": 111897, "note": "...", "mode": "duree" | "mensualite" }]
 -- L'app admin (ecran Emprunts, bouton avance-rapide) lit/ecrit cette liste.
+-- montant = ce qui a ete VERSE ; frais = indemnite de remboursement anticipe /
+--   accessoires (n'amortit pas) -> capital amorti = montant - frais
 -- mode "duree" (defaut)  : mensualite constante, le pret se termine plus tot
 -- mode "mensualite"      : duree conservee, mensualite recalculee sur le capital restant
 

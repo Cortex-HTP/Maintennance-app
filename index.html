@@ -17008,7 +17008,7 @@
               )
             ),
             h("div", { style: { fontSize: 10, color: "#71717a", marginTop: 8, fontStyle: "italic" } },
-              "Recopie une LIGNE du tableau banque : date d'echeance + somme restant due. Cette somme est reputee APRES l'echeance et les remboursements de ce jour-la (convention des tableaux banque). Une date future ne s'appliquera qu'a partir de ce jour-la. Taux variable ou echeances reportees : mets aussi a jour le taux et la duree / date de fin.")
+              "Recopie une LIGNE du tableau banque : date d'echeance + somme restant due. Cette somme est reputee APRES l'echeance et les remboursements de ce jour-la (convention des tableaux banque). Une date future ne s'appliquera qu'a partir de ce jour-la. Taux variable ou echeances reportees : mets aussi a jour le taux et la duree / date de fin. NB : les tableaux NC affichent des interets TAXES INCLUSES (TOF 6 %) - pour coller au franc pres, saisis le taux nominal x 1,06 (ex : 5,10 -> 5,406).")
           ),
           h("div", { style: { marginBottom: 14 } },
             h("label", { style: labelStyle }, "Statut"),
@@ -17039,7 +17039,7 @@
       var todayIso = dNow.getFullYear() + "-" + String(dNow.getMonth() + 1).padStart(2, "0") + "-" + String(dNow.getDate()).padStart(2, "0");
       var _liste = useState(getRemboursementsAnticipes(emprunt));
       var liste = _liste[0]; var setListe = _liste[1];
-      var _draft = useState({ date: todayIso, montant: "", note: "", mode: "duree" });
+      var _draft = useState({ date: todayIso, montant: "", frais: "", note: "", mode: "duree" });
       var draft = _draft[0]; var setDraft = _draft[1];
 
       // Impact : amortissement AVEC la liste en cours vs SANS aucun anticipe
@@ -17054,6 +17054,7 @@
       var restantApres = getCapitalRestantAujourdhui(empAvec);
       var finApres = amortAvec.length > 0 ? amortAvec[amortAvec.length - 1].date : (emprunt.date_fin || null);
       var totalListe = liste.reduce(function(s, r) { return s + (parseFloat(r.montant) || 0); }, 0);
+      var totalCapListe = liste.reduce(function(s, r) { return s + montantCapitalRemb(r); }, 0);
       // Nouvelle mensualite apres le dernier remboursement (mode "mensualite") :
       // la ligne d'injection porte deja la mensualite recalculee
       var hasModeMens = liste.some(function(r) { return r.mode === "mensualite"; });
@@ -17067,12 +17068,14 @@
       function frD(s) { if (!s) return "—"; var p = String(s).substring(0, 10).split("-"); return p.length === 3 ? (p[2] + "/" + p[1] + "/" + p[0]) : s; }
       function addRemb() {
         var m = parseFloat(String(draft.montant).replace(",", ".")) || 0;
+        var f = parseFloat(String(draft.frais).replace(",", ".")) || 0;
         if (!draft.date) { alert("Choisis la date du remboursement."); return; }
         if (m <= 0) { alert("Saisis un montant positif."); return; }
-        var next = liste.concat([{ date: draft.date, montant: Math.round(m), note: draft.note || "", mode: draft.mode === "mensualite" ? "mensualite" : "duree" }])
+        if (f > 0 && f >= m) { alert("L'indemnite / frais doit etre inferieure au montant verse (c'est la part qui n'amortit pas le capital)."); return; }
+        var next = liste.concat([{ date: draft.date, montant: Math.round(m), frais: f > 0 ? Math.round(f) : 0, note: draft.note || "", mode: draft.mode === "mensualite" ? "mensualite" : "duree" }])
           .sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
         setListe(next);
-        setDraft({ date: todayIso, montant: "", note: "", mode: draft.mode });
+        setDraft({ date: todayIso, montant: "", frais: "", note: "", mode: draft.mode });
       }
       function removeRemb(idx) { setListe(liste.filter(function(x, i) { return i !== idx; })); }
 
@@ -17098,6 +17101,8 @@
                   h("span", { style: { fontSize: 12, color: "#a1a1aa", marginLeft: 8 } }, "le " + frD(r.date)),
                   h("span", { style: { display: "inline-block", marginLeft: 8, padding: "1px 8px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, letterSpacing: 0.3, background: r.mode === "mensualite" ? "rgba(56,189,248,0.15)" : "rgba(167,139,250,0.15)", color: r.mode === "mensualite" ? "#7dd3fc" : "#c4b5fd", border: "1px solid " + (r.mode === "mensualite" ? "rgba(56,189,248,0.40)" : "rgba(167,139,250,0.40)") } },
                     r.mode === "mensualite" ? "MENSUALITE REDUITE" : "DUREE REDUITE"),
+                  (parseFloat(r.frais) || 0) > 0 ? h("div", { style: { fontSize: 10.5, color: "#fdba74" } },
+                    "dont frais / IRA : " + fmtNum(Math.round(parseFloat(r.frais) || 0)) + " XPF - capital amorti : " + fmtNum(Math.round(montantCapitalRemb(r))) + " XPF") : null,
                   r.note ? h("div", { style: { fontSize: 11, color: "#cbd5e1", fontStyle: "italic" } }, r.note) : null
                 ),
                 h("button", { onClick: function() { removeRemb(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Retirer ce remboursement" }, h(Icon, { name: "x", size: 14, color: "#f43f5e" }))
@@ -17113,9 +17118,13 @@
                 h("input", { type: "date", value: draft.date, onChange: function(e) { setDraft(Object.assign({}, draft, { date: e.target.value })); }, style: inputStyle })
               ),
               h("div", null,
-                h("label", { style: labelStyle }, "Montant (XPF)"),
-                h("input", { type: "number", min: 0, step: 10000, value: draft.montant, onChange: function(e) { setDraft(Object.assign({}, draft, { montant: e.target.value })); }, placeholder: "ex: 1000000", style: inputStyle })
+                h("label", { style: labelStyle }, "Montant verse (XPF)"),
+                h("input", { type: "number", min: 0, step: 10000, value: draft.montant, onChange: function(e) { setDraft(Object.assign({}, draft, { montant: e.target.value })); }, placeholder: "ex: 4500000", style: inputStyle })
               )
+            ),
+            h("div", { style: { marginBottom: 10 } },
+              h("label", { style: labelStyle }, "Dont indemnite / frais (XPF, optionnel)"),
+              h("input", { type: "number", min: 0, step: 100, value: draft.frais, onChange: function(e) { setDraft(Object.assign({}, draft, { frais: e.target.value })); }, placeholder: "ex: 111897 (IRA, ligne Accessoires du tableau - n'amortit pas le capital)", style: inputStyle })
             ),
             // Choix de l'effet du remboursement
             h("div", { style: { marginBottom: 10 } },
@@ -17150,8 +17159,9 @@
             h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#a5b4fc", marginBottom: 10 } }, "Impact sur le pret"),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 10 } },
               h("div", null,
-                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Total anticipe"),
-                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#86efac" } }, fmtNum(Math.round(totalListe)) + " XPF")
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Total verse"),
+                h("div", { style: { fontSize: 15, fontWeight: 700, color: "#86efac" } }, fmtNum(Math.round(totalListe)) + " XPF"),
+                totalCapListe < totalListe ? h("div", { style: { fontSize: 10, color: "#fdba74" } }, "capital amorti : " + fmtNum(Math.round(totalCapListe)) + " XPF") : null
               ),
               h("div", null,
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", textTransform: "uppercase" } }, "Restant du aujourd'hui"),
@@ -17196,6 +17206,16 @@
       var arr = emprunt && Array.isArray(emprunt.remboursements) ? emprunt.remboursements : [];
       return arr.filter(function(r) { return r && (parseFloat(r.montant) || 0) > 0 && r.date; })
         .slice().sort(function(a, b) { return String(a.date).localeCompare(String(b.date)); });
+    }
+
+    // Helper : part d'un remboursement anticipe qui AMORTIT le capital.
+    // Le montant saisi est ce qui a ete VERSE ; les frais (indemnite de
+    // remboursement anticipe, accessoires) n'amortissent pas.
+    function montantCapitalRemb(r) {
+      var m = parseFloat(r && r.montant) || 0;
+      var f = parseFloat(r && r.frais) || 0;
+      if (f < 0 || f >= m) f = 0;
+      return Math.max(0, m - f);
     }
 
     // Helper : l'emprunt porte-t-il un recalage banque (capital restant
@@ -17293,7 +17313,8 @@
             recalcMens = true;
             nbCibleMens = nbEff;
           }
-          var mR = Math.min(parseFloat(rembs[ri].montant) || 0, restant);
+          // Seule la PART CAPITAL du versement amortit (frais/IRA deduits)
+          var mR = Math.min(montantCapitalRemb(rembs[ri]), restant);
           anticipe += mR;
           restant -= mR;
           ri++;
@@ -17376,10 +17397,11 @@
         refDate = ancreDateR;
       }
       // Anticipes deja verses mais pas encore absorbes par une echeance passee
+      // (part capital seule : les frais/IRA n'amortissent pas)
       getRemboursementsAnticipes(emprunt).forEach(function(r) {
         var dIso = String(r.date).substring(0, 10);
         if (hasAncreR && dIso <= ancreDateR) return; // deja inclus dans le constate
-        if (dIso <= todayIso && dIso > refDate) restant = Math.max(0, restant - (parseFloat(r.montant) || 0));
+        if (dIso <= todayIso && dIso > refDate) restant = Math.max(0, restant - montantCapitalRemb(r));
       });
       if (moisEcoules >= n && !hasAncreR) return 0; // terme depasse : pret solde
       return restant;
