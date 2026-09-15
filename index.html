@@ -8227,6 +8227,107 @@
         setReembauche(null);
       }
 
+      // ── Prolongation de CDD : repousse dateFinContrat et trace l'avenant
+      //    dans emp.prolongations (jamais ecrase). Les moteurs (primes,
+      //    fenetres d'emploi, alerte fin CDD, badge Np) suivent automatiquement
+      //    puisqu'ils lisent tous dateFinContrat. ──
+      var _prolong = useState({ nouvelleFin: "", note: "" });
+      var prolong = _prolong[0], setProlong = _prolong[1];
+      function prolongerContrat(emp) {
+        var nf = String(prolong.nouvelleFin || "").substring(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nf)) { alert("Choisis la nouvelle date de fin du contrat."); return; }
+        var ancienne = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "";
+        if (ancienne && nf <= ancienne) { alert("La nouvelle date de fin doit etre APRES la date actuelle (" + formatDate(ancienne) + ")."); return; }
+        var t = new Date();
+        var todayIso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+        setPersonnel(function(p) {
+          return p.map(function(x) {
+            if (x.id !== emp.id) return x;
+            var histo = (x.prolongations || []).concat([{
+              ancienneFin: ancienne,
+              nouvelleFin: nf,
+              date: todayIso,
+              note: String(prolong.note || "").trim()
+            }]);
+            return Object.assign({}, x, { dateFinContrat: nf, prolongations: histo });
+          });
+        });
+        setProlong({ nouvelleFin: "", note: "" });
+        // La fiche affichee garde l'objet emp d'avant : on la ferme pour relire l'etat frais
+        setViewFiche(null);
+        setFicheTab("infos");
+      }
+
+      // ── Onglet Contrat (fiche CDD) : etat du contrat + prolongation + avenants ──
+      function renderFicheContrat(emp) {
+        var fin = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "";
+        var t = new Date();
+        var todayIso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+        var joursRestants = null;
+        if (fin) {
+          joursRestants = Math.round((new Date(fin + "T00:00:00") - new Date(todayIso + "T00:00:00")) / 86400000);
+        }
+        var finPassee = joursRestants != null && joursRestants < 0;
+        var finProche = joursRestants != null && joursRestants >= 0 && joursRestants <= 30;
+        var couleurFin = finPassee ? "#fda4af" : finProche ? "#fde68a" : "#86efac";
+        var prolongs = Array.isArray(emp.prolongations) ? emp.prolongations : [];
+        var histoContrats = Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : [];
+        var inputStyleC = { width: "100%", padding: "9px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+        var labelStyleC = { display: "block", fontSize: 11, fontWeight: 700, color: "#a1a1aa", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.4 };
+        return h("div", null,
+          // Etat du contrat en cours
+          h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.30)", marginBottom: 16 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+              h("span", { style: { fontSize: 11, fontWeight: 800, padding: "2px 10px", borderRadius: 999, background: "rgba(251,191,36,0.18)", color: "#fde68a" } }, "CDD"),
+              h("span", { style: { fontSize: 13.5, fontWeight: 700, color: "#e5e7eb" } },
+                "du " + formatDate(emp.dateEmbauche) + " au " + (fin ? formatDate(fin) : "?")),
+              joursRestants != null ? h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: couleurFin } },
+                finPassee ? "Echu depuis " + Math.abs(joursRestants) + " j" : joursRestants + " j restants") : null
+            ),
+            prolongs.length > 0 ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 6 } },
+              prolongs.length + " prolongation" + (prolongs.length > 1 ? "s" : "") + " deja enregistree" + (prolongs.length > 1 ? "s" : "")) : null
+          ),
+          // Formulaire de prolongation
+          h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.30)", marginBottom: 16 } },
+            h("div", { style: { fontSize: 13, fontWeight: 800, color: "#86efac", marginBottom: 10, display: "flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: "calendar-plus", size: 15, color: "#86efac" }), "Prolonger le contrat"),
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 } },
+              h("div", null,
+                h("label", { style: labelStyleC }, "Nouvelle date de fin *"),
+                h("input", { type: "date", min: fin || undefined, value: prolong.nouvelleFin, onChange: function(e) { setProlong(Object.assign({}, prolong, { nouvelleFin: e.target.value })); }, style: inputStyleC })
+              ),
+              h("div", null,
+                h("label", { style: labelStyleC }, "Note (avenant, motif...)"),
+                h("input", { type: "text", value: prolong.note, placeholder: "ex: avenant n°2 - chantier KNS", onChange: function(e) { setProlong(Object.assign({}, prolong, { note: e.target.value })); }, style: inputStyleC })
+              )
+            ),
+            h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginBottom: 10, fontStyle: "italic" } },
+              "La date de fin actuelle est remplacee et l'avenant est trace ci-dessous. Primes, fenetres d'emploi et alertes fin de CDD suivent automatiquement. Rappel NC : un CDD ne peut etre renouvele que 2 fois au maximum."),
+            h(Button, { onClick: function() { prolongerContrat(emp); } }, h(IconText, { icon: "calendar-plus", size: 14 }, "Prolonger jusqu'au " + (prolong.nouvelleFin ? formatDate(prolong.nouvelleFin) : "...")))
+          ),
+          // Historique des prolongations (avenants)
+          prolongs.length > 0 ? h("div", { style: { marginBottom: 14 } },
+            h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Prolongations enregistrees"),
+            prolongs.slice().reverse().map(function(pr, pi) {
+              return h("div", { key: pi, style: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", padding: "7px 12px", borderLeft: "3px solid #22c55e", background: "rgba(34,197,94,0.05)", borderRadius: "0 8px 8px 0", marginBottom: 4, fontSize: 12.5 } },
+                h("span", { style: { color: "#fca5a5", textDecoration: "line-through" } }, formatDate(pr.ancienneFin)),
+                h("span", { style: { color: "#86efac", fontWeight: 800 } }, "→ " + formatDate(pr.nouvelleFin)),
+                pr.note ? h("span", { style: { color: "#cbd5e1", fontStyle: "italic" } }, "« " + pr.note + " »") : null,
+                h("span", { style: { marginLeft: "auto", fontSize: 10.5, color: "#71717a" } }, "le " + formatDate(pr.date))
+              );
+            })
+          ) : null,
+          // Contrats precedents (reembauches)
+          histoContrats.length > 0 ? h("div", null,
+            h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Contrats precedents"),
+            histoContrats.slice().reverse().map(function(ct, ci) {
+              return h("div", { key: ci, style: { fontSize: 12, color: "#a1a1aa", padding: "4px 12px" } },
+                (ct.typeContrat || "CDI") + " du " + formatDate(ct.dateEmbauche) + " au " + formatDate(ct.dateFinContrat) + (ct.motifFin ? " (" + ct.motifFin + ")" : ""));
+            })
+          ) : null
+        );
+      }
+
       function formatDate(d) { if (!d) return "-"; var parts = d.split("-"); return parts.length === 3 ? parts[2] + "/" + parts[1] + "/" + parts[0] : d; }
       function getInitials(emp) { return (emp.prenom ? emp.prenom.charAt(0) : "") + (emp.nom ? emp.nom.charAt(0) : ""); }
       function getAnciennete(d) {
@@ -8262,9 +8363,12 @@
           }, label);
         }
 
-        var tabsBar = hasAnyRapport ? h("div", { style: { display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: 18, marginLeft: -20, marginRight: -20, paddingLeft: 20, paddingRight: 20 } },
+        // Onglet Contrat : uniquement pour les CDD (prolongation + avenants)
+        var isCDD = emp.typeContrat === "CDD";
+        var tabsBar = (hasAnyRapport || isCDD) ? h("div", { style: { display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: 18, marginLeft: -20, marginRight: -20, paddingLeft: 20, paddingRight: 20 } },
           tabBtn("infos", "Infos"),
-          tabBtn("activite", "Activite (" + allEmpRapports.length + ")")
+          hasAnyRapport ? tabBtn("activite", "Activite (" + allEmpRapports.length + ")") : null,
+          isCDD ? tabBtn("contrat", "Contrat (CDD)") : null
         ) : null;
 
         var header = h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 18 } },
@@ -8302,7 +8406,9 @@
         return h(Modal, { title: "Fiche employe", onClose: function() { setViewFiche(null); setFicheTab("infos"); }, size: modalSize },
           header,
           tabsBar,
-          ficheTab === "activite" && hasAnyRapport ? renderFicheActivite(emp, allEmpRapports) : infosContent
+          ficheTab === "activite" && hasAnyRapport ? renderFicheActivite(emp, allEmpRapports)
+            : ficheTab === "contrat" && isCDD ? renderFicheContrat(emp)
+            : infosContent
         );
       }
 
