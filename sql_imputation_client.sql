@@ -3,9 +3,11 @@
 -- Base : WALLIS-LABEL (tfmnmzyetybaeygughcs) - PAS Cosmo !
 -- A executer dans Supabase > SQL Editor
 -- ============================================================
--- 1) Drapeau PAR CHANTIER : active l'ecran d'imputation (BC, numeros de
---    compte, repartition MFT/AIRCORE Preex/Planif) montre au client juste
---    apres sa validation du releve. Desactive par defaut.
+-- 1) Drapeau PAR CHANTIER : active l ecran d imputation (numeros de compte,
+--    repartition Preex/Planif PAR FAMILLE de forage reellement foree :
+--    AIRCORE, MFT, CAROTTE, RC...) montre au client juste apres sa
+--    validation du releve. Desactive par defaut. Le BON DE COMMANDE, lui,
+--    est demande a TOUTES les validations (colonne bon_commande ci-dessous).
 alter table chantiers
   add column if not exists imputation_client boolean not null default false;
 
@@ -14,6 +16,11 @@ alter table chantiers
 --      attente: {heures, compte, prix, montant}, par, le }
 alter table validations_recap_mensuel
   add column if not exists imputation jsonb;
+
+-- 3) Bon de commande client : demande PAR DEFAUT a toute validation
+--    (tous chantiers, optionnel), repris/complete par l'ecran d'imputation.
+alter table validations_recap_mensuel
+  add column if not exists bon_commande text;
 
 -- Activation (exemple TIEBAGHI) :
 -- update chantiers set imputation_client = true where id = 2;
