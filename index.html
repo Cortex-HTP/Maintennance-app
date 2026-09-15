@@ -784,14 +784,28 @@
       if (!cl) return null;
       return h("span", { style: Object.assign({ fontSize: 10.5, fontWeight: 700, color: "#7dd3fc", background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.30)", borderRadius: 999, padding: "1px 8px", marginLeft: 8, whiteSpace: "nowrap", verticalAlign: "middle", letterSpacing: 0.3 }, extraStyle || {}) }, cl);
     }
-    // Grille "prix du metre par type de forage" du formulaire chantier.
+    // Grille "prix du metre par FAMILLE de forage" du formulaire chantier.
     // Partage par les 2 formulaires (Chantiers et Avancement). Champ vide =
-    // le type est facture au "Prix au metre" general. Utilise par la
-    // facturation Cortex (ventilation du metrage valide par type de sondage).
-    var TYPES_FORAGE_PRIX = ["AIRCORE", "RC", "DIAMOND", "CAROTTE", "MFT", "AUTRE"];
+    // la famille est facturee au "Prix au metre" general. Utilise par la
+    // facturation Cortex et l'ecran d'imputation client.
+    // Les types de rf_types_sondage sont NORMALISES en familles (MFT PREEX et
+    // MFT PLANIF -> MFT, Carotter/DIAMOND -> CAROTTE...) : le prix est le meme
+    // entre Preex et Planif, une seule ligne par famille suffit. RC et AUTRE
+    // sont exclus de la grille (demande Tomy 2026-09-15) - s'ils sont fores,
+    // ils sont factures au prix au metre general.
+    var TYPES_FORAGE_PRIX = ["AIRCORE", "MFT", "CAROTTE"];
+    var FAMILLES_PRIX_EXCLUES = { RC: true, AUTRE: true };
+    // Meme normalisation que l'API validation-recap (familleForage)
+    function familleForagePrix(type) {
+      var t = String(type || "").toUpperCase().trim();
+      if (t.indexOf("MFT") >= 0) return "MFT";
+      if (t.indexOf("AIR") >= 0) return "AIRCORE";
+      if (t.indexOf("CAROT") >= 0 || t.indexOf("DIAMOND") >= 0 || t.indexOf("DIAMANT") >= 0) return "CAROTTE";
+      if (t === "RC" || t.indexOf("RC ") === 0 || t.indexOf(" RC") >= 0) return "RC";
+      return t || "AUTRE";
+    }
     // Liste REELLE des types (parametres > rf_types_sondage, la meme que l'app
-    // Employes) chargee paresseusement : un type ajoute dans Parametres (ex.
-    // "MFT PREEX") apparait dans la grille sans toucher au code.
+    // Employes) chargee paresseusement, puis reduite en familles.
     var RF_TYPES_PRIX_CACHE = null;
     var RF_TYPES_PRIX_LOADING = false;
     function champPrixParType(f, upd) {
@@ -810,12 +824,28 @@
           }, function() { RF_TYPES_PRIX_LOADING = false; });
       }
       var vals = f.prixMetreParType || {};
-      var types = (RF_TYPES_PRIX_CACHE || TYPES_FORAGE_PRIX).slice();
+      // Types -> FAMILLES dedupliquees, RC/AUTRE exclues, ordre stable
+      var types = [];
+      (RF_TYPES_PRIX_CACHE || TYPES_FORAGE_PRIX).forEach(function(t) {
+        var fam = familleForagePrix(t);
+        if (FAMILLES_PRIX_EXCLUES[fam]) return;
+        if (types.indexOf(fam) < 0) types.push(fam);
+      });
+      var ORDRE_PRIX = ["AIRCORE", "MFT", "CAROTTE"];
+      types.sort(function(a, b) {
+        var ia = ORDRE_PRIX.indexOf(a), ib = ORDRE_PRIX.indexOf(b);
+        if (ia >= 0 && ib >= 0) return ia - ib;
+        if (ia >= 0) return -1;
+        if (ib >= 0) return 1;
+        return a.localeCompare(b);
+      });
+      // Cles deja saisies sur CE chantier (meme hors famille, ex. ancien "RC") :
+      // toujours affichees pour pouvoir les vider
       Object.keys(vals).forEach(function(t) { if (types.indexOf(t) < 0) types.push(t); });
       var inSty = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
       return h("div", { style: { padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" } },
-        h("div", { style: { fontSize: 12, fontWeight: 700, color: "#a5b4fc", marginBottom: 3 } }, "Prix du metre par type de forage (XPF)"),
-        h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 10 } }, "Chaque type peut avoir son prix (ex. MFT # AIRCORE) - la facture ventile le metrage valide par type. Champ vide = prix au metre general ci-dessus."),
+        h("div", { style: { fontSize: 12, fontWeight: 700, color: "#a5b4fc", marginBottom: 3 } }, "Prix du metre par famille de forage (XPF)"),
+        h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 10 } }, "Une ligne par famille (les variantes Preex/Planif partagent le meme prix). Champ vide = prix au metre general ci-dessus."),
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 130px), 1fr))", gap: 10 } },
           types.map(function(t) {
             return h("div", { key: t },
