@@ -23964,6 +23964,28 @@
       var _form = useState(function() {
         // Copie profonde minimale pour eviter de muter la prop
         var deep = function(o) { try { return JSON.parse(JSON.stringify(o)); } catch(e) { return o; } };
+        var sondagesInit = Array.isArray(rapport.sondages) ? deep(rapport.sondages) : [];
+        // Demande de modification CLIENT (page de signature) : on annote CHAQUE
+        // sondage touche directement sur sa carte (_diffClient, strippe au save).
+        // Appariement : les passes ajoutees portent _ajout_client (sign.html),
+        // les autres se calent sur les originaux dans l'ordre.
+        if (Array.isArray(rapport.sondages_originaux) && rapport.sondages_originaux.length > 0) {
+          var origDiff = rapport.sondages_originaux;
+          var oiDiff = 0;
+          sondagesInit.forEach(function(sd) {
+            if (!sd) return;
+            if (sd._ajout_client) { sd._diffClient = { ajout: true }; return; }
+            var oD = origDiff[oiDiff]; oiDiff++;
+            if (!oD) { sd._diffClient = { ajout: true }; return; }
+            var avant = {};
+            ["num", "type", "angle", "de", "a"].forEach(function(fld) {
+              var ov = (oD[fld] == null || oD[fld] === "") ? "" : String(oD[fld]);
+              var nv = (sd[fld] == null || sd[fld] === "") ? "" : String(sd[fld]);
+              if (ov !== nv) avant[fld] = ov === "" ? "(vide)" : ov;
+            });
+            if (Object.keys(avant).length > 0) sd._diffClient = { avant: avant };
+          });
+        }
         return {
           date_rapport: rapport.date_rapport || "",
           sondeuse_code: rapport.sondeuse_code || "",
@@ -23974,7 +23996,7 @@
           remarques: rapport.remarques || "",
           controles_ok: !!rapport.controles_ok,
           equipe: Array.isArray(rapport.equipe) ? deep(rapport.equipe) : [],
-          sondages: Array.isArray(rapport.sondages) ? deep(rapport.sondages) : [],
+          sondages: sondagesInit,
           activites: Array.isArray(rapport.activites) ? deep(rapport.activites) : [],
           consommables_perdus: Array.isArray(rapport.consommables_perdus) ? deep(rapport.consommables_perdus) : [],
           horametre: Array.isArray(rapport.horametre) ? deep(rapport.horametre) : [],
@@ -24064,7 +24086,8 @@
           remarques: form.remarques || null,
           controles_ok: !!form.controles_ok,
           equipe: form.equipe || [],
-          sondages: form.sondages || [],
+          // _diffClient = annotation d'affichage uniquement, jamais persistee
+          sondages: (form.sondages || []).map(function(sd) { var c2 = Object.assign({}, sd); delete c2._diffClient; return c2; }),
           activites: form.activites || [],
           consommables_perdus: form.consommables_perdus || [],
           horametre: form.horametre || [],
@@ -24218,22 +24241,20 @@
             "Le releve client ne distingue pas la machine : ces demandes visent la journee du chantier (verifie qu'elles concernent bien CE rapport). A l'enregistrement, le renvoi du rapport corrige au client te sera propose automatiquement.")
         ) : null,
 
-        // Modifications demandees via la PAGE DE SIGNATURE du rapport : les
-        // sondages en base (et donc le formulaire ci-dessous) contiennent DEJA
-        // la version demandee par le client ; ce diff reste affiche pendant
-        // l'ajustement pour voir exactement ce qu'il a change.
-        Array.isArray(rapport.sondages_originaux) && rapport.sondages_originaux.length > 0 ? h("div", { style: { background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.45)", borderRadius: 10, padding: "12px 14px", marginBottom: 18 } },
-          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" } },
+        // Demande de modification CLIENT : une seule ligne compacte ici, le
+        // detail est marque DIRECTEMENT sur les cartes sondages concernees
+        // (bordure orange, badge, saisie sondeur d'origine barree).
+        Array.isArray(rapport.sondages_originaux) && rapport.sondages_originaux.length > 0 ? (function() {
+          var nbModifs = (form.sondages || []).filter(function(sd) { return sd && sd._diffClient && !sd._diffClient.ajout; }).length;
+          var nbAjouts = (form.sondages || []).filter(function(sd) { return sd && sd._diffClient && sd._diffClient.ajout; }).length;
+          return h("div", { style: { background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.45)", borderRadius: 10, padding: "10px 14px", marginBottom: 18, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", fontSize: 12.5 } },
             h(Icon, { name: "alert-triangle", size: 14, color: "#fdba74" }),
-            h("div", { style: { fontSize: 12.5, fontWeight: 800, color: "#fed7aa" } }, "Modifications demandees par le client (signature du rapport)"),
-            rapport.client_signataire_nom ? h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + rapport.client_signataire_nom) : null
-          ),
-          rapport.remarques_client ? h("div", { style: { fontSize: 12, color: "#fed7aa", fontStyle: "italic", marginBottom: 8, padding: "6px 10px", background: "rgba(0,0,0,0.20)", borderRadius: 6 } },
-            "Remarque du client : « " + String(rapport.remarques_client) + " »") : null,
-          h(SondagesDiffClient, { orig: rapport.sondages_originaux, nouv: Array.isArray(rapport.sondages) ? rapport.sondages : [] }),
-          h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } },
-            "Les sondages du formulaire ci-dessous partent de la VERSION DEMANDEE par le client : ajuste ce qu'il faut (metres, type, ou bouton + Ajouter une passe), Enregistre, puis dans le detail du rapport clique « Valider les modifs client » pour le renvoyer en signature.")
-        ) : null,
+            h("span", { style: { fontWeight: 800, color: "#fed7aa" } },
+              "Demande client : " + (nbModifs > 0 ? nbModifs + " sondage" + (nbModifs > 1 ? "s" : "") + " modifie" + (nbModifs > 1 ? "s" : "") : "") + (nbModifs > 0 && nbAjouts > 0 ? " + " : "") + (nbAjouts > 0 ? nbAjouts + " passe" + (nbAjouts > 1 ? "s" : "") + " ajoutee" + (nbAjouts > 1 ? "s" : "") : "") + ((nbModifs + nbAjouts) === 0 ? "aucun ecart restant" : " - reperes en orange ci-dessous")),
+            rapport.remarques_client ? h("span", { style: { fontStyle: "italic", color: "#fed7aa" } }, "« " + String(rapport.remarques_client) + " »") : null,
+            rapport.client_signataire_nom ? h("span", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + rapport.client_signataire_nom) : null
+          );
+        }()) : null,
 
         h("div", { style: { background: "rgba(36,40,60,0.85)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 24, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
 
@@ -24368,12 +24389,27 @@
             var sFact = s.facturable;
             if (sFact == null && s.commentaire && String(s.commentaire).toUpperCase().indexOf("NON FACTURABLE") >= 0) sFact = false;
             else if (sFact == null && s.commentaire && /\b(REFORATION|ARRET\s*TECHNIQUE)\b/i.test(s.commentaire)) sFact = true;
-            return h("div", { key: "sd-" + idx, style: { background: "rgba(0,0,0,0.20)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: 12, marginBottom: 8 } },
-              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+            // Demande client annotee SUR la carte (badge + valeurs d'origine barrees)
+            var dc = s._diffClient;
+            var LBL_DIFF = { num: "No", type: "Type", angle: "Angle", de: "De", a: "A" };
+            return h("div", { key: "sd-" + idx, style: { background: dc ? "rgba(249,115,22,0.07)" : "rgba(0,0,0,0.20)", border: dc ? "1.5px solid rgba(249,115,22,0.55)" : "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: 12, marginBottom: 8 } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" } },
                 h("span", { style: { fontSize: 10, fontWeight: 800, color: "#f9a8d4", background: "rgba(236,72,153,0.15)", border: "1px solid rgba(236,72,153,0.35)", padding: "2px 8px", borderRadius: 999 } }, "#" + (idx + 1) + " Sondage"),
-                h("button", { onClick: function() { removeFromList("sondages", idx); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 24, height: 24, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
+                dc ? h("span", { style: { fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#fdba74", background: "rgba(249,115,22,0.18)", border: "1px solid rgba(249,115,22,0.50)", padding: "2px 8px", borderRadius: 999 } },
+                  dc.ajout ? "PASSE AJOUTEE PAR LE CLIENT" : "MODIFIE PAR LE CLIENT") : null,
+                h("button", { onClick: function() { removeFromList("sondages", idx); }, style: { marginLeft: "auto", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", color: "#fda4af", width: 24, height: 24, borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" } },
                   h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
               ),
+              dc && dc.avant ? h("div", { style: { fontSize: 12, color: "#fed7aa", margin: "0 0 10px", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "baseline" } },
+                h("span", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#fdba74" } }, "Saisie sondeur d'origine :"),
+                Object.keys(dc.avant).map(function(fk) {
+                  return h("span", { key: fk },
+                    h("span", { style: { color: "#a1a1aa" } }, (LBL_DIFF[fk] || fk) + " "),
+                    h("span", { style: { color: "#fca5a5", textDecoration: "line-through", fontWeight: 700 } }, dc.avant[fk]),
+                    h("span", { style: { color: "#86efac", fontWeight: 800 } }, " → " + ((s[fk] == null || s[fk] === "") ? "(vide)" : String(s[fk])))
+                  );
+                })
+              ) : null,
               h("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8, marginBottom: 8 } },
                 h("label", { style: labelStyleEdit }, "No sondage", h("input", { type: "text", value: s.num || "", onChange: function(e) { updateList("sondages", idx, "num", e.target.value); }, style: inputStyleEdit })),
                 h("label", { style: labelStyleEdit }, "Angle", h("input", { type: "number", value: s.angle != null ? s.angle : "", onChange: function(e) { updateList("sondages", idx, "angle", e.target.value); }, style: inputStyleEdit })),
