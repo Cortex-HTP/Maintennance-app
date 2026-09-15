@@ -23710,6 +23710,73 @@
       );
     }
 
+    // ─── Diff sondages : version SONDEUR (orig) vs version CLIENT (nouv) ─────
+    // Tableau partage entre le detail d'un rapport (statut demande_modification)
+    // et l'Edition complete, pour voir les modifs demandees pendant l'ajustement.
+    function SondagesDiffClient({ orig, nouv }) {
+      var maxLen = Math.max(orig.length, nouv.length);
+      var rows = [];
+      var changesCount = 0;
+      for (var idx = 0; idx < maxLen; idx++) {
+        var o = orig[idx] || null;
+        var n = nouv[idx] || null;
+        var fields = ["num", "type", "de", "a"];
+        var rowChanged = false;
+        var cells = [];
+        for (var fi = 0; fi < fields.length; fi++) {
+          var f = fields[fi];
+          var ov = o ? o[f] : null;
+          var nv = n ? n[f] : null;
+          var ovs = (ov == null || ov === "") ? "" : String(ov);
+          var nvs = (nv == null || nv === "") ? "" : String(nv);
+          var changed = ovs !== nvs;
+          if (changed) rowChanged = true;
+          cells.push(h("td", { key: f, style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12 } },
+            changed ? h("span", null,
+              ovs !== "" ? h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, ovs) : null,
+              nvs !== "" ? h("span", { style: { color: "#86efac", fontWeight: 700 } }, nvs) : h("span", { style: { color: "#a1a1aa", fontStyle: "italic" } }, "vide")
+            ) : h("span", { style: { color: "#e4e4e7" } }, nvs === "" ? "-" : nvs)
+          ));
+        }
+        var oTot = o ? Math.max(0, (parseFloat(o.a) || 0) - (parseFloat(o.de) || 0)) : 0;
+        var nTot = n ? Math.max(0, (parseFloat(n.a) || 0) - (parseFloat(n.de) || 0)) : 0;
+        var totChanged = Math.abs(oTot - nTot) > 0.001;
+        cells.push(h("td", { key: "tot", style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, textAlign: "right", fontWeight: 700 } },
+          totChanged ? h("span", null,
+            h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, oTot.toFixed(1) + " m"),
+            h("span", { style: { color: "#86efac" } }, nTot.toFixed(1) + " m")
+          ) : h("span", { style: { color: "#e4e4e7" } }, nTot.toFixed(1) + " m")
+        ));
+        if (rowChanged) changesCount++;
+        rows.push(h("tr", { key: idx, style: { background: rowChanged ? "rgba(249,115,22,0.08)" : "transparent" } }, cells));
+      }
+      var oldTotal = orig.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
+      var newTotal = nouv.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
+      var deltaTotal = newTotal - oldTotal;
+      return h("div", null,
+        h("div", { style: { overflowX: "auto", borderRadius: 8, background: "rgba(0,0,0,0.25)" } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+            h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.30)" } },
+              h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "No"),
+              h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Type"),
+              h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "De (m)"),
+              h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "A (m)"),
+              h("th", { style: { padding: "8px 10px", textAlign: "right", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Total")
+            )),
+            h("tbody", null, rows)
+          )
+        ),
+        h("div", { style: { marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(0,0,0,0.20)", borderRadius: 6, fontSize: 12, fontWeight: 700, flexWrap: "wrap", gap: 8 } },
+          h("div", { style: { color: "#fed7aa" } }, changesCount + " ligne" + (changesCount > 1 ? "s" : "") + " modifiee" + (changesCount > 1 ? "s" : "") + " sur " + maxLen),
+          h("div", null,
+            h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 8 } }, "Initial : " + oldTotal.toFixed(1) + " m"),
+            h("span", { style: { color: "#86efac" } }, "Demande : " + newTotal.toFixed(1) + " m"),
+            Math.abs(deltaTotal) > 0.001 ? h("span", { style: { marginLeft: 8, color: deltaTotal > 0 ? "#86efac" : "#fca5a5" } }, "(" + (deltaTotal > 0 ? "+" : "") + deltaTotal.toFixed(1) + " m)") : null
+          )
+        )
+      );
+    }
+
     function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, piecesEquipements, onClose, onSaved, showToast, correctionsClient, correctionsValidataire }) {
       // Types dynamiques : lus depuis parametres (categories rf_types_sondage / rf_types_activite)
       var _parametres = useAppData().parametres || [];
@@ -23972,6 +24039,23 @@
           }),
           h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } },
             "Le releve client ne distingue pas la machine : ces demandes visent la journee du chantier (verifie qu'elles concernent bien CE rapport). A l'enregistrement, le renvoi du rapport corrige au client te sera propose automatiquement.")
+        ) : null,
+
+        // Modifications demandees via la PAGE DE SIGNATURE du rapport : les
+        // sondages en base (et donc le formulaire ci-dessous) contiennent DEJA
+        // la version demandee par le client ; ce diff reste affiche pendant
+        // l'ajustement pour voir exactement ce qu'il a change.
+        Array.isArray(rapport.sondages_originaux) && rapport.sondages_originaux.length > 0 ? h("div", { style: { background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.45)", borderRadius: 10, padding: "12px 14px", marginBottom: 18 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" } },
+            h(Icon, { name: "alert-triangle", size: 14, color: "#fdba74" }),
+            h("div", { style: { fontSize: 12.5, fontWeight: 800, color: "#fed7aa" } }, "Modifications demandees par le client (signature du rapport)"),
+            rapport.client_signataire_nom ? h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + rapport.client_signataire_nom) : null
+          ),
+          rapport.remarques_client ? h("div", { style: { fontSize: 12, color: "#fed7aa", fontStyle: "italic", marginBottom: 8, padding: "6px 10px", background: "rgba(0,0,0,0.20)", borderRadius: 6 } },
+            "Remarque du client : « " + String(rapport.remarques_client) + " »") : null,
+          h(SondagesDiffClient, { orig: rapport.sondages_originaux, nouv: Array.isArray(rapport.sondages) ? rapport.sondages : [] }),
+          h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginTop: 8, fontStyle: "italic" } },
+            "Les sondages du formulaire ci-dessous partent de la VERSION DEMANDEE par le client : ajuste ce qu'il faut (metres, type, ou bouton + Ajouter une passe), Enregistre, puis dans le detail du rapport clique « Valider les modifs client » pour le renvoyer en signature.")
         ) : null,
 
         h("div", { style: { background: "rgba(36,40,60,0.85)", backdropFilter: "blur(20px) saturate(180%)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: 24, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" } },
@@ -26430,74 +26514,16 @@
                   h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" } },
                     h(Icon, { name: "alert-triangle", size: 16, color: "#fdba74" }),
                     h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fed7aa", letterSpacing: 0.4, textTransform: "uppercase" } }, "Modifications demandees par le client"),
-                    r.client_signataire_nom ? h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + r.client_signataire_nom) : null
+                    r.client_signataire_nom ? h("div", { style: { marginLeft: "auto", fontSize: 11, color: "#fdba74" } }, "Par " + r.client_signataire_nom) : null,
+                    // Ouvre directement l'Edition complete avec le diff visible :
+                    // l'admin ajuste lui-meme au lieu de tout accepter/refuser en bloc
+                    h("button", { onClick: function() { setEditingRapportId(r.id); },
+                      title: "Ouvrir l'Edition complete : les champs contiennent deja la version demandee par le client, ce diff reste affiche pendant l'ajustement",
+                      style: { marginLeft: r.client_signataire_nom ? 0 : "auto", display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(249,115,22,0.18)", border: "1px solid rgba(249,115,22,0.50)", color: "#fed7aa", padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontSize: 11.5, fontWeight: 700, fontFamily: "inherit" } },
+                      h(Icon, { name: "edit-3", size: 12, color: "#fed7aa" }), "Ajuster moi-meme")
                   ),
                   h("div", { style: { fontSize: 12, color: "#fed7aa", marginBottom: 12 } }, "Valeur initiale (sondeur) en rouge barre / Valeur demandee (client) en vert"),
-                  (function() {
-                    var orig = r.sondages_originaux;
-                    var nouv = sondages;
-                    var maxLen = Math.max(orig.length, nouv.length);
-                    var rows = [];
-                    var changesCount = 0;
-                    for (var idx = 0; idx < maxLen; idx++) {
-                      var o = orig[idx] || null;
-                      var n = nouv[idx] || null;
-                      var fields = ["num", "type", "de", "a"];
-                      var rowChanged = false;
-                      var cells = [];
-                      for (var fi = 0; fi < fields.length; fi++) {
-                        var f = fields[fi];
-                        var ov = o ? o[f] : null;
-                        var nv = n ? n[f] : null;
-                        var ovs = (ov == null || ov === "") ? "" : String(ov);
-                        var nvs = (nv == null || nv === "") ? "" : String(nv);
-                        var changed = ovs !== nvs;
-                        if (changed) rowChanged = true;
-                        cells.push(h("td", { key: f, style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12 } },
-                          changed ? h("span", null,
-                            ovs !== "" ? h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, ovs) : null,
-                            nvs !== "" ? h("span", { style: { color: "#86efac", fontWeight: 700 } }, nvs) : h("span", { style: { color: "#a1a1aa", fontStyle: "italic" } }, "vide")
-                          ) : h("span", { style: { color: "#e4e4e7" } }, nvs === "" ? "-" : nvs)
-                        ));
-                      }
-                      var oTot = o ? Math.max(0, (parseFloat(o.a) || 0) - (parseFloat(o.de) || 0)) : 0;
-                      var nTot = n ? Math.max(0, (parseFloat(n.a) || 0) - (parseFloat(n.de) || 0)) : 0;
-                      var totChanged = Math.abs(oTot - nTot) > 0.001;
-                      cells.push(h("td", { key: "tot", style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, textAlign: "right", fontWeight: 700 } },
-                        totChanged ? h("span", null,
-                          h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, oTot.toFixed(1) + " m"),
-                          h("span", { style: { color: "#86efac" } }, nTot.toFixed(1) + " m")
-                        ) : h("span", { style: { color: "#e4e4e7" } }, nTot.toFixed(1) + " m")
-                      ));
-                      if (rowChanged) changesCount++;
-                      rows.push(h("tr", { key: idx, style: { background: rowChanged ? "rgba(249,115,22,0.08)" : "transparent" } }, cells));
-                    }
-                    var oldTotal = orig.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
-                    var newTotal = nouv.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
-                    var deltaTotal = newTotal - oldTotal;
-                    return h("div", null,
-                      h("div", { style: { overflowX: "auto", borderRadius: 8, background: "rgba(0,0,0,0.25)" } },
-                        h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
-                          h("thead", null, h("tr", { style: { background: "rgba(0,0,0,0.30)" } },
-                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "No"),
-                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Type"),
-                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "De (m)"),
-                            h("th", { style: { padding: "8px 10px", textAlign: "left", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "A (m)"),
-                            h("th", { style: { padding: "8px 10px", textAlign: "right", color: "#fdba74", fontWeight: 700, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase" } }, "Total")
-                          )),
-                          h("tbody", null, rows)
-                        )
-                      ),
-                      h("div", { style: { marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(0,0,0,0.20)", borderRadius: 6, fontSize: 12, fontWeight: 700, flexWrap: "wrap", gap: 8 } },
-                        h("div", { style: { color: "#fed7aa" } }, changesCount + " ligne" + (changesCount > 1 ? "s" : "") + " modifiee" + (changesCount > 1 ? "s" : "") + " sur " + maxLen),
-                        h("div", null,
-                          h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 8 } }, "Initial : " + oldTotal.toFixed(1) + " m"),
-                          h("span", { style: { color: "#86efac" } }, "Demande : " + newTotal.toFixed(1) + " m"),
-                          Math.abs(deltaTotal) > 0.001 ? h("span", { style: { marginLeft: 8, color: deltaTotal > 0 ? "#86efac" : "#fca5a5" } }, "(" + (deltaTotal > 0 ? "+" : "") + deltaTotal.toFixed(1) + " m)") : null
-                        )
-                      )
-                    );
-                  })()
+                  h(SondagesDiffClient, { orig: r.sondages_originaux, nouv: sondages })
                 )
               ) : null,
               sondages.length > 0 ? h("div", null,
