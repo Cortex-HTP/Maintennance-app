@@ -785,9 +785,28 @@
     // le type est facture au "Prix au metre" general. Utilise par la
     // facturation Cortex (ventilation du metrage valide par type de sondage).
     var TYPES_FORAGE_PRIX = ["AIRCORE", "RC", "DIAMOND", "CAROTTE", "MFT", "AUTRE"];
+    // Liste REELLE des types (parametres > rf_types_sondage, la meme que l'app
+    // Employes) chargee paresseusement : un type ajoute dans Parametres (ex.
+    // "MFT PREEX") apparait dans la grille sans toucher au code.
+    var RF_TYPES_PRIX_CACHE = null;
+    var RF_TYPES_PRIX_LOADING = false;
     function champPrixParType(f, upd) {
+      if (!RF_TYPES_PRIX_CACHE && !RF_TYPES_PRIX_LOADING) {
+        RF_TYPES_PRIX_LOADING = true;
+        supabase.from("parametres").select("valeur,ordre").eq("categorie", "rf_types_sondage").order("ordre")
+          .then(function(res) {
+            RF_TYPES_PRIX_LOADING = false;
+            var arr = ((res && res.data) || []).map(function(p) { return String(p.valeur || "").toUpperCase().trim(); }).filter(Boolean);
+            if (arr.length) {
+              RF_TYPES_PRIX_CACHE = arr;
+              // Muter un cache module ne re-rend pas React : on force un
+              // rendu du formulaire ouvert via un upd() neutre.
+              if (typeof upd === "function") upd("prixMetreParType", Object.assign({}, f.prixMetreParType || {}));
+            }
+          }, function() { RF_TYPES_PRIX_LOADING = false; });
+      }
       var vals = f.prixMetreParType || {};
-      var types = TYPES_FORAGE_PRIX.slice();
+      var types = (RF_TYPES_PRIX_CACHE || TYPES_FORAGE_PRIX).slice();
       Object.keys(vals).forEach(function(t) { if (types.indexOf(t) < 0) types.push(t); });
       var inSty = { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
       return h("div", { style: { padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" } },
