@@ -23879,46 +23879,149 @@
       );
     }
 
+    // ─── Alignement sondages SONDEUR (orig) vs CLIENT (nouv) ─────────────────
+    // Une ligne INSEREE au milieu ne doit pas marquer toutes les suivantes en
+    // "modifie" (l'ancien diff comparait par position). On aligne par numero de
+    // forage (LCS) : les lignes se decalent, seules les VRAIES modifs ressortent.
+    // - nouv avec _ajout_client -> ajout d'office
+    // - egalite de numero : prefere la ligne dont le TYPE correspond aussi
+    // Retourne [{ etat: "pair"|"add"|"del", o, n, nIdx }] dans l'ordre client.
+    function alignSondagesClient(orig, nouv) {
+      var key = function(s) { return String(s && s.num || "").trim().toUpperCase(); };
+      var typ = function(s) { return String(s && s.type || "").trim().toUpperCase(); };
+      // Les ajouts flagges sortent de l'alignement (ils sont surs)
+      var nIdxMap = [];
+      var nAlign = [];
+      (nouv || []).forEach(function(s, i) {
+        if (s && s._ajout_client) return;
+        nAlign.push(s); nIdxMap.push(i);
+      });
+      var o = orig || [];
+      var n = o.length, m = nAlign.length;
+      // LCS des suffixes sur le numero de forage
+      var dp = [];
+      for (var i = 0; i <= n; i++) { dp.push([]); for (var j = 0; j <= m; j++) dp[i].push(0); }
+      for (i = n - 1; i >= 0; i--) {
+        for (var j2 = m - 1; j2 >= 0; j2--) {
+          dp[i][j2] = key(o[i]) === key(nAlign[j2])
+            ? dp[i + 1][j2 + 1] + 1
+            : Math.max(dp[i + 1][j2], dp[i][j2 + 1]);
+        }
+      }
+      // Marche avant : on associe au plus tot ; en cas d'egalite de numero mais
+      // de type different, si sauter la ligne client ne coute rien ET qu'une
+      // ligne suivante matche numero+type, on la traite comme une insertion.
+      var pairsByN = {}; // index nAlign -> index orig
+      i = 0; var jj = 0;
+      while (i < n && jj < m) {
+        if (key(o[i]) === key(nAlign[jj]) && dp[i][jj] === dp[i + 1][jj + 1] + 1) {
+          var skipInsertion = false;
+          if (typ(o[i]) !== typ(nAlign[jj]) && dp[i][jj + 1] === dp[i][jj]) {
+            for (var k2 = jj + 1; k2 < m; k2++) {
+              if (key(nAlign[k2]) === key(o[i]) && typ(nAlign[k2]) === typ(o[i])) { skipInsertion = true; break; }
+            }
+          }
+          if (!skipInsertion) { pairsByN[jj] = i; i++; jj++; continue; }
+          jj++; // insertion client
+        } else if (dp[i + 1][jj] >= dp[i][jj + 1]) {
+          i++; // ligne sondeur sans correspondant (suppression)
+        } else {
+          jj++; // ligne client sans correspondant (ajout)
+        }
+      }
+      // Reconstruction dans l'ordre CLIENT, suppressions intercalees a leur place
+      var rows = [];
+      var oPtr = 0;
+      var aPtr = 0; // pointeur dans nAlign
+      (nouv || []).forEach(function(s, ni) {
+        if (s && s._ajout_client) { rows.push({ etat: "add", n: s, nIdx: ni }); return; }
+        var oi = pairsByN[aPtr];
+        if (oi != null) {
+          while (oPtr < oi) { rows.push({ etat: "del", o: o[oPtr] }); oPtr++; }
+          rows.push({ etat: "pair", o: o[oi], n: s, nIdx: ni });
+          oPtr = oi + 1;
+        } else {
+          rows.push({ etat: "add", n: s, nIdx: ni });
+        }
+        aPtr++;
+      });
+      while (oPtr < n) { rows.push({ etat: "del", o: o[oPtr] }); oPtr++; }
+      return rows;
+    }
+
     // ─── Diff sondages : version SONDEUR (orig) vs version CLIENT (nouv) ─────
-    // Tableau partage entre le detail d'un rapport (statut demande_modification)
-    // et l'Edition complete, pour voir les modifs demandees pendant l'ajustement.
+    // Tableau du detail d'un rapport (statut demande_modification), aligne par
+    // numero de forage : seules les vraies modifs sont marquees.
     function SondagesDiffClient({ orig, nouv }) {
-      var maxLen = Math.max(orig.length, nouv.length);
+      var aligned = alignSondagesClient(orig, nouv);
       var rows = [];
       var changesCount = 0;
-      for (var idx = 0; idx < maxLen; idx++) {
-        var o = orig[idx] || null;
-        var n = nouv[idx] || null;
+      var addsCount = 0;
+      var delsCount = 0;
+      var tdBase = { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12 };
+      aligned.forEach(function(al, idx) {
         var fields = ["num", "type", "de", "a"];
-        var rowChanged = false;
         var cells = [];
-        for (var fi = 0; fi < fields.length; fi++) {
-          var f = fields[fi];
-          var ov = o ? o[f] : null;
-          var nv = n ? n[f] : null;
-          var ovs = (ov == null || ov === "") ? "" : String(ov);
-          var nvs = (nv == null || nv === "") ? "" : String(nv);
+        if (al.etat === "add") {
+          addsCount++;
+          fields.forEach(function(f) {
+            var v = (al.n[f] == null || al.n[f] === "") ? "-" : String(al.n[f]);
+            cells.push(h("td", { key: f, style: tdBase },
+              f === "num" ? h("span", null,
+                h("span", { style: { fontSize: 9, fontWeight: 800, color: "#86efac", background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", padding: "1px 6px", borderRadius: 999, marginRight: 6 } }, "AJOUT"),
+                h("span", { style: { color: "#86efac", fontWeight: 700 } }, v)
+              ) : h("span", { style: { color: "#86efac", fontWeight: 700 } }, v)));
+          });
+          var aTot = Math.max(0, (parseFloat(al.n.a) || 0) - (parseFloat(al.n.de) || 0));
+          cells.push(h("td", { key: "tot", style: Object.assign({}, tdBase, { textAlign: "right", fontWeight: 700 } ) },
+            h("span", { style: { color: "#86efac" } }, "+" + aTot.toFixed(1) + " m")));
+          rows.push(h("tr", { key: "al-" + idx, style: { background: "rgba(34,197,94,0.07)" } }, cells));
+          return;
+        }
+        if (al.etat === "del") {
+          delsCount++;
+          fields.forEach(function(f) {
+            var v = (al.o[f] == null || al.o[f] === "") ? "-" : String(al.o[f]);
+            cells.push(h("td", { key: f, style: tdBase },
+              f === "num" ? h("span", null,
+                h("span", { style: { fontSize: 9, fontWeight: 800, color: "#fca5a5", background: "rgba(244,63,94,0.15)", border: "1px solid rgba(244,63,94,0.40)", padding: "1px 6px", borderRadius: 999, marginRight: 6 } }, "SUPPRIME"),
+                h("span", { style: { color: "#fca5a5", textDecoration: "line-through" } }, v)
+              ) : h("span", { style: { color: "#fca5a5", textDecoration: "line-through" } }, v)));
+          });
+          var dTot = Math.max(0, (parseFloat(al.o.a) || 0) - (parseFloat(al.o.de) || 0));
+          cells.push(h("td", { key: "tot", style: Object.assign({}, tdBase, { textAlign: "right", fontWeight: 700 }) },
+            h("span", { style: { color: "#fca5a5", textDecoration: "line-through" } }, dTot.toFixed(1) + " m")));
+          rows.push(h("tr", { key: "al-" + idx, style: { background: "rgba(244,63,94,0.06)" } }, cells));
+          return;
+        }
+        // Ligne appariee : seuls les champs reellement modifies sont marques
+        var oS = al.o, nS = al.n;
+        var rowChanged = false;
+        fields.forEach(function(f) {
+          var ovs = (oS[f] == null || oS[f] === "") ? "" : String(oS[f]);
+          var nvs = (nS[f] == null || nS[f] === "") ? "" : String(nS[f]);
           var changed = ovs !== nvs;
           if (changed) rowChanged = true;
-          cells.push(h("td", { key: f, style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12 } },
+          cells.push(h("td", { key: f, style: tdBase },
             changed ? h("span", null,
               ovs !== "" ? h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, ovs) : null,
               nvs !== "" ? h("span", { style: { color: "#86efac", fontWeight: 700 } }, nvs) : h("span", { style: { color: "#a1a1aa", fontStyle: "italic" } }, "vide")
             ) : h("span", { style: { color: "#e4e4e7" } }, nvs === "" ? "-" : nvs)
           ));
-        }
-        var oTot = o ? Math.max(0, (parseFloat(o.a) || 0) - (parseFloat(o.de) || 0)) : 0;
-        var nTot = n ? Math.max(0, (parseFloat(n.a) || 0) - (parseFloat(n.de) || 0)) : 0;
+        });
+        var oTot = Math.max(0, (parseFloat(oS.a) || 0) - (parseFloat(oS.de) || 0));
+        var nTot = Math.max(0, (parseFloat(nS.a) || 0) - (parseFloat(nS.de) || 0));
         var totChanged = Math.abs(oTot - nTot) > 0.001;
-        cells.push(h("td", { key: "tot", style: { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, textAlign: "right", fontWeight: 700 } },
+        cells.push(h("td", { key: "tot", style: Object.assign({}, tdBase, { textAlign: "right", fontWeight: 700 }) },
           totChanged ? h("span", null,
             h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 6 } }, oTot.toFixed(1) + " m"),
             h("span", { style: { color: "#86efac" } }, nTot.toFixed(1) + " m")
           ) : h("span", { style: { color: "#e4e4e7" } }, nTot.toFixed(1) + " m")
         ));
         if (rowChanged) changesCount++;
-        rows.push(h("tr", { key: idx, style: { background: rowChanged ? "rgba(249,115,22,0.08)" : "transparent" } }, cells));
-      }
+        rows.push(h("tr", { key: "al-" + idx, style: { background: rowChanged ? "rgba(249,115,22,0.08)" : "transparent" } }, cells));
+      });
+      var maxLen = aligned.length;
       var oldTotal = orig.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
       var newTotal = nouv.reduce(function(sum, x) { return sum + Math.max(0, (parseFloat(x.a) || 0) - (parseFloat(x.de) || 0)); }, 0);
       var deltaTotal = newTotal - oldTotal;
@@ -23936,7 +24039,11 @@
           )
         ),
         h("div", { style: { marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(0,0,0,0.20)", borderRadius: 6, fontSize: 12, fontWeight: 700, flexWrap: "wrap", gap: 8 } },
-          h("div", { style: { color: "#fed7aa" } }, changesCount + " ligne" + (changesCount > 1 ? "s" : "") + " modifiee" + (changesCount > 1 ? "s" : "") + " sur " + maxLen),
+          h("div", { style: { color: "#fed7aa" } },
+            changesCount + " modifiee" + (changesCount > 1 ? "s" : "") +
+            (addsCount > 0 ? " · " + addsCount + " ajoutee" + (addsCount > 1 ? "s" : "") : "") +
+            (delsCount > 0 ? " · " + delsCount + " supprimee" + (delsCount > 1 ? "s" : "") : "") +
+            " sur " + maxLen + " ligne" + (maxLen > 1 ? "s" : "")),
           h("div", null,
             h("span", { style: { color: "#fca5a5", textDecoration: "line-through", marginRight: 8 } }, "Initial : " + oldTotal.toFixed(1) + " m"),
             h("span", { style: { color: "#86efac" } }, "Demande : " + newTotal.toFixed(1) + " m"),
@@ -23967,23 +24074,23 @@
         var sondagesInit = Array.isArray(rapport.sondages) ? deep(rapport.sondages) : [];
         // Demande de modification CLIENT (page de signature) : on annote CHAQUE
         // sondage touche directement sur sa carte (_diffClient, strippe au save).
-        // Appariement : les passes ajoutees portent _ajout_client (sign.html),
-        // les autres se calent sur les originaux dans l'ordre.
+        // MEME alignement que le tableau du detail (alignSondagesClient, par
+        // numero de forage) : une ligne inseree au milieu ne marque pas
+        // faussement toutes les suivantes.
         if (Array.isArray(rapport.sondages_originaux) && rapport.sondages_originaux.length > 0) {
-          var origDiff = rapport.sondages_originaux;
-          var oiDiff = 0;
-          sondagesInit.forEach(function(sd) {
-            if (!sd) return;
-            if (sd._ajout_client) { sd._diffClient = { ajout: true }; return; }
-            var oD = origDiff[oiDiff]; oiDiff++;
-            if (!oD) { sd._diffClient = { ajout: true }; return; }
+          alignSondagesClient(rapport.sondages_originaux, sondagesInit).forEach(function(al) {
+            if (al.etat === "add" && al.nIdx != null) {
+              sondagesInit[al.nIdx]._diffClient = { ajout: true };
+              return;
+            }
+            if (al.etat !== "pair" || al.nIdx == null) return;
             var avant = {};
             ["num", "type", "angle", "de", "a"].forEach(function(fld) {
-              var ov = (oD[fld] == null || oD[fld] === "") ? "" : String(oD[fld]);
-              var nv = (sd[fld] == null || sd[fld] === "") ? "" : String(sd[fld]);
+              var ov = (al.o[fld] == null || al.o[fld] === "") ? "" : String(al.o[fld]);
+              var nv = (al.n[fld] == null || al.n[fld] === "") ? "" : String(al.n[fld]);
               if (ov !== nv) avant[fld] = ov === "" ? "(vide)" : ov;
             });
-            if (Object.keys(avant).length > 0) sd._diffClient = { avant: avant };
+            if (Object.keys(avant).length > 0) sondagesInit[al.nIdx]._diffClient = { avant: avant };
           });
         }
         return {
