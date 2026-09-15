@@ -7795,6 +7795,7 @@
       var _dateFinContrat = useState(editItem && editItem.dateFinContrat ? editItem.dateFinContrat : "");
       var _motifFin = useState(editItem && editItem.motifFin ? editItem.motifFin : "");
       var _role = useState(editItem && editItem.role ? editItem.role : "Aide sondeur");
+      var _email = useState(editItem && editItem.email ? editItem.email : "");
       var _pin = useState(editItem && editItem.pin ? editItem.pin : "");
       var _acces = useState(editItem ? !!editItem.accesAppEmploye : false);
       var _code = useState(editItem && editItem.code ? editItem.code : "");
@@ -7857,6 +7858,7 @@
           dateFinContrat: _dateFinContrat[0] || "",
           motifFin: _motifFin[0] || "",
           role: _role[0],
+          email: String(_email[0] || "").trim().toLowerCase(),
           pin: _pin[0] || "",
           accesAppEmploye: !!_acces[0],
           roleMecanicien: !!_roleMec[0],
@@ -7889,6 +7891,10 @@
             ROLES.map(function(r) { return h("option", { key: r, value: r }, r); })
           )),
           h(FormField, { label: "Code interne" }, h("input", { style: Object.assign({}, inputStyle, { fontFamily: "monospace" }), value: _code[0], onChange: function(e) { _code[1](e.target.value); }, placeholder: "p19, p20...", readOnly: !!editItem })),
+          // Email de CONNEXION a l'app admin : c'est lui qui relie le compte
+          // utilisateur (app_users) a cette fiche -> sans lui, le Coffre-fort RH
+          // de l'employe s'affiche VIDE (constate 2026-09-15).
+          h(FormField, { label: "Email (connexion app admin)" }, h("input", { type: "email", style: inputStyle, value: _email[0], onChange: function(e) { _email[1](e.target.value); }, placeholder: "le meme email que son compte utilisateur" })),
         ),
         // Section fin de contrat (debauche / licenciement / fin CDD / demission) - cachee pour sous-traitants auto-entrepreneurs
         isSousTraitantAuto ? null : h("div", { style: { marginTop: 20, padding: 16, background: _dateFinContrat[0] ? "linear-gradient(135deg, rgba(244,63,94,0.08), rgba(244,63,94,0.02))" : "rgba(255,255,255,0.03)", border: "1px solid " + (_dateFinContrat[0] ? "rgba(244,63,94,0.30)" : "rgba(255,255,255,0.07)"), borderRadius: 12 } },
@@ -30886,9 +30892,11 @@
         try { return (JSON.parse(pdRow.valeur) || []).filter(function(p) { return !p.roleMecanicien; }); } catch (e) { return []; }
       }());
 
-      // Si non-RH, on filtre sur l'employe connecte (matching par email)
+      // Si non-RH, on filtre sur l'employe connecte (matching par email de la
+      // fiche personnel - champ "Email (connexion app admin)" du formulaire)
+      var userEmailNorm = String(userEmail || "").trim().toLowerCase();
       var ownPersonnel = personnelList.find(function(p) {
-        return p && p.email && p.email.toLowerCase() === userEmail.toLowerCase();
+        return p && p.email && String(p.email).trim().toLowerCase() === userEmailNorm;
       });
 
       // ─ State ─
@@ -30950,6 +30958,16 @@
 
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "folder-lock", size: 20 }, "Coffre-fort RH"), subtitle: isRH ? "Documents administratifs des employes" : "Mes documents administratifs et signatures en attente" }),
+
+        // Fiche non reliee au compte : expliquer au lieu d'afficher un coffre vide
+        !isRH && !ownPersonnel ? h("div", { style: { marginBottom: 18, padding: "14px 16px", borderRadius: 12, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.40)", display: "flex", gap: 12, alignItems: "flex-start" } },
+          h(Icon, { name: "alert-triangle", size: 18, color: "#fbbf24" }),
+          h("div", null,
+            h("div", { style: { fontSize: 13.5, fontWeight: 800, color: "#fde68a" } }, "Ton coffre n'est pas encore relie a ton compte"),
+            h("div", { style: { fontSize: 12, color: "#cbd5e1", marginTop: 4, lineHeight: 1.5 } },
+              "Aucune fiche employe ne porte l'email " + (userEmailNorm || "?") + ". Demande a l'administrateur de renseigner le champ « Email (connexion app admin) » sur ta fiche (Personnel > Modifier) : tes documents apparaitront aussitot.")
+          )
+        ) : null,
 
         // KPIs (RH seulement)
         isRH ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
