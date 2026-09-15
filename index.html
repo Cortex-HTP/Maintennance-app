@@ -20056,6 +20056,30 @@
                 statuts.map(function(s) { return h("option", { key: s, value: s }, s); })
               ))
             ),
+            // Droit individuel : coffre RH COMPLET (tous les employes), quel que
+            // soit le role - ex. dispatch qui gere le personnel. Range dans
+            // pages_autorisees sous la cle speciale "coffre-rh-complet".
+            f.role !== "Administrateur" && f.role !== "Secretaire" ? (function() {
+              var hasCRH = (f.pagesAutorisees || []).indexOf("coffre-rh-complet") >= 0;
+              return h("div", {
+                onClick: function() {
+                  var cur = (f.pagesAutorisees || []).slice();
+                  if (hasCRH) cur = cur.filter(function(k) { return k !== "coffre-rh-complet"; });
+                  else cur.push("coffre-rh-complet");
+                  upd("pagesAutorisees", cur);
+                },
+                style: { display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", userSelect: "none", padding: "12px 14px", borderRadius: 10, marginBottom: 12, background: hasCRH ? "rgba(6,182,212,0.10)" : "rgba(255,255,255,0.03)", border: "1px solid " + (hasCRH ? "rgba(6,182,212,0.40)" : "rgba(255,255,255,0.08)") }
+              },
+                h("div", { style: { width: 18, height: 18, marginTop: 1, flexShrink: 0, borderRadius: 5, background: hasCRH ? "#06b6d4" : "transparent", border: "2px solid " + (hasCRH ? "#06b6d4" : "#52525b"), display: "flex", alignItems: "center", justifyContent: "center" } },
+                  hasCRH ? h(Icon, { name: "check", size: 12, color: "#04222a" }) : null),
+                h("div", null,
+                  h("div", { style: { fontSize: 13, fontWeight: 700, color: hasCRH ? "#67e8f9" : "#d4d4d8" } }, "Acces complet au Coffre-fort RH"),
+                  h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3, lineHeight: 1.45 } },
+                    hasCRH ? "Cet utilisateur voit le coffre de TOUS les employes (documents, depots, signatures) - comme une Secretaire RH, quel que soit son role (ex : dispatch qui gere le personnel)."
+                           : "Sans ce droit, l'utilisateur ne voit que SES propres documents (fiche personnel reliee par son email).")
+                )
+              );
+            }()) : null,
             h("div", { style: { marginTop: 4 } },
               h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
                 h("div", { style: { fontSize: 13, fontWeight: 700, color: "#e5e7eb" } }, "Pages autorisees"),
@@ -20178,7 +20202,8 @@
                         ),
                         h("td", { style: Object.assign({}, tdStyle, { color: "#a1a1aa" }) }, u.email),
                         h("td", { style: tdStyle },
-                          h("span", { style: { fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4, background: u.role === "Administrateur" ? "rgba(167,139,250,0.15)" : u.role === "Secretaire" ? "rgba(6,182,212,0.15)" : "rgba(34,197,94,0.12)", color: u.role === "Administrateur" ? "#a78bfa" : u.role === "Secretaire" ? "#67e8f9" : "#86efac", border: "1px solid " + (u.role === "Administrateur" ? "rgba(167,139,250,0.3)" : u.role === "Secretaire" ? "rgba(6,182,212,0.3)" : "rgba(34,197,94,0.3)") } }, u.role === "Secretaire" ? "Secretaire RH" : u.role)
+                          h("span", { style: { fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4, background: u.role === "Administrateur" ? "rgba(167,139,250,0.15)" : u.role === "Secretaire" ? "rgba(6,182,212,0.15)" : "rgba(34,197,94,0.12)", color: u.role === "Administrateur" ? "#a78bfa" : u.role === "Secretaire" ? "#67e8f9" : "#86efac", border: "1px solid " + (u.role === "Administrateur" ? "rgba(167,139,250,0.3)" : u.role === "Secretaire" ? "rgba(6,182,212,0.3)" : "rgba(34,197,94,0.3)") } }, u.role === "Secretaire" ? "Secretaire RH" : u.role),
+                          (u.pagesAutorisees || []).indexOf("coffre-rh-complet") >= 0 ? h("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: "rgba(6,182,212,0.15)", color: "#67e8f9", border: "1px solid rgba(6,182,212,0.3)" }, title: "Acces complet au Coffre-fort RH" }, "Coffre RH complet") : null
                         ),
                         h("td", { style: tdStyle },
                           h("span", { style: { fontSize: 11, fontWeight: 600, color: "#a1a1aa" } }, pageCount + " / " + ALL_PAGES.length + " pages")
@@ -30881,7 +30906,8 @@
       var ctx = useAppData();
       var isAdmin = ctx.isAdmin;
       var isSecretaire = ctx.isSecretaire;
-      var isRH = isAdmin || isSecretaire;
+      // ctx.isRH inclut aussi le droit individuel "coffre-rh-complet" (dispatch...)
+      var isRH = ctx.isRH === true || isAdmin || isSecretaire;
       var userEmail = ctx.userEmail || "";
 
       // ─ Personnel : depuis parametres.personnel_data ─
@@ -35030,8 +35056,12 @@
       }, [dbChantiers]);
       // isSecretaire: role "Secretaire" -> acces complet au coffre RH uniquement
       const isSecretaire = !!(currentAppUser && currentAppUser.role === "Secretaire");
-      // Peut acceder au coffre RH (admin OR secretaire OR utilisateur avec page autorisee)
-      const isRH = isAdmin || isSecretaire;
+      // Acces complet au coffre RH accorde INDIVIDUELLEMENT (ex: dispatch qui
+      // gere le personnel) via la cle speciale "coffre-rh-complet" rangee dans
+      // pages_autorisees (ce n'est pas une vraie page : jamais rendue en menu).
+      const hasCoffreComplet = !!(currentAppUser && Array.isArray(currentAppUser.pagesAutorisees) && currentAppUser.pagesAutorisees.indexOf("coffre-rh-complet") >= 0);
+      // Peut voir TOUT le coffre RH (admin OR secretaire OR droit individuel)
+      const isRH = isAdmin || isSecretaire || hasCoffreComplet;
 
       // ── RH signatures en attente (poll toutes les 60s) ─────────────────
       // - Pour RH (admin/secretaire) : compte global des docs en attente
