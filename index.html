@@ -748,7 +748,7 @@
 
     // ─── Conversion DB: chantiers, declarations, renouvellements, app_users ─
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, prixMetreParType: r.prix_metre_par_type || {}, pmtEnBase: !!(r.prix_metre_par_type && Object.keys(r.prix_metre_par_type).length), depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, prixMetreParType: r.prix_metre_par_type || {}, pmtEnBase: !!(r.prix_metre_par_type && Object.keys(r.prix_metre_par_type).length), depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true, imputationClient: r.imputation_client === true, impEnBase: r.imputation_client !== undefined };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
@@ -760,6 +760,10 @@
       // pas joue (colonne inconnue) — la sauvegarde doit rester possible.
       var pmt = chantierPrixParTypeToDb(c);
       if (pmt !== null || c.pmtEnBase === true) ret.prix_metre_par_type = pmt;
+      // Meme prudence PGRST204 pour le drapeau imputation client : n'envoie la
+      // colonne que si elle est cochee ou existait deja en base (tant que
+      // sql_imputation_client.sql n'est pas joue, la sauvegarde doit passer).
+      if (c.imputationClient === true || c.impEnBase === true) ret.imputation_client = c.imputationClient === true;
       return ret;
     }
     // Nettoie la grille de prix par type de forage : ne garde que les prix > 0.
@@ -853,6 +857,32 @@
             actif
               ? "Les pleins de ce chantier restent saisis par les equipes (suivi conso, horametres) mais ne comptent plus dans les couts : cout/m machine, seuil de rentabilite, marges et prix de vente les excluent."
               : "Le carburant est a notre charge : les pleins de ce chantier sont comptes dans les couts.")
+        )
+      );
+    }
+    // Interrupteur "imputation client apres validation" du formulaire chantier.
+    // Active l'ecran BC / numeros de compte / repartition MFT-AIRCORE
+    // Preex/Planif montre au client juste apres sa validation du releve.
+    function champImputationClient(f, upd) {
+      var actif = f.imputationClient === true;
+      return h("div", {
+        onClick: function() { upd("imputationClient", !actif); },
+        style: {
+          display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", userSelect: "none",
+          padding: "12px 14px", borderRadius: 10, marginTop: 10,
+          background: actif ? "rgba(56,189,248,0.10)" : "rgba(255,255,255,0.03)",
+          border: "1px solid " + (actif ? "rgba(56,189,248,0.40)" : "rgba(255,255,255,0.08)")
+        }
+      },
+        h("div", { style: { width: 18, height: 18, marginTop: 1, flexShrink: 0, borderRadius: 5, background: actif ? "#38bdf8" : "transparent", border: "2px solid " + (actif ? "#38bdf8" : "#52525b"), display: "flex", alignItems: "center", justifyContent: "center" } },
+          actif ? h(Icon, { name: "check", size: 12, color: "#0c1220" }) : null
+        ),
+        h("div", null,
+          h("div", { style: { fontSize: 13, fontWeight: 700, color: actif ? "#7dd3fc" : "#d4d4d8" } }, "Imputation client apres validation"),
+          h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3, lineHeight: 1.45 } },
+            actif
+              ? "Apres avoir valide le releve mensuel, le client enchaine sur un ecran ou il indique son bon de commande, ses numeros de compte et la repartition des volumes MFT / AIRCORE entre Preex et Planif (prix identique Preex/Planif). Renseigne la grille de prix par type (MFT, AIRCORE) et le prix d'attente."
+              : "Le client valide le releve et s'arrete la (pas d'ecran bon de commande / comptes / repartition).")
         )
       );
     }
@@ -10147,6 +10177,7 @@
             ),
             champPrixParType(f, upd),
             champCarburantClient(f, upd),
+            champImputationClient(f, upd),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Depenses prevues (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
@@ -13969,6 +14000,7 @@
             ),
             champPrixParType(f, upd),
             champCarburantClient(f, upd),
+            champImputationClient(f, upd),
             h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.statut, onChange: function(e) { upd("statut", e.target.value); } },
               statuts.map(function(s) { return h("option", { key: s, value: s }, s); })
             )),
@@ -24893,7 +24925,7 @@
           // Validations client du releve mensuel (onglet Validation client des rapports).
           // Colonnes light : signature_png (lourde) et token (sensible) exclus du
           // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
-          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }),
+          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,imputation,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }),
           // Destinataires clients configures PAR CHANTIER (Administration >
           // Destinataires emails) : source prioritaire pour la validation client.
           // Le scope "global" est volontairement exclu (adresses internes Wallis).
@@ -27833,6 +27865,29 @@
                       h(Icon, { name: "edit-3", size: 11, color: "#a5b4fc" }), "Corriger le rapport")
                   );
                 })
+              ) : null,
+              // Imputation transmise par le client (chantiers actives) : BC,
+              // comptes et repartition Preex/Planif a reporter sur la facture
+              v && v.imputation ? h("div", { style: { marginTop: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.35)" } },
+                h("div", { style: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 } },
+                  h("span", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#7dd3fc" } }, "Imputation client"),
+                  h("span", { style: { fontSize: 12.5, fontWeight: 800, color: "#e5e7eb" } }, "BC " + (v.imputation.bc || "?")),
+                  h("span", { style: { fontSize: 11, color: "#71717a" } }, "par " + (v.imputation.par || "?") + " le " + fmtD(v.imputation.le))
+                ),
+                (v.imputation.buckets || []).filter(function(b) { return (parseFloat(b.volume_m) || 0) > 0; }).map(function(b, bi) {
+                  return h("div", { key: bi, style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "#cbd5e1", padding: "2px 0" } },
+                    h("span", { style: { fontWeight: 700, minWidth: 110 } }, b.label),
+                    h("span", null, (parseFloat(b.volume_m) || 0).toLocaleString("fr-FR") + " m"),
+                    h("span", { style: { color: "#7dd3fc" } }, "compte " + (b.compte || "?")),
+                    h("span", { style: { marginLeft: "auto", fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(b.montant || 0)) + " XPF")
+                  );
+                }),
+                v.imputation.attente && (parseFloat(v.imputation.attente.heures) || 0) > 0 ? h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "#cbd5e1", padding: "2px 0" } },
+                  h("span", { style: { fontWeight: 700, minWidth: 110 } }, "Attente"),
+                  h("span", null, (parseFloat(v.imputation.attente.heures) || 0).toLocaleString("fr-FR") + " h"),
+                  h("span", { style: { color: "#7dd3fc" } }, "compte " + (v.imputation.attente.compte || "?")),
+                  h("span", { style: { marginLeft: "auto", fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(v.imputation.attente.montant || 0)) + " XPF")
+                ) : null
               ) : null,
               h("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
                 h(Button, { variant: "secondary", onClick: function() {
