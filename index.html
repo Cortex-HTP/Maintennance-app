@@ -23799,6 +23799,7 @@
           date_rapport: rapport.date_rapport || "",
           sondeuse_code: rapport.sondeuse_code || "",
           client: rapport.client || "",
+          chantier_id: rapport.chantier_id != null ? String(rapport.chantier_id) : "",
           lieu: rapport.lieu || "",
           quart: rapport.quart || "jour",
           remarques: rapport.remarques || "",
@@ -23878,10 +23879,17 @@
 
       var save = function() {
         setSaving(true);
+        // Rattachement chantier : select -> id numerique (null si non rattache)
+        var chIdSave = null;
+        if (form.chantier_id !== "" && form.chantier_id != null) {
+          chIdSave = parseInt(form.chantier_id, 10);
+          if (isNaN(chIdSave)) chIdSave = null;
+        }
         var payload = {
           date_rapport: form.date_rapport || null,
           sondeuse_code: form.sondeuse_code || null,
           client: form.client || null,
+          chantier_id: chIdSave,
           lieu: form.lieu || null,
           quart: form.quart || null,
           remarques: form.remarques || null,
@@ -24063,7 +24071,44 @@
           // ── Section Chantier ──
           h("h3", { style: sectionTitleStyle }, h(Icon, { name: "briefcase", size: 14, color: "#a78bfa" }), "Chantier"),
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 12 } },
-            h("label", { style: labelStyleEdit }, "Client", h("input", { type: "text", value: form.client, onChange: function(e) { update("client", e.target.value); }, style: inputStyleEdit })),
+            // Rattachement au VRAI chantier (id) : c'est lui qui porte le prix au
+            // metre et le rattachement facturation/validation client. Choisir un
+            // chantier auto-remplit Client + Lieu depuis sa fiche.
+            h("label", { style: labelStyleEdit }, "Chantier (rattachement)", (function() {
+              var chs = (dbChantiers || []).filter(function(c) { return c.statut === "En cours" || c.statut === "A venir" || String(c.id) === String(form.chantier_id); });
+              var opts = [h("option", { key: "__e", value: "" }, "-- Aucun (non rattache) --")];
+              chs.forEach(function(c) {
+                opts.push(h("option", { key: c.id, value: String(c.id) }, (c.titre || "?") + " - " + (c.site || "?") + " (" + (c.client || "?") + ")" + (c.statut === "A venir" ? " [a venir]" : "")));
+              });
+              return h("select", { value: form.chantier_id || "", onChange: function(e) {
+                var idSel = e.target.value;
+                var cSel = (dbChantiers || []).find(function(c) { return String(c.id) === idSel; });
+                var copy = Object.assign({}, form);
+                copy.chantier_id = idSel;
+                if (cSel) {
+                  copy.client = cSel.client || copy.client;
+                  copy.lieu = cSel.site || cSel.titre || copy.lieu;
+                }
+                setForm(copy);
+              }, style: inputStyleEdit }, opts);
+            }())),
+            h("label", { style: labelStyleEdit }, "Client", (function() {
+              var clients = [], seenC = {};
+              (dbChantiers || []).forEach(function(c) {
+                var cl = String(c.client || "").trim();
+                if (!cl) return;
+                var k = cl.toUpperCase();
+                if (seenC[k]) return; seenC[k] = true; clients.push(cl);
+              });
+              clients.sort(function(x, y) { return x.localeCompare(y, "fr", { sensitivity: "base" }); });
+              var curC = String(form.client || "").trim();
+              var matchC = clients.find(function(t) { return t.toUpperCase() === curC.toUpperCase(); });
+              var arrC = clients.slice();
+              if (curC && !matchC) arrC.unshift(curC); // valeur libre historique conservee
+              var optsC = [h("option", { key: "__e", value: "" }, "-- Choisir un client --")];
+              arrC.forEach(function(t) { optsC.push(h("option", { key: t, value: t }, t)); });
+              return h("select", { value: matchC || curC, onChange: function(e) { update("client", e.target.value); }, style: inputStyleEdit }, optsC);
+            }())),
             h("label", { style: labelStyleEdit }, "Lieu (chantier)", (function() {
               var titres = [], seen = {};
               (dbChantiers || []).forEach(function(c) {
