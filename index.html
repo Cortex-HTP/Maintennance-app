@@ -20714,6 +20714,10 @@
       // Tableau detaille de tresorerie masque par defaut
       var _showTblTr = useState(false);
       var showTableauTr = _showTblTr[0]; var setShowTableauTr = _showTblTr[1];
+      // Annee de la courbe de tresorerie : 0 = annee en cours, 1 = n+1 (previsionnel
+      // pilote par le Planning engins du Calendrier, chaine sur la fin de l'annee N)
+      var _anneeTr = useState(0);
+      var anneeTreso = _anneeTr[0]; var setAnneeTreso = _anneeTr[1];
       useEffect(function() {
         var p = (ctx.parametres || []).find(function(x) { return x && x.categorie === "tresorerie_solde_actuel"; });
         if (p && p.valeur != null && p.valeur !== "") {
@@ -23007,6 +23011,10 @@
           // Solde initial : lu dans parametres.tresorerie_solde_init (defaut 0).
           (function() {
             var now2 = new Date(); now2.setHours(0, 0, 0, 0);
+            // Vue n+1 : l'annee N est TOUJOURS calculee d'abord (logique inchangee),
+            // puis n+1 est projetee par-dessus et chainee sur le solde de fin d'annee N.
+            var estVueN1 = anneeTreso === 1;
+            var anneeCible = now2.getFullYear() + (estVueN1 ? 1 : 0);
             // ── Phase 2 : lecture COMPTA (grand livre) pour le passe reel + solde bancaire ──
             // Solde bancaire live = SUM(debit) - SUM(credit) sur comptes 512*
             var soldeBanqueLive = 0;
@@ -23103,6 +23111,9 @@
             var metByMkTr = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
             var EXCL_TR = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
             var horizonMs = new Date(now2.getFullYear(), 11, 31, 23, 59, 59).getTime(); // fin d'annee courante
+            // Metrage PROJETE en annee N par chantier : la vue n+1 en repart pour ne
+            // jamais recompter ce que le solde chaine de fin N contient deja.
+            var projNParChantier = {};
             (dbChantiers || []).forEach(function(c) {
               if (c.statut === "Termine" || c.statut === "Annule") return;
               var metrage = parseFloat(c.metrage) || 0;
@@ -23152,10 +23163,15 @@
               // Cadence objectif (chantiers SANS historique) : repartir le metrage RESTANT sur les
               // JOURS OUVRES restants (lun-jeu) jusqu'a la fin de chantier. Avant, un facteur 4/7
               // superflu (cumule au filtre jours ouvres de la boucle) divisait la projection par ~3.
+              // Cadence etalee sur la VRAIE fenetre du chantier (jusqu'a sa dateFin,
+              // meme en n+1) : un chantier finissant l'annee suivante ne tasse plus
+              // tout son metrage sur l'annee N - la part n+1 est creditee par la vue
+              // n+1 (chainage sans double-compte). Sans effet sur un chantier qui
+              // finit dans l'annee (fenetre identique a avant).
               var joursOuvresRestants = 0;
               if (fallbackLineaire) {
                 var dCntF = new Date(startCursorMs); var safeCnt = 0;
-                while (dCntF.getTime() <= effectiveEnd && safeCnt < 500) {
+                while (dCntF.getTime() <= dFin.getTime() && safeCnt < 1300) {
                   var dowCnt = dCntF.getDay();
                   if (dowCnt >= 1 && dowCnt <= 4) joursOuvresRestants++;
                   dCntF.setDate(dCntF.getDate() + 1); safeCnt++;
@@ -23189,6 +23205,7 @@
                 }
                 cursor.setDate(cursor.getDate() + 1); safeF++;
               }
+              projNParChantier[c.id] = totalProj;
             });
 
             // ── CA REALISE par mois (facturation reelle des sondeurs) ──
@@ -23442,6 +23459,174 @@
             // Totaux annee complete (passe + futur) - utilises pour info
             var totalInAnnee = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
             var totalOutAnnee = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
+
+            // ══ VUE N+1 : projection de l'annee suivante, chainee sur la fin de N ══
+            // Toutes les hypotheses sont ESTIMEES SUR LES DONNEES DE L'ANNEE N :
+            // salaires (Personnel x1.4), frais generaux structure (FEC), plancher de
+            // decaissements (rythme bancaire reel), CA activites (moyenne YTD),
+            // emprunts (echeancier mois par mois, fins de prets respectees). Le CA
+            // chantiers vient du PLANNING MACHINES du Calendrier : chaque machine
+            // planifiee produit a sa vitesse historique mesuree.
+            if (estVueN1) {
+              var horizonN1 = new Date(anneeCible, 11, 31, 23, 59, 59).getTime();
+              var debJanN1 = new Date(anneeCible, 0, 1).getTime();
+              var caChN1 = new Array(12).fill(0);
+              // Caches hisses hors de la boucle chantiers (perf : ~470 jours x chantiers)
+              var titreEqN1 = {};
+              (ctx.equipements || []).forEach(function(eq) {
+                if (eq && eq.Id != null) titreEqN1[String(eq.Id)] = String(eq.Title || "").toUpperCase().trim();
+              });
+              var vitMachCacheN1 = {};
+              var vitMachN1 = function(mk) {
+                if (vitMachCacheN1[mk] == null) vitMachCacheN1[mk] = vitesseMachineGlobal(metByMkTr, mk, now2.getTime(), 30);
+                return vitMachCacheN1[mk];
+              };
+              (dbChantiers || []).forEach(function(c) {
+                if (c.statut === "Termine" || c.statut === "Annule") return;
+                var metrageC = parseFloat(c.metrage) || 0;
+                var prixC = parseFloat(c.prixMetre) || 0;
+                if (metrageC <= 0 || prixC <= 0) return;
+                var dDebC = c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00") : null;
+                var dFinC = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
+                if (!dDebC || !dFinC || isNaN(dDebC.getTime()) || isNaN(dFinC.getTime())) return;
+                if (dFinC.getTime() < now2.getTime()) return;
+                var realiseC = 0;
+                var saisC = (ctx.dbSaisies || {})[c.id] || {};
+                Object.keys(saisC).forEach(function(dK) {
+                  var vv2 = saisC[dK];
+                  var mm2 = typeof vv2 === "object" && vv2 !== null ? (parseFloat(vv2.valeur) || 0) : (parseFloat(vv2) || 0);
+                  if (mm2 > 0) realiseC += mm2;
+                });
+                var restantC = Math.max(0, metrageC - realiseC);
+                if (restantC <= 0) return;
+                var vitQ = computeMetragePerJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
+                var coefD = coefDispoChantierHist(c, ctx.dbSaisies, now2.getTime()).coef;
+                var avgMH = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, now2);
+                var sansHisto = vitQ <= 0;
+                // ANTI DOUBLE-COMPTE : la fin de l'annee N n'est PAS reprojetee ici.
+                // On demarre au 1er janvier n+1 et on repart du metrage que la vue N
+                // a deja projete (projNParChantier) - ce metrage est deja dans le
+                // solde chaine de fin N, le recompter gonflerait 2 fois la tresorerie.
+                var debutCur = Math.max(dDebC.getTime(), debJanN1);
+                var finCur = Math.min(dFinC.getTime(), horizonN1);
+                if (debutCur > finCur) return;
+                var totP = projNParChantier[c.id] || 0;
+                if (totP >= restantC) return;
+                // Cadence objectif : MEME formule que la vue N (metrage restant depuis
+                // aujourd'hui / jours ouvres jusqu'a la VRAIE fin du chantier)
+                var jOuvR = 0;
+                var dCnt = new Date(Math.max(dDebC.getTime(), now2.getTime())); var safeC1 = 0;
+                while (dCnt.getTime() <= dFinC.getTime() && safeC1 < 1300) {
+                  var dwC = dCnt.getDay();
+                  if (dwC >= 1 && dwC <= 4) jOuvR++;
+                  dCnt.setDate(dCnt.getDate() + 1); safeC1++;
+                }
+                var cadObj = jOuvR > 0 ? (restantC / jOuvR) : 0;
+                // Machines planifiees sur ce chantier (Calendrier > Planning engins)
+                var cesC = (ctx.dbChantierEquipements || []).filter(function(ce) {
+                  return ce && String(ce.chantierId) === String(c.id);
+                });
+                var curS = new Date(debutCur); var safeC2 = 0;
+                while (curS.getTime() <= finCur && safeC2 < 900 && totP < restantC) {
+                  var dwS = curS.getDay();
+                  if (dwS >= 1 && dwS <= 4) {
+                    var isoS = curS.getFullYear() + "-" + String(curS.getMonth() + 1).padStart(2, "0") + "-" + String(curS.getDate()).padStart(2, "0");
+                    var dayM = 0;
+                    if (sansHisto) {
+                      // Chantier futur sans vitesse mesuree : LE PLANNING MACHINES fait foi.
+                      // Chaque machine planifiee ce jour produit a sa vitesse historique
+                      // globale (30 j) ; sans planning ni vitesse -> cadence objectif
+                      // (sans coefDispo, comme la vue N).
+                      var tS = curS.getTime();
+                      var vMachines = 0; var nbPl = 0;
+                      cesC.forEach(function(ce) {
+                        var db2 = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
+                        var df2 = ce.dateFin ? new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00").getTime() : null;
+                        if (db2 !== null && tS < db2) return;
+                        if (df2 !== null && tS > df2) return;
+                        nbPl++;
+                        var mkC = titreEqN1[String(ce.equipementId)];
+                        if (mkC) vMachines += vitMachN1(mkC);
+                      });
+                      if (nbPl > 0 && vMachines > 0) dayM = vMachines * coefD;
+                      else dayM = cadObj;
+                    } else {
+                      // Chantier avec historique : moteur machine-aware STRICT (une journee
+                      // sans machine planifiee = 0) - en vue n+1 le planning EST la saisie.
+                      var prevD = previsionnelBaseChantierDay(c.id, isoS, ctx.dbChantierEquipements, ctx.equipements, metByMkTr, vitQ, now2.getTime(), avgMH);
+                      dayM = (prevD.metrage || 0) * coefD;
+                    }
+                    if (dayM > 0) {
+                      if (totP + dayM > restantC) dayM = restantC - totP;
+                      totP += dayM;
+                      if (curS.getFullYear() === anneeCible) caChN1[curS.getMonth()] += dayM * prixC;
+                    }
+                  }
+                  curS.setDate(curS.getDate() + 1); safeC2++;
+                }
+              });
+              // Emprunts : mensualite EFFECTIVE de chaque mois n+1 (meme logique que
+              // l'echeancier 24 mois : debut/fin effective respectes, traites reduites)
+              var empruntsPourMoisN1 = function(y3, m3) {
+                var dP = new Date(y3, m3, 1);
+                var dDer = new Date(y3, m3 + 1, 0);
+                var moisIso3 = y3 + "-" + String(m3 + 1).padStart(2, "0") + "-01";
+                var tot3 = 0;
+                (ctx.dbEmprunts || []).forEach(function(e) {
+                  if ((e.statut || "actif") !== "actif") return;
+                  var db3 = e.date_debut ? new Date(e.date_debut) : null;
+                  var dfEff3 = getDateFinEffectiveEmprunt(e);
+                  var df3 = dfEff3 ? new Date(dfEff3) : null;
+                  if (db3 && db3 > dDer) return;
+                  if (df3 && df3 < dP) return;
+                  tot3 += getMensualiteEffectiveEmprunt(e, moisIso3);
+                });
+                return tot3;
+              };
+              // Passe mensuelle n+1 : encaissement = travaux du mois precedent (janvier
+              // n+1 encaisse decembre N), decaissements = hypotheses annee N + emprunts
+              // du mois, plancher = rythme bancaire reel observe en N.
+              var soldeDebutN1 = trMois[11].solde;
+              var trN1 = [];
+              var soldeC3 = soldeDebutN1;
+              for (var mN = 0; mN < 12; mN++) {
+                var kMonthN = anneeCible + "-" + String(mN + 1).padStart(2, "0");
+                var caChMi3 = mN === 0 ? (caTravailChParMois[11] || 0) : (caChN1[mN - 1] || 0);
+                var caAcMi3 = mN === 0 ? (caTravailAcParMois[11] || 0) : caActivitesMens;
+                var encN = caChMi3 + caAcMi3;
+                var empMoisN = empruntsPourMoisN1(anneeCible, mN);
+                var factMiN = factFrsFutures[kMonthN] || 0;
+                var decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN;
+                // Plancher = rythme bancaire reel N, AJUSTE du delta d'emprunts : le
+                // rythme observe contient les mensualites de N ; on y substitue celles
+                // du mois n+1 pour que les fins de prets restent visibles sur la courbe.
+                var plancherN1 = decaissMoyenReel != null ? Math.max(0, decaissMoyenReel - empruntsMensuel + empMoisN) : null;
+                var decN = plancherN1 != null ? Math.max(plancherN1, decTheoN) : decTheoN;
+                var netN = encN - decN;
+                soldeC3 += netN;
+                trN1.push({
+                  d: new Date(anneeCible, mN, 1), encaiss: encN, decaiss: decN, net: netN,
+                  caChantiers: caChMi3, factFrs: factMiN, source: "projete", estPasse: false, estCourant: false,
+                  solde: soldeC3,
+                  detail: {
+                    kind: "projete", caChantiers: caChMi3, caActivites: caAcMi3,
+                    encaissTheorique: encN, encaissMoyenReel: null, encaissAjustement: 0,
+                    salaires: salairesMens, chargesFixes: chargesFixesMens, emprunts: empMoisN,
+                    factFrs: factMiN, decaissTheorique: decTheoN, decaissMoyenReel: plancherN1,
+                    decaissAjustement: decN - decTheoN
+                  }
+                });
+              }
+              // La vue n+1 remplace les series affichees (l'annee N reste la base du chainage)
+              trMois = trN1;
+              soldeInit = soldeDebutN1;
+              soldeFinTr = trMois[11].solde;
+              minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
+              minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
+              totalInTr = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
+              totalOutTr = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
+              soldeSource = "chaine_n";
+            }
             var fmtCaTr = function(v) {
               var sign = v < 0 ? "-" : "";
               var abs = Math.abs(v);
@@ -23470,10 +23655,22 @@
             var yTicksT = [0, 0.25, 0.5, 0.75, 1].map(function(t) { return { v: maxVt - t * yRangeT, y: padT.t + t * iht }; });
             return h("div", { style: { background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.20)", borderRadius: 12, padding: 16, marginBottom: 16 } },
               h("div", { style: { marginBottom: 12 } },
-                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8 } },
+                h("div", { style: { fontSize: 14, fontWeight: 800, color: "#93c5fd", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
                   h(Icon, { name: "line-chart", size: 16, color: "#93c5fd" }),
-                  "Tresorerie previsionnelle - annee " + now2.getFullYear(),
-                  soldeSource === "manuel" ? h("span", { style: { fontSize: 10, background: "rgba(129,140,248,0.20)", color: "#c7d2fe", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Ancre solde manuel") : (soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres")),
+                  "Tresorerie previsionnelle - annee " + anneeCible,
+                  // ── Bascule d'annee : N (reel + projete) / N+1 (previsionnel planning) ──
+                  h("span", { style: { display: "inline-flex", gap: 4, marginLeft: 4 } },
+                    h("span", {
+                      onClick: function() { setAnneeTreso(0); },
+                      style: { fontSize: 10.5, padding: "3px 10px", borderRadius: 999, fontWeight: 700, cursor: "pointer", background: !estVueN1 ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: !estVueN1 ? "#ffffff" : "#a1a1aa", border: "1px solid " + (!estVueN1 ? "transparent" : "rgba(255,255,255,0.12)") }
+                    }, String(now2.getFullYear())),
+                    h("span", {
+                      onClick: function() { setAnneeTreso(1); },
+                      style: { fontSize: 10.5, padding: "3px 10px", borderRadius: 999, fontWeight: 700, cursor: "pointer", background: estVueN1 ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: estVueN1 ? "#ffffff" : "#a1a1aa", border: "1px solid " + (estVueN1 ? "transparent" : "rgba(255,255,255,0.12)") }
+                    }, (now2.getFullYear() + 1) + " (n+1)")
+                  ),
+                  estVueN1 ? h("span", { style: { fontSize: 10, background: "rgba(56,189,248,0.15)", color: "#7dd3fc", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Chaine sur fin " + now2.getFullYear())
+                  : (soldeSource === "manuel" ? h("span", { style: { fontSize: 10, background: "rgba(129,140,248,0.20)", color: "#c7d2fe", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Ancre solde manuel") : (soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres"))),
                   h("button", {
                     onClick: async function() {
                       var cur = soldeManuel != null ? String(soldeManuel) : "";
@@ -23494,22 +23691,24 @@
                     style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", color: "#c7d2fe", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
                 ),
-                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, "Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : ""))
+                h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
+                  ? ("Previsionnel " + anneeCible + " : le CA vient du PLANNING ENGINS du Calendrier (chaque machine planifiee produit a sa vitesse mesuree " + now2.getFullYear() + "). Salaires, frais generaux, plancher de decaissements et CA activites = estimes sur les donnees " + now2.getFullYear() + " ; emprunts = echeancier reel mois par mois (fins de prets deduites). Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
+                  : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
               ),
               (function() {
-                var soldeAujourdhui = soldeManuel != null ? soldeManuel : (nbEcrBanque > 0 ? soldeBanqueLive : (trMois[now2.getMonth()] ? trMois[now2.getMonth()].solde : soldeInit));
+                var soldeAujourdhui = estVueN1 ? soldeInit : (soldeManuel != null ? soldeManuel : (nbEcrBanque > 0 ? soldeBanqueLive : (trMois[now2.getMonth()] ? trMois[now2.getMonth()].solde : soldeInit)));
                 return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 8, marginBottom: 14 } },
                 h("div", { style: { padding: "10px 12px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Solde aujourd'hui"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, estVueN1 ? "Solde debut " + anneeCible : "Solde aujourd'hui"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: soldeAujourdhui >= 0 ? "#c7d2fe" : "#fda4af", fontFamily: "monospace" } }, fmtCaTr(soldeAujourdhui) + " XPF"),
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, soldeSource === "manuel" ? "Ancre manuel" : (soldeSource === "compta" ? "Solde bancaire Compta" : "Estimation"))
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, estVueN1 ? "Chaine sur la courbe " + now2.getFullYear() : (soldeSource === "manuel" ? "Ancre manuel" : (soldeSource === "compta" ? "Solde bancaire Compta" : "Estimation")))
                 ),
                 h("div", { style: { padding: "10px 12px", background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.30)", borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Encaissements a venir"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, estVueN1 ? "Encaissements " + anneeCible : "Encaissements a venir"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: "#86efac", fontFamily: "monospace" } }, fmtCaTr(totalInTr) + " XPF")
                 ),
                 h("div", { style: { padding: "10px 12px", background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.30)", borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Decaissements a venir"),
+                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, estVueN1 ? "Decaissements " + anneeCible : "Decaissements a venir"),
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: "#fda4af", fontFamily: "monospace" } }, "-" + fmtCaTr(totalOutTr) + " XPF")
                 ),
                 h("div", { style: { padding: "10px 12px", background: soldeFinTr >= soldeInit ? "rgba(34,197,94,0.10)" : "rgba(244,63,94,0.10)", border: "1px solid " + (soldeFinTr >= soldeInit ? "rgba(34,197,94,0.30)" : "rgba(244,63,94,0.30)"), borderRadius: 8 } },
@@ -23557,7 +23756,8 @@
                   // Ligne moyenne (jaune pointille, comme carburant)
                   h("line", { x1: padT.l, y1: yForT(moyenneSolde), x2: padT.l + iwt, y2: yForT(moyenneSolde), stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }),
                   // Ligne verticale "Aujourd'hui" (separe passe reel Compta et futur projete)
-                  (function() {
+                  // - sans objet en vue n+1 (annee entierement future)
+                  estVueN1 ? null : (function() {
                     var idxToday = now2.getMonth();
                     var xToday = xForT(idxToday);
                     return h("g", null,
