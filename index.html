@@ -12812,12 +12812,29 @@
         var dk = String(r.dateReleve).substring(0, 10);
         var v = parseFloat(r.metrage) || 0;
         if (v <= 0) return;
-        if (!idx[mk]) idx[mk] = { _total: {} };
+        if (!idx[mk]) idx[mk] = { _total: {}, _libre: {} };
+        // MAX par (machine, chantier, date) : rapportsAsReleves genere UNE LIGNE
+        // PAR MEMBRE D'EQUIPE avec le metrage TOTAL du rapport -> une somme brute
+        // multiplierait la vitesse par la taille de l'equipe.
+        var bucket;
         if (ck) {
           if (!idx[mk][ck]) idx[mk][ck] = {};
-          if (v > (idx[mk][ck][dk] || 0)) idx[mk][ck][dk] = v;
+          bucket = idx[mk][ck];
+        } else {
+          bucket = idx[mk]._libre;
         }
-        idx[mk]._total[dk] = (idx[mk]._total[dk] || 0) + v;
+        if (v > (bucket[dk] || 0)) bucket[dk] = v;
+      });
+      // _total[dk] = SOMME des max dedupliques par chantier (machine reellement
+      // sur 2 chantiers le meme jour : les 2 productions comptent, une equipe
+      // de 3 sur le meme rapport ne compte qu'une fois).
+      Object.keys(idx).forEach(function(mk2) {
+        var tot = idx[mk2]._total;
+        Object.keys(idx[mk2]).forEach(function(ck2) {
+          if (ck2 === "_total") return;
+          var b2 = idx[mk2][ck2];
+          Object.keys(b2).forEach(function(dk2) { tot[dk2] = (tot[dk2] || 0) + b2[dk2]; });
+        });
       });
       return idx;
     }
