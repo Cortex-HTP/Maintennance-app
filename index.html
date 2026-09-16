@@ -10299,10 +10299,29 @@
 
         if (f._type === "chant") {
           var caPreview = (f.metrage || 0) * (f.prixMetre || 0);
+          // Suggestions Titre / Client depuis les chantiers existants (saisie libre
+          // conservee : un nouveau nom reste possible, ex. reconduction "Tiebaghi")
+          var titresExist = [], clientsExist = [];
+          (function() {
+            var st = {}, sc = {};
+            (chantiers || []).forEach(function(c2) {
+              var t2 = String(c2.titre || "").trim();
+              var cl2 = String(c2.client || "").trim();
+              if (t2 && !st[t2.toUpperCase()]) { st[t2.toUpperCase()] = 1; titresExist.push(t2); }
+              if (cl2 && !sc[cl2.toUpperCase()]) { sc[cl2.toUpperCase()] = 1; clientsExist.push(cl2); }
+            });
+            titresExist.sort(); clientsExist.sort();
+          }());
           return h(Modal, { title: f.id ? "Modifier le chantier" : "Nouveau chantier", onClose: closeModal, size: 650 },
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
-              h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: f.titre, onChange: function(e) { upd("titre", e.target.value); } })),
-              h(FormField, { label: "Client" }, h("input", { style: inputStyle, value: f.client || "", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }))
+              h(FormField, { label: "Titre" }, h("span", null,
+                h("input", { style: inputStyle, value: f.titre, list: "dl-chant-titres", placeholder: "Choisir ou saisir...", onChange: function(e) { upd("titre", e.target.value); } }),
+                h("datalist", { id: "dl-chant-titres" }, titresExist.map(function(t3) { return h("option", { key: t3, value: t3 }); }))
+              )),
+              h(FormField, { label: "Client" }, h("span", null,
+                h("input", { style: inputStyle, value: f.client || "", list: "dl-chant-clients", placeholder: "ex. SLN, NMC...", onChange: function(e) { upd("client", e.target.value); } }),
+                h("datalist", { id: "dl-chant-clients" }, clientsExist.map(function(cl3) { return h("option", { key: cl3, value: cl3 }); }))
+              ))
             ),
             h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 } },
               h(FormField, { label: "Email contact client (secours - les signataires des rapports sont prioritaires)" }, h("input", { type: "email", style: inputStyle, value: f.emailContact || "", placeholder: "contact@client.nc", onChange: function(e) { upd("emailContact", e.target.value); } })),
@@ -10362,10 +10381,12 @@
           h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel", value: fmtNum(caChantiers), color: "#d97706" }),
           h(KPICard, { icon: h(Icon, { name: ratioCashPlan.aDonnees ? "banknote" : "trending-up", size: 32, color: "#2563eb" }), label: ratioCashPlan.aDonnees ? "Marge cash %" : "Marge %", value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
         ),
+        // Chantiers et Planning engins raisonnent a l'ANNEE (filtre + saut annuel) ;
+        // Declarations / Renouvellements gardent la navigation mensuelle en vue liste.
         h("div", { style: { marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
-          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, viewMode === "annuel" ? String(currentMonth.getFullYear()) : currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, viewMode === "annuel" ? 12 : 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
+          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? String(currentMonth.getFullYear()) : currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? 12 : 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
           h("div", { style: { marginLeft: "auto", display: "flex", gap: 8 } },
             h("button", { onClick: function() { setViewMode("annuel"); }, style: { background: viewMode === "annuel" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: viewMode === "annuel" ? "white" : "#a1a1aa", border: "1px solid " + (viewMode === "annuel" ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "calendar-range", size: 14, color: viewMode === "annuel" ? "white" : "#a1a1aa" })),
             h("button", { onClick: function() { setViewMode("liste"); }, style: { background: viewMode === "liste" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: viewMode === "liste" ? "white" : "#a1a1aa", border: "1px solid " + (viewMode === "liste" ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "list", size: 14, color: viewMode === "liste" ? "white" : "#a1a1aa" }))
@@ -10478,10 +10499,21 @@
                 )
               );
             }
+            // Filtre par l'ANNEE affichee : un chantier apparait si sa periode
+            // [dateDebut, dateFin] touche l'annee (sans dates -> toujours visible)
+            var anneeCartes = currentMonth.getFullYear();
+            var chantiersAnnee = chantiers.filter(function(ch2) {
+              var dD2 = ch2.dateDebut ? new Date(String(ch2.dateDebut).substring(0, 10) + "T00:00:00") : null;
+              var dF2 = ch2.dateFin ? new Date(String(ch2.dateFin).substring(0, 10) + "T00:00:00") : null;
+              if ((!dD2 || isNaN(dD2.getTime())) && (!dF2 || isNaN(dF2.getTime()))) return true;
+              var y0 = dD2 && !isNaN(dD2.getTime()) ? dD2.getFullYear() : dF2.getFullYear();
+              var y1 = dF2 && !isNaN(dF2.getTime()) ? dF2.getFullYear() : y0;
+              return anneeCartes >= y0 && anneeCartes <= y1;
+            });
             var _gridCh = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 16 };
-            return chantiers.length > 0
-              ? h("div", { style: _gridCh }, chantiers.map(renderChantierCard))
-              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier");
+            return chantiersAnnee.length > 0
+              ? h("div", { style: _gridCh }, chantiersAnnee.map(renderChantierCard))
+              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier sur " + anneeCartes);
           }()) : renderAnnuel()
         ),
         activeTab === "maintenances" && (function() {
