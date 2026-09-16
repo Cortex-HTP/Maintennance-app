@@ -23513,26 +23513,18 @@
             var totalOutAnnee = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
 
             // ══ VUE N+1 : projection de l'annee suivante, chainee sur la fin de N ══
-            // Toutes les hypotheses sont ESTIMEES SUR LES DONNEES DE L'ANNEE N :
-            // salaires (Personnel x1.4), frais generaux structure (FEC), plancher de
+            // MEME MOTEUR CA que la vue N (comportement identique, demande user) :
+            // chantier sans historique -> cadence objectif (metrage x prix repartis
+            // uniformement sur la periode saisie au Calendrier) ; chantier avec
+            // vitesse mesuree -> mode legacy previsionnelBaseChantierDay. Toutes les
+            // hypotheses sont ESTIMEES SUR LES DONNEES DE L'ANNEE N : salaires
+            // (Personnel x1.4), frais generaux structure (FEC), plancher de
             // decaissements (rythme bancaire reel), CA activites (moyenne YTD),
-            // emprunts (echeancier mois par mois, fins de prets respectees). Le CA
-            // chantiers vient du PLANNING MACHINES du Calendrier : chaque machine
-            // planifiee produit a sa vitesse historique mesuree.
+            // emprunts (echeancier mois par mois, fins de prets respectees).
             if (estVueN1) {
               var horizonN1 = new Date(anneeCible, 11, 31, 23, 59, 59).getTime();
               var debJanN1 = new Date(anneeCible, 0, 1).getTime();
               var caChN1 = new Array(12).fill(0);
-              // Caches hisses hors de la boucle chantiers (perf : ~470 jours x chantiers)
-              var titreEqN1 = {};
-              (ctx.equipements || []).forEach(function(eq) {
-                if (eq && eq.Id != null) titreEqN1[String(eq.Id)] = String(eq.Title || "").toUpperCase().trim();
-              });
-              var vitMachCacheN1 = {};
-              var vitMachN1 = function(mk) {
-                if (vitMachCacheN1[mk] == null) vitMachCacheN1[mk] = vitesseMachineGlobal(metByMkTr, mk, now2.getTime(), 30);
-                return vitMachCacheN1[mk];
-              };
               (dbChantiers || []).forEach(function(c) {
                 if (c.statut === "Termine" || c.statut === "Annule") return;
                 var metrageC = parseFloat(c.metrage) || 0;
@@ -23553,7 +23545,6 @@
                 if (restantC <= 0) return;
                 var vitQ = computeMetragePerJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
                 var coefD = coefDispoChantierHist(c, ctx.dbSaisies, now2.getTime()).coef;
-                var avgMH = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, now2);
                 var sansHisto = vitQ <= 0;
                 // ANTI DOUBLE-COMPTE : la fin de l'annee N n'est PAS reprojetee ici.
                 // On demarre au 1er janvier n+1 et on repart du metrage que la vue N
@@ -23574,10 +23565,6 @@
                   dCnt.setDate(dCnt.getDate() + 1); safeC1++;
                 }
                 var cadObj = jOuvR > 0 ? (restantC / jOuvR) : 0;
-                // Machines planifiees sur ce chantier (Calendrier > Planning engins)
-                var cesC = (ctx.dbChantierEquipements || []).filter(function(ce) {
-                  return ce && String(ce.chantierId) === String(c.id);
-                });
                 var curS = new Date(debutCur); var safeC2 = 0;
                 while (curS.getTime() <= finCur && safeC2 < 900 && totP < restantC) {
                   var dwS = curS.getDay();
@@ -23585,28 +23572,14 @@
                     var isoS = curS.getFullYear() + "-" + String(curS.getMonth() + 1).padStart(2, "0") + "-" + String(curS.getDate()).padStart(2, "0");
                     var dayM = 0;
                     if (sansHisto) {
-                      // Chantier futur sans vitesse mesuree : LE PLANNING MACHINES fait foi.
-                      // Chaque machine planifiee ce jour produit a sa vitesse historique
-                      // globale (30 j) ; sans planning ni vitesse -> cadence objectif
-                      // (sans coefDispo, comme la vue N).
-                      var tS = curS.getTime();
-                      var vMachines = 0; var nbPl = 0;
-                      cesC.forEach(function(ce) {
-                        var db2 = ce.dateDebut ? new Date(String(ce.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
-                        var df2 = ce.dateFin ? new Date(String(ce.dateFin).substring(0, 10) + "T00:00:00").getTime() : null;
-                        if (db2 !== null && tS < db2) return;
-                        if (df2 !== null && tS > df2) return;
-                        nbPl++;
-                        var mkC = titreEqN1[String(ce.equipementId)];
-                        if (mkC) vMachines += vitMachN1(mkC);
-                      });
-                      if (nbPl > 0 && vMachines > 0) dayM = vMachines * coefD;
-                      else dayM = cadObj;
+                      // MEME moteur que la vue N : cadence objectif, le metrage et les
+                      // dates saisis au Calendrier font foi (repartition uniforme)
+                      dayM = cadObj;
                     } else {
-                      // Chantier avec historique : moteur machine-aware STRICT (une journee
-                      // sans machine planifiee = 0) - en vue n+1 le planning EST la saisie.
-                      var prevD = previsionnelBaseChantierDay(c.id, isoS, ctx.dbChantierEquipements, ctx.equipements, metByMkTr, vitQ, now2.getTime(), avgMH);
-                      dayM = (prevD.metrage || 0) * coefD;
+                      // MEME mode legacy que la vue N : vitesse chantier mesuree,
+                      // affinee par le planning machines quand il est saisi
+                      var prevD = previsionnelBaseChantierDay(c.id, isoS, ctx.dbChantierEquipements, ctx.equipements, metByMkTr, vitQ, now2.getTime());
+                      dayM = (prevD.metrage || vitQ) * coefD;
                     }
                     if (dayM > 0) {
                       if (totP + dayM > restantC) dayM = restantC - totP;
@@ -23744,7 +23717,7 @@
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
                 ),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
-                  ? ("Previsionnel " + anneeCible + " : le CA vient du PLANNING ENGINS du Calendrier (chaque machine planifiee produit a sa vitesse mesuree " + now2.getFullYear() + "). Salaires, frais generaux, plancher de decaissements et CA activites = estimes sur les donnees " + now2.getFullYear() + " ; emprunts = echeancier reel mois par mois (fins de prets deduites). Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
+                  ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Salaires, frais generaux, plancher de decaissements et CA activites = estimes sur les donnees " + now2.getFullYear() + " ; emprunts = echeancier reel mois par mois (fins de prets deduites). Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
                   : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
               ),
               (function() {
