@@ -9746,7 +9746,19 @@
       var docsARenouveler = renouvellements.filter(function(r) {
         return computeRenouvellementStatus(r) !== "Valide";
       }).length;
-      var caChantiers = chantiers.reduce(function(sum, c) { return sum + (c.metrage * c.prixMetre); }, 0);
+      // ── Filtre ANNEE du bandeau, partage entre les KPI chantiers et les cartes ──
+      // "A provisionner" et "Docs a renouveler" restent globaux (compteurs d'action).
+      var anneePlanning = currentMonth.getFullYear();
+      function chantierToucheAnnee(ch2) {
+        var dD2 = ch2.dateDebut ? new Date(String(ch2.dateDebut).substring(0, 10) + "T00:00:00") : null;
+        var dF2 = ch2.dateFin ? new Date(String(ch2.dateFin).substring(0, 10) + "T00:00:00") : null;
+        if ((!dD2 || isNaN(dD2.getTime())) && (!dF2 || isNaN(dF2.getTime()))) return true;
+        var y0 = dD2 && !isNaN(dD2.getTime()) ? dD2.getFullYear() : dF2.getFullYear();
+        var y1 = dF2 && !isNaN(dF2.getTime()) ? dF2.getFullYear() : y0;
+        return anneePlanning >= y0 && anneePlanning <= y1;
+      }
+      var chantiersAnneePlan = chantiers.filter(chantierToucheAnnee);
+      var caChantiers = chantiersAnneePlan.reduce(function(sum, c) { return sum + (c.metrage * c.prixMetre); }, 0);
       // Cout de revient reel au metre (FEC). Repli quand la machine n'a pas de donnees.
       var coutMetreFEC = computeCoutMetreFEC(ctx, new Date());
       // ── Cout/m PAR CHANTIER via sa machine dominante (meme moteur qu'Avancement) ──
@@ -9804,7 +9816,8 @@
         return ratioCashPlan.aDonnees ? base * ratioCashPlan.ratio : base;
       }
       // Cout par chantier = depenses saisies si renseignees, sinon cout/m de SA machine
-      var depensesChantiers = chantiers.reduce(function(sum, c) {
+      // (meme perimetre annee que le CA pour une marge coherente)
+      var depensesChantiers = chantiersAnneePlan.reduce(function(sum, c) {
         var cmC = coutMetreChantierPlan(c.id);
         var cout = (parseFloat(c.depensesPrevues) || 0) > 0 ? parseFloat(c.depensesPrevues) : (cmC > 0 ? cmC * (c.metrage || 0) : 0);
         return sum + cout;
@@ -10378,8 +10391,8 @@
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "wallet", size: 32, color: "#a78bfa" }), label: "A provisionner", value: fmtNum(totalAprovisionner), color: "#a78bfa" }),
           h(KPICard, { icon: h(Icon, { name: "file-check", size: 32, color: "#059669" }), label: "Docs a renouveler", value: String(docsARenouveler), color: "#059669" }),
-          h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel", value: fmtNum(caChantiers), color: "#d97706" }),
-          h(KPICard, { icon: h(Icon, { name: ratioCashPlan.aDonnees ? "banknote" : "trending-up", size: 32, color: "#2563eb" }), label: ratioCashPlan.aDonnees ? "Marge cash %" : "Marge %", value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
+          h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#d97706" }), label: "CA Previsionnel " + anneePlanning, value: fmtNum(caChantiers), color: "#d97706" }),
+          h(KPICard, { icon: h(Icon, { name: ratioCashPlan.aDonnees ? "banknote" : "trending-up", size: 32, color: "#2563eb" }), label: (ratioCashPlan.aDonnees ? "Marge cash % " : "Marge % ") + anneePlanning, value: margeChantiers == null ? "—" : (margeChantiers + "%"), color: margeChantiers != null && margeChantiers < 0 ? "#dc2626" : "#2563eb" })
         ),
         // Chantiers et Planning engins raisonnent a l'ANNEE (filtre + saut annuel) ;
         // Declarations / Renouvellements gardent la navigation mensuelle en vue liste.
@@ -10499,21 +10512,11 @@
                 )
               );
             }
-            // Filtre par l'ANNEE affichee : un chantier apparait si sa periode
-            // [dateDebut, dateFin] touche l'annee (sans dates -> toujours visible)
-            var anneeCartes = currentMonth.getFullYear();
-            var chantiersAnnee = chantiers.filter(function(ch2) {
-              var dD2 = ch2.dateDebut ? new Date(String(ch2.dateDebut).substring(0, 10) + "T00:00:00") : null;
-              var dF2 = ch2.dateFin ? new Date(String(ch2.dateFin).substring(0, 10) + "T00:00:00") : null;
-              if ((!dD2 || isNaN(dD2.getTime())) && (!dF2 || isNaN(dF2.getTime()))) return true;
-              var y0 = dD2 && !isNaN(dD2.getTime()) ? dD2.getFullYear() : dF2.getFullYear();
-              var y1 = dF2 && !isNaN(dF2.getTime()) ? dF2.getFullYear() : y0;
-              return anneeCartes >= y0 && anneeCartes <= y1;
-            });
+            // Meme filtre ANNEE que les KPI du haut (chantierToucheAnnee, bandeau)
             var _gridCh = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 16 };
-            return chantiersAnnee.length > 0
-              ? h("div", { style: _gridCh }, chantiersAnnee.map(renderChantierCard))
-              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier sur " + anneeCartes);
+            return chantiersAnneePlan.length > 0
+              ? h("div", { style: _gridCh }, chantiersAnneePlan.map(renderChantierCard))
+              : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier sur " + anneePlanning);
           }()) : renderAnnuel()
         ),
         activeTab === "maintenances" && (function() {
