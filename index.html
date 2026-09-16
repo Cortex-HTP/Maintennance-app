@@ -3239,7 +3239,14 @@
           // Update seulement si on edite un enregistrement EXISTANT (avec un vrai Id).
           // Un pre-remplissage (ex: depuis une fiche equipement) n'a pas d'Id -> insert.
           if (finalForm.Id) await updateIntervention(finalForm); else await addIntervention(finalForm);
-          if (f.Horametre || f.KM) {
+          // Les interventions AUTO ([Auto] / cycle_number pose par l'auto-generation)
+          // portent un horametre PLANIFIE (seuil du plan d'entretien), PAS un releve
+          // reel : enregistrer une modification ne doit JAMAIS creer de releve ni
+          // toucher l'horametre de la machine (l'HM sautait a la valeur du seuil).
+          // Les interventions manuelles gardent leur comportement (le mecano saisit
+          // un horametre reellement releve ce jour-la).
+          var estInterAuto = (finalForm.CycleNumber != null) || String(finalForm.Title || "").indexOf("[Auto]") === 0;
+          if (!estInterAuto && (f.Horametre || f.KM)) {
             await addReleve({ Equipement: f.Equipement, Date: f.Date_Intervention, Horametre: f.Horametre || "0", KM: f.KM || "0", Technicien: f.Technicien || "" });
           }
           if (onDone) onDone();
