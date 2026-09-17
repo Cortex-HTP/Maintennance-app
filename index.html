@@ -13040,7 +13040,15 @@
       // planifiees ce jour. Corrige le sur-forecast quand le chantier tournait avec plus
       // de machines dans le passe que ce qui est planifie pour le jour futur.
       // Mode legacy : baseline = vitesse chantier brute (buggé si le nb de machines change).
-      var nbActives = Math.max(1, actives.length);
+      // PLAFOND REALITE : le nb de machines PLANIFIEES est borne par le nb de
+      // machines qui TOURNENT reellement (avgMachinesHist, mesure sur les jours
+      // productifs). Cas Wallis : 2 sondeuses posees sur Tiebaghi mais UNE seule
+      // tourne a la fois (une equipe) -> 2 bandes au planning ne doivent pas
+      // doubler la projection. Si les 2 se mettent vraiment a forer ensemble,
+      // la mesure monte et le plafond suit automatiquement.
+      var nbListees = Math.max(1, actives.length); // machines posees au planning (denominateur adaptation)
+      var nbActives = nbListees;
+      if (useAvgMachines) nbActives = Math.min(nbActives, Math.max(1, Math.round(avgMachinesHist)));
       var baseMetrage = useAvgMachines ? (vitChant / avgMachinesHist) * nbActives : vitChant;
       var anyAdapt = false, anyOldBaseline = false;
       var adaptingFraction = 0;
@@ -13058,7 +13066,7 @@
         if (isReplacement && realDays < 3) {
           phase = "adapt";
           anyAdapt = true;
-          adaptingFraction += 1 / nbActives;
+          adaptingFraction += 1 / nbListees;
         } else if (isReplacement && realDays < 7) {
           phase = "old-baseline";
           anyOldBaseline = true;
