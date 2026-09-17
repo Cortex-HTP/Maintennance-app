@@ -1163,6 +1163,19 @@
       }
       return best;
     }
+    // Un chantier "touche" l'annee donnee si sa periode [dateDebut, dateFin] la
+    // chevauche (sans dates : toujours vrai, jamais bloquant). Sert a masquer
+    // les chantiers de l'annee suivante saisis en avance (previsionnel n+1)
+    // dans les listes de travail de l'annee en cours - meme regle que le
+    // dropdown des tablettes cote APP Employes.
+    function chantierToucheAnneeCal(c, annee) {
+      var y0 = c && c.dateDebut ? parseInt(String(c.dateDebut).substring(0, 4), 10) : NaN;
+      var y1 = c && c.dateFin ? parseInt(String(c.dateFin).substring(0, 4), 10) : NaN;
+      if (!isFinite(y0) && !isFinite(y1)) return true;
+      if (!isFinite(y0)) y0 = y1;
+      if (!isFinite(y1)) y1 = y0;
+      return annee >= y0 && annee <= y1;
+    }
     function resolveRapportChantierId(r, chantierBySite) {
       var chId = (r.chantier_id != null) ? r.chantier_id : null;
       if (chId == null) {
@@ -13721,7 +13734,7 @@
       };
       var closeModalAv = function() { setShowModal(false); setEditing(null); };
 
-      var activeChantiers = chantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine" || c.statut === "A venir"; });
+      var activeChantiers = chantiers.filter(function(c) { return (c.statut === "En cours" || c.statut === "Termine" || c.statut === "A venir") && chantierToucheAnneeCal(c, currentMonth.getFullYear()); });
       var daysInMonth = getDaysInMonth(currentMonth);
       var year = currentMonth.getFullYear();
       var monthIdx = currentMonth.getMonth();
@@ -16251,7 +16264,7 @@
       var daysInMonth = getDaysInMonthPe(currentMonth);
       var dayLetters = ["D", "L", "M", "M", "J", "V", "S"];
 
-      var activeChantiers = chantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "A venir"; });
+      var activeChantiers = chantiers.filter(function(c) { return (c.statut === "En cours" || c.statut === "A venir") && chantierToucheAnneeCal(c, currentMonth.getFullYear()); });
 
       function getChantierColor(chId) {
         var idx = activeChantiers.findIndex(function(ch) { return ch.id === chId; });
@@ -24650,7 +24663,7 @@
             // metre et le rattachement facturation/validation client. Choisir un
             // chantier auto-remplit Client + Lieu depuis sa fiche.
             h("label", { style: labelStyleEdit }, "Chantier (rattachement)", (function() {
-              var chs = (dbChantiers || []).filter(function(c) { return c.statut === "En cours" || c.statut === "A venir" || String(c.id) === String(form.chantier_id); });
+              var chs = (dbChantiers || []).filter(function(c) { return ((c.statut === "En cours" || c.statut === "A venir") && chantierToucheAnneeCal(c, new Date().getFullYear())) || String(c.id) === String(form.chantier_id); });
               var opts = [h("option", { key: "__e", value: "" }, "-- Aucun (non rattache) --")];
               chs.forEach(function(c) {
                 opts.push(h("option", { key: c.id, value: String(c.id) }, (c.titre || "?") + " - " + (c.site || "?") + " (" + (c.client || "?") + ")" + (c.statut === "A venir" ? " [a venir]" : "")));
@@ -24695,6 +24708,7 @@
               var sites = [], seen = {}, siteTitre = {};
               (dbChantiers || []).forEach(function(c) {
                 if (c.statut !== "En cours" && c.statut !== "A venir") return;
+                if (!chantierToucheAnneeCal(c, new Date().getFullYear())) return;
                 var s = String(c.site || c.titre || "").trim().toUpperCase();
                 if (!s) return;
                 if (!seen[s]) { seen[s] = 1; sites.push(s); siteTitre[s] = String(c.titre || "").trim(); }
@@ -24723,6 +24737,7 @@
                 var valU = String(val || "").trim().toUpperCase();
                 var cands = (dbChantiers || []).filter(function(c) {
                   return (c.statut === "En cours" || c.statut === "A venir") &&
+                         chantierToucheAnneeCal(c, new Date().getFullYear()) &&
                          (String(c.site || "").trim().toUpperCase() === valU ||
                           String(c.titre || "").trim().toUpperCase() === valU);
                 });
