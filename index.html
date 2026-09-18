@@ -23668,6 +23668,16 @@
                   coutVarMetreN1 = Math.max(0, (decaissMoyenReel - salairesMens - chargesFixesMens - empruntsMensuel) / metMoyenReelN);
                 }
               }
+              // Prix moyen reel au metre de l'annee N (pour convertir le CA de
+              // decembre N en metres : janvier n+1 paie les travaux de decembre)
+              var prixMoyenReelN = 0;
+              (function() {
+                var sCa = 0, sMet = 0;
+                for (var pmR = 0; pmR < 12; pmR++) {
+                  if (metRealiseParMois[pmR] > 0) { sCa += caChantiersRealiseParMois[pmR]; sMet += metRealiseParMois[pmR]; }
+                }
+                if (sMet > 0) prixMoyenReelN = sCa / sMet;
+              }());
               // Passe mensuelle n+1 : encaissement = travaux du mois precedent (janvier
               // n+1 encaisse decembre N), decaissements = salaires + fixes + emprunts
               // du mois + DEPENSES VARIABLES indexees sur le metrage projete (cout/m
@@ -23682,15 +23692,28 @@
                 var encN = caChMi3 + caAcMi3;
                 var empMoisN = empruntsPourMoisN1(anneeCible, mN);
                 var factMiN = factFrsFutures[kMonthN] || 0;
-                var varExpN = coutVarMetreN1 != null ? coutVarMetreN1 * (metChN1[mN] || 0) : null;
-                var decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN + (varExpN || 0);
-                var decN, plancherN1 = null;
+                // MEME DECALAGE 30 J QUE LES ENCAISSEMENTS : le mois M encaisse ET
+                // paie les travaux du mois M-1 (clients ET fournisseurs a 30 jours).
+                // Ainsi, a encaissement egal, depenses variables egales -> net
+                // mensuel lisible = marge des travaux M-1 moins fixes du mois.
+                // Janvier n+1 paie decembre N (CA decembre / prix moyen reel N).
+                var varExpN = null, metPayeN = 0;
+                if (coutVarMetreN1 != null) {
+                  if (mN === 0) metPayeN = prixMoyenReelN > 0 ? (caChMi3 / prixMoyenReelN) : 0;
+                  else metPayeN = metChN1[mN - 1] || 0;
+                  varExpN = coutVarMetreN1 * metPayeN;
+                }
+                var decTheoN, decN, plancherN1 = null;
                 if (varExpN != null) {
-                  // Modele complet : fixes + emprunts du mois + variable indexe metrage
+                  // Modele complet. Les factures 401 ne sont PAS recomptees : les
+                  // achats a 30 j sont deja modelises par le variable decale
+                  // (sinon janvier paierait decembre N deux fois).
+                  decTheoN = salairesMens + chargesFixesMens + empMoisN + varExpN;
                   decN = decTheoN;
                 } else {
                   // Repli sans cout/m mesurable : plancher = rythme bancaire reel N,
                   // AJUSTE du delta d'emprunts (fins de prets visibles sur la courbe)
+                  decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN;
                   plancherN1 = decaissMoyenReel != null ? Math.max(0, decaissMoyenReel - empruntsMensuel + empMoisN) : null;
                   decN = plancherN1 != null ? Math.max(plancherN1, decTheoN) : decTheoN;
                 }
@@ -23704,9 +23727,9 @@
                     kind: "projete", caChantiers: caChMi3, caActivites: caAcMi3,
                     encaissTheorique: encN, encaissMoyenReel: null, encaissAjustement: 0,
                     salaires: salairesMens, chargesFixes: chargesFixesMens, emprunts: empMoisN,
-                    factFrs: factMiN, decaissTheorique: decTheoN, decaissMoyenReel: plancherN1,
+                    factFrs: varExpN != null ? 0 : factMiN, decaissTheorique: decTheoN, decaissMoyenReel: plancherN1,
                     decaissAjustement: decN - decTheoN,
-                    varExploitation: varExpN, coutVarMetre: coutVarMetreN1, metrageMois: metChN1[mN] || 0
+                    varExploitation: varExpN, coutVarMetre: coutVarMetreN1, metrageMois: metPayeN
                   }
                 });
               }
@@ -23785,7 +23808,7 @@
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
                 ),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
-                  ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Decaissements : salaires + frais generaux (donnees " + now2.getFullYear() + ") + emprunts mois par mois (fins de prets deduites) + DEPENSES D'EXPLOITATION VARIABLES indexees sur le metrage projete (gasoil, consommables... au cout/m mesure sur le reel bancaire " + now2.getFullYear() + ") - plus de CA = plus de sorties. Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
+                  ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Chaque mois ENCAISSE ET PAIE les travaux du mois precedent (clients et fournisseurs a 30 j) : encaissement = CA du mois M-1, depenses variables (gasoil, consommables... au cout/m mesure sur le reel bancaire " + now2.getFullYear() + ") = metrage du mois M-1. + salaires, frais generaux (donnees " + now2.getFullYear() + ") et emprunts mois par mois (fins de prets deduites). Net mensuel = marge des travaux du mois precedent - charges fixes. Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
                   : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
               ),
               (function() {
@@ -23983,8 +24006,8 @@
                                   h("span", null, "Factures fournisseurs 401 (J+30)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.factFrs))
                                 ) : null,
-                                det.varExploitation != null ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" }, title: "Gasoil, consommables, pieces, sous-traitance... : cout variable mesure sur le reel bancaire de l'annee en cours, indexe sur le metrage projete du mois" },
-                                  h("span", null, "Exploitation variable (" + Math.round(det.metrageMois).toLocaleString("fr-FR") + " m x " + Math.round(det.coutVarMetre).toLocaleString("fr-FR") + " F/m)"),
+                                det.varExploitation != null ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" }, title: "Gasoil, consommables, pieces, sous-traitance... payes a ~30 jours comme les encaissements : le mois paie les travaux du mois precedent. Cout variable au metre mesure sur le reel bancaire de l'annee en cours." },
+                                  h("span", null, "Exploitation - travaux mois prec. (" + Math.round(det.metrageMois).toLocaleString("fr-FR") + " m x " + Math.round(det.coutVarMetre).toLocaleString("fr-FR") + " F/m)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.varExploitation))
                                 ) : null,
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 6 } },
