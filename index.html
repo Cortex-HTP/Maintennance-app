@@ -10412,15 +10412,19 @@
               var pers = Array.isArray(f.periodes) ? f.periodes : [];
               function majPeriodes(next) {
                 var copy = Object.assign({}, f, { periodes: next });
-                // La fenetre globale (dates debut/fin de la fiche) suit
-                // automatiquement l'enveloppe des periodes saisies
-                var ds = next.map(function(p) { return p.debut; }).filter(Boolean).sort();
-                var fs = next.map(function(p) { return p.fin; }).filter(Boolean).sort();
-                if (ds.length) copy.dateDebut = ds[0];
-                if (fs.length) copy.dateFin = fs[fs.length - 1];
-                // Si CHAQUE periode a son metrage, le metrage de la fiche = la somme
-                var tousMet = next.length >= 1 && next.every(function(p) { return parseFloat(p.metrage) > 0; });
-                if (tousMet) copy.metrage = next.reduce(function(s, p) { return s + (parseFloat(p.metrage) || 0); }, 0);
+                // La fenetre globale (dates debut/fin de la fiche) suit l'enveloppe
+                // des periodes VALIDES uniquement (debut <= fin) : une ligne
+                // inversee ou incomplete ne doit JAMAIS polluer la fiche.
+                var valides = next.filter(function(p) { return p.debut && p.fin && String(p.debut) <= String(p.fin); });
+                if (valides.length) {
+                  var ds = valides.map(function(p) { return p.debut; }).sort();
+                  var fs = valides.map(function(p) { return p.fin; }).sort();
+                  copy.dateDebut = ds[0];
+                  copy.dateFin = fs[fs.length - 1];
+                  // Si CHAQUE periode valide a son metrage, metrage fiche = somme
+                  var tousMet = valides.every(function(p) { return parseFloat(p.metrage) > 0; });
+                  if (tousMet) copy.metrage = valides.reduce(function(s, p) { return s + (parseFloat(p.metrage) || 0); }, 0);
+                }
                 setEditing(copy);
               }
               function updPer(iPer, kPer, vPer) {
@@ -10436,7 +10440,8 @@
                     ? "Le previsionnel ne produit QUE pendant ces periodes - entre deux, c'est la coupure (zero metrage, zero CA, zero depense variable). Metrage par periode optionnel : chaque phase fore alors SON metrage sur SA duree (sinon le metrage de la fiche est reparti). Dates et metrage de la fiche suivent automatiquement."
                     : "Optionnel : pour un chantier qui s'arrete puis reprend (ex. janvier-avril puis septembre-decembre), ajoute ses periodes - avec un metrage par periode si tu le connais. Sans periodes, le chantier tourne en continu du debut a la fin."),
                 pers.map(function(p, iPer) {
-                  var ligneIncomplete = !(p.debut && p.fin && String(p.debut) <= String(p.fin));
+                  var finAvantDebut = !!(p.debut && p.fin && String(p.debut) > String(p.fin));
+                  var ligneIncomplete = !(p.debut && p.fin) || finAvantDebut;
                   return h("div", { key: iPer, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" } },
                     h("span", { style: { fontSize: 11, color: ligneIncomplete ? "#fda4af" : "#a1a1aa", width: 62, fontWeight: 700 } }, "Periode " + (iPer + 1)),
                     h("input", { type: "date", style: Object.assign({}, inputStyle, { width: 150 }), value: p.debut || "", onChange: function(e) { updPer(iPer, "debut", e.target.value); } }),
@@ -10444,7 +10449,7 @@
                     h("input", { type: "date", style: Object.assign({}, inputStyle, { width: 150 }), value: p.fin || "", onChange: function(e) { updPer(iPer, "fin", e.target.value); } }),
                     h("input", { type: "number", min: 0, placeholder: "metrage", title: "Metrage de cette periode (optionnel)", style: Object.assign({}, inputStyle, { width: 100 }), value: p.metrage != null && p.metrage !== "" ? p.metrage : "", onChange: function(e) { updPer(iPer, "metrage", e.target.value); } }),
                     h("span", { style: { fontSize: 11, color: "#71717a" } }, "m"),
-                    ligneIncomplete ? h("span", { style: { fontSize: 10, color: "#fda4af" } }, "dates incompletes : ignoree a l'enregistrement") : null,
+                    ligneIncomplete ? h("span", { style: { fontSize: 10, color: "#fda4af", fontWeight: 700 } }, finAvantDebut ? "la FIN est avant le DEBUT : corrige les dates (annee ?)" : "dates incompletes : ignoree a l'enregistrement") : null,
                     h("button", { onClick: function() { majPeriodes(pers.filter(function(pf, jPer) { return jPer !== iPer; })); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.35)", color: "#fda4af", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 } }, "X")
                   );
                 }),
