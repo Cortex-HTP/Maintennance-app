@@ -10087,6 +10087,34 @@
         var rowHeight = 44;
         var barHeight = 26;
 
+        // Barre chantier de la vue annuelle : SEGMENTEE si des periodes de
+        // travail (coupures) sont saisies sur la fiche - coupure PHYSIQUE
+        // visible entre les segments. Les segments ne se deplacent pas a la
+        // souris (les dates suivent les periodes : modifier via la fiche) ;
+        // un chantier sans periodes garde sa barre deplacable/redimensionnable.
+        function barreChantierAnnuel(ch, leftPct, widthPct, barGradient, isDragging) {
+          var persCh = Array.isArray(ch.periodes) && ch.periodes.length >= 1 ? ch.periodes : null;
+          if (!persCh) {
+            return h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ch.id, "move", "chantiers"); }, style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, background: barGradient, borderRadius: 6, boxShadow: isDragging ? "0 4px 16px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.12)", zIndex: 3, display: "flex", alignItems: "center", overflow: "hidden", cursor: "grab", transition: "box-shadow 0.15s" }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " au " + formatDateFr(ch.dateFin) + " (" + ch.statut + ")" },
+              h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-start", "chantiers"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } }),
+              widthPct > 8 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)", flex: 1 } }, ch.titre) : null,
+              h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-end", "chantiers"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } })
+            );
+          }
+          return h("div", { style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, zIndex: 3 }, title: ch.titre + " - " + persCh.length + " periode" + (persCh.length > 1 ? "s" : "") + " (modifier via la fiche, crayon)" },
+            persCh.map(function(perB, iB) {
+              var pD = parseDate(perB.debut); var pF = parseDate(perB.fin);
+              if (!pD || !pF) return null;
+              var pL = dateToPct(pD); var pR = dateToPct(pF);
+              var relL = widthPct > 0 ? ((pL - leftPct) / widthPct) * 100 : 0;
+              var relW = widthPct > 0 ? (Math.max(pR - pL, 0.5) / widthPct) * 100 : 100;
+              return h("div", { key: "pb" + iB, title: ch.titre + " : " + formatDateFr(perB.debut) + " au " + formatDateFr(perB.fin) + (parseFloat(perB.metrage) > 0 ? " - " + perB.metrage + " m" : "") + " (" + ch.statut + ")", style: { position: "absolute", left: relL + "%", width: relW + "%", top: 0, bottom: 0, background: barGradient, borderRadius: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", overflow: "hidden" } },
+                iB === 0 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 10px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)" } }, ch.titre) : null
+              );
+            })
+          );
+        }
+
         if (activeTab === "declarations") {
           var declsYear = declarations.filter(function(d) {
             if (!d.dateDebutPeriode || !d.dateFinPeriode) return false;
@@ -10178,11 +10206,7 @@
               h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
                 monthLines.map(function(line) { return line; }),
                 todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
-                h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ch.id, "move", "chantiers"); }, style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, background: barGradient, borderRadius: 6, boxShadow: isDragging ? "0 4px 16px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.12)", zIndex: 3, display: "flex", alignItems: "center", overflow: "hidden", cursor: "grab", transition: "box-shadow 0.15s" }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " au " + formatDateFr(ch.dateFin) + " (" + ch.statut + ")" },
-                  h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-start", "chantiers"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } }),
-                  widthPct > 8 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)", flex: 1 } }, ch.titre) : null,
-                  h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-end", "chantiers"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } })
-                )
+                barreChantierAnnuel(ch, leftPct, widthPct, barGradient, isDragging)
               )
             ));
           });
@@ -10218,11 +10242,7 @@
                 h("div", { "data-annuel-timeline": true, style: { position: "relative", flex: 1, height: rowHeight } },
                   monthLines.map(function(line) { return line; }),
                   todayPct >= 0 ? h("div", { style: { position: "absolute", left: todayPct + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.4, zIndex: 2 } }) : null,
-                  h("div", { onMouseDown: function(e) { handleDragStartAnnuel(e, ch.id, "move", "chantiers"); }, style: { position: "absolute", left: leftPct + "%", top: (rowHeight - barHeight) / 2, height: barHeight, width: widthPct + "%", minWidth: 8, background: barGradient, borderRadius: 6, boxShadow: isDragging ? "0 4px 16px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.12)", zIndex: 3, display: "flex", alignItems: "center", overflow: "hidden", cursor: "grab", transition: "box-shadow 0.15s" }, title: ch.titre + " - " + formatDateFr(ch.dateDebut) + " au " + formatDateFr(ch.dateFin) + " (" + ch.statut + ")" },
-                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-start", "chantiers"); }, style: { position: "absolute", left: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } }),
-                    widthPct > 8 ? h("span", { style: { fontSize: 11, color: "white", padding: "0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600, textShadow: "0 1px 2px rgba(0,0,0,0.2)", flex: 1 } }, ch.titre) : null,
-                    h("div", { onMouseDown: function(e) { e.stopPropagation(); handleDragStartAnnuel(e, ch.id, "resize-end", "chantiers"); }, style: { position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "ew-resize", zIndex: 4 } })
-                  )
+                  barreChantierAnnuel(ch, leftPct, widthPct, barGradient, isDragging)
                 )
               ));
             });
