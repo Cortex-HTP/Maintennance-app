@@ -754,7 +754,7 @@
     // seule), le chantier est actif sur toute sa fenetre [dateDebut, dateFin].
     function chantierEnPeriode(c, t) {
       var ps = c && Array.isArray(c.periodes) ? c.periodes : [];
-      if (ps.length < 2) return true;
+      if (ps.length < 1) return true;
       for (var iP = 0; iP < ps.length; iP++) {
         var p0 = ps[iP] && ps[iP].debut ? new Date(String(ps[iP].debut).substring(0, 10) + "T00:00:00").getTime() : null;
         var p1 = ps[iP] && ps[iP].fin ? new Date(String(ps[iP].fin).substring(0, 10) + "T23:59:59").getTime() : null;
@@ -788,18 +788,24 @@
       return ret;
     }
     // Nettoie les periodes de travail : garde les lignes {debut, fin} valides
-    // (debut <= fin), triees. null si moins de 2 periodes utiles (une periode
-    // unique = la fenetre du chantier, la colonne reste vide).
+    // (debut <= fin), triees, avec leur metrage optionnel. DES 1 periode
+    // valide, elle est sauvee (une ligne incomplete est ecartee mais ne fait
+    // jamais perdre les autres). null si aucune -> colonne vide.
     function chantierPeriodesToDb(c) {
       var srcP = Array.isArray(c.periodes) ? c.periodes : [];
       var outP = [];
       srcP.forEach(function(p) {
         var d0 = p && p.debut ? String(p.debut).substring(0, 10) : "";
         var d1 = p && p.fin ? String(p.fin).substring(0, 10) : "";
-        if (d0 && d1 && d0 <= d1) outP.push({ debut: d0, fin: d1 });
+        if (d0 && d1 && d0 <= d1) {
+          var entree = { debut: d0, fin: d1 };
+          var pm = parseFloat(p.metrage);
+          if (pm > 0) entree.metrage = Math.round(pm);
+          outP.push(entree);
+        }
       });
       outP.sort(function(a, b) { return a.debut.localeCompare(b.debut); });
-      return outP.length >= 2 ? outP : null;
+      return outP.length >= 1 ? outP : null;
     }
     // Nettoie la grille de prix par type de forage : ne garde que les prix > 0.
     // null si aucune ligne (le champ jsonb reste vide -> tout au prix general).
@@ -10412,6 +10418,9 @@
                 var fs = next.map(function(p) { return p.fin; }).filter(Boolean).sort();
                 if (ds.length) copy.dateDebut = ds[0];
                 if (fs.length) copy.dateFin = fs[fs.length - 1];
+                // Si CHAQUE periode a son metrage, le metrage de la fiche = la somme
+                var tousMet = next.length >= 1 && next.every(function(p) { return parseFloat(p.metrage) > 0; });
+                if (tousMet) copy.metrage = next.reduce(function(s, p) { return s + (parseFloat(p.metrage) || 0); }, 0);
                 setEditing(copy);
               }
               function updPer(iPer, kPer, vPer) {
@@ -10423,19 +10432,23 @@
               return h("div", { style: { background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.20)", borderRadius: 8, padding: 12 } },
                 h("div", { style: { fontSize: 12, fontWeight: 700, color: "#a5b4fc", marginBottom: 6 } }, "Periodes de travail (chantier avec coupure)"),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: pers.length ? 8 : 0 } },
-                  pers.length >= 2
-                    ? "Le previsionnel ne produit QUE pendant ces periodes - entre deux, c'est la coupure (zero metrage, zero CA, zero depense variable). Les dates debut/fin de la fiche suivent l'enveloppe."
-                    : "Optionnel : ajoute 2 periodes ou plus pour un chantier qui s'arrete puis reprend (ex. janvier-avril puis septembre-decembre). Sans periodes, le chantier tourne en continu du debut a la fin."),
+                  pers.length >= 1
+                    ? "Le previsionnel ne produit QUE pendant ces periodes - entre deux, c'est la coupure (zero metrage, zero CA, zero depense variable). Metrage par periode optionnel : chaque phase fore alors SON metrage sur SA duree (sinon le metrage de la fiche est reparti). Dates et metrage de la fiche suivent automatiquement."
+                    : "Optionnel : pour un chantier qui s'arrete puis reprend (ex. janvier-avril puis septembre-decembre), ajoute ses periodes - avec un metrage par periode si tu le connais. Sans periodes, le chantier tourne en continu du debut a la fin."),
                 pers.map(function(p, iPer) {
+                  var ligneIncomplete = !(p.debut && p.fin && String(p.debut) <= String(p.fin));
                   return h("div", { key: iPer, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" } },
-                    h("span", { style: { fontSize: 11, color: "#a1a1aa", width: 62, fontWeight: 700 } }, "Periode " + (iPer + 1)),
+                    h("span", { style: { fontSize: 11, color: ligneIncomplete ? "#fda4af" : "#a1a1aa", width: 62, fontWeight: 700 } }, "Periode " + (iPer + 1)),
                     h("input", { type: "date", style: Object.assign({}, inputStyle, { width: 150 }), value: p.debut || "", onChange: function(e) { updPer(iPer, "debut", e.target.value); } }),
                     h("span", { style: { color: "#71717a" } }, "→"),
                     h("input", { type: "date", style: Object.assign({}, inputStyle, { width: 150 }), value: p.fin || "", onChange: function(e) { updPer(iPer, "fin", e.target.value); } }),
+                    h("input", { type: "number", min: 0, placeholder: "metrage", title: "Metrage de cette periode (optionnel)", style: Object.assign({}, inputStyle, { width: 100 }), value: p.metrage != null && p.metrage !== "" ? p.metrage : "", onChange: function(e) { updPer(iPer, "metrage", e.target.value); } }),
+                    h("span", { style: { fontSize: 11, color: "#71717a" } }, "m"),
+                    ligneIncomplete ? h("span", { style: { fontSize: 10, color: "#fda4af" } }, "dates incompletes : ignoree a l'enregistrement") : null,
                     h("button", { onClick: function() { majPeriodes(pers.filter(function(pf, jPer) { return jPer !== iPer; })); }, style: { background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.35)", color: "#fda4af", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 } }, "X")
                   );
                 }),
-                h("button", { onClick: function() { majPeriodes(pers.concat([pers.length === 0 ? { debut: f.dateDebut || "", fin: "" } : { debut: "", fin: f.dateFin || "" }])); }, style: { marginTop: 4, background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.4)", color: "#c7d2fe", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "+ Ajouter une periode")
+                h("button", { onClick: function() { majPeriodes(pers.concat([pers.length === 0 ? { debut: f.dateDebut || "", fin: "", metrage: "" } : { debut: "", fin: "", metrage: "" }])); }, style: { marginTop: 4, background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.4)", color: "#c7d2fe", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "+ Ajouter une periode")
               );
             }()),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
@@ -10802,7 +10815,7 @@
                           h("div", { style: { width: 240, flexShrink: 0, padding: "8px 12px", boxSizing: "border-box", display: "flex", alignItems: "center", gap: 6 } },
                             h("div", { style: { flex: 1, minWidth: 0 } },
                               h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa" } }, ch.titre, chantierClientBadge(ch, { fontSize: 9.5, padding: "0 6px", marginLeft: 6 })),
-                              h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin) + (Array.isArray(ch.periodes) && ch.periodes.length >= 2 ? " - " + ch.periodes.length + " periodes" : ""))
+                              h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, ch.statut + " - " + formatDateFr(ch.dateDebut) + " > " + formatDateFr(ch.dateFin) + (Array.isArray(ch.periodes) && ch.periodes.length >= 1 ? " - " + ch.periodes.length + " periode" + (ch.periodes.length > 1 ? "s" : "") : ""))
                             ),
                             // Affectation SANS glisser : ouvre la saisie precise (mode crayon)
                             h("button", {
@@ -10814,11 +10827,11 @@
                           h("div", { style: { position: "relative", flex: 1, height: 22 } },
                             // Bande indicative du chantier - SEGMENTEE si des periodes
                             // de travail (coupures) sont saisies sur la fiche
-                            (Array.isArray(ch.periodes) && ch.periodes.length >= 2 ? ch.periodes : [{ debut: ch.dateDebut, fin: ch.dateFin }]).map(function(perSeg, iSeg) {
+                            (Array.isArray(ch.periodes) && ch.periodes.length >= 1 ? ch.periodes : [{ debut: ch.dateDebut, fin: ch.dateFin }]).map(function(perSeg, iSeg) {
                               var segD = parseDate(perSeg.debut); var segF = parseDate(perSeg.fin);
                               if (!segD || !segF) return null;
                               var segL = dateToPctY(segD); var segR = dateToPctY(segF);
-                              return h("div", { key: "seg" + iSeg, title: formatDateFr(perSeg.debut) + " > " + formatDateFr(perSeg.fin), style: { position: "absolute", left: segL + "%", top: 5, width: Math.max(segR - segL, 1) + "%", height: 12, background: ch.statut === "En cours" ? "rgba(245,158,11,0.15)" : "rgba(148,163,184,0.15)", borderRadius: 3, border: "1px dashed " + statutColor } });
+                              return h("div", { key: "seg" + iSeg, title: formatDateFr(perSeg.debut) + " > " + formatDateFr(perSeg.fin) + (parseFloat(perSeg.metrage) > 0 ? " - " + perSeg.metrage + " m" : ""), style: { position: "absolute", left: segL + "%", top: 5, width: Math.max(segR - segL, 1) + "%", height: 12, background: ch.statut === "En cours" ? "rgba(245,158,11,0.15)" : "rgba(148,163,184,0.15)", borderRadius: 3, border: "1px dashed " + statutColor } });
                             }),
                             todayPctLocal >= 0 ? h("div", { style: { position: "absolute", left: todayPctLocal + "%", top: 0, bottom: 0, width: 2, background: "#7c3aed", opacity: 0.5 } }) : null
                           )
@@ -23304,6 +23317,67 @@
               }
               return false;
             };
+            // ── Plan de cadence d'un chantier sans historique ──
+            // Chaque PERIODE de la fiche peut porter son propre METRAGE : sa cadence
+            // = son metrage / ses jours ouvres actifs (periode ∩ bandes machines).
+            // Une periode sans metrage se partage le SOLDE de la fiche au prorata de
+            // ses jours. Sans periodes : cadence uniforme (comportement historique).
+            // Couverture nulle (periodes/bandes hors fenetre) : repli uniforme, un
+            // chantier n'est jamais efface par une erreur de saisie. Utilise par les
+            // vues N ET n+1 -> meme plan des deux cotes, chainage sans double-compte.
+            var planCadenceChantier = function(c, startMs, dFinMs, restant) {
+              var ps = (Array.isArray(c.periodes) && c.periodes.length >= 1) ? c.periodes : null;
+              var segs = [];
+              if (ps) {
+                ps.forEach(function(p) {
+                  var p0 = p && p.debut ? new Date(String(p.debut).substring(0, 10) + "T00:00:00").getTime() : null;
+                  var p1 = p && p.fin ? new Date(String(p.fin).substring(0, 10) + "T23:59:59").getTime() : null;
+                  var pm = parseFloat(p && p.metrage);
+                  segs.push({ d0: p0, d1: p1, met: pm > 0 ? pm : null, jours: 0, cad: 0 });
+                });
+              } else {
+                segs.push({ d0: null, d1: null, met: null, jours: 0, cad: 0 });
+              }
+              var curP = new Date(startMs); var safeP1 = 0; var joursTot = 0;
+              while (curP.getTime() <= dFinMs && safeP1 < 1300) {
+                var dwP = curP.getDay();
+                if (dwP >= 1 && dwP <= 4) {
+                  var tP = curP.getTime();
+                  if (jourCouvertTr(c.id, tP)) {
+                    for (var siP = 0; siP < segs.length; siP++) {
+                      if ((segs[siP].d0 === null || tP >= segs[siP].d0) && (segs[siP].d1 === null || tP <= segs[siP].d1)) { segs[siP].jours++; joursTot++; break; }
+                    }
+                  }
+                }
+                curP.setDate(curP.getDate() + 1); safeP1++;
+              }
+              if (joursTot === 0) {
+                var curU = new Date(startMs); var safeU = 0; var jU = 0;
+                while (curU.getTime() <= dFinMs && safeU < 1300) {
+                  var dwU = curU.getDay();
+                  if (dwU >= 1 && dwU <= 4) jU++;
+                  curU.setDate(curU.getDate() + 1); safeU++;
+                }
+                var cadU = jU > 0 ? restant / jU : 0;
+                return { cadenceJour: function() { return cadU; } };
+              }
+              var metExpl = 0, joursSansMet = 0;
+              segs.forEach(function(s) { if (s.met !== null) metExpl += s.met; else joursSansMet += s.jours; });
+              var soldeMet = Math.max(0, restant - metExpl);
+              segs.forEach(function(s) {
+                var mi = s.met !== null ? s.met : (joursSansMet > 0 ? soldeMet * (s.jours / joursSansMet) : 0);
+                s.cad = s.jours > 0 ? mi / s.jours : 0;
+              });
+              return {
+                cadenceJour: function(t2) {
+                  if (!jourCouvertTr(c.id, t2)) return 0;
+                  for (var siC = 0; siC < segs.length; siC++) {
+                    if ((segs[siC].d0 === null || t2 >= segs[siC].d0) && (segs[siC].d1 === null || t2 <= segs[siC].d1)) return segs[siC].cad;
+                  }
+                  return 0;
+                }
+              };
+            };
             // Metrage PROJETE en annee N par chantier : la vue n+1 en repart pour ne
             // jamais recompter ce que le solde chaine de fin N contient deja.
             var projNParChantier = {};
@@ -23361,26 +23435,7 @@
               // tout son metrage sur l'annee N - la part n+1 est creditee par la vue
               // n+1 (chainage sans double-compte). Sans effet sur un chantier qui
               // finit dans l'annee (fenetre identique a avant).
-              var joursOuvresRestants = 0;
-              var sansCouverture = false; // bandes toutes hors fenetre -> repli uniforme
-              if (fallbackLineaire) {
-                var dCntF = new Date(startCursorMs); var safeCnt = 0;
-                while (dCntF.getTime() <= dFin.getTime() && safeCnt < 1300) {
-                  var dowCnt = dCntF.getDay();
-                  if (dowCnt >= 1 && dowCnt <= 4 && chantierEnPeriode(c, dCntF.getTime()) && jourCouvertTr(c.id, dCntF.getTime())) joursOuvresRestants++;
-                  dCntF.setDate(dCntF.getDate() + 1); safeCnt++;
-                }
-                if (joursOuvresRestants === 0) {
-                  sansCouverture = true;
-                  var dCntU = new Date(startCursorMs); var safeCntU = 0;
-                  while (dCntU.getTime() <= dFin.getTime() && safeCntU < 1300) {
-                    var dowCntU = dCntU.getDay();
-                    if (dowCntU >= 1 && dowCntU <= 4) joursOuvresRestants++;
-                    dCntU.setDate(dCntU.getDate() + 1); safeCntU++;
-                  }
-                }
-              }
-              var cadenceObjectif = joursOuvresRestants > 0 ? (restant / joursOuvresRestants) : 0;
+              var planCadN = fallbackLineaire ? planCadenceChantier(c, startCursorMs, dFin.getTime(), restant) : null;
               var totalProj = 0, safeF = 0;
               while (cursor.getTime() <= effectiveEnd && safeF < 500 && totalProj < restant) {
                 var dow = cursor.getDay();
@@ -23388,10 +23443,9 @@
                   var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
                   var dayMet;
                   if (fallbackLineaire) {
-                    // Cadence objectif = metrage restant / jours ouvres ACTIFS :
-                    // dans une periode de la fiche ET couverts par le planning
-                    // machines s'il existe. Uniforme si ni periodes ni bandes.
-                    dayMet = (sansCouverture || (chantierEnPeriode(c, cursor.getTime()) && jourCouvertTr(c.id, cursor.getTime()))) ? cadenceObjectif : 0;
+                    // Plan de cadence : metrage par periode de la fiche / jours
+                    // actifs (periodes + bandes machines) ; 0 pendant une coupure
+                    dayMet = planCadN.cadenceJour(cursor.getTime());
                   } else {
                     // Mode legacy (sans avgMachHist) : on retombe sur vitesse chantier
                     // meme quand aucune machine planifiee ce jour (utile car les plannings
@@ -23716,27 +23770,9 @@
                 if (debutCur > finCur) return;
                 var totP = projNParChantier[c.id] || 0;
                 if (totP >= restantC) return;
-                // Cadence objectif : MEME formule que la vue N (metrage restant depuis
-                // aujourd'hui / jours ouvres COUVERTS par le planning jusqu'a la vraie
-                // fin du chantier - coupures respectees, uniforme sans bande)
-                var jOuvR = 0;
-                var sansCouv1 = false;
-                var dCnt = new Date(Math.max(dDebC.getTime(), now2.getTime())); var safeC1 = 0;
-                while (dCnt.getTime() <= dFinC.getTime() && safeC1 < 1300) {
-                  var dwC = dCnt.getDay();
-                  if (dwC >= 1 && dwC <= 4 && chantierEnPeriode(c, dCnt.getTime()) && jourCouvertTr(c.id, dCnt.getTime())) jOuvR++;
-                  dCnt.setDate(dCnt.getDate() + 1); safeC1++;
-                }
-                if (jOuvR === 0) {
-                  sansCouv1 = true;
-                  var dCntV = new Date(Math.max(dDebC.getTime(), now2.getTime())); var safeC1V = 0;
-                  while (dCntV.getTime() <= dFinC.getTime() && safeC1V < 1300) {
-                    var dwCV = dCntV.getDay();
-                    if (dwCV >= 1 && dwCV <= 4) jOuvR++;
-                    dCntV.setDate(dCntV.getDate() + 1); safeC1V++;
-                  }
-                }
-                var cadObj = jOuvR > 0 ? (restantC / jOuvR) : 0;
+                // MEME plan de cadence que la vue N (metrage par periode / jours
+                // actifs depuis aujourd'hui) -> chainage sans double-compte
+                var planCad1 = sansHisto ? planCadenceChantier(c, Math.max(dDebC.getTime(), now2.getTime()), dFinC.getTime(), restantC) : null;
                 var curS = new Date(debutCur); var safeC2 = 0;
                 while (curS.getTime() <= finCur && safeC2 < 900 && totP < restantC) {
                   var dwS = curS.getDay();
@@ -23744,10 +23780,9 @@
                     var isoS = curS.getFullYear() + "-" + String(curS.getMonth() + 1).padStart(2, "0") + "-" + String(curS.getDate()).padStart(2, "0");
                     var dayM = 0;
                     if (sansHisto) {
-                      // MEME moteur que la vue N : cadence objectif sur les jours
-                      // ACTIFS (periodes de la fiche + planning machines) -
-                      // coupures = zero production
-                      dayM = (sansCouv1 || (chantierEnPeriode(c, curS.getTime()) && jourCouvertTr(c.id, curS.getTime()))) ? cadObj : 0;
+                      // MEME moteur que la vue N : metrage par periode de la fiche
+                      // / jours actifs - coupures = zero production
+                      dayM = planCad1.cadenceJour(curS.getTime());
                     } else {
                       // MEME mode legacy que la vue N : vitesse chantier mesuree,
                       // affinee par le planning machines quand il est saisi
