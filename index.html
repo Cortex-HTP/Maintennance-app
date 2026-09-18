@@ -23307,6 +23307,9 @@
             // Source A : rapports de forage (identique KPI stats) -> CA metrage + CA activites
             var caChantiersRapportsParMois = new Array(12).fill(0);
             var caActivitesRealiseParMois = new Array(12).fill(0);
+            // Metrage REEL par mois (pour le cout variable au metre de la vue n+1)
+            var metRapportsParMois = new Array(12).fill(0);
+            var metAvancementParMois = new Array(12).fill(0);
             (rapports || []).forEach(function(r) {
               if (!r || !r.date_rapport) return;
               var dR = new Date(String(r.date_rapport).substring(0,10) + "T00:00:00");
@@ -23315,6 +23318,7 @@
               // CA metrage = total_metres x prix/m du chantier (identique stats KPI)
               var mR = parseFloat(r.total_metres) || 0;
               var prixR = lookupPrixMetre(r);
+              if (mR > 0) metRapportsParMois[moisR] += mR;
               if (mR > 0 && prixR > 0) caChantiersRapportsParMois[moisR] += mR * prixR;
               // CA facturation activites (attentes/deplacements tarifes >= duree_min)
               var actsR = Array.isArray(r.activites) ? r.activites : [];
@@ -23352,7 +23356,7 @@
                 if (isNaN(d.getTime()) || d.getFullYear() !== currentYearReal) return;
                 var mksAv = Object.keys(relIdxAv[ck][dk]); var sTot = 0;
                 for (var mAv = 0; mAv < mksAv.length; mAv++) sTot += relIdxAv[ck][dk][mksAv[mAv]];
-                if (sTot > 0) caChantiersAvancementParMois[d.getMonth()] += sTot * prix;
+                if (sTot > 0) { caChantiersAvancementParMois[d.getMonth()] += sTot * prix; metAvancementParMois[d.getMonth()] += sTot; }
               });
             });
             // B2 : saisies manuelles admin (fallback si pas de releve pour chantier x date)
@@ -23369,12 +23373,15 @@
                 var val = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
                 if (val <= 0) return;
                 caChantiersAvancementParMois[d.getMonth()] += val * prix;
+                metAvancementParMois[d.getMonth()] += val;
               });
             });
             // CA metrage retenu par mois = MAX(rapports, avancement)
             var caChantiersRealiseParMois = new Array(12).fill(0);
+            var metRealiseParMois = new Array(12).fill(0);
             for (var mMax = 0; mMax < 12; mMax++) {
               caChantiersRealiseParMois[mMax] = Math.max(caChantiersRapportsParMois[mMax], caChantiersAvancementParMois[mMax]);
+              metRealiseParMois[mMax] = Math.max(metRapportsParMois[mMax], metAvancementParMois[mMax]);
             }
 
             // ── Determination des mois "fiables" cote Compta ──
@@ -23561,6 +23568,7 @@
               var horizonN1 = new Date(anneeCible, 11, 31, 23, 59, 59).getTime();
               var debJanN1 = new Date(anneeCible, 0, 1).getTime();
               var caChN1 = new Array(12).fill(0);
+              var metChN1 = new Array(12).fill(0);
               (dbChantiers || []).forEach(function(c) {
                 if (c.statut === "Termine" || c.statut === "Annule") return;
                 var metrageC = parseFloat(c.metrage) || 0;
@@ -23620,7 +23628,7 @@
                     if (dayM > 0) {
                       if (totP + dayM > restantC) dayM = restantC - totP;
                       totP += dayM;
-                      if (curS.getFullYear() === anneeCible) caChN1[curS.getMonth()] += dayM * prixC;
+                      if (curS.getFullYear() === anneeCible) { caChN1[curS.getMonth()] += dayM * prixC; metChN1[curS.getMonth()] += dayM; }
                     }
                   }
                   curS.setDate(curS.getDate() + 1); safeC2++;
@@ -23644,9 +23652,26 @@
                 });
                 return tot3;
               };
+              // ── Cout VARIABLE d'exploitation au metre, mesure sur le reel N ──
+              // (decaissements bancaires reels moyens - salaires - frais fixes -
+              // emprunts N) / metrage reel mensuel moyen = gasoil, consommables,
+              // pieces, sous-traitance... par metre fore. En n+1, ces depenses
+              // suivent le METRAGE PROJETE du mois : plus de CA = plus de sorties.
+              var coutVarMetreN1 = null;
+              if (decaissMoyenReel != null) {
+                var totMetF = 0, nbMetF = 0;
+                for (var mvF = 0; mvF < 12; mvF++) { if (moisFiable(mvF) && metRealiseParMois[mvF] > 0) { totMetF += metRealiseParMois[mvF]; nbMetF++; } }
+                // Repli si la compta et les rapports ne couvrent pas les memes mois
+                if (nbMetF === 0) { for (var mvE = 0; mvE < 12; mvE++) { if (moisEchu(mvE) && metRealiseParMois[mvE] > 0) { totMetF += metRealiseParMois[mvE]; nbMetF++; } } }
+                var metMoyenReelN = nbMetF > 0 ? totMetF / nbMetF : 0;
+                if (metMoyenReelN >= 1000) {
+                  coutVarMetreN1 = Math.max(0, (decaissMoyenReel - salairesMens - chargesFixesMens - empruntsMensuel) / metMoyenReelN);
+                }
+              }
               // Passe mensuelle n+1 : encaissement = travaux du mois precedent (janvier
-              // n+1 encaisse decembre N), decaissements = hypotheses annee N + emprunts
-              // du mois, plancher = rythme bancaire reel observe en N.
+              // n+1 encaisse decembre N), decaissements = salaires + fixes + emprunts
+              // du mois + DEPENSES VARIABLES indexees sur le metrage projete (cout/m
+              // mesure N). Sans cout/m mesurable : plancher rythme reel ajuste.
               var soldeDebutN1 = trMois[11].solde;
               var trN1 = [];
               var soldeC3 = soldeDebutN1;
@@ -23657,12 +23682,18 @@
                 var encN = caChMi3 + caAcMi3;
                 var empMoisN = empruntsPourMoisN1(anneeCible, mN);
                 var factMiN = factFrsFutures[kMonthN] || 0;
-                var decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN;
-                // Plancher = rythme bancaire reel N, AJUSTE du delta d'emprunts : le
-                // rythme observe contient les mensualites de N ; on y substitue celles
-                // du mois n+1 pour que les fins de prets restent visibles sur la courbe.
-                var plancherN1 = decaissMoyenReel != null ? Math.max(0, decaissMoyenReel - empruntsMensuel + empMoisN) : null;
-                var decN = plancherN1 != null ? Math.max(plancherN1, decTheoN) : decTheoN;
+                var varExpN = coutVarMetreN1 != null ? coutVarMetreN1 * (metChN1[mN] || 0) : null;
+                var decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN + (varExpN || 0);
+                var decN, plancherN1 = null;
+                if (varExpN != null) {
+                  // Modele complet : fixes + emprunts du mois + variable indexe metrage
+                  decN = decTheoN;
+                } else {
+                  // Repli sans cout/m mesurable : plancher = rythme bancaire reel N,
+                  // AJUSTE du delta d'emprunts (fins de prets visibles sur la courbe)
+                  plancherN1 = decaissMoyenReel != null ? Math.max(0, decaissMoyenReel - empruntsMensuel + empMoisN) : null;
+                  decN = plancherN1 != null ? Math.max(plancherN1, decTheoN) : decTheoN;
+                }
                 var netN = encN - decN;
                 soldeC3 += netN;
                 trN1.push({
@@ -23674,7 +23705,8 @@
                     encaissTheorique: encN, encaissMoyenReel: null, encaissAjustement: 0,
                     salaires: salairesMens, chargesFixes: chargesFixesMens, emprunts: empMoisN,
                     factFrs: factMiN, decaissTheorique: decTheoN, decaissMoyenReel: plancherN1,
-                    decaissAjustement: decN - decTheoN
+                    decaissAjustement: decN - decTheoN,
+                    varExploitation: varExpN, coutVarMetre: coutVarMetreN1, metrageMois: metChN1[mN] || 0
                   }
                 });
               }
@@ -23753,7 +23785,7 @@
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
                 ),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
-                  ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Salaires, frais generaux, plancher de decaissements et CA activites = estimes sur les donnees " + now2.getFullYear() + " ; emprunts = echeancier reel mois par mois (fins de prets deduites). Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
+                  ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Decaissements : salaires + frais generaux (donnees " + now2.getFullYear() + ") + emprunts mois par mois (fins de prets deduites) + DEPENSES D'EXPLOITATION VARIABLES indexees sur le metrage projete (gasoil, consommables... au cout/m mesure sur le reel bancaire " + now2.getFullYear() + ") - plus de CA = plus de sorties. Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
                   : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
               ),
               (function() {
@@ -23950,6 +23982,10 @@
                                 det.factFrs > 0 ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
                                   h("span", null, "Factures fournisseurs 401 (J+30)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.factFrs))
+                                ) : null,
+                                det.varExploitation != null ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" }, title: "Gasoil, consommables, pieces, sous-traitance... : cout variable mesure sur le reel bancaire de l'annee en cours, indexe sur le metrage projete du mois" },
+                                  h("span", null, "Exploitation variable (" + Math.round(det.metrageMois).toLocaleString("fr-FR") + " m x " + Math.round(det.coutVarMetre).toLocaleString("fr-FR") + " F/m)"),
+                                  h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.varExploitation))
                                 ) : null,
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 6 } },
                                   h("span", null, "= Sous-total theorique"),
