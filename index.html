@@ -23199,6 +23199,29 @@
             var metByMkTr = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
             var EXCL_TR = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
             var horizonMs = new Date(now2.getFullYear(), 11, 31, 23, 59, 59).getTime(); // fin d'annee courante
+            // ── Coupures de chantier via le Planning engins ──
+            // Un chantier peut s'arreter puis reprendre : PLUSIEURS bandes machine
+            // avec un trou entre elles. Pour un chantier SANS historique, la cadence
+            // objectif ne repartit le metrage QUE sur les jours couverts par au
+            // moins une bande ; pendant le trou : zero production. Aucune bande =
+            // aucune coupure (repartition uniforme, comportement historique).
+            var bandesParChantierTr = {};
+            (ctx.dbChantierEquipements || []).forEach(function(ceB) {
+              if (!ceB || ceB.chantierId == null) return;
+              var b0 = ceB.dateDebut ? new Date(String(ceB.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
+              var b1 = ceB.dateFin ? new Date(String(ceB.dateFin).substring(0, 10) + "T23:59:59").getTime() : null;
+              var kB = String(ceB.chantierId);
+              if (!bandesParChantierTr[kB]) bandesParChantierTr[kB] = [];
+              bandesParChantierTr[kB].push({ d0: b0, d1: b1 });
+            });
+            var jourCouvertTr = function(chId, t) {
+              var bs = bandesParChantierTr[String(chId)];
+              if (!bs || bs.length === 0) return true;
+              for (var bi = 0; bi < bs.length; bi++) {
+                if ((bs[bi].d0 === null || t >= bs[bi].d0) && (bs[bi].d1 === null || t <= bs[bi].d1)) return true;
+              }
+              return false;
+            };
             // Metrage PROJETE en annee N par chantier : la vue n+1 en repart pour ne
             // jamais recompter ce que le solde chaine de fin N contient deja.
             var projNParChantier = {};
@@ -23257,12 +23280,22 @@
               // n+1 (chainage sans double-compte). Sans effet sur un chantier qui
               // finit dans l'annee (fenetre identique a avant).
               var joursOuvresRestants = 0;
+              var sansCouverture = false; // bandes toutes hors fenetre -> repli uniforme
               if (fallbackLineaire) {
                 var dCntF = new Date(startCursorMs); var safeCnt = 0;
                 while (dCntF.getTime() <= dFin.getTime() && safeCnt < 1300) {
                   var dowCnt = dCntF.getDay();
-                  if (dowCnt >= 1 && dowCnt <= 4) joursOuvresRestants++;
+                  if (dowCnt >= 1 && dowCnt <= 4 && jourCouvertTr(c.id, dCntF.getTime())) joursOuvresRestants++;
                   dCntF.setDate(dCntF.getDate() + 1); safeCnt++;
+                }
+                if (joursOuvresRestants === 0) {
+                  sansCouverture = true;
+                  var dCntU = new Date(startCursorMs); var safeCntU = 0;
+                  while (dCntU.getTime() <= dFin.getTime() && safeCntU < 1300) {
+                    var dowCntU = dCntU.getDay();
+                    if (dowCntU >= 1 && dowCntU <= 4) joursOuvresRestants++;
+                    dCntU.setDate(dCntU.getDate() + 1); safeCntU++;
+                  }
                 }
               }
               var cadenceObjectif = joursOuvresRestants > 0 ? (restant / joursOuvresRestants) : 0;
@@ -23273,8 +23306,9 @@
                   var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
                   var dayMet;
                   if (fallbackLineaire) {
-                    // Cadence objectif = metrage restant / jours ouvres restants (repartition uniforme).
-                    dayMet = cadenceObjectif;
+                    // Cadence objectif = metrage restant / jours ouvres COUVERTS par le
+                    // planning (coupures respectees) ; uniforme si aucune bande.
+                    dayMet = (sansCouverture || jourCouvertTr(c.id, cursor.getTime())) ? cadenceObjectif : 0;
                   } else {
                     // Mode legacy (sans avgMachHist) : on retombe sur vitesse chantier
                     // meme quand aucune machine planifiee ce jour (utile car les plannings
@@ -23600,13 +23634,24 @@
                 var totP = projNParChantier[c.id] || 0;
                 if (totP >= restantC) return;
                 // Cadence objectif : MEME formule que la vue N (metrage restant depuis
-                // aujourd'hui / jours ouvres jusqu'a la VRAIE fin du chantier)
+                // aujourd'hui / jours ouvres COUVERTS par le planning jusqu'a la vraie
+                // fin du chantier - coupures respectees, uniforme sans bande)
                 var jOuvR = 0;
+                var sansCouv1 = false;
                 var dCnt = new Date(Math.max(dDebC.getTime(), now2.getTime())); var safeC1 = 0;
                 while (dCnt.getTime() <= dFinC.getTime() && safeC1 < 1300) {
                   var dwC = dCnt.getDay();
-                  if (dwC >= 1 && dwC <= 4) jOuvR++;
+                  if (dwC >= 1 && dwC <= 4 && jourCouvertTr(c.id, dCnt.getTime())) jOuvR++;
                   dCnt.setDate(dCnt.getDate() + 1); safeC1++;
+                }
+                if (jOuvR === 0) {
+                  sansCouv1 = true;
+                  var dCntV = new Date(Math.max(dDebC.getTime(), now2.getTime())); var safeC1V = 0;
+                  while (dCntV.getTime() <= dFinC.getTime() && safeC1V < 1300) {
+                    var dwCV = dCntV.getDay();
+                    if (dwCV >= 1 && dwCV <= 4) jOuvR++;
+                    dCntV.setDate(dCntV.getDate() + 1); safeC1V++;
+                  }
                 }
                 var cadObj = jOuvR > 0 ? (restantC / jOuvR) : 0;
                 var curS = new Date(debutCur); var safeC2 = 0;
@@ -23616,9 +23661,9 @@
                     var isoS = curS.getFullYear() + "-" + String(curS.getMonth() + 1).padStart(2, "0") + "-" + String(curS.getDate()).padStart(2, "0");
                     var dayM = 0;
                     if (sansHisto) {
-                      // MEME moteur que la vue N : cadence objectif, le metrage et les
-                      // dates saisis au Calendrier font foi (repartition uniforme)
-                      dayM = cadObj;
+                      // MEME moteur que la vue N : cadence objectif sur les jours
+                      // couverts par le planning (coupures = zero production)
+                      dayM = (sansCouv1 || jourCouvertTr(c.id, curS.getTime())) ? cadObj : 0;
                     } else {
                       // MEME mode legacy que la vue N : vitesse chantier mesuree,
                       // affinee par le planning machines quand il est saisi
