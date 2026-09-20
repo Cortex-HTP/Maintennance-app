@@ -13740,10 +13740,12 @@
               newAffectations.push(newAff);
               // Inserer en DB
               (function(na) {
-                supabase.from("affectations").insert({
+                // Upsert : la ligne peut deja exister en base (synchro conges,
+                // autre ecran) sans etre dans l'etat local -> pas de duplicate key
+                supabase.from("affectations").upsert({
                   personnel_id: na.personnelId, chantier_id: na.chantierId,
                   date_affectation: na.dateAffectation, type_jour: na.typeJour
-                }).select().single().then(function(res) {
+                }, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
                   if (res.error) { console.error("Erreur creation affectation:", res.error.message); return; }
                   // Mettre a jour l'id dans le state
                   setAffectationsAv(function(p) {
@@ -16588,20 +16590,24 @@
                 setAffectations(affectations.map(function(a) { return a.id === existing.id ? affectationFromDb(res.data) : a; }));
               });
             } else {
-              supabase.from("affectations").insert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }).select().single().then(function(res) {
+              // UPSERT sur (personnel_id, date_affectation) : une ligne peut deja
+              // exister en base sans etre dans l'etat local (synchro conges, autre
+              // onglet, latence realtime) -> l'insert brut violait la contrainte
+              // unique ("duplicate key ... affectations_personnel_id_date_...").
+              supabase.from("affectations").upsert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
                 if (res.error) { alert("Erreur: " + res.error.message); return; }
-                setAffectations(affectations.concat(affectationFromDb(res.data)));
+                var ligneUp = affectationFromDb(res.data);
+                setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }).concat(ligneUp));
               });
             }
             return;
           }
-          // Eraser: delete
-          if (existing) {
-            supabase.from("affectations").delete().eq("id", existing.id).then(function(res) {
-              if (res.error) { alert("Erreur: " + res.error.message); return; }
-              setAffectations(affectations.filter(function(a) { return a.id !== existing.id; }));
-            });
-          }
+          // Gomme : suppression par (personne, date) - marche meme si la ligne
+          // en base n'est pas (encore) dans l'etat local
+          supabase.from("affectations").delete().eq("personnel_id", empId).eq("date_affectation", dateStr).then(function(res) {
+            if (res.error) { alert("Erreur: " + res.error.message); return; }
+            setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }));
+          });
         } else {
           var chId = chantierId ? parseInt(chantierId) : null;
           if (existing) {
@@ -16614,11 +16620,13 @@
               setAffectations(affectations.map(function(a) { return a.id === existing.id ? affectationFromDb(res.data) : a; }));
             });
           } else {
-            var insertData = { personnel_id: empId, date_affectation: dateStr, type_jour: tj };
-            if (chId !== null) insertData.chantier_id = chId;
-            supabase.from("affectations").insert(insertData).select().single().then(function(res) {
+            // UPSERT (cf. commentaire ci-dessus) : chantier_id TOUJOURS envoye
+            // (meme null) pour ecraser proprement une ligne cachee existante
+            var insertData = { personnel_id: empId, date_affectation: dateStr, type_jour: tj, chantier_id: chId };
+            supabase.from("affectations").upsert(insertData, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
               if (res.error) { alert("Erreur: " + res.error.message); return; }
-              setAffectations(affectations.concat(affectationFromDb(res.data)));
+              var ligneIns = affectationFromDb(res.data);
+              setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }).concat(ligneIns));
             });
           }
         }
