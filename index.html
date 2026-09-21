@@ -23772,36 +23772,30 @@
                 caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; // pour info
                 monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, reelInFin: mvtReel.inFin || 0, reelOutFin: mvtReel.outFin || 0, reelInterne: mvtReel.interne || 0, caTerrain: caChantiersRealMi + caActivitesRealMi };
               } else if (estCourant && mvtReel && (((mvtReel.in || 0) > 0) || ((mvtReel.out || 0) > 0))) {
-                // ── MOIS EN COURS avec compta PARTIELLE : REEL a date + PROJECTION du reste ──
-                // Proportionnalite : on garde les mouvements bancaires deja saisis ce mois-ci
-                // (le "vu" par la compta) et on complete la fin du mois par la projection,
-                // au prorata des jours restants. Ainsi le mois en cours reflete tout de suite
-                // les ecritures importees, sans attendre qu'il soit echu.
-                var nbJoursMoisC = dMEnd.getDate();
-                var jourC = now2.getDate();
-                var fracRestante = nbJoursMoisC > 0 ? Math.max(0, Math.min(1, (nbJoursMoisC - jourC) / nbJoursMoisC)) : 0;
+                // ── MOIS EN COURS = COMPTABILISE a date + PLANIFIE restant ──
+                // Comptabilise = mouvements bancaires 512 deja saisis ce mois-ci.
+                // Planifie restant = ce qu'il reste pour atteindre le previsionnel PLEIN du
+                // mois = max(0, projection pleine - deja comptabilise). Le mois ne descend
+                // donc jamais sous le previsionnel ; on affiche la part deja passee + le reste
+                // planifie. (Evite l'effondrement : encaissements clients a ~30j, compta partielle.)
                 var moisTravailEncC = mi2 - 1;
                 var caChProjC = moisTravailEncC >= 0 ? caTravailChParMois[moisTravailEncC] : 0;
                 var caAcProjC = moisTravailEncC >= 0 ? caTravailAcParMois[moisTravailEncC] : 0;
                 var encProjMoisC = caChProjC + caAcProjC;
                 var decaissTheoriqueC = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
                 var decProjMoisC = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheoriqueC) : decaissTheoriqueC;
-                var encProjResteC = encProjMoisC * fracRestante;
-                var decProjResteC = decProjMoisC * fracRestante;
-                encaiss = (mvtReel.in || 0) + encProjResteC;
-                decaiss = (mvtReel.out || 0) + decProjResteC;
+                var reelInC = mvtReel.in || 0, reelOutC = mvtReel.out || 0;
+                var encPlanifResteC = Math.max(0, encProjMoisC - reelInC);
+                var decPlanifResteC = Math.max(0, decProjMoisC - reelOutC);
+                encaiss = reelInC + encPlanifResteC;   // = max(reelInC, encProjMoisC)
+                decaiss = reelOutC + decPlanifResteC;  // = max(reelOutC, decProjMoisC)
                 source = "reel_partiel";
                 caChantiersMi = caChProjC; caActivitesMi = caAcProjC;
                 monthDetail = {
                   kind: "reel_partiel",
-                  reelIn: mvtReel.in || 0, reelOut: mvtReel.out || 0, reelInterne: mvtReel.interne || 0,
-                  fracRestante: fracRestante, jourC: jourC, nbJoursMoisC: nbJoursMoisC,
-                  encProjReste: encProjResteC, decProjReste: decProjResteC,
-                  // Sous-postes stockes AU PRORATA (fraction restante) pour que le detail
-                  // reconcilie : reel a date + somme des sous-postes projetes = TOTAL.
-                  caChantiers: caChProjC * fracRestante, caActivites: caAcProjC * fracRestante,
-                  salaires: salairesMens * fracRestante, chargesFixes: chargesFixesMens * fracRestante, emprunts: empruntsMensuel * fracRestante, factFrs: factFrsMi * fracRestante,
-                  decaissTheorique: decaissTheoriqueC * fracRestante, decaissMoyenReel: decaissMoyenReel, decaissAjustement: (decProjMoisC - decaissTheoriqueC) * fracRestante
+                  reelIn: reelInC, reelOut: reelOutC, reelInterne: mvtReel.interne || 0,
+                  encPlanifReste: encPlanifResteC, decPlanifReste: decPlanifResteC,
+                  encProjMois: encProjMoisC, decProjMois: decProjMoisC
                 };
               } else {
                 // Mois pas encore fiable cote compta OU mois futur : ESTIMATION
@@ -23894,8 +23888,8 @@
             var futursTr = trMois.filter(function(x) { return x.source === "projete" || x.source === "reel_partiel"; });
             // Mois courant hybride : ne compter que la part PROJETEE restante (le reel deja
             // encaisse/decaisse ce mois-ci n'est pas "a venir", il est deja passe en banque).
-            var totalInTr = futursTr.reduce(function(s, x) { return s + (x.source === "reel_partiel" && x.detail ? (x.detail.encProjReste || 0) : x.encaiss); }, 0);
-            var totalOutTr = futursTr.reduce(function(s, x) { return s + (x.source === "reel_partiel" && x.detail ? (x.detail.decProjReste || 0) : x.decaiss); }, 0);
+            var totalInTr = futursTr.reduce(function(s, x) { return s + (x.source === "reel_partiel" && x.detail ? (x.detail.encPlanifReste || 0) : x.encaiss); }, 0);
+            var totalOutTr = futursTr.reduce(function(s, x) { return s + (x.source === "reel_partiel" && x.detail ? (x.detail.decPlanifReste || 0) : x.decaiss); }, 0);
             // Totaux annee complete (passe + futur) - utilises pour info
             var totalInAnnee = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
             var totalOutAnnee = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
@@ -24147,7 +24141,7 @@
                 ),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
                   ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Chaque mois ENCAISSE ET PAIE les travaux du mois precedent (clients et fournisseurs a 30 j) : encaissement = CA du mois M-1, depenses variables (gasoil, consommables... au cout/m mesure sur le reel bancaire " + now2.getFullYear() + ") = metrage du mois M-1. + salaires, frais generaux (donnees " + now2.getFullYear() + ") et emprunts mois par mois (fins de prets deduites). Net mensuel = marge des travaux du mois precedent - charges fixes. Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
-                  : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi. Le mois en cours = reel deja saisi + projection du reste, au prorata des jours restants." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
+                  : ("Chaque mois : REEL (mouvements bancaires Compta 512*) pour les mois echus deja saisis par la compta, sinon PROJECTION (CA chantiers + activites - salaires x1.4 - charges fixes - emprunts - factures fournisseurs 401 non lettrees). Un mois passe en reel des que la compta l'a saisi. Le mois en cours = comptabilise a date + planifie restant (jusqu'au previsionnel plein du mois)." + (lastReliableMonthIdx >= 0 ? " Compta a jour jusqu'a : " + ["janv.","fevr.","mars","avril","mai","juin","juil.","aout","sept.","oct.","nov.","dec."][lastReliableMonthIdx] + " " + String(currentYear).slice(2) + "." : "")))
               ),
               (function() {
                 var soldeAujourdhui = estVueN1 ? soldeInit : (soldeManuel != null ? soldeManuel : (nbEcrBanque > 0 ? soldeBanqueLive : (trMois[now2.getMonth()] ? trMois[now2.getMonth()].solde : soldeInit)));
@@ -24291,12 +24285,21 @@
                                   h("span", null, "(pour info) CA metrages terrain"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caTerrain))
                                 ) : null
-                              ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
-                                det.kind === "reel_partiel" ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#86efac", fontWeight: 700 } },
-                                  h("span", null, "Reel encaisse a date (Compta 512*)"),
+                              ) : det.kind === "reel_partiel" ? h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#86efac", fontWeight: 700 } },
+                                  h("span", null, "Comptabilise a date (Compta 512*)"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelIn))
-                                ) : null,
-                                det.kind === "reel_partiel" ? h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginBottom: 4 } }, "+ projection du reste du mois (" + Math.round((det.fracRestante || 0) * 100) + "% restant) :") : null,
+                                ),
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#a5b4fc" } },
+                                  h("span", null, "+ Planifie restant (previsionnel)"),
+                                  h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.encPlanifReste))
+                                ),
+                                h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginTop: 2 } }, "Previsionnel plein du mois : " + fmtCaTr(det.encProjMois)),
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(34,197,94,0.30)", marginTop: 4, paddingTop: 6, fontWeight: 800, color: "#86efac" } },
+                                  h("span", null, "TOTAL encaissements"),
+                                  h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(x.encaiss))
+                                )
+                              ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
                                 h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginBottom: 4 } }, "Travaux du mois precedent (encaisses ~30j apres, fin de mois)"),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
                                   h("span", null, "CA chantiers " + (x.estPasse ? "(rapports sondeurs)" : x.estCourant ? "(rapports + prev)" : "(prev jour x jour)")),
@@ -24332,12 +24335,21 @@
                                   h("span", null, "Virements internes SG<->BCI (neutralises)"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelInterne))
                                 ) : null
-                              ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
-                                det.kind === "reel_partiel" ? h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#fda4af", fontWeight: 700 } },
-                                  h("span", null, "Reel decaisse a date (Compta 512*)"),
+                              ) : det.kind === "reel_partiel" ? h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#fda4af", fontWeight: 700 } },
+                                  h("span", null, "Comptabilise a date (Compta 512*)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.reelOut))
-                                ) : null,
-                                det.kind === "reel_partiel" ? h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginBottom: 4 } }, "+ projection du reste du mois (" + Math.round((det.fracRestante || 0) * 100) + "% restant) :") : null,
+                                ),
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#a5b4fc" } },
+                                  h("span", null, "+ Planifie restant (previsionnel)"),
+                                  h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.decPlanifReste))
+                                ),
+                                h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginTop: 2 } }, "Previsionnel plein du mois : -" + fmtCaTr(det.decProjMois)),
+                                h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(244,63,94,0.30)", marginTop: 4, paddingTop: 6, fontWeight: 800, color: "#fda4af" } },
+                                  h("span", null, "TOTAL decaissements"),
+                                  h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(x.decaiss))
+                                )
+                              ) : h("div", { style: { fontSize: 12, color: "#d4d4d8" } },
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
                                   h("span", null, "Salaires x1.4"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.salaires))
