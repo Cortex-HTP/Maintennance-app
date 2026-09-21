@@ -34960,6 +34960,23 @@
             supabase.from("renouvellements").select("*").order("date_expiration"),
             supabase.from("app_users").select("*").order("nom"),
           ]);
+          // Charge TOUTES les lignes en paginant par 1000 : PostgREST plafonne
+          // chaque requete a 1000 lignes. Sans pagination NI tri, les lignes
+          // RECENTES au-dela du cap disparaissaient silencieusement au
+          // rechargement (ex. cases du dispatch peintes puis "perdues" au F5,
+          // et "duplicate key" car la ligne existait en base sans etre chargee).
+          var fetchAllRows = async function(buildQuery, maxRows) {
+            var all = []; var fromR = 0; var capR = maxRows || 50000;
+            while (all.length < capR) {
+              var resR = await buildQuery().range(fromR, fromR + 999);
+              if (resR.error) return { data: all, error: resR.error };
+              var rowsR = resR.data || [];
+              all = all.concat(rowsR);
+              if (rowsR.length < 1000) break;
+              fromR += 1000;
+            }
+            return { data: all, error: null };
+          };
           // Nouvelles tables (chargement separe pour eviter un crash si migration pas faite)
           var afRes = { data: [], error: null };
           var ppRes = { data: [], error: null };
@@ -34972,13 +34989,13 @@
           var blRes = { data: [], error: null };
           try {
             var results = await Promise.all([
-              supabase.from("affectations").select("*"),
+              fetchAllRows(function() { return supabase.from("affectations").select("*").order("id"); }),
               supabase.from("paliers_primes").select("*").order("site").order("seuil_mh"),
               supabase.from("chantier_equipements").select("*"),
               supabase.from("demandes_financement").select("*").order("created_at", { ascending: false }),
-              supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }),
+              fetchAllRows(function() { return supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }).order("id"); }),
               // Rapports forage : light fetch (sans signatures lourdes en base64)
-              supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at,non_productif,motif_non_productif").order("date_rapport", { ascending: false }),
+              fetchAllRows(function() { return supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at,non_productif,motif_non_productif").order("date_rapport", { ascending: false }).order("id"); }),
               supabase.from("emprunts").select("*").order("date_debut", { ascending: false }),
               supabase.from("charges_fixes").select("*").order("categorie").order("libelle"),
               supabase.from("bug_logs").select("*").order("created_at", { ascending: false }).limit(500),
@@ -35247,7 +35264,21 @@
           pieces: function() { supabase.from("pieces").select("*").then(res => { if (res.data) setPieces(res.data.map(pieceFromDb)); }); },
           plans: function() { supabase.from("plans").select("*").then(res => { if (res.data) setPlans(res.data.map(planFromDb)); }); },
           paliers_primes: function() { supabase.from("paliers_primes").select("*").then(res => { if (res.data) setDbPaliers(res.data.map(palierFromDb)); }); },
-          affectations: function() { supabase.from("affectations").select("*").then(res => { if (res.data) setDbAffectations(res.data.map(affectationFromDb)); }); },
+          affectations: function() {
+            // Pagine par 1000 (meme raison que le chargement initial : au-dela
+            // du cap PostgREST, les lignes recentes disparaissaient du state)
+            (async function() {
+              var all = []; var f = 0;
+              while (all.length < 50000) {
+                var r = await supabase.from("affectations").select("*").order("id").range(f, f + 999);
+                if (r.error || !r.data) break;
+                all = all.concat(r.data);
+                if (r.data.length < 1000) break;
+                f += 1000;
+              }
+              setDbAffectations(all.map(affectationFromDb));
+            })();
+          },
           saisies: function() { supabase.from("saisies").select("*").then(res => {
             if (!res.data) return;
             var bag = {};
@@ -35258,7 +35289,19 @@
           emprunts: function() { supabase.from("emprunts").select("*").then(res => { if (res.data) setDbEmprunts(res.data); }); },
           parametres: function() { supabase.from("parametres").select("*").then(res => { if (res.data) setParametres(res.data); }); },
           interventions: function() { supabase.from("interventions").select("*").then(res => { if (res.data) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] }))); }); },
-          rapports_forage: function() { supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).then(res => { if (res.data) setDbRapportsForage(res.data); }); },
+          rapports_forage: function() {
+            (async function() {
+              var all = []; var f = 0;
+              while (all.length < 50000) {
+                var r = await supabase.from("rapports_forage").select("*").order("date_rapport", { ascending: false }).order("id").range(f, f + 999);
+                if (r.error || !r.data) break;
+                all = all.concat(r.data);
+                if (r.data.length < 1000) break;
+                f += 1000;
+              }
+              setDbRapportsForage(all);
+            })();
+          },
           releves_horametre: function() { supabase.from("releves_horametre").select("*").then(res => { if (res.data) setReleves(res.data.map(r => releveFromDb(r, eqCodeById))); }); },
           // Planning machines : un engin affecte a un chantier change le previsionnel
           // de metrage, donc le CA projete et la tresorerie previsionnelle.
@@ -35748,9 +35791,17 @@
           .upsert(payloads, { onConflict: "date_releve,employe_nom,sondeuse_code" })
           .select();
         if (error) { showToast(error.message, "error"); throw error; }
-        // Recharger les releves depuis la DB pour avoir l'etat propre
-        const { data: refreshed } = await supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false });
-        setDbRelevesJourn((refreshed || []).map(releveJournFromDb));
+        // Recharger les releves depuis la DB pour avoir l'etat propre (pagine :
+        // au-dela de 1000 lignes, les releves recents disparaissaient du state)
+        var refreshedAll = []; var fRj = 0;
+        while (refreshedAll.length < 50000) {
+          const pageRj = await supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }).order("id").range(fRj, fRj + 999);
+          if (pageRj.error || !pageRj.data) break;
+          refreshedAll = refreshedAll.concat(pageRj.data);
+          if (pageRj.data.length < 1000) break;
+          fRj += 1000;
+        }
+        setDbRelevesJourn(refreshedAll.map(releveJournFromDb));
         return { count: (data || []).length };
       };
       const deleteReleveJourn = async (id) => {
