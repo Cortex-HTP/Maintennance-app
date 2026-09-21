@@ -4355,7 +4355,7 @@
 
     // ─── Ecran Interventions (Liste + modal de saisie) ──────────────────
     function EcranInterventions({ onNavigate, editItem }) {
-      const { interventions, deleteIntervention, updateIntervention, parametres, userEmail } = useAppData();
+      const { interventions, deleteIntervention, updateIntervention, parametres, userEmail, equipements } = useAppData();
       const [sT, setST] = useState(""); const [sM, setSM] = useState(""); const [sD, setSD] = useState(""); const [sI, setSI] = useState(""); const [sS, setSS] = useState("");
       const [sSource, setSSource] = useState("all");  // all | admin | mecanicien
       const [toDelete, setToDelete] = useState(null);
@@ -4500,15 +4500,33 @@
       // ── Donnees de la vue "Par equipement" : interventions A FAIRE ──
       // (tout sauf Termine / Rejetee / Annulee, statut effectif via la gamme)
       var parEquipInter = (function() {
+        // Rang de tri par nature d'equipement (demande user) :
+        // 0 = MACHINES (engins/sondeuses), 1 = CAMIONS (poids lourds),
+        // 2 = VEHICULES (legers, utilitaires), 3 = inconnu
+        var rangParId = {}, rangParTitre = {};
+        (equipements || []).forEach(function(eq2) {
+          var typ2 = String(eq2.Type || "").toLowerCase();
+          var rg = 3;
+          if (eq2.Categorie === "Engin") rg = 0;
+          else if (typ2.indexOf("poids") >= 0 || typ2.indexOf("camion") >= 0) rg = 1;
+          else if (eq2.Categorie === "Vehicule") rg = 2;
+          rangParId[String(eq2.Id)] = rg;
+          if (eq2.Title) rangParTitre[String(eq2.Title).toUpperCase().trim()] = rg;
+        });
         var map = {};
         interventions.forEach(function(i) {
           var st = computeIntervStatus(i);
           if (st === "Termine" || st === "Rejetee" || st === "Annulee") return;
           var k = String(i.EquipementId || i.Equipement || "?");
-          if (!map[k]) map[k] = { key: k, nom: i.Equipement || "?", prev: [], cur: [] };
+          if (!map[k]) {
+            var rgI = rangParId[String(i.EquipementId)] != null ? rangParId[String(i.EquipementId)]
+              : (rangParTitre[String(i.Equipement || "").toUpperCase().trim()] != null ? rangParTitre[String(i.Equipement || "").toUpperCase().trim()] : 3);
+            map[k] = { key: k, nom: i.Equipement || "?", rang: rgI, prev: [], cur: [] };
+          }
           if (i.Type === "Preventive") map[k].prev.push(i); else map[k].cur.push(i);
         });
         return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+          if (a.rang !== b.rang) return a.rang - b.rang; // machines > camions > vehicules
           if (b.cur.length !== a.cur.length) return b.cur.length - a.cur.length;
           if (b.prev.length !== a.prev.length) return b.prev.length - a.prev.length;
           return String(a.nom).localeCompare(String(b.nom));
