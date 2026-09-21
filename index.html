@@ -23894,6 +23894,24 @@
             var totalInAnnee = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
             var totalOutAnnee = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
 
+            // ── PLAN vs REEL (annee a date) : sur les mois CLOTURES ET saisis en compta ──
+            // Encaissements : prevu = travaux du mois precedent (previsionnel) ; reel = 512 in.
+            // Decaissements : prevu = budget theorique (salaires x1.4 + fixes + emprunts + 401) ; reel = 512 out.
+            var pvrReelEnc = 0, pvrReelDec = 0, pvrPlanEnc = 0, pvrPlanDec = 0, pvrNb = 0;
+            for (var mpv = 0; mpv < 12; mpv++) {
+              if (!moisFiable(mpv)) continue;
+              var kpv = currentYear + "-" + String(mpv + 1).padStart(2, "0");
+              var mvpv = mvtsBanqueParMois[kpv];
+              pvrReelEnc += mvpv.in; pvrReelDec += mvpv.out;
+              pvrPlanEnc += (mpv - 1) >= 0 ? ((caTravailChParMois[mpv - 1] || 0) + (caTravailAcParMois[mpv - 1] || 0)) : 0;
+              pvrPlanDec += salairesMens + chargesFixesMens + empruntsMensuel + (factFrsFutures[kpv] || 0);
+              pvrNb++;
+            }
+            var pvrEcEnc = pvrPlanEnc > 0 ? Math.round((pvrReelEnc - pvrPlanEnc) / pvrPlanEnc * 100) : null;
+            var pvrEcDec = pvrPlanDec > 0 ? Math.round((pvrReelDec - pvrPlanDec) / pvrPlanDec * 100) : null;
+            var pvrMaxEnc = Math.max(pvrReelEnc, pvrPlanEnc, 1);
+            var pvrMaxDec = Math.max(pvrReelDec, pvrPlanDec, 1);
+
             // ══ VUE N+1 : projection de l'annee suivante, chainee sur la fin de N ══
             // MEME MOTEUR CA que la vue N (comportement identique, demande user) :
             // chantier sans historique -> cadence objectif (metrage x prix repartis
@@ -24171,6 +24189,49 @@
                 )
               );
               }()),
+              // ── Comparatif REEL vs PREVU (annee a date) : 2 lignes de barres ──
+              (!estVueN1 && pvrNb > 0) ? h("div", { style: { marginBottom: 14, padding: "10px 12px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8 } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } },
+                  h("div", { style: { fontSize: 11, fontWeight: 700, color: "#e5e7eb", textTransform: "uppercase", letterSpacing: 0.5 } }, "Reel vs Previsionnel - annee a date"),
+                  h("div", { style: { fontSize: 10, color: "#71717a" } }, pvrNb + " mois clotures")
+                ),
+                h("div", { style: { marginBottom: 10 } },
+                  h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 } },
+                    h("span", { style: { color: "#a1a1aa" } }, "Encaissements"),
+                    h("span", { style: { fontFamily: "monospace" } },
+                      h("span", { style: { color: "#86efac" } }, fmtCaTr(pvrReelEnc)),
+                      h("span", { style: { color: "#71717a" } }, " / prevu " + fmtCaTr(pvrPlanEnc) + "  "),
+                      pvrEcEnc != null ? h("span", { style: { color: pvrEcEnc >= 0 ? "#86efac" : "#fda4af", fontWeight: 700 } }, (pvrEcEnc >= 0 ? "+" : "") + pvrEcEnc + "%") : null
+                    )
+                  ),
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3 } },
+                    h("span", { style: { fontSize: 9, color: "#71717a", width: 38 } }, "Prevu"),
+                    h("div", { style: { flex: 1, height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden" } }, h("div", { style: { width: (pvrPlanEnc / pvrMaxEnc * 100) + "%", height: "100%", background: "#6b7280", borderRadius: 4 } }))
+                  ),
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                    h("span", { style: { fontSize: 9, color: "#71717a", width: 38 } }, "Reel"),
+                    h("div", { style: { flex: 1, height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden" } }, h("div", { style: { width: (pvrReelEnc / pvrMaxEnc * 100) + "%", height: "100%", background: "#22c55e", borderRadius: 4 } }))
+                  )
+                ),
+                h("div", null,
+                  h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 } },
+                    h("span", { style: { color: "#a1a1aa" } }, "Decaissements"),
+                    h("span", { style: { fontFamily: "monospace" } },
+                      h("span", { style: { color: "#fda4af" } }, fmtCaTr(pvrReelDec)),
+                      h("span", { style: { color: "#71717a" } }, " / prevu " + fmtCaTr(pvrPlanDec) + "  "),
+                      pvrEcDec != null ? h("span", { style: { color: pvrEcDec <= 0 ? "#86efac" : "#fda4af", fontWeight: 700 } }, (pvrEcDec >= 0 ? "+" : "") + pvrEcDec + "%") : null
+                    )
+                  ),
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3 } },
+                    h("span", { style: { fontSize: 9, color: "#71717a", width: 38 } }, "Prevu"),
+                    h("div", { style: { flex: 1, height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden" } }, h("div", { style: { width: (pvrPlanDec / pvrMaxDec * 100) + "%", height: "100%", background: "#6b7280", borderRadius: 4 } }))
+                  ),
+                  h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                    h("span", { style: { fontSize: 9, color: "#71717a", width: 38 } }, "Reel"),
+                    h("div", { style: { flex: 1, height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden" } }, h("div", { style: { width: (pvrReelDec / pvrMaxDec * 100) + "%", height: "100%", background: "#f43f5e", borderRadius: 4 } }))
+                  )
+                )
+              ) : null,
               // ── Legende inline en tete du chart (style carburant) ──
               h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 16, fontSize: 11, color: "#a1a1aa", marginBottom: 6, flexWrap: "wrap" } },
                 h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#818cf8", verticalAlign: "middle", marginRight: 6 } }), "Solde net cumule"),
