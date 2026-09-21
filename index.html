@@ -4362,6 +4362,10 @@
       const [showForm, setShowForm] = useState(false);
       const [editing, setEditing] = useState(null);
       const [rejeteMotifModal, setRejeteMotifModal] = useState(null);  // { interv, motif }
+      // Vue "Par equipement" : machines avec interventions A FAIRE (macarons
+      // jaune = preventif, rouge = curatif) ; accordeon multi-ouvert
+      const [vueInter, setVueInter] = useState("liste"); // liste | equipements
+      const [expandedEqInter, setExpandedEqInter] = useState({});
 
       // Index code -> mecanicien sous-traitant (pour resoudre nom + taux)
       const mecaniciensByCode = (function() {
@@ -4493,6 +4497,26 @@
         var dB = String(b.Date_Intervention || b.DateDemande || "");
         return dB.localeCompare(dA);
       });
+      // ── Donnees de la vue "Par equipement" : interventions A FAIRE ──
+      // (tout sauf Termine / Rejetee / Annulee, statut effectif via la gamme)
+      var parEquipInter = (function() {
+        var map = {};
+        interventions.forEach(function(i) {
+          var st = computeIntervStatus(i);
+          if (st === "Termine" || st === "Rejetee" || st === "Annulee") return;
+          var k = String(i.EquipementId || i.Equipement || "?");
+          if (!map[k]) map[k] = { key: k, nom: i.Equipement || "?", prev: [], cur: [] };
+          if (i.Type === "Preventive") map[k].prev.push(i); else map[k].cur.push(i);
+        });
+        return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+          if (b.cur.length !== a.cur.length) return b.cur.length - a.cur.length;
+          if (b.prev.length !== a.prev.length) return b.prev.length - a.prev.length;
+          return String(a.nom).localeCompare(String(b.nom));
+        });
+      })();
+      var macaronInter = function(nb, fond, texte, titre) {
+        return h("span", { title: titre, style: { minWidth: 26, height: 26, borderRadius: 999, background: fond, color: texte, fontWeight: 900, fontSize: 12.5, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 8px", boxShadow: "0 1px 4px " + fond + "66", flexShrink: 0 } }, String(nb));
+      };
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "wrench", size: 20 }, "Interventions"), subtitle: interventions.length + " interventions" + (demandesEnAttente.length > 0 ? " · " + demandesEnAttente.length + " demande" + (demandesEnAttente.length > 1 ? "s" : "") + " en attente" : ""), action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle intervention")) }),
         // ─── BANDEAU DEMANDES EN ATTENTE ───
@@ -4520,7 +4544,12 @@
             })
           )
         ) : null,
-        h(Card, { style: { marginBottom: 16 } },
+        // ── Bascule de vue : Liste classique / Par equipement (a faire) ──
+        h("div", { style: { display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" } },
+          h("span", { onClick: function() { setVueInter("liste"); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: vueInter === "liste" ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: vueInter === "liste" ? "#ffffff" : "#a1a1aa", border: "1px solid " + (vueInter === "liste" ? "transparent" : "rgba(255,255,255,0.12)") } }, "Liste"),
+          h("span", { onClick: function() { setVueInter("equipements"); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: vueInter === "equipements" ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: vueInter === "equipements" ? "#ffffff" : "#a1a1aa", border: "1px solid " + (vueInter === "equipements" ? "transparent" : "rgba(255,255,255,0.12)") } }, "Par equipement" + (parEquipInter.length > 0 ? " (" + parEquipInter.length + ")" : ""))
+        ),
+        vueInter === "liste" ? h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 12 } },
             h(SearchInput, { placeholder: "Titre...", value: sT, onChange: setST }),
             h(SearchInput, { placeholder: "Machine...", value: sM, onChange: setSM }),
@@ -4533,8 +4562,8 @@
               h("option", { value: "mecanicien" }, "Demandes sous-traitant")
             )
           )
-        ),
-        h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        ) : null,
+        vueInter === "liste" ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
           filtered.length === 0 ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention trouvee")) :
             filtered.map((item) => {
               const prog = gammeProgress(item.Gamme);
@@ -4565,7 +4594,49 @@
                   h(StatusBadge, { status: effStatus }),
                   h("button", { onClick: () => openEdit(item), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
                   h("button", { onClick: () => setToDelete(item), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })))));
-            })),
+            })) : null,
+        // ── Vue PAR EQUIPEMENT : machines avec du travail en attente ──
+        // Macaron JAUNE = nb preventives a faire, ROUGE = nb curatives ; un
+        // equipement sans rien a faire n'apparait pas. Accordeon multi-ouvert :
+        // deplier une machine laisse les autres cliquables.
+        vueInter === "equipements" ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          parEquipInter.length === 0
+            ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucun equipement n'a d'intervention a faire. Tout est a jour."))
+            : parEquipInter.map(function(eqG) {
+                var ouvert = !!expandedEqInter[eqG.key];
+                var lignes = eqG.cur.concat(eqG.prev); // curatives d'abord
+                return h(Card, { key: eqG.key, style: { padding: 0, overflow: "hidden" } },
+                  h("div", {
+                    onClick: function() { setExpandedEqInter(function(prev) { var n2 = Object.assign({}, prev); n2[eqG.key] = !prev[eqG.key]; return n2; }); },
+                    style: { display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", cursor: "pointer" }
+                  },
+                    h("span", { style: { display: "inline-block", fontSize: 11, color: "#71717a", transition: "transform 0.15s", transform: ouvert ? "rotate(90deg)" : "rotate(0deg)" } }, "▶"),
+                    h(Icon, { name: "hard-hat", size: 17, color: "#a5b4fc" }),
+                    h("div", { style: { fontWeight: 800, fontSize: 14.5, color: "#fafafa", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, eqG.nom),
+                    eqG.prev.length > 0 ? macaronInter(eqG.prev.length, "#fbbf24", "#1c1917", eqG.prev.length + " maintenance(s) preventive(s) a faire") : null,
+                    eqG.cur.length > 0 ? macaronInter(eqG.cur.length, "#f43f5e", "#ffffff", eqG.cur.length + " intervention(s) curative(s) a faire") : null
+                  ),
+                  ouvert ? h("div", { style: { borderTop: "1px solid rgba(255,255,255,0.07)", padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 6 } },
+                    lignes.map(function(it) {
+                      var estPrev = it.Type === "Preventive";
+                      return h("div", { key: "eqi" + it.Id, style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "rgba(0,0,0,0.22)", border: "1px solid " + (estPrev ? "rgba(251,191,36,0.25)" : "rgba(244,63,94,0.25)"), borderRadius: 8, flexWrap: "wrap" } },
+                        h("span", { title: estPrev ? "Preventive" : "Curative", style: { width: 10, height: 10, borderRadius: 999, background: estPrev ? "#fbbf24" : "#f43f5e", flexShrink: 0 } }),
+                        h("div", { style: { flex: 1, minWidth: 180 } },
+                          h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa" } }, it.Title || it.Travaux_Effectues || "(sans titre)"),
+                          h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2, display: "flex", gap: 12, flexWrap: "wrap" } },
+                            it.Date_Intervention ? h("span", null, h(IconText, { icon: "calendar", size: 11, color: "#a1a1aa" }, it.Date_Intervention)) : null,
+                            it.Technicien ? h("span", null, h(IconText, { icon: "user", size: 11, color: "#a1a1aa" }, it.Technicien)) : null,
+                            it.MecanicienCode ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 11, color: "#fde68a" }, getMecanicienLabel(it.MecanicienCode))) : null
+                          )
+                        ),
+                        h(StatusBadge, { status: computeIntervStatus(it) }),
+                        h("button", { onClick: function() { openEdit(it); }, style: { padding: "6px 12px", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(129,140,248,0.4)", borderRadius: 6, color: "#c7d2fe", cursor: "pointer", fontWeight: 700, fontSize: 12 } }, h(IconText, { icon: "pencil", size: 12 }, "Modifier"))
+                      );
+                    })
+                  ) : null
+                );
+              })
+        ) : null,
         showForm && h(Modal, { title: editing ? "Modifier l'intervention" : "Nouvelle intervention", onClose: closeForm, size: 760 },
           h(InterventionForm, { editItem: editing, onDone: closeForm })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'intervention ?", message: "Confirmer la suppression de \"" + (toDelete.Title || toDelete.Travaux_Effectues || "intervention") + "\" ?", onConfirm: async () => { await deleteIntervention(toDelete.Id); setToDelete(null); }, onCancel: () => setToDelete(null) }),
