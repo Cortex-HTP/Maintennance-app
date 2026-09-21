@@ -16575,9 +16575,42 @@
         return "";
       }
 
+      // ── Verrou des mois PASSES ──
+      // Une fois le mois ecoule, son planning est considere ENREGISTRE : toute
+      // re-modification demande une validation explicite (une confirmation par
+      // mois et par session, pas a chaque case). Evite de fausser par megarde
+      // les primes / heures deja arretees sur un mois clos.
+      var _verrouPe = useState({});
+      var moisDeverrouillesPe = _verrouPe[0]; var setMoisDeverrouillesPe = _verrouPe[1];
+      function moisPasseVerrouille(dateStr) {
+        var mCle = String(dateStr).substring(0, 7);
+        var nowV = new Date();
+        var moisCourantCle = nowV.getFullYear() + "-" + String(nowV.getMonth() + 1).padStart(2, "0");
+        if (mCle >= moisCourantCle) return false;
+        if (moisDeverrouillesPe[mCle]) return false;
+        var lblV = new Date(mCle + "-01T00:00:00").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+        if (window.confirm("Le planning de " + lblV + " est cloture (mois passe, deja pris en compte pour les primes et les heures).\n\nDeverrouiller la modification de ce mois pour cette session ?")) {
+          setMoisDeverrouillesPe(function(prev) { var nV = Object.assign({}, prev); nV[mCle] = true; return nV; });
+          return false;
+        }
+        return true;
+      }
+
       function setAffectation(empId, dateStr, chantierId, typeJour) {
+        if (moisPasseVerrouille(dateStr)) return;
         var tj = typeJour || "travail";
         var existing = affectations.find(function(a) { return a.personnelId === empId && a.dateAffectation === dateStr; });
+        // MISE A JOUR FONCTIONNELLE de l'etat : en peinture rapide (glisser sur
+        // plusieurs cases), chaque reponse async repartait de l'etat CAPTURE a
+        // son lancement -> la derniere reponse revenue ecrasait les autres et
+        // des cases semblaient ne pas s'enregistrer. Ici chaque reponse
+        // s'applique sur l'etat COURANT, ligne par ligne.
+        var majLigne = function(ligne) {
+          setAffectations(function(prev) {
+            var sans = prev.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); });
+            return ligne ? sans.concat(ligne) : sans;
+          });
+        };
         if ((chantierId === "" || chantierId === null) && tj === "travail") {
           // ── Gomme sur une case issue d'un RAPPORT DE FORAGE ──
           // L'affectation affichee est alors VIRTUELLE (deduite de l'equipe du
@@ -16585,54 +16618,35 @@
           // aussitot et la gomme paraissait inoperante. On enregistre donc une
           // ligne "masque" (chantier vide) qui prime sur le rapport.
           if (rapportCoverPe[empId + "-" + dateStr]) {
-            if (existing) {
-              // Deja masquee : rien a faire (evite un aller-retour qui ferait
-              // reapparaitre le rapport a la gomme suivante).
-              if (existing.chantierId == null && (existing.typeJour || "travail") === "travail") return;
-              supabase.from("affectations").update({ chantier_id: null, type_jour: "travail" }).eq("id", existing.id).select().single().then(function(res) {
-                if (res.error) { alert("Erreur: " + res.error.message); return; }
-                setAffectations(affectations.map(function(a) { return a.id === existing.id ? affectationFromDb(res.data) : a; }));
-              });
-            } else {
-              // UPSERT sur (personnel_id, date_affectation) : une ligne peut deja
-              // exister en base sans etre dans l'etat local (synchro conges, autre
-              // onglet, latence realtime) -> l'insert brut violait la contrainte
-              // unique ("duplicate key ... affectations_personnel_id_date_...").
-              supabase.from("affectations").upsert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
-                if (res.error) { alert("Erreur: " + res.error.message); return; }
-                var ligneUp = affectationFromDb(res.data);
-                setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }).concat(ligneUp));
-              });
-            }
+            // Deja masquee : rien a faire (evite un aller-retour qui ferait
+            // reapparaitre le rapport a la gomme suivante).
+            if (existing && existing.chantierId == null && (existing.typeJour || "travail") === "travail") return;
+            // UPSERT sur (personnel_id, date_affectation) : une ligne peut deja
+            // exister en base sans etre dans l'etat local (synchro conges, autre
+            // onglet, latence realtime) -> un insert brut violerait la contrainte
+            // unique ("duplicate key ... affectations_personnel_id_date_...").
+            supabase.from("affectations").upsert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
+              if (res.error) { alert("Erreur: " + res.error.message); return; }
+              majLigne(affectationFromDb(res.data));
+            });
             return;
           }
           // Gomme : suppression par (personne, date) - marche meme si la ligne
           // en base n'est pas (encore) dans l'etat local
           supabase.from("affectations").delete().eq("personnel_id", empId).eq("date_affectation", dateStr).then(function(res) {
             if (res.error) { alert("Erreur: " + res.error.message); return; }
-            setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }));
+            majLigne(null);
           });
         } else {
           var chId = chantierId ? parseInt(chantierId) : null;
-          if (existing) {
-            if (existing.chantierId === chId && existing.typeJour === tj) return; // Already same
-            var updateData = { type_jour: tj };
-            if (chId !== null) updateData.chantier_id = chId;
-            else updateData.chantier_id = null;
-            supabase.from("affectations").update(updateData).eq("id", existing.id).select().single().then(function(res) {
-              if (res.error) { alert("Erreur: " + res.error.message); return; }
-              setAffectations(affectations.map(function(a) { return a.id === existing.id ? affectationFromDb(res.data) : a; }));
-            });
-          } else {
-            // UPSERT (cf. commentaire ci-dessus) : chantier_id TOUJOURS envoye
-            // (meme null) pour ecraser proprement une ligne cachee existante
-            var insertData = { personnel_id: empId, date_affectation: dateStr, type_jour: tj, chantier_id: chId };
-            supabase.from("affectations").upsert(insertData, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
-              if (res.error) { alert("Erreur: " + res.error.message); return; }
-              var ligneIns = affectationFromDb(res.data);
-              setAffectations(affectations.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); }).concat(ligneIns));
-            });
-          }
+          if (existing && existing.chantierId === chId && existing.typeJour === tj) return; // deja identique
+          // UPSERT unique pour creation ET modification (cf. commentaire) :
+          // chantier_id TOUJOURS envoye (meme null) pour ecraser proprement
+          var insertData = { personnel_id: empId, date_affectation: dateStr, type_jour: tj, chantier_id: chId };
+          supabase.from("affectations").upsert(insertData, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
+            if (res.error) { alert("Erreur: " + res.error.message); return; }
+            majLigne(affectationFromDb(res.data));
+          });
         }
       }
 
