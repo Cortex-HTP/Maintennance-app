@@ -28,7 +28,7 @@ DECLARE
     'chantiers',              -- nouveau chantier / changement de metrage, prix, dates, statut
     'chantier_equipements',   -- planning machines -> previsionnel de metrage
     'rapports_forage',        -- production reelle du jour
-    'saisies',                -- avancement saisi a la main
+    'saisies_metrage',        -- avancement saisi a la main (vraie table ; 'saisies' n'existe pas)
     'ecritures_compta',       -- import FEC -> frais generaux, marges cash, treso
     'consommations_carburant',
     'affectations',

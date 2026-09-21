@@ -228,6 +228,29 @@
     const SUPABASE_URL = "https://tfmnmzyetybaeygughcs.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRmbW5tenlldHliYWV5Z3VnaGNzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxMDIyMTQsImV4cCI6MjA5MTY3ODIxNH0.mpFFrat0OkWvm30FSt5gtW8zR4KcBjdc0V-I0NPxaVA";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    // Pagination PostgREST : recupere TOUTES les lignes par pages de 1000
+    // (PostgREST plafonne chaque select a 1000 lignes, silencieusement).
+    // buildQuery DOIT porter un tri stable (.order(...).order("id")) sinon les
+    // pages se chevauchent entre deux requetes (doublons + lignes perdues).
+    var fetchAllRows = async function(buildQuery, maxRows) {
+      var all = []; var fromR = 0; var capR = maxRows || 50000;
+      while (all.length < capR) {
+        var resR = await buildQuery().range(fromR, fromR + 999);
+        if (resR.error) return { data: all, error: resR.error };
+        var rowsR = resR.data || [];
+        all = all.concat(rowsR);
+        if (rowsR.length < 1000) break;
+        fromR += 1000;
+      }
+      return { data: all, error: null };
+    };
+    // Date calendaire LOCALE (Noumea, UTC+11) au format AAAA-MM-JJ.
+    // JAMAIS new Date().toISOString().slice(0,10) pour un jour calendaire :
+    // avant 11h du matin, la date UTC est encore celle de la VEILLE.
+    function localISODate(d) {
+      var x = d || new Date();
+      return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+    }
 
     // Telecharge le PDF d'une demande d'intervention (meme rendu que le PDF joint aux emails).
     // Appelle l'endpoint securise (JWT admin) sur employes-psi et declenche le download.
@@ -979,7 +1002,7 @@
       return { id: r.id, nom: r.nom || "", email: r.email || "", role: r.role || "Utilisateur", statut: r.statut || "Actif", pagesAutorisees: r.pages_autorisees || ["accueil"], dateCreation: r.date_creation || "", derniereConnexion: r.derniere_connexion || null };
     }
     function appUserToDb(u) {
-      return { nom: u.nom, email: u.email, role: u.role || "Utilisateur", statut: u.statut || "Actif", pages_autorisees: u.pagesAutorisees || ["accueil"], date_creation: u.dateCreation || new Date().toISOString().substring(0, 10) };
+      return { nom: u.nom, email: u.email, role: u.role || "Utilisateur", statut: u.statut || "Actif", pages_autorisees: u.pagesAutorisees || ["accueil"], date_creation: u.dateCreation || localISODate() };
     }
 
     // ─── Conversion DB: releves_journaliers (heures + metrage importes) ──
@@ -2791,8 +2814,13 @@
             else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
             if (freqVal > 0) {
               var currentVal = freqType === "h" ? parseFloat(eq.Horametre || 0) : parseFloat(eq.KM || 0);
+              // Seuil : celui STOCKE sur l'intervention [Auto] (base-relative,
+              // ex. dernier entretien 10 266 + 250 = 10 516). Le recalcul
+              // cycle x frequence donnait un seuil different (10 750) et
+              // affichait "Dans 150 h" pour une visite deja en retard.
+              var seuilStocke = freqType === "h" ? parseFloat(i.Horametre) : parseFloat(i.KM);
               var cycleNum = parseInt(i.CycleNumber || 0);
-              var threshold = cycleNum > 0 ? cycleNum * freqVal : freqVal;
+              var threshold = (seuilStocke > 0) ? seuilStocke : (cycleNum > 0 ? cycleNum * freqVal : freqVal);
               diff = currentVal - threshold;
               var unit = freqType === "h" ? " h" : " km";
               if (diff > 0) { statusText = "En retard de " + Math.round(diff) + unit; statusType = "overdue"; }
@@ -2982,7 +3010,7 @@
     function PlanForm({ onSave, onCancel, editItem }) {
       const freqs = useParams("frequence_plan");
       const { isAdmin } = useAppData();
-      const [f, setF] = useState(editItem || { Title: "", Frequence: freqs[0] || "Mensuel", Description: "", SeuilAlerte: "50", SeuilAlerteAvenir: "", Equipements: "", ProchainIntervention: new Date().toISOString().split("T")[0], Statut: "Actif", Gamme: [], DureeEstimeeMin: "" });
+      const [f, setF] = useState(editItem || { Title: "", Frequence: freqs[0] || "Mensuel", Description: "", SeuilAlerte: "50", SeuilAlerteAvenir: "", Equipements: "", ProchainIntervention: localISODate(), Statut: "Actif", Gamme: [], DureeEstimeeMin: "" });
       const [saving, setSaving] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // Detecter l'unite du seuil depuis la frequence selectionnee
@@ -3118,7 +3146,7 @@
     function InterventionForm({ editItem, onDone }) {
       const { equipements, plans, pieces, piecesEquipements, addIntervention, updateIntervention, addReleve, parametres } = useAppData();
       const techniciens = useParams("technicien");
-      const [f, setF] = useState(editItem || { Title: "", Equipement: "", Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "", Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "", Plan: "", Horametre: "", KM: "", Type: "Preventive", Gamme: [], Source: "admin", MecanicienCode: "", DescriptionProbleme: "", DureeHeures: "", Urgence: "normale", TauxHoraireApplique: 0, PiecesUtilisees: [], Photos: [] });
+      const [f, setF] = useState(editItem || { Title: "", Equipement: "", Date_Intervention: localISODate(), Technicien: "", Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "", Plan: "", Horametre: "", KM: "", Type: "Preventive", Gamme: [], Source: "admin", MecanicienCode: "", DescriptionProbleme: "", DureeHeures: "", Urgence: "normale", TauxHoraireApplique: 0, PiecesUtilisees: [], Photos: [] });
 
       // Liste des mecaniciens sous-traitants disponibles (depuis personnel_data)
       const mecaniciens = (function() {
@@ -3301,8 +3329,17 @@
           // toucher l'horametre de la machine (l'HM sautait a la valeur du seuil).
           // Les interventions manuelles gardent leur comportement (le mecano saisit
           // un horametre reellement releve ce jour-la).
-          var estInterAuto = (finalForm.CycleNumber != null) || String(finalForm.Title || "").indexOf("[Auto]") === 0;
-          if (!estInterAuto && (f.Horametre || f.KM)) {
+          var estInterAuto = (finalForm.CycleNumber != null) || /^\[auto\]/i.test(String(finalForm.Title || ""));
+          // Releve horametre : UNIQUEMENT a la creation ou si la valeur a change.
+          // Avant, chaque re-enregistrement (cocher une etape, corriger le
+          // technicien...) re-inserait le meme releve, et le trigger DB
+          // greatest() rendait toute faute de frappe irreversible.
+          var hmNum = parseFloat(f.Horametre) || 0;
+          var kmNum = parseFloat(f.KM) || 0;
+          var valeursCompteurChangees = !editItem
+            || hmNum !== (parseFloat(editItem.Horametre) || 0)
+            || kmNum !== (parseFloat(editItem.KM) || 0);
+          if (!estInterAuto && (hmNum > 0 || kmNum > 0) && valeursCompteurChangees) {
             await addReleve({ Equipement: f.Equipement, Date: f.Date_Intervention, Horametre: f.Horametre || "0", KM: f.KM || "0", Technicien: f.Technicien || "" });
           }
           if (onDone) onDone();
@@ -3311,8 +3348,16 @@
       };
       return h("div", null,
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 16 } },
-            h(FormField, { label: "Titre / Description" }, h("input", { style: inputStyle, value: f.Title, onChange: (e) => upd("Title", e.target.value), onBlur: () => upd("Title", capitalizeFirst(f.Title)), placeholder: "Ex: Vidange D36" })),
-            h(FormField, { label: "Equipement" }, h("select", { style: selectStyle, value: f.Equipement, onChange: (e) => upd("Equipement", e.target.value) },
+            // onBlur : majuscule sur la 1re lettre SANS ecraser le reste du titre.
+            // capitalizeFirst mettait tout en minuscules : "[Auto] Vidange" devenait
+            // "[auto] vidange" (le filtre startsWith("[Auto]") de l'auto-generation
+            // ne le voyait plus -> DOUBLON de visite preventive) et "D38 - Fuite"
+            // devenait "D38 - fuite".
+            h(FormField, { label: "Titre / Description" }, h("input", { style: inputStyle, value: f.Title, onChange: (e) => upd("Title", e.target.value), onBlur: () => { var t0 = f.Title || ""; if (t0 && !/^\[auto\]/i.test(t0)) upd("Title", t0.charAt(0).toUpperCase() + t0.slice(1)); }, placeholder: "Ex: Vidange D36" })),
+            // Le changement de machine met a jour Equipement ET EquipementId :
+            // interventionToDb priorise EquipementId, donc sans ca le changement
+            // etait silencieusement ignore en base.
+            h(FormField, { label: "Equipement" }, h("select", { style: selectStyle, value: f.Equipement, onChange: (e) => { var titEq = e.target.value; var eqSel = equipements.find(function(x) { return x.Title === titEq; }); setF(function(prev) { return Object.assign({}, prev, { Equipement: titEq, EquipementId: eqSel ? eqSel.Id : null }); }); } },
               h("option", { value: "" }, "-- Selectionner --"),
               sortByField(equipements, "Title").map((eq) => h("option", { key: eq.Id, value: eq.Title }, eq.Title + " \u2014 " + eq.Nom)))),
             h(FormField, { label: "Date d'intervention" }, h("input", { type: "date", style: inputStyle, value: f.Date_Intervention, onChange: (e) => upd("Date_Intervention", e.target.value) })),
@@ -3435,7 +3480,7 @@
                 });
               }
               function addSession() {
-                var d = window.prompt("Date de la session (AAAA-MM-JJ)", new Date().toISOString().substring(0, 10));
+                var d = window.prompt("Date de la session (AAAA-MM-JJ)", localISODate());
                 if (!d) return;
                 var defTaux = selectedMec ? (parseFloat(selectedMec.tauxHoraire) || 0) : (parseFloat(f.TauxHoraireApplique) || 0);
                 var lignes = [];
@@ -3626,7 +3671,7 @@
     // ─── Formulaire Equipement ──────────────────────────────────────────
     function EquipementForm({ onSave, onCancel, editItem }) {
       const { isAdmin } = useAppData();
-      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: new Date().toISOString().split("T")[0], Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
+      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate(), Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
       const [saving, setSaving] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // On ne peut modifier l'horametre/KM manuellement que si admin et en mode edition.
@@ -3741,7 +3786,7 @@
             }));
         }()),
         showModal && h(Modal, { title: editing ? "Modifier l'equipement" : "Nouvel equipement", onClose: () => { setShowModal(false); setEditing(null); } },
-          h(EquipementForm, { onSave: handleSave, onCancel: () => { setShowModal(false); setEditing(null); }, editItem: editing || { Title: "", Nom: "", Categorie: onglet, Type: onglet === "Vehicule" ? "Vehicule leger" : "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: new Date().toISOString().split("T")[0] } })),
+          h(EquipementForm, { onSave: handleSave, onCancel: () => { setShowModal(false); setEditing(null); }, editItem: editing || { Title: "", Nom: "", Categorie: onglet, Type: onglet === "Vehicule" ? "Vehicule leger" : "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate() } })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'equipement ?", message: "Confirmer la suppression de \"" + toDelete.Title + " - " + toDelete.Nom + "\" ? (Les interventions et releves associes seront supprimes.)", onConfirm: handleConfirmDelete, onCancel: () => setToDelete(null) }));
     }
 
@@ -3764,7 +3809,7 @@
       const [showReleveModal, setShowReleveModal] = useState(false);
       const [showPieceModal, setShowPieceModal] = useState(false);
       const [pieceSearch, setPieceSearch] = useState("");
-      const [newReleve, setNewReleve] = useState({ Date: new Date().toISOString().split("T")[0], Horametre: "", KM: "", Technicien: "" });
+      const [newReleve, setNewReleve] = useState({ Date: localISODate(), Horametre: "", KM: "", Technicien: "" });
       const [saving, setSaving] = useState(false);
       const [releveToDelete, setReleveToDelete] = useState(null);
       const [ctDateLocal, setCtDateLocal] = useState(eq.ProchainControleTechnique || "");
@@ -3800,7 +3845,7 @@
         setSaving(true);
         try {
           await addReleve({ ...newReleve, Equipement: eq.Title, EquipementId: eq.Id });
-          setNewReleve({ Date: new Date().toISOString().split("T")[0], Horametre: "", KM: "", Technicien: "" });
+          setNewReleve({ Date: localISODate(), Horametre: "", KM: "", Technicien: "" });
           setShowReleveModal(false);
         } catch (err) { alert("Erreur : " + err.message); }
         finally { setSaving(false); }
@@ -3866,7 +3911,7 @@
             // et revient a la fiche apres validation (_returnTo).
             onNavigate("interventions", {
               Title: "", Equipement: eq.Title, EquipementId: eq.Id,
-              Date_Intervention: new Date().toISOString().split("T")[0], Technicien: "",
+              Date_Intervention: localISODate(), Technicien: "",
               Statut_Intervention: "Planifiee", Travaux_Effectues: "", Temps_Arret: "", Cout: "",
               Plan: "", Horametre: hmActuel ? String(hmActuel) : "", KM: kmActuel ? String(kmActuel) : "",
               Type: "Curative", Gamme: [], Source: "admin", MecanicienCode: "", DescriptionProbleme: "",
@@ -4069,7 +4114,7 @@
           if (releveAsc.length >= 2) {
             var last = releveAsc[releveAsc.length - 1];
             var firstIdx = 0;
-            var thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().substring(0, 10);
+            var thirtyDaysAgo = localISODate(new Date(Date.now() - 30 * 86400000));
             for (var ix = 0; ix < releveAsc.length; ix++) {
               if (releveAsc[ix].Date >= thirtyDaysAgo) { firstIdx = ix; break; }
             }
@@ -5117,9 +5162,9 @@
       const [refreshKey, setRefreshKey] = useState(0);
       useEffect(function() {
         setLoading(true);
-        supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,consommables_perdus")
+        fetchAllRows(function() { return supabase.from("rapports_forage").select("id,date_rapport,sondeuse_code,consommables_perdus")
           .not("consommables_perdus", "is", null)
-          .order("date_rapport", { ascending: false }).then(function(res) {
+          .order("date_rapport", { ascending: false }).order("id"); }).then(function(res) {
           setLoading(false);
           if (res.error) { console.warn(res.error.message); return; }
           setRaps(res.data || []);
@@ -5560,7 +5605,7 @@
 
       useEffect(function() {
         setLoading(true);
-        supabase.from("prix_observations").select("*").order("date_observation", { ascending: true }).then(function(res) {
+        fetchAllRows(function() { return supabase.from("prix_observations").select("*").order("date_observation", { ascending: true }).order("id"); }).then(function(res) {
           setLoading(false);
           if (res.error) { console.warn("[InflationView] fetch:", res.error.message); return; }
           setObs(res.data || []);
@@ -5631,7 +5676,7 @@
       // Modal "Ajouter une observation manuelle"
       function AddObsModal({ pieceRef, pieceDes, pieceCat, fournisseur, onClose }) {
         const [prix, setPrix] = useState("");
-        const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+        const [date, setDate] = useState(localISODate());
         const [fourn, setFourn] = useState(fournisseur || "");
         const [src, setSrc] = useState("manuel");
         const [notes, setNotes] = useState("");
@@ -5945,9 +5990,9 @@
       useEffect(function() {
         setLoading(true);
         Promise.all([
-          supabase.from("messages").select("*").order("created_at", { ascending: false }),
-          supabase.from("message_lectures").select("*"),
-          supabase.from("messages_automatiques").select("*").order("created_at", { ascending: false })
+          fetchAllRows(function() { return supabase.from("messages").select("*").order("created_at", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("message_lectures").select("*").order("message_id").order("personnel_id"); }),
+          fetchAllRows(function() { return supabase.from("messages_automatiques").select("*").order("created_at", { ascending: false }).order("id"); })
         ]).then(function(results) {
           if (results[0].error) console.warn("[messages] fetch:", results[0].error.message);
           if (results[1].error) console.warn("[lectures] fetch:", results[1].error.message);
@@ -6516,7 +6561,7 @@
       const [toDelete, setToDelete] = useState(null);
 
       useEffect(function() {
-        supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id,sondeur_id,created_at").order("date_consommation", { ascending: false }).then(function(res) {
+        fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id,sondeur_id,created_at").order("date_consommation", { ascending: false }).order("id"); }).then(function(res) {
           setLoading(false);
           if (res.error) { console.warn("[carburant] fetch:", res.error.message); return; }
           setCarburants(res.data || []);
@@ -6674,8 +6719,10 @@
       rapportsCtx.forEach(function(r) {
         if (!r.sondeuse_code) return;
         var d = String(r.date_rapport || "").substring(0, 10);
-        if (periodStart && d < periodStart.toISOString().substring(0,10)) return;
-        if (periodEnd && d > periodEnd.toISOString().substring(0,10)) return;
+        // localISODate : periodStart est un minuit LOCAL ; toISOString le
+        // renvoyait a la veille (UTC) et comptait le 31 du mois precedent.
+        if (periodStart && d < localISODate(periodStart)) return;
+        if (periodEnd && d > localISODate(periodEnd)) return;
         var k = String(r.sondeuse_code).toUpperCase().trim();
         metresParMachine[k] = (metresParMachine[k] || 0) + (parseFloat(r.total_metres) || 0);
       });
@@ -9387,20 +9434,43 @@
         var ff = Object.assign({}, f, { site: siteName });
         var siteConfig = f.newSite ? { objectif: f.siteObjectif, moyenne: f.siteMoyenne, paliers: f.sitePaliers || [] } : null;
         delete ff.newSite; delete ff.siteObjectif; delete ff.siteMoyenne; delete ff.sitePaliers;
+        // Garde-fou periodes : si l'utilisateur a saisi des periodes mais
+        // qu'AUCUNE n'est valide (fin < debut...), on refuse d'enregistrer :
+        // avant, la colonne etait ecrasee a null et les periodes existantes
+        // effacees en silence.
+        var lignesPer = (ff.periodes || []).filter(function(p) { return p && (p.debut || p.fin); });
+        var periodesValides = (ff.periodes || []).filter(function(p) { return p && p.debut && p.fin && p.fin >= p.debut; });
+        if (lignesPer.length > 0 && periodesValides.length === 0) {
+          alert("Aucune periode valide : corrige les dates (la FIN doit etre apres le DEBUT) ou vide les lignes avant d'enregistrer.");
+          return;
+        }
+        // Chevauchement de periodes : le metrage de la periode masquee serait
+        // perdu dans le previsionnel -> on bloque avec un message clair.
+        var perTriees = periodesValides.slice().sort(function(a, b) { return a.debut < b.debut ? -1 : 1; });
+        for (var ipv = 1; ipv < perTriees.length; ipv++) {
+          if (perTriees[ipv].debut <= perTriees[ipv - 1].fin) {
+            alert("Deux periodes se chevauchent (" + perTriees[ipv - 1].debut + " -> " + perTriees[ipv - 1].fin + " et " + perTriees[ipv].debut + " -> " + perTriees[ipv].fin + ") : corrige les dates.");
+            return;
+          }
+        }
         var dbData = chantierToDb(ff);
         if (siteName) ensureSiteExists(siteName, ctx.dbPaliers, ctx.setDbPaliers, siteConfig);
+        // La modale n'est fermee QU'EN CAS DE SUCCES : la fermer avant la
+        // reponse detruisait toute la saisie si le serveur repondait en erreur
+        // (ex. colonne periodes absente -> PGRST204).
         if (ff.id) {
           supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
-            if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
+            if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message + "\n\nTa saisie est conservee dans le formulaire."); return; }
             setChantiers(chantiers.map(function(c) { return c.id === ff.id ? chantierFromDb(res.data) : c; }));
+            setShowModal(false); setEditing(null);
           });
         } else {
           supabase.from("chantiers").insert(dbData).select().single().then(function(res) {
-            if (res.error) { alert("Erreur ajout chantier: " + res.error.message); return; }
+            if (res.error) { alert("Erreur ajout chantier: " + res.error.message + "\n\nTa saisie est conservee dans le formulaire."); return; }
             setChantiers(chantiers.concat(chantierFromDb(res.data)));
+            setShowModal(false); setEditing(null);
           });
         }
-        setShowModal(false); setEditing(null);
       };
       var deleteChant = function(id) {
         supabase.from("chantiers").delete().eq("id", id).then(function(res) {
@@ -9486,8 +9556,11 @@
 
       // ── Helpers non-chevauchement engin ──
       function getBusyIntervalsForEngine(ceListAll, eqId, excludeCeId) {
+        // Comparaison par String : les ids d'equipement sont des uuid (chaines)
+        // mais certains chemins (drag&drop, select) repassent par des chaines
+        // ou valeurs derivees - on neutralise tout ecart de type.
         return ceListAll
-          .filter(function(c) { return c.equipementId === eqId && c.id !== excludeCeId; })
+          .filter(function(c) { return String(c.equipementId) === String(eqId) && c.id !== excludeCeId; })
           .map(function(c) { return { start: parseDate(c.dateDebut), end: parseDate(c.dateFin) }; })
           .sort(function(a, b) { return a.start - b.start; });
       }
@@ -12161,7 +12234,10 @@
           if (fin !== null) { if (dCur.getTime() > fin.getTime()) break; }
           else if (restants <= 0) break;
           var dow = dCur.getDay();
-          if (dow !== 0 && dow !== 6) {
+          // Lun-Jeu uniquement : ALIGNE sur congeJoursOuvres (le report en base
+          // n'ecrit que Lun-Jeu, semaine de 4 jours). Compter le vendredi ici
+          // affichait des "C" fantomes ET terminait la periode un jour trop tot.
+          if (dow >= 1 && dow <= 4) {
             var ds = dCur.getFullYear() + "-" + String(dCur.getMonth() + 1).padStart(2, "0") + "-" + String(dCur.getDate()).padStart(2, "0");
             if (!out[pid]) out[pid] = {};
             if (!out[pid][ds] || cg.statut === "approuvee") {
@@ -12766,8 +12842,11 @@
           cred += parseFloat(e.credit) || 0;
         });
         if (deb === 0 && cred === 0) return;
+        // RAN = solde d'ouverture, pas un flux du mois : exclu des encaissements
+        // et decaissements (janvier gonfle des deux cotes sinon).
+        if (jc0 === "RAN") return;
         // Une ligne seule ne peut pas etre un virement interne : pas de neutralisation.
-        var circ = (jc0 === "RAN" || lignes.length < 2) ? 0 : Math.min(deb, cred);
+        var circ = lignes.length < 2 ? 0 : Math.min(deb, cred);
         encaisse += (deb - circ);
         decaisse += (cred - circ);
         nbPieces++;
@@ -12888,7 +12967,8 @@
         });
         if (deb512 === 0 && cred512 === 0) return;
         if (horsExploit) return; // investissement / capital emprunt / compte courant
-        var circ = (jc0 === "RAN" || n512 < 2) ? 0 : Math.min(deb512, cred512);
+        if (jc0 === "RAN") return; // solde d'ouverture, pas un decaissement
+        var circ = n512 < 2 ? 0 : Math.min(deb512, cred512);
         decaisse += (cred512 - circ);
       });
       if (decaisse <= 0) return vide;
@@ -13569,10 +13649,10 @@
       var _carb = useState([]); var carbs90j = _carb[0]; var setCarbs90j = _carb[1];
       useEffect(function() {
         var d90 = new Date(Date.now() - 90 * 86400 * 1000);
-        var iso = d90.toISOString().substring(0, 10);
+        var iso = localISODate(d90);
         // rapport_id necessaire pour rattacher un plein a son chantier (carburant client)
-        supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").gte("date_consommation", iso).then(function(res) {
-          if (res && res.data) setCarbs90j(res.data);
+        fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").gte("date_consommation", iso).order("date_consommation").order("id"); }).then(function(res) {
+          if (res && res.data && !res.error) setCarbs90j(res.data);
         });
       }, []);
 
@@ -13628,7 +13708,7 @@
           }
           var todayCG = new Date();
           var d90CG = new Date(todayCG.getTime() - 90 * 86400 * 1000);
-          var iso90CG = d90CG.toISOString().substring(0, 10);
+          var iso90CG = localISODate(d90CG);
           var coutConsoSondeuses90j = 0;
           (ctxAv.dbRapportsForage || []).forEach(function(rr) {
             if (!rr || !rr.date_rapport || rr.date_rapport < iso90CG) return;
@@ -13675,7 +13755,7 @@
           // Metres 90j (tous chantiers confondus) : source RAPPORTS DE FORAGE (total_metres),
           // meme source que le CA. On evite dbRelevesJourn qui fusionne rapports + CSV legacy
           // et double-compte le metrage -> cout/m trop bas -> marge fausse.
-          var iso90 = d90.toISOString().substring(0, 10);
+          var iso90 = localISODate(d90);
           var totalMetres90j = (ctxAv.dbRapportsForage || []).filter(function(r) {
             return r && (String(r.date_rapport || "").substring(0, 10)) >= iso90;
           }).reduce(function(s, r) { return s + (parseFloat(r.total_metres) || 0); }, 0);
@@ -13795,8 +13875,12 @@
           }
 
           if (!hasAffThisDay && newTypeJour !== "travail") {
-            // Trouver les employes qui ont travaille recemment sur ce site (30 derniers jours)
+            // Trouver les employes qui ont travaille recemment sur ce site,
+            // dans les 30 jours PRECEDENTS uniquement (une affectation future
+            // ne prouve pas une presence), en gardant le chantier de
+            // l'affectation LA PLUS PROCHE en date (et non un arbitraire).
             var recentEmpIds = {};
+            var recentEmpDiff = {};
             prev.forEach(function(a) {
               if (a.typeJour !== "travail" && a.typeJour !== "panne" && a.typeJour !== "intemperies" && a.typeJour !== "ferie" && a.typeJour !== "non_productif") return;
               var matchSite = false;
@@ -13804,9 +13888,10 @@
                 if (String(a.chantierId) === String(siteChantierIds[s])) { matchSite = true; break; }
               }
               if (!matchSite) return;
-              // Verifier que c'est recent (dans les 30 derniers jours)
-              var diff = Math.abs(new Date(dateStr).getTime() - new Date(a.dateAffectation).getTime());
-              if (diff < 30 * 24 * 60 * 60 * 1000) {
+              var diff = new Date(dateStr).getTime() - new Date(a.dateAffectation).getTime();
+              if (diff < 0 || diff >= 30 * 24 * 60 * 60 * 1000) return;
+              if (recentEmpDiff[a.personnelId] == null || diff < recentEmpDiff[a.personnelId]) {
+                recentEmpDiff[a.personnelId] = diff;
                 recentEmpIds[a.personnelId] = a.chantierId;
               }
             });
@@ -13921,18 +14006,21 @@
         delete ff.newSite; delete ff.siteObjectif; delete ff.siteMoyenne; delete ff.sitePaliers;
         var dbData = chantierToDb(ff);
         if (siteName) ensureSiteExists(siteName, ctxAv.dbPaliers, ctxAv.setDbPaliers, siteConfig);
+        // Fermer la modale seulement en cas de succes (sinon la saisie est
+        // perdue quand le serveur repond en erreur).
         if (ff.id) {
           supabase.from("chantiers").update(dbData).eq("id", ff.id).select().single().then(function(res) {
-            if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message); return; }
+            if (res.error) { alert("Erreur sauvegarde chantier: " + res.error.message + "\n\nTa saisie est conservee dans le formulaire."); return; }
             setChantiers(chantiers.map(function(c) { return c.id === ff.id ? chantierFromDb(res.data) : c; }));
+            setShowModal(false); setEditing(null);
           });
         } else {
           supabase.from("chantiers").insert(dbData).select().single().then(function(res) {
-            if (res.error) { alert("Erreur ajout chantier: " + res.error.message); return; }
+            if (res.error) { alert("Erreur ajout chantier: " + res.error.message + "\n\nTa saisie est conservee dans le formulaire."); return; }
             setChantiers(chantiers.concat(chantierFromDb(res.data)));
+            setShowModal(false); setEditing(null);
           });
         }
-        setShowModal(false); setEditing(null);
       };
       var deleteChantier = function(id) {
         supabase.from("chantiers").delete().eq("id", id).then(function(res) {
@@ -16476,16 +16564,42 @@
       var activeChantiers = chantiers.filter(function(c) { return (c.statut === "En cours" || c.statut === "A venir") && chantierToucheAnneeCal(c, currentMonth.getFullYear()); });
 
       function getChantierColor(chId) {
+        // Couleur STABLE par id de chantier (et plus par position dans la liste
+        // filtree : l'index changeait de couleur d'un mois/annee a l'autre).
         var idx = activeChantiers.findIndex(function(ch) { return ch.id === chId; });
-        return idx >= 0 ? CHANTIER_COLORS[idx % CHANTIER_COLORS.length] : "#71717a";
+        if (idx < 0) return "#71717a";
+        var hueId = parseInt(chId, 10);
+        if (!isFinite(hueId)) hueId = idx;
+        return CHANTIER_COLORS[hueId % CHANTIER_COLORS.length];
       }
+      // Initiales : si deux chantiers actifs partagent la meme premiere lettre
+      // (ex. KNS / Kopeto), on affiche les 2 premieres lettres pour les distinguer.
+      var initialesChantiersPe = {};
+      (function() {
+        var parLettre = {};
+        var tous = (activeChantiers || []).concat([]);
+        tous.forEach(function(c) {
+          var l = c.titre ? c.titre.charAt(0).toUpperCase() : "";
+          if (!parLettre[l]) parLettre[l] = [];
+          parLettre[l].push(c);
+        });
+        tous.forEach(function(c) {
+          if (!c.titre) { initialesChantiersPe[c.id] = ""; return; }
+          var l = c.titre.charAt(0).toUpperCase();
+          initialesChantiersPe[c.id] = (parLettre[l].length > 1) ? c.titre.substring(0, 2).toUpperCase() : l;
+        });
+      })();
       function getChantierInitial(chId) {
-        var ch = activeChantiers.find(function(c) { return c.id === chId; });
+        if (initialesChantiersPe[chId] != null) return initialesChantiersPe[chId];
         // Chantier termine ou hors de l'annee affichee : la case reste GRISE
         // (repli de getChantierColor) mais doit garder son initiale - sinon
         // des cases grises muettes (affectations sur un chantier clos).
-        if (!ch) ch = (chantiers || []).find(function(c) { return c.id === chId; });
+        var ch = (chantiers || []).find(function(c) { return c.id === chId; });
         return ch && ch.titre ? ch.titre.charAt(0).toUpperCase() : "";
+      }
+      function getChantierTitre(chId) {
+        var ch = (chantiers || []).find(function(c) { return c.id === chId; });
+        return ch ? (ch.titre || ch.site || "") : "";
       }
 
       // Build saisie type map: { "chantierId-date": typeJour } pour pannes/intemperies/feries
@@ -16504,9 +16618,11 @@
       }
 
       // Build affectation map: { "empId-date": { chantierId, typeJour } }
+      // Date normalisee en AAAA-MM-JJ : une composante horaire rendrait la case
+      // invisible (la lecture se fait toujours avec formatDateISOPe).
       var affMap = {};
       affectations.forEach(function(a) {
-        affMap[a.personnelId + "-" + a.dateAffectation] = { chantierId: a.chantierId, typeJour: a.typeJour || "travail" };
+        affMap[a.personnelId + "-" + String(a.dateAffectation).substring(0, 10)] = { chantierId: a.chantierId, typeJour: a.typeJour || "travail" };
       });
 
       // ── Auto-affectation depuis les rapports de forage ──
@@ -16543,9 +16659,9 @@
       useEffect(function() {
         var cancelled = false;
         function loadConges() {
-          supabase.from("demandes_conge")
+          fetchAllRows(function() { return supabase.from("demandes_conge")
             .select("id,demandeur_id,type_conge,nombre_jours,date_debut,date_reprise,statut")
-            .in("statut", ["en_attente", "approuvee"])
+            .in("statut", ["en_attente", "approuvee"]).order("id"); })
             .then(function(res) {
               if (cancelled) return;
               if (res.error) { console.warn("[planning-conges]", res.error.message); return; }
@@ -16586,9 +16702,19 @@
       function siteToChantierPe(lieu) {
         if (!lieu) return null;
         var lk = String(lieu).toUpperCase().trim();
+        // Un lieu vide (ou fait d'espaces) matchait le PREMIER chantier par
+        // ordre alphabetique via indexOf("") : jamais de repli sur lieu vide.
+        if (!lk) return null;
+        var exact = (activeChantiers || []).find(function(c) {
+          return String(c.site || "").toUpperCase().trim() === lk;
+        });
+        if (exact) return exact.id;
+        // Repli partiel (libelles historiques) : uniquement entre libelles
+        // significatifs, pour eviter les faux matchs de sous-chaines courtes.
+        if (lk.length < 3) return null;
         var match = (activeChantiers || []).find(function(c) {
           var s = String(c.site || "").toUpperCase().trim();
-          return s && (s === lk || s.indexOf(lk) >= 0 || lk.indexOf(s) >= 0);
+          return s.length >= 3 && (s.indexOf(lk) >= 0 || lk.indexOf(s) >= 0);
         });
         return match ? match.id : null;
       }
@@ -16598,23 +16724,29 @@
       var rapportCoverPe = {};
       (ctx.dbRapportsForage || []).forEach(function(r) {
         if (!r.date_rapport || !Array.isArray(r.equipe) || r.equipe.length === 0) return;
+        // Un rapport BROUILLON (jamais soumis) ne doit pas peindre le planning.
+        if (r.statut === "brouillon") return;
         var d = String(r.date_rapport).substring(0, 10);
         if (d.substring(0, 7) !== year + "-" + (monthIdx < 9 ? "0" : "") + (monthIdx + 1)) return; // skip si pas dans le mois affiche
         var chId = r.chantier_id || siteToChantierPe(r.lieu);
         if (!chId) return;
         r.equipe.forEach(function(m) {
           if (!m) return;
-          // Resolution du personnel_id : via m.id (code) puis via nom canonique
+          // Resolution du personnel_id : code -> nom canonique -> id numerique.
+          // Le hash 31 bits n'est plus utilise en priorite : il ne correspond a
+          // aucun p.id reel et court-circuitait le repli par nom (equipier
+          // silencieusement absent du planning des que son code changeait).
           var pid = null;
           if (m.id && codeToPidPe[String(m.id)]) pid = codeToPidPe[String(m.id)];
-          else if (m.id) { var b = _strToBigintPe(m.id); if (b) pid = b; }
           if (!pid && m.nom) {
             var k = String(m.nom).toLowerCase().trim().split(/\s+/).filter(Boolean).sort().join(" ");
             if (nameKeyToPidPe[k]) pid = nameKeyToPidPe[k];
           }
+          if (!pid && m.id && /^\d+$/.test(String(m.id))) pid = parseInt(m.id, 10);
           if (!pid) return;
           var key = pid + "-" + d;
-          rapportCoverPe[key] = chId;
+          // Premier rapport du jour gagne (coherent avec affMap ci-dessous).
+          if (!rapportCoverPe[key]) rapportCoverPe[key] = chId;
           var existingAff = affMap[key];
           // Priorite a l'affectation explicite existante, SAUF si c'est un jour ferie :
           // la presence de l'employe dans l'equipe d'un rapport prouve qu'il a travaille,
@@ -16641,16 +16773,22 @@
         if (entry) {
           // Verifier si le chantier a une panne/intemperie/ferie dans les saisies pour ce jour
           if (entry.chantierId) {
+            // 1) Saisie du chantier DE L'EMPLOYE (prioritaire et seule source pour "panne")
+            var saisieOwn = saisieTypeMap[String(entry.chantierId) + "-" + dateStr];
+            if (saisieOwn && !(saisieOwn === "ferie" && entry.fromRapport)) return saisieOwn;
+            // 2) Autres chantiers du MEME SITE : on ne propage que les evenements
+            //    de site (intemperies / ferie). Une PANNE est propre a sa machine :
+            //    elle ne doit pas masquer l'equipe de l'autre sondeuse du site.
             var ch = chantiers.find(function(c) { return c.id == entry.chantierId; });
             var siteName = ch ? ch.site : "";
             if (siteName) {
-              var siteChs = chantiers.filter(function(c) { return c.site && c.site === siteName; });
+              var siteChs = chantiers.filter(function(c) { return c.site && c.site === siteName && c.id != entry.chantierId; });
               for (var sci = 0; sci < siteChs.length; sci++) {
                 var saisieType = saisieTypeMap[String(siteChs[sci].id) + "-" + dateStr];
-                if (saisieType) {
+                if (saisieType && saisieType !== "panne") {
                   // Les affectations issues d'un rapport priment sur les jours feries :
                   // si l'employe a travaille (present dans l'equipe d'un rapport ce jour),
-                  // on ignore un ferie pose au niveau du site. Panne/intemperies restent prioritaires.
+                  // on ignore un ferie pose au niveau du site. Intemperies restent prioritaires.
                   if (saisieType === "ferie" && entry.fromRapport) continue;
                   return saisieType;
                 }
@@ -17016,6 +17154,14 @@
                     } else if (cgApprouve) {
                       tip = "Conge approuve";
                     }
+                    // Infobulle chantier : indispensable quand deux chantiers
+                    // partagent une initiale (KNS / Kopeto) - on voit le NOM.
+                    if (!tip && currentVal) {
+                      var affTipPe = affMap[emp.id + "-" + dateStr];
+                      var nomChTip = getChantierTitre(currentVal);
+                      tip = (isEvt && evtInfo ? (evtInfo.label || currentType) + " - " : "") + nomChTip
+                        + (affTipPe && affTipPe.fromRapport ? " (deduit du rapport de forage)" : "");
+                    }
                     // ── Hors periode de contrat : "non productif" automatique ──
                     // (embauche future ou contrat termine, case vide uniquement)
                     // Le marquage NP "hors contrat" ne concerne que les jours
@@ -17352,7 +17498,7 @@
       // Dates et duree inter-liees : remplir 2 des 3 champs (date_debut, date_fin,
       // duree_mois) suffit, le 3e se calcule automatiquement.
       // Au nouveau, date_debut est pre-remplie a aujourd'hui pour faciliter la saisie.
-      var todayIso = new Date().toISOString().slice(0, 10);
+      var todayIso = localISODate();
       var _form = useState({
         libelle: (editing && editing.libelle) || "",
         montant_total: (editing && editing.montant_total) || "",
@@ -18927,9 +19073,9 @@
       useEffect(function() {
         var cancelled = false;
         function loadDc() {
-          supabase.from("demandes_conge")
+          fetchAllRows(function() { return supabase.from("demandes_conge")
             .select("id,demandeur_id,type_conge,nombre_jours,date_debut,date_reprise,statut")
-            .in("statut", ["en_attente", "approuvee"])
+            .in("statut", ["en_attente", "approuvee"]).order("id"); })
             .then(function(res) {
               if (cancelled) return;
               if (res.error) { console.warn("[primes-conges]", res.error.message); return; }
@@ -20146,7 +20292,7 @@
       var search = _search[0]; var setSearch = _search[1];
 
       var openNew = function() {
-        setEditing({ id: null, nom: "", email: "", role: "Utilisateur", statut: "Actif", dateCreation: new Date().toISOString().substring(0, 10), derniereConnexion: null, pagesAutorisees: ["accueil"] });
+        setEditing({ id: null, nom: "", email: "", role: "Utilisateur", statut: "Actif", dateCreation: localISODate(), derniereConnexion: null, pagesAutorisees: ["accueil"] });
         setShowModal(true);
       };
       var openEdit = function(u) {
@@ -20605,7 +20751,7 @@
       const equipements = ctx.equipements;
       const chantiers = ctx.dbChantiers;
       const interventions = ctx.interventions;
-      const now = new Date().toISOString().substring(0, 10);
+      const now = localISODate();
       const [f, setF] = useState(editItem || {
         id: null, demandeurEmail: currentUserEmail || "", titre: "", categorie: "piece",
         montantDemande: 0, urgence: "Normale", description: "", fournisseur: "", urlDevis: "",
@@ -20881,10 +21027,10 @@
         function fetchPositions() {
           // Recupere les 24 dernieres heures, dedup par personnel_id (on garde la plus recente)
           var since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-          supabase.from("gps_positions")
+          fetchAllRows(function() { return supabase.from("gps_positions")
             .select("personnel_id,personnel_code,latitude,longitude,accuracy_m,sondeuse_code,recorded_at")
             .gte("recorded_at", since)
-            .order("recorded_at", { ascending: false })
+            .order("recorded_at", { ascending: false }).order("id"); }, 10000)
             .then(function(res) {
               if (res.error) { console.warn("[carte] fetch:", res.error.message); return; }
               var seen = {};
@@ -21116,6 +21262,7 @@
             var res = await supabase.from("rapports_forage")
               .select(STATS_COLS)
               .order("date_rapport", { ascending: false })
+              .order("id")
               .range(start, start + batchSize - 1);
             if (res.error) { console.warn("[stats] fetch rapports:", res.error.message); break; }
             if (!res.data || res.data.length === 0) break;
@@ -21133,6 +21280,7 @@
           while (!cancelled) {
             var res = await supabase.from("consommations_carburant")
               .select("id,sondeuse_code,date_consommation,quantite_l,rapport_id")
+              .order("id")
               .range(start, start + batchSize - 1);
             if (res.error) { console.warn("[stats] fetch carburant:", res.error.message); break; }
             if (!res.data || res.data.length === 0) break;
@@ -21157,6 +21305,7 @@
               .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
               .in("exercice", [yearNow - 1, yearNow])
               .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+              .order("id")
               .range(from, from + pageSize - 1);
             if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); break; }
             if (!res.data || res.data.length === 0) break;
@@ -21617,14 +21766,9 @@
         if (!dDeb || !dFin || isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return;
         if (dFin.getTime() < todayMsProj) return; // chantier deja fini en pratique
         if (dDeb.getTime() > yearEndMsProj) return; // chantier demarrant apres fin annee
-        // Realise cumule via saisies (source de verite du metrage journalier)
-        var realiseTotal = 0;
-        var saisChant = (ctx.dbSaisies || {})[c.id] || {};
-        Object.keys(saisChant).forEach(function(d) {
-          var vv = saisChant[d];
-          var mm = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
-          if (mm > 0) realiseTotal += mm;
-        });
+        // Realise cumule : releves/rapports d'abord, saisies en repli
+        // (source canonique, sinon realise=0 pour un chantier suivi par rapports)
+        var realiseTotal = computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
         var restantContrat = Math.max(0, metrage - realiseTotal);
         if (restantContrat <= 0) return;
         // Vitesse quotidienne du chantier (14 derniers jours productifs Lun-Jeu)
@@ -21674,7 +21818,7 @@
         var avgMachAnnuel = computeAvgMachinesHistChantier(c, ctx.dbRelevesJourn, new Date(todayMsProj));
         while (cursor.getTime() <= effectiveEnd && safeF < 500) {
           var dow = cursor.getDay();
-          if (dow >= 1 && dow <= 4) {
+          if (dow >= 1 && dow <= 4 && chantierEnPeriode(c, cursor)) {
             var isoF = cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0") + "-" + String(cursor.getDate()).padStart(2, "0");
             // Baseline machine-aware : vitesse par machine * nb machines planifiees + adaptation
             var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkAnnuel, vitesseQuot, todayMsProj, avgMachAnnuel);
@@ -22473,8 +22617,11 @@
             deb512 += parseFloat(e.debit) || 0; cred512 += parseFloat(e.credit) || 0;
           });
           if (deb512 === 0 && cred512 === 0) return;
+          // RAN = solde d'ouverture, pas un decaissement (un credit 512 BCI au
+          // 01/01 gonflait les "decaissements" de janvier).
+          if (jc0 === "RAN") return;
           var mkk = String(lignes[0].date_ecriture).substring(0, 7);
-          var circ = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
+          var circ = Math.min(deb512, cred512);
           reelParMois[mkk] = (reelParMois[mkk] || 0) + (cred512 - circ);
         });
         var factFrsParMois = {};
@@ -23340,10 +23487,15 @@
             var anneeCible = now2.getFullYear() + (estVueN1 ? 1 : 0);
             // ── Phase 2 : lecture COMPTA (grand livre) pour le passe reel + solde bancaire ──
             // Solde bancaire live = SUM(debit) - SUM(credit) sur comptes 512*
+            // UNIQUEMENT l'annee en cours (RAN de janvier N inclus = cloture N-1).
+            // Sommer aussi l'exercice N-1 (charge en memoire) comptait la cloture
+            // N-1 DEUX fois : "Solde aujourd'hui" affichait ~2x le vrai solde.
             var soldeBanqueLive = 0;
             var nbEcrBanque = 0;
+            var anneeLiveStr = String(now2.getFullYear());
             (dbEcrCompta || []).forEach(function(e) {
               if (!e.compte_code || String(e.compte_code).substring(0,3) !== "512") return;
+              if (String(e.date_ecriture || "").substring(0, 4) !== anneeLiveStr) return;
               soldeBanqueLive += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0);
               nbEcrBanque++;
             });
@@ -23385,8 +23537,13 @@
                 cred512 += parseFloat(e.credit) || 0;
                 if (estFluxFinancement(e.libelle)) estFin = true;
               });
-              // Report a nouveau (RAN) = soldes d'ouverture, pas un virement -> ne pas neutraliser.
-              var circulant = jc0 === "RAN" ? 0 : Math.min(deb512, cred512);
+              // Report a nouveau (RAN) = soldes d'OUVERTURE, pas des flux du mois :
+              // ni encaissement ni decaissement. Compte en janvier, il gonflait
+              // les flux du mois ET la moyenne des decaissements reels qui sert
+              // a projeter tous les mois futurs (le solde d'ouverture, lui, est
+              // deja porte par solde1erJanvier).
+              if (jc0 === "RAN") return;
+              var circulant = Math.min(deb512, cred512);
               var inReel = deb512 - circulant;
               var outReel = cred512 - circulant;
               if (inReel === 0 && outReel === 0 && circulant === 0) return;
@@ -23418,10 +23575,31 @@
 
             var empruntsMensuel = (ctx.dbEmprunts || []).filter(function(e) { return (e.statut || "actif") === "actif"; })
               .reduce(function(s, e) { return s + getMensualiteEffectiveEmprunt(e, null); }, 0);
+            // Mensualite d'emprunts EFFECTIVE d'un mois donne (debut/fin de chaque
+            // pret respectes, traites reduites). La somme plate empruntsMensuel
+            // comptait un pret solde en mars sur les 12 mois de l'annee.
+            var empruntsPourMois = function(yE, mE) {
+              var dPE = new Date(yE, mE, 1);
+              var dDerE = new Date(yE, mE + 1, 0);
+              var moisIsoE = yE + "-" + String(mE + 1).padStart(2, "0") + "-01";
+              var totE = 0;
+              (ctx.dbEmprunts || []).forEach(function(e) {
+                if ((e.statut || "actif") !== "actif") return;
+                var dbE = e.date_debut ? new Date(e.date_debut) : null;
+                var dfEffE = getDateFinEffectiveEmprunt(e);
+                var dfE = dfEffE ? new Date(dfEffE) : null;
+                if (dbE && dbE > dDerE) return;
+                if (dfE && dfE < dPE) return;
+                totE += getMensualiteEffectiveEmprunt(e, moisIsoE);
+              });
+              return totE;
+            };
             // Tresorerie : frais generaux STRUCTURE seule (entretien/pieces exclus car deja
             // projetes via les factures fournisseurs 401 a J+30 -> evite le double-compte).
             var chargesFixesMens = fgInfo.aDonnees ? fgInfo.poolStructMoyenMensuel : chargesFixesManuelles;
-            var salairesMens = masseSalarialeMensuelle * 1.40;
+            // Masse salariale AU JOUR PRESENT (pas celle du filtre de periode des
+            // KPI : changer le filtre "Mois dernier" faisait bouger la courbe).
+            var salairesMens = (personnelDataAll || []).filter(function(p) { return isActiveEmploye(p, new Date()) && !p.roleMecanicien; }).reduce(function(s, p) { return s + (parseInt(p.salaire) || 0); }, 0) * 1.40;
             var moisEcoules = Math.max(1, Math.floor(daysElapsed / 30));
             var caActivitesMens = caFactYTD / moisEcoules;
 
@@ -23501,11 +23679,30 @@
                 var cadU = jU > 0 ? restant / jU : 0;
                 return { cadenceJour: function() { return cadU; } };
               }
-              var metExpl = 0, joursSansMet = 0;
-              segs.forEach(function(s) { if (s.met !== null) metExpl += s.met; else joursSansMet += s.jours; });
-              var soldeMet = Math.max(0, restant - metExpl);
+              var metExpl = 0, joursSansMet = 0, joursAvecMet = 0;
               segs.forEach(function(s) {
-                var mi = s.met !== null ? s.met : (joursSansMet > 0 ? soldeMet * (s.jours / joursSansMet) : 0);
+                if (s.met !== null && s.jours > 0) { metExpl += s.met; joursAvecMet += s.jours; }
+                else if (s.met === null) joursSansMet += s.jours;
+                // met explicite mais 0 jour dans la fenetre (periode echue) :
+                // ce metrage n'est plus realisable la -> il retombe dans le solde.
+              });
+              // Si les periodes promettent PLUS que le restant, on met a l'echelle
+              // (sinon le CA etait avance puis tronque en fin de fenetre).
+              var scaleP = (metExpl > restant && metExpl > 0) ? restant / metExpl : 1;
+              var soldeMet = Math.max(0, restant - metExpl * scaleP);
+              segs.forEach(function(s) {
+                var mi;
+                if (s.met !== null && s.jours > 0) {
+                  mi = s.met * scaleP;
+                  // Solde residuel (metrage fiche > somme des periodes) : reparti
+                  // au prorata des jours quand AUCUN segment sans metrage n'existe
+                  // (avant, ce solde n'etait jamais projete -> CA perdu).
+                  if (joursSansMet === 0 && soldeMet > 0 && joursAvecMet > 0) mi += soldeMet * (s.jours / joursAvecMet);
+                } else if (s.met === null) {
+                  mi = joursSansMet > 0 ? soldeMet * (s.jours / joursSansMet) : 0;
+                } else {
+                  mi = 0;
+                }
                 s.cad = s.jours > 0 ? mi / s.jours : 0;
               });
               return {
@@ -23530,14 +23727,11 @@
               var dFin = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
               if (!dDeb || !dFin || isNaN(dDeb.getTime()) || isNaN(dFin.getTime())) return;
               if (dFin.getTime() < now2.getTime()) return;
-              // Realise cumule
-              var realise = 0;
-              var saisCh = (ctx.dbSaisies || {})[c.id] || {};
-              Object.keys(saisCh).forEach(function(d) {
-                var vv = saisCh[d];
-                var mm = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
-                if (mm > 0) realise += mm;
-              });
+              // Realise cumule : releves/rapports d'abord, saisies en repli
+              // (source canonique computeRealiseChantier). Ne lire QUE les
+              // saisies manuelles donnait realise=0 sur un chantier suivi par
+              // rapports -> tout le metrage deja facture etait REPROJETE en CA.
+              var realise = computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
               var restant = Math.max(0, metrage - realise);
               if (restant <= 0) return;
               // Vitesse quotidienne du chantier
@@ -23586,11 +23780,16 @@
                     // Plan de cadence : metrage par periode de la fiche / jours
                     // actifs (periodes + bandes machines) ; 0 pendant une coupure
                     dayMet = planCadN.cadenceJour(cursor.getTime());
+                  } else if (!chantierEnPeriode(c, cursor)) {
+                    // COUPURE de chantier (periodes de la fiche) : zero production,
+                    // meme avec une vitesse mesuree. Sans ce garde, un chantier a
+                    // historique produisait du CA pendant ses pauses.
+                    dayMet = 0;
                   } else {
                     // Mode legacy (sans avgMachHist) : on retombe sur vitesse chantier
                     // meme quand aucune machine planifiee ce jour (utile car les plannings
                     // futurs sont rarement saisis pour 12 mois complets).
-                    var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkTr, vitesseQuot, now2.getTime());
+                    var prevF = previsionnelBaseChantierDay(c.id, isoF, ctx.dbChantierEquipements, ctx.equipements, metByMkTr, vitesseQuot, now2.getTime(), avgMachHist);
                     dayMet = (prevF.metrage || vitesseQuot) * coefDispo;
                   }
                   if (dayMet > 0) {
@@ -23687,12 +23886,21 @@
                 metAvancementParMois[d.getMonth()] += val;
               });
             });
-            // CA metrage retenu par mois = MAX(rapports, avancement)
+            // CA metrage retenu par mois = la SOURCE (rapports ou avancement) qui a
+            // le plus de metrage - CA et metrage pris ENSEMBLE dans cette source.
+            // Deux Math.max independants pouvaient marier le CA d'une source avec
+            // le metrage de l'autre -> prix moyen au metre batard (sert a
+            // convertir le CA de decembre en metres pour janvier n+1).
             var caChantiersRealiseParMois = new Array(12).fill(0);
             var metRealiseParMois = new Array(12).fill(0);
             for (var mMax = 0; mMax < 12; mMax++) {
-              caChantiersRealiseParMois[mMax] = Math.max(caChantiersRapportsParMois[mMax], caChantiersAvancementParMois[mMax]);
-              metRealiseParMois[mMax] = Math.max(metRapportsParMois[mMax], metAvancementParMois[mMax]);
+              if (metAvancementParMois[mMax] > metRapportsParMois[mMax]) {
+                caChantiersRealiseParMois[mMax] = caChantiersAvancementParMois[mMax];
+                metRealiseParMois[mMax] = metAvancementParMois[mMax];
+              } else {
+                caChantiersRealiseParMois[mMax] = caChantiersRapportsParMois[mMax];
+                metRealiseParMois[mMax] = metRapportsParMois[mMax];
+              }
             }
 
             // ── Determination des mois "fiables" cote Compta ──
@@ -23782,7 +23990,7 @@
                 var caChProjC = moisTravailEncC >= 0 ? caTravailChParMois[moisTravailEncC] : 0;
                 var caAcProjC = moisTravailEncC >= 0 ? caTravailAcParMois[moisTravailEncC] : 0;
                 var encProjMoisC = caChProjC + caAcProjC;
-                var decaissTheoriqueC = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
+                var decaissTheoriqueC = salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mi2) + factFrsMi;
                 var decProjMoisC = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheoriqueC) : decaissTheoriqueC;
                 var reelInC = mvtReel.in || 0, reelOutC = mvtReel.out || 0;
                 var encPlanifResteC = Math.max(0, encProjMoisC - reelInC);
@@ -23819,7 +24027,8 @@
                 //   meilleur proxy du vrai rythme mensuel de sortie. On prend le MAX entre ce
                 //   rythme et le theorique (salaires+fixes+emprunts+fournisseurs echus), pour ne
                 //   PAS sous-estimer les depenses (le blend 50/50 sous-estimait apres nettoyage).
-                var decaissTheorique = salairesMens + chargesFixesMens + empruntsMensuel + factFrsMi;
+                var empMoisProj = empruntsPourMois(currentYear, mi2);
+                var decaissTheorique = salairesMens + chargesFixesMens + empMoisProj + factFrsMi;
                 decaiss = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheorique) : decaissTheorique;
                 source = "projete";
                 monthDetail = {
@@ -23831,7 +24040,7 @@
                   encaissAjustement: 0,
                   salaires: salairesMens,
                   chargesFixes: chargesFixesMens,
-                  emprunts: empruntsMensuel,
+                  emprunts: empMoisProj,
                   factFrs: factFrsMi,
                   decaissTheorique: decaissTheorique,
                   decaissMoyenReel: decaissMoyenReel,
@@ -23884,8 +24093,11 @@
             var soldeFinTr = trMois[trMois.length - 1].solde;
             var minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
             var minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
-            // KPIs "a venir" = uniquement mois futurs (ou courant partiellement projete)
-            var futursTr = trMois.filter(function(x) { return x.source === "projete" || x.source === "reel_partiel"; });
+            if (minIdxTr < 0) minIdxTr = 0; // garde anti-NaN (sinon crash au rendu)
+            // KPIs "a venir" = uniquement mois futurs (ou courant partiellement projete).
+            // Le filtre d'index exclut les mois PASSES restes "projete" faute de
+            // compta saisie : ils ne sont pas "a venir" (ils gonflaient les cartes).
+            var futursTr = trMois.filter(function(x, idxF) { return (x.source === "projete" || x.source === "reel_partiel") && idxF >= now2.getMonth(); });
             // Mois courant hybride : ne compter que la part PROJETEE restante (le reel deja
             // encaisse/decaisse ce mois-ci n'est pas "a venir", il est deja passe en banque).
             var totalInTr = futursTr.reduce(function(s, x) { return s + (x.source === "reel_partiel" && x.detail ? (x.detail.encPlanifReste || 0) : x.encaiss); }, 0);
@@ -23935,13 +24147,8 @@
                 var dFinC = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
                 if (!dDebC || !dFinC || isNaN(dDebC.getTime()) || isNaN(dFinC.getTime())) return;
                 if (dFinC.getTime() < now2.getTime()) return;
-                var realiseC = 0;
-                var saisC = (ctx.dbSaisies || {})[c.id] || {};
-                Object.keys(saisC).forEach(function(dK) {
-                  var vv2 = saisC[dK];
-                  var mm2 = typeof vv2 === "object" && vv2 !== null ? (parseFloat(vv2.valeur) || 0) : (parseFloat(vv2) || 0);
-                  if (mm2 > 0) realiseC += mm2;
-                });
+                // Meme source canonique que la vue N (releves/rapports d'abord)
+                var realiseC = computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
                 var restantC = Math.max(0, metrageC - realiseC);
                 if (restantC <= 0) return;
                 var vitQ = computeMetragePerJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
@@ -23969,6 +24176,10 @@
                       // MEME moteur que la vue N : metrage par periode de la fiche
                       // / jours actifs - coupures = zero production
                       dayM = planCad1.cadenceJour(curS.getTime());
+                    } else if (!chantierEnPeriode(c, curS)) {
+                      // COUPURE (periodes de la fiche) : zero production, meme
+                      // avec une vitesse mesuree (parite avec la vue N corrigee).
+                      dayM = 0;
                     } else {
                       // MEME mode legacy que la vue N : vitesse chantier mesuree,
                       // affinee par le planning machines quand il est saisi
@@ -24009,13 +24220,23 @@
               // suivent le METRAGE PROJETE du mois : plus de CA = plus de sorties.
               var coutVarMetreN1 = null;
               if (decaissMoyenReel != null) {
-                var totMetF = 0, nbMetF = 0;
-                for (var mvF = 0; mvF < 12; mvF++) { if (moisFiable(mvF) && metRealiseParMois[mvF] > 0) { totMetF += metRealiseParMois[mvF]; nbMetF++; } }
-                // Repli si la compta et les rapports ne couvrent pas les memes mois
-                if (nbMetF === 0) { for (var mvE = 0; mvE < 12; mvE++) { if (moisEchu(mvE) && metRealiseParMois[mvE] > 0) { totMetF += metRealiseParMois[mvE]; nbMetF++; } } }
-                var metMoyenReelN = nbMetF > 0 ? totMetF / nbMetF : 0;
-                if (metMoyenReelN >= 1000) {
-                  coutVarMetreN1 = Math.max(0, (decaissMoyenReel - salairesMens - chargesFixesMens - empruntsMensuel) / metMoyenReelN);
+                // Numerateur et denominateur sur les MEMES mois (fiables compta
+                // AVEC metrage) : moyenner les sorties sur 6 mois et le metrage
+                // sur 4 sous-evaluait le cout/m des qu'un mois fiable etait sans
+                // forage. Emprunts au reel de chaque mois (prets soldes exclus).
+                var totOutVar = 0, totMetVar = 0, totFixesVar = 0, nbVar = 0;
+                for (var mvF = 0; mvF < 12; mvF++) {
+                  if (moisFiable(mvF) && metRealiseParMois[mvF] > 0) {
+                    var kVarF = currentYear + "-" + String(mvF + 1).padStart(2, "0");
+                    var mvVarF = mvtsBanqueParMois[kVarF];
+                    totOutVar += (mvVarF && mvVarF.out) || 0;
+                    totMetVar += metRealiseParMois[mvF];
+                    totFixesVar += salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mvF);
+                    nbVar++;
+                  }
+                }
+                if (nbVar > 0 && (totMetVar / nbVar) >= 1000) {
+                  coutVarMetreN1 = Math.max(0, (totOutVar - totFixesVar) / totMetVar);
                 }
               }
               // Prix moyen reel au metre de l'annee N (pour convertir le CA de
@@ -24089,6 +24310,7 @@
               soldeFinTr = trMois[11].solde;
               minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
               minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
+              if (minIdxTr < 0) minIdxTr = 0; // garde anti-NaN (sinon crash au rendu)
               totalInTr = trMois.reduce(function(s, x) { return s + x.encaiss; }, 0);
               totalOutTr = trMois.reduce(function(s, x) { return s + x.decaiss; }, 0);
               soldeSource = "chaine_n";
@@ -26013,19 +26235,21 @@
         var INTS_COLS    = "id,demandeur_id,date_demande,materiel_modele,materiel_no_serie,immatriculation,horametre,equipement_id,chantier_id,type_panne,urgence,description,photos,statut,fait_par_employe,date_fait,confirme_at,created_at";
         var RAPS_COLS    = "id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,sondages_originaux,activites,remarques,remarques_client,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,client_signataire_nom,client_signataire_email,signed_client_at,created_at,non_productif,motif_non_productif";
 
+        // Tables cumulatives (releves, rapports, carburant...) : pagination
+        // fetchAllRows + tri stable (.order id) sinon cap silencieux a 1000.
         Promise.all([
-          supabase.from("releves_heures").select(RELEVES_COLS).order("created_at", { ascending: false }),
-          supabase.from("demandes_conge").select(CONGES_COLS).order("created_at", { ascending: false }),
-          supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }),
-          supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }),
-          supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("created_at", { ascending: false }),
-          supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }),
+          fetchAllRows(function() { return supabase.from("releves_heures").select(RELEVES_COLS).order("created_at", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("demandes_conge").select(CONGES_COLS).order("created_at", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("bons_commande").select(CMDS_COLS).order("created_at", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("demandes_intervention").select(INTS_COLS).order("created_at", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("rapports_forage").select(RAPS_COLS).order("date_rapport", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }).order("id"); }),
           // Commandes materiel des mecaniciens - fusionnees a l'onglet "Commandes" comme une source unifiee.
-          supabase.from("commandes_materiel_mec").select("id,intervention_id,mecanicien_code,mecanicien_nom,description,urgence,photos,lignes,statut,notes_admin,date_creation,date_traitement").order("date_creation", { ascending: false }),
+          fetchAllRows(function() { return supabase.from("commandes_materiel_mec").select("id,intervention_id,mecanicien_code,mecanicien_nom,description,urgence,photos,lignes,statut,notes_admin,date_creation,date_traitement").order("date_creation", { ascending: false }).order("id"); }),
           // Validations client du releve mensuel (onglet Validation client des rapports).
           // Colonnes light : signature_png (lourde) et token (sensible) exclus du
           // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
-          supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,imputation,bon_commande,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }),
+          fetchAllRows(function() { return supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,imputation,bon_commande,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }).order("id"); }),
           // Destinataires clients configures PAR CHANTIER (Administration >
           // Destinataires emails) : source prioritaire pour la validation client.
           // Le scope "global" est volontairement exclu (adresses internes Wallis).
@@ -26338,13 +26562,18 @@
             for (var i = 0; i < jours.length; i++) {
               var d = jours[i]; var ex = affByDate[d];
               if (ex) {
-                if (ex.type_jour !== typeJour) await supabase.from("affectations").update({ type_jour: typeJour, chantier_id: null }).eq("id", ex.id);
+                // On GARDE le chantier_id : si le conge est annule plus tard,
+                // cleanupCongeSync restaure la case "travail" sur son chantier
+                // (avant, chantier_id etait ecrase a null et l'info perdue).
+                if (ex.type_jour !== typeJour) await supabase.from("affectations").update({ type_jour: typeJour }).eq("id", ex.id);
               } else {
                 toInsertAff.push({ personnel_id: p.id, date_affectation: d, type_jour: typeJour });
               }
             }
             if (toInsertAff.length) {
-              var insAff = await supabase.from("affectations").insert(toInsertAff);
+              // Upsert : une ligne peut exister en base sans etre dans affRes
+              // (course avec un autre onglet) -> pas de duplicate key.
+              var insAff = await supabase.from("affectations").upsert(toInsertAff, { onConflict: "personnel_id,date_affectation" });
               if (insAff.error) console.warn("[conge-sync] affectations:", insAff.error.message);
             }
           } else {
@@ -26384,11 +26613,14 @@
           if (!jours.length) return;
           // Releves crees automatiquement UNIQUEMENT (source = auto_conge)
           await supabase.from("releves_heures").delete().eq("personnel_id", c.demandeur_id).eq("source", "auto_conge").in("date_releve", jours);
-          // Affectations conge/maladie posees sur la periode
+          // Affectations conge/maladie posees sur la periode : celles qui ont
+          // garde leur chantier redeviennent "travail" (restauration), celles
+          // sans chantier (creees par le report) sont supprimees.
           var p = resolvePersonnel(c.demandeur_id);
           var typeJour = congeAbsenceType(c.type_conge) === "maladie" ? "maladie" : "conge";
           if (p && p.id != null) {
-            await supabase.from("affectations").delete().eq("personnel_id", p.id).eq("type_jour", typeJour).in("date_affectation", jours);
+            await supabase.from("affectations").update({ type_jour: "travail" }).eq("personnel_id", p.id).eq("type_jour", typeJour).not("chantier_id", "is", null).in("date_affectation", jours);
+            await supabase.from("affectations").delete().eq("personnel_id", p.id).eq("type_jour", typeJour).is("chantier_id", null).in("date_affectation", jours);
           }
           if (showToast) showToast("Report du conge retire (planning + recap)", "success");
           setRefreshFlag(function(f) { return f + 1; });
@@ -27566,7 +27798,7 @@
                       }()),
                       Equipement: eq ? eq.Title : (c.immatriculation || ""),
                       EquipementId: c.equipement_id || null,
-                      Date_Intervention: new Date().toISOString().substring(0, 10),
+                      Date_Intervention: localISODate(),
                       Technicien: "",
                       Statut_Intervention: "Planifiee",
                       Travaux_Effectues: c.description || "",
@@ -30216,7 +30448,7 @@
 
       useEffect(function() {
         setLoading(true);
-        supabase.from("deleted_items").select("*").order("deleted_at", { ascending: false }).then(function(res) {
+        fetchAllRows(function() { return supabase.from("deleted_items").select("*").order("deleted_at", { ascending: false }).order("id"); }).then(function(res) {
           setLoading(false);
           if (res.error) { console.warn("[corbeille] fetch:", res.error.message); return; }
           setItems(res.data || []);
@@ -31914,9 +32146,11 @@
       // ─ Fetch docs ─
       function fetchDocs() {
         setLoading(true);
-        var q = supabase.from("rh_documents").select("*").order("uploaded_at", { ascending: false });
-        if (!isRH) q = q.eq("personnel_code", ownPersonnel ? ownPersonnel.code : "__nope__");
-        q.then(function(res) {
+        fetchAllRows(function() {
+          var q = supabase.from("rh_documents").select("*").order("uploaded_at", { ascending: false }).order("id");
+          if (!isRH) q = q.eq("personnel_code", ownPersonnel ? ownPersonnel.code : "__nope__");
+          return q;
+        }).then(function(res) {
           if (res.error) { console.warn("[coffre-rh] fetch:", res.error.message); setLoading(false); return; }
           setDocs(res.data || []);
           setLoading(false);
@@ -34559,7 +34793,7 @@
       const [fournisseur, setFournisseur] = useState("");
       const [ttc, setTtc] = useState("");
       const [ht, setHt] = useState("");
-      const [dateFact, setDateFact] = useState(new Date().toISOString().substring(0, 10));
+      const [dateFact, setDateFact] = useState(localISODate());
       const [categorie, setCategorie] = useState("");
       const [chantierId, setChantierId] = useState("");
       const [notes, setNotes] = useState("");
@@ -34601,7 +34835,7 @@
       const reset = function() {
         setPhoto(null); setPhotoName(null); setPhotoMime(null);
         setPdfPreviewUrl(null); setPdfState({ rasterizing: false, nbPages: 0, error: null });
-        setFournisseur(""); setTtc(""); setHt(""); setDateFact(new Date().toISOString().substring(0, 10));
+        setFournisseur(""); setTtc(""); setHt(""); setDateFact(localISODate());
         setCategorie(""); setChantierId(""); setNotes("");
         setTypeFacture(""); setEcheance(""); setTgcTaux(0); setMultiTaux(false); setTgcRep({ 0: "", 3: "", 6: "", 11: "", 22: "" });
         setModePaiement(""); setRefPaiement(""); setOcrText(""); setOcrStatus(null);
@@ -35158,37 +35392,24 @@
       const loadAll = useCallback(async () => {
         setDataLoading(true);
         try {
+          // Tables cumulatives (interventions, releves horametre, pieces,
+          // saisies...) : pagination fetchAllRows + tri stable, cap 1000 sinon.
           const [eqRes, pcRes, plRes, inRes, rlRes, peRes, paRes, chRes, saRes, dcRes, rnRes, auRes] = await Promise.all([
             supabase.from("equipements").select("*").order("immatriculation"),
-            supabase.from("pieces").select("*").order("reference"),
+            fetchAllRows(function() { return supabase.from("pieces").select("*").order("reference").order("id"); }),
             supabase.from("plans").select("*").order("nom"),
-            supabase.from("interventions").select("*").order("date_intervention", { ascending: false }),
-            supabase.from("releves_horametre").select("*").order("date_releve", { ascending: false }),
-            supabase.from("pieces_equipements").select("*"),
+            fetchAllRows(function() { return supabase.from("interventions").select("*").order("date_intervention", { ascending: false }).order("id"); }),
+            fetchAllRows(function() { return supabase.from("releves_horametre").select("*").order("date_releve", { ascending: false }).order("id"); }),
+            fetchAllRows(function() { return supabase.from("pieces_equipements").select("*").order("id"); }),
             supabase.from("parametres").select("*").order("ordre"),
             supabase.from("chantiers").select("*").order("titre"),
-            supabase.from("saisies_metrage").select("*"),
+            fetchAllRows(function() { return supabase.from("saisies_metrage").select("*").order("id"); }),
             supabase.from("declarations").select("*").order("date_debut_periode"),
             supabase.from("renouvellements").select("*").order("date_expiration"),
             supabase.from("app_users").select("*").order("nom"),
           ]);
-          // Charge TOUTES les lignes en paginant par 1000 : PostgREST plafonne
-          // chaque requete a 1000 lignes. Sans pagination NI tri, les lignes
-          // RECENTES au-dela du cap disparaissaient silencieusement au
-          // rechargement (ex. cases du dispatch peintes puis "perdues" au F5,
-          // et "duplicate key" car la ligne existait en base sans etre chargee).
-          var fetchAllRows = async function(buildQuery, maxRows) {
-            var all = []; var fromR = 0; var capR = maxRows || 50000;
-            while (all.length < capR) {
-              var resR = await buildQuery().range(fromR, fromR + 999);
-              if (resR.error) return { data: all, error: resR.error };
-              var rowsR = resR.data || [];
-              all = all.concat(rowsR);
-              if (rowsR.length < 1000) break;
-              fromR += 1000;
-            }
-            return { data: all, error: null };
-          };
+          // fetchAllRows (module, defini pres du client supabase) : pagination
+          // PostgREST par 1000 avec tri stable obligatoire dans buildQuery.
           // Nouvelles tables (chargement separe pour eviter un crash si migration pas faite)
           var afRes = { data: [], error: null };
           var ppRes = { data: [], error: null };
@@ -35291,6 +35512,7 @@
                 .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                 .in("exercice", [yearFEC - 1, yearFEC])
                 .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+                .order("id")
                 .range(fromFEC, fromFEC + 999);
               if (ecrRes.error) { console.warn("Table ecritures_compta:", ecrRes.error.message); break; }
               if (!ecrRes.data || ecrRes.data.length === 0) break;
@@ -35302,7 +35524,7 @@
           } catch (e) { console.warn("Fetch ecritures_compta:", e.message); }
           // Consommations carburant (pour le cout/m par machine)
           try {
-            var carbRes = await supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false });
+            var carbRes = await fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }).order("id"); });
             if (carbRes.error) { console.warn("Table consommations_carburant:", carbRes.error.message); }
             else setDbCarburants(carbRes.data || []);
           } catch (e) { console.warn("Fetch consommations_carburant:", e.message); }
@@ -35320,10 +35542,13 @@
       useEffect(() => {
         if (!session) return;
         function refreshRapports() {
-          supabase.from("rapports_forage")
-            .select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at,non_productif,motif_non_productif")
-            .order("date_rapport", { ascending: false })
-            .then(res => { if (res.data) setDbRapportsForage(res.data); });
+          // Pagine (cap 1000 PostgREST) : sinon ce refresh ecrase l'etat charge
+          // pagine au boot par un maximum de 1000 lignes des le 1er evenement.
+          fetchAllRows(function() {
+            return supabase.from("rapports_forage")
+              .select("id,date_rapport,sondeuse_code,equipement_id,chantier_id,client,lieu,quart,equipe,horametre,sondages,activites,remarques,consommables_perdus,controles_ok,total_metres,total_heures,personnel_id,statut,created_at,non_productif,motif_non_productif")
+              .order("date_rapport", { ascending: false }).order("id");
+          }).then(res => { if (res.data && !res.error) setDbRapportsForage(res.data); });
         }
         var channel = null;
         try {
@@ -35350,8 +35575,8 @@
               supabase.from("bons_commande").select("id", { count: "exact", head: true }).eq("statut", "soumis"),
               supabase.from("demandes_conge").select("id", { count: "exact", head: true }).eq("statut", "en_attente"),
               // Pour les pieces inconnues : on doit lire les consommables_perdus de tous les rapports
-              supabase.from("rapports_forage").select("consommables_perdus").not("consommables_perdus", "is", null),
-              supabase.from("pieces").select("reference,designation")
+              fetchAllRows(function() { return supabase.from("rapports_forage").select("consommables_perdus").not("consommables_perdus", "is", null).order("id"); }),
+              fetchAllRows(function() { return supabase.from("pieces").select("reference,designation").order("id"); })
             ]);
             var soumTotal = (relRes.count || 0) + (intRes.count || 0) + (cmdRes.count || 0) + (congeRes.count || 0);
             setSoumissionsPendingCount(soumTotal);
@@ -35461,14 +35686,25 @@
         } catch (e) { return 0; }
       }, [plans, pieces, equipements, piecesEquipements]);
 
+      // Map id -> code machine TOUJOURS a jour pour les refreshers realtime.
+      // La version capturee a la souscription restait figee a {} (souscription
+      // avant la fin de loadAll, deps [session]) : au premier evenement realtime
+      // toutes les interventions/releves perdaient leur code machine (cartes
+      // "?", filtre machine vide, enregistrement refuse dans le formulaire).
+      var eqCodeByIdRef = useRef({});
+      useEffect(() => {
+        var mEq = {};
+        (equipements || []).forEach(e => { mEq[e.Id] = e.Title; });
+        eqCodeByIdRef.current = mEq;
+      }, [equipements]);
+
       // ── Realtime : sync auto des changements DB (toutes apps connectees) ──
       // Subscribe sur les tables clés. A chaque INSERT/UPDATE/DELETE, on re-fetch
       // la table pour mettre l'UI a jour sans rechargement.
       useEffect(() => {
         if (!session) return;
-        var eqCodeById = {};
-        (equipements || []).forEach(e => { eqCodeById[e.Id] = e.Title; });
-        // Helper : table -> handler de re-fetch
+        // Helper : table -> handler de re-fetch (les codes machine sont lus via
+        // eqCodeByIdRef.current AU MOMENT du refresh, jamais captures ici)
         var refreshers = {
           app_users: function() { supabase.from("app_users").select("*").then(res => { if (res.data) setDbAppUsers(res.data.map(appUserFromDb)); }); },
           chantiers: function() { supabase.from("chantiers").select("*").order("titre").then(res => { if (res.data) setDbChantiers(res.data.map(chantierFromDb)); }); },
@@ -35491,16 +35727,29 @@
               setDbAffectations(all.map(affectationFromDb));
             })();
           },
-          saisies: function() { supabase.from("saisies").select("*").then(res => {
-            if (!res.data) return;
-            var bag = {};
-            res.data.forEach(s => { if (!bag[s.chantier_id]) bag[s.chantier_id] = {}; bag[s.chantier_id][s.date_saisie] = s.valeur != null ? s.valeur : (s.type_jour && s.type_jour !== 'normal' ? { valeur: 0, typeJour: s.type_jour } : 0); });
-            setDbSaisies(bag);
-          }); },
+          // Table reelle : saisies_metrage (l'ancien nom "saisies" ne matchait
+          // aucune table -> abonnement jamais declenche, resync en 404).
+          // Format IDENTIQUE au chargement initial : { valeur, typeJour } sinon
+          // les pannes/intemperies/feries disparaissaient du planning.
+          saisies_metrage: function() {
+            fetchAllRows(function() { return supabase.from("saisies_metrage").select("*").order("id"); }).then(res => {
+              if (!res.data || res.error) return;
+              var bag = {};
+              res.data.forEach(s => {
+                if (!bag[s.chantier_id]) bag[s.chantier_id] = {};
+                bag[s.chantier_id][s.date_saisie] = { valeur: s.valeur != null ? s.valeur : 0, typeJour: s.type_jour || "normal" };
+              });
+              setDbSaisies(bag);
+            });
+          },
           charges_fixes: function() { supabase.from("charges_fixes").select("*").order("categorie").order("libelle").then(res => { if (res.data) setDbChargesFixes(res.data); }); },
           emprunts: function() { supabase.from("emprunts").select("*").then(res => { if (res.data) setDbEmprunts(res.data); }); },
           parametres: function() { supabase.from("parametres").select("*").then(res => { if (res.data) setParametres(res.data); }); },
-          interventions: function() { supabase.from("interventions").select("*").then(res => { if (res.data) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] }))); }); },
+          interventions: function() {
+            fetchAllRows(function() { return supabase.from("interventions").select("*").order("date_intervention", { ascending: false }).order("id"); }).then(res => {
+              if (res.data && !res.error) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeByIdRef.current[r.equipement_id] })));
+            });
+          },
           rapports_forage: function() {
             (async function() {
               var all = []; var f = 0;
@@ -35514,7 +35763,11 @@
               setDbRapportsForage(all);
             })();
           },
-          releves_horametre: function() { supabase.from("releves_horametre").select("*").then(res => { if (res.data) setReleves(res.data.map(r => releveFromDb(r, eqCodeById))); }); },
+          releves_horametre: function() {
+            fetchAllRows(function() { return supabase.from("releves_horametre").select("*").order("date_releve", { ascending: false }).order("id"); }).then(res => {
+              if (res.data && !res.error) setReleves(res.data.map(r => releveFromDb(r, eqCodeByIdRef.current)));
+            });
+          },
           // Planning machines : un engin affecte a un chantier change le previsionnel
           // de metrage, donc le CA projete et la tresorerie previsionnelle.
           chantier_equipements: function() { supabase.from("chantier_equipements").select("*").then(res => { if (res.data) setDbChantierEquipements(res.data.map(chantierEquipementFromDb)); }); },
@@ -35529,6 +35782,7 @@
                   .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                   .in("exercice", [yFEC - 1, yFEC])
                   .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+                  .order("id")
                   .range(offFEC, offFEC + 999);
                 if (r.error || !r.data || r.data.length === 0) break;
                 acc.push.apply(acc, r.data);
@@ -35538,7 +35792,11 @@
               if (acc.length > 0) setDbEcrCompta(acc);
             } catch (e) { console.warn("[realtime] ecritures_compta:", e.message); }
           },
-          consommations_carburant: function() { supabase.from("consommations_carburant").select("sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }).then(res => { if (res.data) setDbCarburants(res.data); }); }
+          consommations_carburant: function() {
+            fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id").order("date_consommation", { ascending: false }).order("id"); }).then(res => {
+              if (res.data && !res.error) setDbCarburants(res.data);
+            });
+          }
         };
         // Throttle : evite de re-fetch trop souvent si plusieurs events arrivent rapidement
         var pending = {};
@@ -35564,7 +35822,7 @@
         // pilotent les chiffres (chantiers, planning machines, rapports, FEC) chaque
         // fois que l'onglet redevient visible, avec un garde de 30 s anti-rafale.
         var dernierResync = Date.now();
-        var TABLES_RESYNC = ["chantiers", "chantier_equipements", "rapports_forage", "saisies", "ecritures_compta"];
+        var TABLES_RESYNC = ["chantiers", "chantier_equipements", "rapports_forage", "affectations", "saisies_metrage", "ecritures_compta"];
         function resyncSiVisible() {
           if (document.visibilityState !== "visible") return;
           if (Date.now() - dernierResync < 30000) return;
@@ -35639,7 +35897,7 @@
               // (statut En cours). -> doublons. Le filtre auto-gen doit rester strict.
               var terminatedInts = myInts.filter((i) => i.Statut_Intervention === "Termine");
               const pending = myInts.filter((i) =>
-                i.Statut_Intervention !== "Termine" && (i.Title || "").startsWith("[Auto]")
+                i.Statut_Intervention !== "Termine" && (/^\[auto\]/i.test(i.Title || "") || i.CycleNumber != null)
               );
 
               var result = computeNextDue(freqNum, typeCycle, currentVal, baseVal, terminatedInts);
@@ -35685,7 +35943,7 @@
                     equipement_id: eq.Id,
                     titre: "[Auto] " + p.Title + " - " + targetVal + " " + dp.typeCycle,
                     technicien: null,
-                    date_intervention: new Date().toISOString().split("T")[0],
+                    date_intervention: localISODate(),
                     statut: "pas_fait",
                     travaux_effectues: travauxStr,
                     temps_arret: null,
@@ -35729,10 +35987,10 @@
               if (error) throw error;
             }
             // Rechargement complet des interventions pour refleter toutes les modifications
-            const { data: inRes, error: inErr } = await supabase.from("interventions").select("*").order("date_intervention", { ascending: false });
-            if (inErr) throw inErr;
+            const inFull = await fetchAllRows(function() { return supabase.from("interventions").select("*").order("date_intervention", { ascending: false }).order("id"); });
+            if (inFull.error) throw inFull.error;
             const eqCodeById = {}; equipements.forEach((e) => { eqCodeById[e.Id] = e.Title; });
-            setInterventions((inRes || []).map((r) => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] })));
+            setInterventions((inFull.data || []).map((r) => interventionFromDb({ ...r, _equipement_code: eqCodeById[r.equipement_id] })));
             const parts = [];
             if (toCreate.length) parts.push(toCreate.length + " creee(s)");
             if (toUpdate.length) parts.push(toUpdate.length + " mise(s) a jour");
@@ -35809,7 +36067,7 @@
           categorie: item.Categorie || null,
           prix_unitaire: nouveauPrix,
           fournisseur: item.Fournisseur || null,
-          date_observation: new Date().toISOString().substring(0, 10),
+          date_observation: localISODate(),
           source: source || "maj fiche",
           notes: (ancienPrix != null && ancienPrix > 0) ? ("Ancien prix : " + ancienPrix) : null
         }).then(function(r) {
