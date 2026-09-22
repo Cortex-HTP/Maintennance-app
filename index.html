@@ -21890,6 +21890,9 @@
       // Aligne avec Avancement : extrapolation lineaire sur les jours ecoules du mois.
       // (la formule chantier-based proratisee sous-estimait quand les machines depassaient le plan)
       var caProjPeriode = caPeriode;
+      // Ratio de projection du mois (jours ouvres totaux / ecoules) : sert aussi
+      // a projeter le CA ACTIVITES de la periode (calcule plus bas dans le code).
+      var projRatioMois = 1;
       var periodLabelShort = "";
       if (period === "mois") {
         var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -21911,7 +21914,8 @@
           iter.setDate(iter.getDate() + 1);
         }
         workdaysElapsed = Math.max(1, workdaysElapsed);
-        caProjPeriode = (caPeriode / workdaysElapsed) * workdaysTotal;
+        projRatioMois = workdaysTotal / workdaysElapsed;
+        caProjPeriode = caPeriode * projRatioMois;
         periodLabelShort = "mois en cours";
       } else if (period === "moisdernier") periodLabelShort = "mois dernier";
       else if (period === "3mois") periodLabelShort = "3 mois";
@@ -22388,16 +22392,28 @@
       // qui couvre l'annee complete. Puis somme les tarifs configures (attentes >= X min,
       // deplacements >= X min, etc.) applicables aux activites.
       var caFactYTD = 0;
+      // CA activites de la PERIODE affichee (memes filtres periode + chantier
+      // que caPeriode) : entre dans les KPI "CA" et "CA projete" du haut.
+      var caFactPeriode = 0;
       (rapports || []).forEach(function(r) {
         if (!r.date_rapport) return;
         var dR = new Date(r.date_rapport);
-        if (dR < yearStart || dR > now) return;
+        var dansYtdF = dR >= yearStart && dR <= now;
+        var passChFact = (chantierF === "all" || (r.chantier_id != null && String(r.chantier_id) === String(chantierF)));
+        var dansPeriodeF = passChFact && !(periodStart && dR < periodStart) && !(periodEnd && dR > periodEnd);
+        if (!dansYtdF && !dansPeriodeF) return;
         var actsYtd = Array.isArray(r.activites) ? r.activites : [];
         actsYtd.forEach(function(a) {
           var libU = String(a && a.libelle || "").toUpperCase().trim();
-          if (!facturablesActSet[libU]) return;
+          // Regle unique : drapeau explicite a.facturable prioritaire sur la liste
+          var estFactA = (a && a.facturable === true) || ((!a || a.facturable !== false) && facturablesActSet[libU]);
+          if (!estFactA) return;
           var paY = lookupPrixAttente(r);
-          if (paY > 0) caFactYTD += (durBtw(a.debut, a.fin) / 60) * paY;
+          if (paY > 0) {
+            var caActA = (durBtw(a.debut, a.fin) / 60) * paY;
+            if (dansYtdF) caFactYTD += caActA;
+            if (dansPeriodeF) caFactPeriode += caActA;
+          }
         });
       });
 
@@ -23008,8 +23024,10 @@
           // KPIs
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14, marginBottom: 14 } },
             kpiCard("indigo", "rocket", Math.round(totalMetres).toLocaleString("fr-FR") + " m", "Metrage total", "Annuel projete : " + Math.round(metragesAnnuelProj).toLocaleString("fr-FR") + " m" + (nbChantiersPlanifies > 0 ? " (planning)" : " (extrapolation)")),
-            kpiCard("green", "coins", fmtCaCompact(caPeriode) + " XPF", "CA (" + periodLabelShort + ")", "Annuel " + now.getFullYear() + " (" + daysElapsed + "j) : " + fmtCaCompact(caYTD + caFactYTD) + " XPF · Metrage : " + fmtCaCompact(caYTD) + " + Activites : " + fmtCaCompact(caFactYTD) + " XPF"),
-            kpiCard("red", "trending-up", fmtCaCompact(caProjPeriode) + " XPF", "CA projete (" + periodLabelShort + ")", "Annuel projete : " + fmtCaCompact(caAnnuelProj) + " XPF - " + (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? "" : " (periode passee : projete = realise)")),
+            // CA et CA projete : ACTIVITES FACTURABLES INCLUSES dans les grandes
+            // valeurs (metrage + activites), decomposition dans le sous-titre.
+            kpiCard("green", "coins", fmtCaCompact(caPeriode + caFactPeriode) + " XPF", "CA (" + periodLabelShort + ")", "Metrage : " + fmtCaCompact(caPeriode) + " + Activites : " + fmtCaCompact(caFactPeriode) + " XPF · Annuel " + now.getFullYear() + " (" + daysElapsed + "j) : " + fmtCaCompact(caYTD + caFactYTD) + " XPF (" + fmtCaCompact(caYTD) + " + " + fmtCaCompact(caFactYTD) + ")"),
+            kpiCard("red", "trending-up", fmtCaCompact(caProjPeriode + caFactPeriode * projRatioMois) + " XPF", "CA projete (" + periodLabelShort + ")", "Annuel projete : " + fmtCaCompact(caAnnuelProj + (daysElapsed > 0 ? (caFactYTD / daysElapsed) * 365 : 0)) + " XPF · Metrage : " + fmtCaCompact(caAnnuelProj) + " + Activites : " + fmtCaCompact(daysElapsed > 0 ? (caFactYTD / daysElapsed) * 365 : 0) + " XPF - " + (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? "" : " (periode passee : projete = realise)")),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
