@@ -2518,17 +2518,24 @@
     const inputStyle = { width: "100%", padding: "10px 12px", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 13.5, outline: "none", boxSizing: "border-box", background: "rgba(255,255,255,0.05)", color: "#fafafa", fontFamily: "inherit" };
     const selectStyle = { ...inputStyle, background: "rgba(255,255,255,0.05)" };
 
-    function Modal({ title, onClose, children, size = 600 }) {
+    function Modal({ title, onClose, children, size = 600, fullscreen = false }) {
       var bp = useBreakpoint();
-      var pad = bp.isMobile ? 12 : 20;
+      // fullscreen : le panneau occupe tout l'ecran (fin liseret de 10px),
+      // hauteur forcee a 100% (l'inline bat le max-height 90vh de la classe).
+      var pad = fullscreen ? 10 : (bp.isMobile ? 12 : 20);
       var modalPad = bp.isMobile ? 16 : 24;
-      var modalWidth = bp.isMobile ? "100%" : "min(" + size + "px, 95vw)";
-      return h("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: bp.isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: pad } },
-        h("div", { onClick: (e) => e.stopPropagation(), className: "wl-modal-panel", style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(24px) saturate(180%)", WebkitBackdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: bp.isMobile ? "16px 16px 0 0" : 16, padding: modalPad, maxWidth: bp.isMobile ? "100%" : size, width: modalWidth, overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", color: "#fafafa" } },
+      var modalWidth = fullscreen ? "100%" : (bp.isMobile ? "100%" : "min(" + size + "px, 95vw)");
+      var arbre = h("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: fullscreen ? "stretch" : (bp.isMobile ? "flex-end" : "center"), justifyContent: "center", zIndex: 100, padding: pad } },
+        h("div", { onClick: (e) => e.stopPropagation(), className: "wl-modal-panel", style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(24px) saturate(180%)", WebkitBackdropFilter: "blur(24px) saturate(180%)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: fullscreen ? 12 : (bp.isMobile ? "16px 16px 0 0" : 16), padding: modalPad, maxWidth: fullscreen ? "100%" : (bp.isMobile ? "100%" : size), width: modalWidth, height: fullscreen ? "100%" : "auto", maxHeight: fullscreen ? "100%" : undefined, overflowY: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", color: "#fafafa" } },
           h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: bp.isMobile ? 14 : 20, paddingBottom: bp.isMobile ? 12 : 16, borderBottom: "1px solid rgba(255,255,255,0.08)", position: "sticky", top: -modalPad, background: "rgba(36, 40, 60, 0.95)", marginLeft: -modalPad, marginRight: -modalPad, marginTop: -modalPad, padding: modalPad + "px " + modalPad + "px " + (bp.isMobile ? 12 : 16) + "px", zIndex: 2 } },
             h("h2", { style: { fontSize: bp.isMobile ? 16 : 18, fontWeight: 700, color: "#fafafa", margin: 0, letterSpacing: "-0.01em" } }, title),
             h("button", { onClick: onClose, "aria-label": "Fermer", style: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", fontSize: 18, cursor: "pointer", color: "#cbd5e1", padding: 0, width: bp.isMobile ? 36 : 30, height: bp.isMobile ? 36 : 30, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "\u00D7")),
           children));
+      // fullscreen : rendu en PORTAL sur document.body. Sans ca, un ancetre
+      // avec backdrop-filter CONFINE le position:fixed (l'overlay ne couvrait
+      // que la zone de contenu, pas tout l'ecran).
+      if (fullscreen && window.ReactDOM && ReactDOM.createPortal) return ReactDOM.createPortal(arbre, document.body);
+      return arbre;
     }
 
     // ─── Graphique lineaire SVG ────────────────────────────────────────
@@ -29348,7 +29355,7 @@
               h("img", { src: apercuVal.v.signature_png, style: { maxWidth: 260, background: "white", borderRadius: 8, padding: 6 } })
             ) : null;
             if (snapFallback) {
-              return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 700 },
+              return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 700, fullscreen: true },
                 h("div", { style: { marginBottom: 10, fontSize: 11.5, color: "#a1a1aa" } }, "Les rapports detailles de cette periode ne sont plus charges en memoire : affichage du releve fige tel qu'envoye au client."),
                 h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
                   h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
@@ -29379,7 +29386,7 @@
                 signatureBlock
               );
             }
-            return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 1000 },
+            return h(Modal, { title: "Detail par jour - " + apercuVal.chantier.titre + " - " + apercuVal.periode.label, onClose: function() { setApercuVal(null); }, size: 1000, fullscreen: true },
               snapDiff ? h("div", { style: { marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.35)", fontSize: 12, color: "#fde68a" } },
                 "Les rapports ont change depuis l'envoi : le releve envoye au client totalisait " + (snapTot.metrage || 0).toLocaleString("fr-FR") + " m / " + (snapTot.heures || 0).toLocaleString("fr-FR") + " h. Le detail ci-dessous reflete les rapports ACTUELS.") : null,
               h("div", { style: { maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" } },
