@@ -26991,6 +26991,18 @@
       };
       var estCommReforage = function(c) { return getCommBase(c) !== null; };
       var estCommNonFact = function(c) { return getCommBase(c) !== null && String(c || "").toUpperCase().indexOf("NON FACTURABLE") >= 0; };
+      // Regle UNIQUE "sondage non facturable" (miroir de l'API send-validation-recap) :
+      // 1) drapeau explicite s.facturable (boutons Facturable / Non facturable) prioritaire ;
+      // 2) sinon commentaire contenant NON FACTURABLE (toggleable ou libre).
+      // Utilisee par le recap mensuel, le detail par jour et l'export : avant,
+      // seuls les commentaires toggleables exacts etaient exclus, le drapeau
+      // explicite etait IGNORE par la facturation.
+      var sondageEstNonFacturable = function(s) {
+        if (!s) return false;
+        if (s.facturable === true) return false;
+        if (s.facturable === false) return true;
+        return String(s.commentaire || "").toUpperCase().indexOf("NON FACTURABLE") >= 0;
+      };
       var toggleSondageReforage = function(rapportId, sondageIdx, facturable) {
         var rap = raps.find(function(x) { return x.id === rapportId; });
         if (!rap) return;
@@ -28830,10 +28842,20 @@
           if (!byDay[d]) byDay[d] = { date: d, machines: {}, metrage: 0, heures: 0, attente: 0 };
           var e = byDay[d];
           if (r.sondeuse_code) e.machines[String(r.sondeuse_code).toUpperCase()] = true;
-          e.metrage += parseFloat(r.total_metres) || 0;
+          // Metrage FACTURABLE (miroir de l'API send-validation-recap) :
+          // total - sondages marques non facturables (drapeau ou commentaire).
+          var nonFactSnap = 0;
+          (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+            if (!sondageEstNonFacturable(s)) return;
+            var deS = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+            var aS = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+            nonFactSnap += Math.max(0, aS - deS);
+          });
+          e.metrage += Math.max(0, (parseFloat(r.total_metres) || 0) - nonFactSnap);
           // total_heures est en MINUTES en base (cf. insertRapportForage) -> /60
           e.heures += (parseFloat(r.total_heures) || 0) / 60;
           (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+            if (a && a.facturable === false) return; // exclusion explicite
             if (String((a && a.libelle) || "").toUpperCase().indexOf("ATTENTE") >= 0) e.attente += dureeH(a);
           });
         });
@@ -28878,6 +28900,9 @@
           var total = 0;
           (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
             if (String(s.type || "").toUpperCase() !== typeFilter) return;
+            // Colonnes par famille COHERENTES avec le metrage facturable :
+            // un sondage exclu de la facturation ne compte pas dans sa famille.
+            if (sondageEstNonFacturable(s)) return;
             var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
             var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
             total += Math.max(0, a - de);
@@ -28909,7 +28934,7 @@
           var totMR = parseFloat(r.total_metres) || 0;
           var nonFactMR = 0;
           (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
-            if (estCommNonFact(s.commentaire)) {
+            if (sondageEstNonFacturable(s)) {
               var deN = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
               var aN = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
               nonFactMR += Math.max(0, aN - deN);
@@ -29474,7 +29499,7 @@
           // Detection generique : commentaire = "<BASE> NON FACTURABLE" ou BASE
           // appartient a la liste des commentaires toggleables (REFORATION, ARRET TECHNIQUE...).
           (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
-            if (estCommNonFact(s.commentaire)) {
+            if (sondageEstNonFacturable(s)) {
               var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
               var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
               metresReforageNonFact += Math.max(0, a - de);
@@ -29696,6 +29721,8 @@
             r.sondages.forEach(function(s) {
               var t = String(s.type || "").toUpperCase();
               if (t === typeFilter) {
+                // Coherence avec le metrage facturable : sondage exclu = 0
+                if (sondageEstNonFacturable(s)) return;
                 var de = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
                 var a = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
                 total += Math.max(0, a - de);
@@ -29735,7 +29762,7 @@
               var totMR = parseFloat(r.total_metres) || 0;
               var nonFactMR = 0;
               (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
-                if (estCommNonFact(s.commentaire)) {
+                if (sondageEstNonFacturable(s)) {
                   var deN = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
                   var aN = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
                   nonFactMR += Math.max(0, aN - deN);
