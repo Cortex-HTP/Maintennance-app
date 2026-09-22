@@ -20260,6 +20260,10 @@
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
         { key: "emprunts", label: "Emprunts", icon: "landmark" },
+        // Passerelle Cortex-Facturation : contrairement aux autres pages, elle
+        // n'est JAMAIS accordee d'office aux admins — seul le compte coche ici
+        // voit le lien dans la sidebar (demande Tomy 2026-09-22).
+        { key: "facturation-ext", label: "Facturation (Cortex)", icon: "receipt" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
         { key: "stats-mecaniciens", label: "Mecaniciens", icon: "wrench" },
         { key: "coffre-rh", label: "Coffre-fort RH", icon: "folder-lock" },
@@ -20479,10 +20483,15 @@
         if (!editing) return;
         var pages = ALL_PAGES.filter(function(p) {
           if (editing.role !== "Administrateur" && p.adminOnly) return false;
+          // La passerelle Facturation ne se donne JAMAIS en bloc : uniquement
+          // par coche individuelle sur le compte choisi (demande Tomy).
+          if (p.key === "facturation-ext") return false;
           return true;
         }).map(function(p) { return p.key; });
         // Inclure aussi toutes les sous-pages de soumissions
         var all = pages.concat(subKeys);
+        // "Tout cocher" preserve l'etat actuel de la passerelle Facturation
+        if ((editing.pagesAutorisees || []).indexOf("facturation-ext") >= 0) all.push("facturation-ext");
         setEditing(Object.assign({}, editing, { pagesAutorisees: all }));
       };
 
@@ -33611,7 +33620,7 @@
       );
     }
 
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, facturationAllowed, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -33675,7 +33684,7 @@
         h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
           sections.map((section) => h("div", { key: section.name },
             h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
-            section.pages.filter(function(p) { if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
+            section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
               return h("button", { key: p.key, onClick: () => handleItemClick(p),
                 style: {
@@ -36472,6 +36481,10 @@
       } else if (!isAdmin && !currentAppUser) {
         allowedPages = ["accueil"]; // unknown user = accueil only
       }
+      // Passerelle Facturation (Cortex) : JAMAIS accordee d'office, meme admin.
+      // Seul le compte explicitement coche "facturation-ext" (Administration >
+      // Utilisateurs) voit le lien — demande Tomy 2026-09-22.
+      var facturationAllowed = !!(currentAppUser && (currentAppUser.pagesAutorisees || []).indexOf("facturation-ext") >= 0);
 
       // Update derniere_connexion on login
       useEffect(function() {
@@ -36826,7 +36839,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
