@@ -32258,8 +32258,24 @@
       var now = new Date();
       var soon = new Date(now.getTime() + 30 * 86400000);
       var totalDocs = docs.length;
-      var expiringSoon = docs.filter(function(d) { return d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; }).length;
-      var expired = docs.filter(function(d) { return d.date_expiration && new Date(d.date_expiration) < now; }).length;
+      // Version COURANTE par (employe, type de document) = la plus grande
+      // date d'expiration. Les ANCIENNES versions d'un document renouvele
+      // (ex. contrat remplace par un avenant) restent stockees en historique
+      // mais ne comptent plus comme "expirees / a renouveler en urgence" :
+      // le document de l'employe, lui, est a jour.
+      var maxExpParEmpType = {};
+      docs.forEach(function(d) {
+        if (!d.date_expiration) return;
+        var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
+        if (!maxExpParEmpType[kET] || String(d.date_expiration) > maxExpParEmpType[kET]) maxExpParEmpType[kET] = String(d.date_expiration);
+      });
+      var estVersionRemplacee = function(d) {
+        if (!d.date_expiration) return false;
+        var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
+        return String(d.date_expiration) < (maxExpParEmpType[kET] || "");
+      };
+      var expiringSoon = docs.filter(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; }).length;
+      var expired = docs.filter(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) < now; }).length;
       var pendingSignatures = docs.filter(function(d) { return d.status === "pending_signature"; }).length;
 
       // ─ Liste employes filtree par search + onglet actif/ex ─
@@ -32318,8 +32334,8 @@
             filteredPersonnel.map(function(p) {
               var isActive = p.code === selectedCode;
               var pDocs = docs.filter(function(d) { return d.personnel_code === p.code; });
-              var hasExpired = pDocs.some(function(d) { return d.date_expiration && new Date(d.date_expiration) < now; });
-              var hasExpiringSoon = pDocs.some(function(d) { return d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; });
+              var hasExpired = pDocs.some(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) < now; });
+              var hasExpiringSoon = pDocs.some(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; });
               var initials = ((p.prenom || "?")[0] + (p.nom || "?")[0]).toUpperCase();
               return h("div", { key: p.code, onClick: function() { setSelectedCode(p.code); },
                 style: { padding: "10px 12px", borderRadius: 8, marginBottom: 6, display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
@@ -32379,9 +32395,10 @@
               h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 12 } },
                 docsForSelected.map(function(d) {
                   var info = getRhDocTypeInfo(d.type_document);
-                  var expired = d.date_expiration && new Date(d.date_expiration) < now;
-                  var expiringSoon2 = d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon;
-                  var expColor = expired ? "#fda4af" : expiringSoon2 ? "#fde68a" : "#86efac";
+                  var remplace = estVersionRemplacee(d);
+                  var expired = !remplace && d.date_expiration && new Date(d.date_expiration) < now;
+                  var expiringSoon2 = !remplace && d.date_expiration && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon;
+                  var expColor = remplace ? "#71717a" : expired ? "#fda4af" : expiringSoon2 ? "#fde68a" : "#86efac";
                   var canSignThis = !isRH && d.personnel_code === (ownPersonnel && ownPersonnel.code) && d.status === "pending_signature";
                   // Action principale au clic : signer (si employe avec doc en attente), sinon preview
                   function handleCardClick() {
@@ -32411,7 +32428,7 @@
                     ),
                     h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.05)" } },
                       h("span", null, d.date_emission ? new Date(d.date_emission).toLocaleDateString("fr-FR") : "?"),
-                      d.date_expiration ? h("span", { style: { color: expColor } }, "Exp " + new Date(d.date_expiration).toLocaleDateString("fr-FR")) : h("span", null, "Sans expiration")
+                      d.date_expiration ? h("span", { style: { color: expColor } }, (remplace ? "Remplace - exp " : "Exp ") + new Date(d.date_expiration).toLocaleDateString("fr-FR")) : h("span", null, "Sans expiration")
                     ),
                     d.status === "pending_signature" ? h("div", { style: { marginTop: 8, padding: "5px 8px", borderRadius: 5, background: "rgba(251,191,36,0.18)", color: "#fde68a", fontSize: 11, fontWeight: 700, textAlign: "center" } },
                       canSignThis ? "✍️ Cliquer pour signer" : "✍️ En attente de signature"
