@@ -21224,11 +21224,21 @@
         var iso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
         return mMap[iso] || null;
       })();
+      // Meteo "prete" = les previsions des chantiers actifs sont chargees (ou
+      // leur echec constate, ou 6 s ecoulees). Tant que c'est false, le graphe
+      // journalier ne dessine PAS les barres previsionnelles : le 1er rendu
+      // sans meteo (facteur 1) affichait des barres trop hautes qui
+      // "redescendaient" quelques secondes plus tard a l'arrivee de la pluie
+      // prevue (yo-yo visuel signale par Tomy).
+      var _mrdy = useState(false); var meteoPreteStat = _mrdy[0]; var setMeteoPreteStat = _mrdy[1];
       useEffect(function() {
         var chs = ctx.dbChantiers || [];
-        var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; });
-        actifs.slice(0, 8).forEach(function(c) {
-          if (meteoByChantierStat[c.id]) return;
+        var actifs = chs.filter(function(x) { return x.statut !== "Termine" && x.latitude != null && x.longitude != null; }).slice(0, 8);
+        if (actifs.length === 0) { setMeteoPreteStat(true); return; }
+        var restantsMeteo = actifs.length;
+        var finiMeteo = function() { restantsMeteo--; if (restantsMeteo <= 0) setMeteoPreteStat(true); };
+        actifs.forEach(function(c) {
+          if (meteoByChantierStat[c.id]) { finiMeteo(); return; }
           // 1) Hydrate depuis localStorage (historique conserve)
           var hist = loadMeteoHistFromLS(c.id);
           if (Object.keys(hist).length > 0) {
@@ -21254,8 +21264,12 @@
             }
             var merged = mergeAndSaveMeteoLS(c.id, dateMap);
             setMeteoByChantierStat(function(prev) { var nm = {}; Object.keys(prev).forEach(function(k) { nm[k] = prev[k]; }); nm[c.id] = merged; return nm; });
-          }).catch(function() {});
+          }).catch(function() {}).then(finiMeteo);
         });
+        // Garde : API meteo lente/indisponible -> on debloque quand meme (sans
+        // meteo, facteur 1) plutot que de ne jamais afficher le previsionnel.
+        var tGardeMeteo = setTimeout(function() { setMeteoPreteStat(true); }, 6000);
+        return function() { clearTimeout(tGardeMeteo); };
       }, [ctx.dbChantiers]);
       var _refresh = useState(0);
       var refreshFlag = _refresh[0]; var setRefreshFlag = _refresh[1];
@@ -22038,7 +22052,10 @@
           // Forecast pour les jours FUTURS ou aujourd'hui (Lun-Jeu) sans donnees reelles
           var isFuture = cur.getTime() >= bcToday.getTime();
           var fcVal = 0, fcCA = 0, fcIntemp = false, fcReduced = false;
-          if (isFuture && dow >= 1 && dow <= 4 && realVal === 0) {
+          // meteoPreteStat : on attend que la meteo soit chargee avant de
+          // dessiner le previsionnel, sinon il apparait d'abord SANS l'impact
+          // pluie (trop haut) puis redescend a l'arrivee des previsions.
+          if (meteoPreteStat && isFuture && dow >= 1 && dow <= 4 && realVal === 0) {
             // Index per-machine (build once par render mais ici simplifie : appele par chantier)
             var metByMkStat = buildMetByMachine(ctx.dbRelevesJourn, ctx.equipements);
             activeChForFc.forEach(function(c) {
@@ -23164,7 +23181,8 @@
           // Evolution + Activites
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16, marginBottom: 16 } },
             h("div", { style: Object.assign({}, sectionStyle, { display: "flex", flexDirection: "column" }) },
-              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trending-up", size: 16, color: "#a78bfa" }), isMonthlyView ? "Evolution metrage mensuel" : "Evolution metrage journalier"),
+              h("h3", { style: sectionTitleStyle }, h(Icon, { name: "trending-up", size: 16, color: "#a78bfa" }), isMonthlyView ? "Evolution metrage mensuel" : "Evolution metrage journalier",
+                !meteoPreteStat && !isMonthlyView ? h("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#71717a", marginLeft: 8 } }, "previsionnel : chargement meteo...") : null),
               chartData.length === 0 ? h("div", { style: { color: "#a1a1aa", textAlign: "center", padding: 30, fontSize: 12, flex: 1 } }, "Pas assez de donnees") :
               h("div", { style: { flex: 1, minHeight: 220, display: "flex" } }, (function() {
                 // SVG responsive : viewBox 100% width, pas de scroll horizontal.
