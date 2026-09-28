@@ -20285,7 +20285,11 @@
         { key: "soumissions_conges",        label: "Conges",                  icon: "calendar-days" },
         { key: "soumissions_commandes",     label: "Commandes",               icon: "shopping-cart" },
         { key: "soumissions_interventions", label: "Demandes d'intervention", icon: "wrench" },
-        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text" }
+        { key: "soumissions_rapports",      label: "Rapports de forage",      icon: "file-text" },
+        // Permission d'ACTION (pas un onglet) : autorise l'ENVOI/RELANCE des
+        // releves mensuels au client (vue Validation client) sans etre admin.
+        // Verifiee aussi COTE SERVEUR (send-validation-recap).
+        { key: "envoi-validation-client",   label: "Envoi validation client (email)", icon: "send" }
       ];
 
       var allPageKeys = ALL_PAGES.map(function(p) { return p.key; });
@@ -20501,10 +20505,14 @@
           if (p.key === "facturation-ext") return false;
           return true;
         }).map(function(p) { return p.key; });
-        // Inclure aussi toutes les sous-pages de soumissions
-        var all = pages.concat(subKeys);
+        // Inclure aussi toutes les sous-pages de soumissions - SAUF l'envoi
+        // validation client (emails aux clients avec chiffres de facturation :
+        // jamais accorde en masse, uniquement par coche deliberee)
+        var all = pages.concat(subKeys.filter(function(k) { return k !== "envoi-validation-client"; }));
         // "Tout cocher" preserve l'etat actuel de la passerelle Facturation
         if ((editing.pagesAutorisees || []).indexOf("facturation-ext") >= 0) all.push("facturation-ext");
+        // ... et de l'envoi validation client
+        if ((editing.pagesAutorisees || []).indexOf("envoi-validation-client") >= 0) all.push("envoi-validation-client");
         setEditing(Object.assign({}, editing, { pagesAutorisees: all }));
       };
 
@@ -26140,6 +26148,11 @@
       // Tout utilisateur qui voit un onglet (= acces a la page) peut y agir.
       // (l'admin a toujours toutes les permissions par defaut)
       var canEditSoumissions = isAdmin || (allowedPages && allowedPages.indexOf(tab) >= 0);
+      // Envoi des releves mensuels au client (Validation client) : admin OU
+      // permission granulaire cochee dans Administration > Utilisateurs
+      // ("Envoi validation client"). Le serveur send-validation-recap applique
+      // EXACTEMENT la meme regle (le front ne fait que masquer le bouton).
+      var canEnvoyerValidationCli = isAdmin || (allowedPages && allowedPages.indexOf("envoi-validation-client") >= 0);
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
       var _rels = useState([]);       var rels = _rels[0];         var setRels = _rels[1];
@@ -29345,7 +29358,7 @@
                     });
                   }
                 } }, h(IconText, { icon: "eye", size: 13 }, "Apercu du detail")),
-                canEditSoumissions && peutEnvoyer ? h(Button, {
+                canEnvoyerValidationCli && peutEnvoyer ? h(Button, {
                   disabled: sending || !destOk || nbJours === 0,
                   onClick: function() {
                     var verb = statut === "envoye" ? "Relancer" : "Envoyer";
