@@ -26875,6 +26875,7 @@
           var next = {};
           Object.keys(prev).forEach(function(kk) { next[kk] = prev[kk]; });
           next[k] = lignes.map(function(l) {
+            if (l && l.abandonne) return 0; // ligne hors decompte : rien a envoyer
             var reste = cmdResteAvant(l);
             return reste > 0 ? reste : (cmdLigneQty(l) > 0 ? 0 : 1);
           });
@@ -26904,7 +26905,8 @@
         // au cumul : plus besoin de refuser en cas de modification concurrente,
         // deux envois s'additionnent naturellement.
         var mouvements = lignes.map(function(l, i) {
-          return { delta: Math.round(cmdSaisieNum(draft, i) * 100) / 100 };
+          // Ligne abandonnee : aucun mouvement possible
+          return { delta: (l && l.abandonne) ? 0 : Math.round(cmdSaisieNum(draft, i) * 100) / 100 };
         });
         var nbMouv = mouvements.filter(function(m) { return m.delta !== 0; }).length;
         if (nbMouv === 0) {
@@ -26933,7 +26935,7 @@
           var clampes = [];
           var newLignes = fresh.map(function(fl, i) {
             var m = mouvements[i];
-            if (m.delta === 0) return fl;
+            if (m.delta === 0 || (fl && fl.abandonne)) return fl;
             var q = cmdLigneQty(fl);
             var cible = cmdLigneEnvoye(fl) + m.delta;
             if (q > 0 && cible > q) {
@@ -26957,6 +26959,7 @@
             });
             cmdPurgeDraft(c.id); // le champ repart de 0, l'affichage montre le reste
             var reste = newLignes.filter(function(l) {
+              if (l && l.abandonne) return false; // hors decompte
               var q = cmdLigneQty(l), e = cmdLigneEnvoye(l);
               return q > 0 ? e < q : e <= 0;
             }).length;
@@ -26967,10 +26970,14 @@
           }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
         }, function(err) { echec("Echec reseau : " + ((err && err.message) || "reessaie")); });
       }
-      // Avancement d'un bon : { nbServies, total, qteEnvoyee, qteTotale, pct, complet }
+      // Avancement d'un bon : { nbServies, total, qteEnvoyee, qteTotale, pct, complet, nbAbandon }
+      // Les lignes ABANDONNEES (cle abandonne du jsonb : "ne sera jamais
+      // envoye") restent visibles mais sortent de TOUT le decompte.
       function cmdAvancement(lignes, draft) {
-        var nbServies = 0, qteEnvoyee = 0, qteTotale = 0;
+        var nbServies = 0, qteEnvoyee = 0, qteTotale = 0, actifs = 0, nbAbandon = 0;
         lignes.forEach(function(l, i) {
+          if (l && l.abandonne) { nbAbandon++; return; }
+          actifs++;
           var q = cmdLigneQty(l);
           var e = cmdTotalApres(draft, i, l); // cumul deja envoye + saisie en cours
           qteTotale += q;
@@ -26979,11 +26986,38 @@
           if (q > 0 ? e >= q : e > 0) nbServies++;
         });
         return {
-          nbServies: nbServies, total: lignes.length,
+          nbServies: nbServies, total: actifs, nbAbandon: nbAbandon,
           qteEnvoyee: qteEnvoyee, qteTotale: qteTotale,
-          pct: qteTotale > 0 ? Math.round(qteEnvoyee / qteTotale * 100) : (nbServies === lignes.length && lignes.length > 0 ? 100 : 0),
-          complet: lignes.length > 0 && nbServies === lignes.length
+          pct: qteTotale > 0 ? Math.round(qteEnvoyee / qteTotale * 100) : (lignes.length > 0 && nbServies === actifs ? 100 : 0),
+          complet: lignes.length > 0 && nbServies === actifs
         };
+      }
+      // Bascule "ne sera JAMAIS envoye" sur une ligne : grisee, hors decompte,
+      // mais toujours visible. Persistant (jsonb lignes, cle abandonne) avec
+      // relecture fraiche comme cmdSaveEnvois (pas d'ecrasement concurrent).
+      function cmdToggleAbandon(c, lignes, idx) {
+        var table = c._source === "mecanicien" ? "commandes_materiel_mec" : "bons_commande";
+        var realId = c._source === "mecanicien" ? c._rawId : c.id;
+        supabase.from(table).select("lignes").eq("id", realId).single().then(function(fr) {
+          if (fr.error) { if (showToast) showToast("Lecture : " + fr.error.message, "error"); else alert("Lecture : " + fr.error.message); return; }
+          var fresh = Array.isArray(fr.data && fr.data.lignes) ? fr.data.lignes : [];
+          if (fresh.length !== lignes.length) { alert("Ce bon a ete modifie ailleurs (nombre d'articles different). Recharge la page."); return; }
+          var newLignes = fresh.map(function(fl, i2) {
+            if (i2 !== idx) return fl;
+            var out = Object.assign({}, fl);
+            if (out.abandonne) delete out.abandonne; else out.abandonne = true;
+            return out;
+          });
+          supabase.from(table).update({ lignes: newLignes }).eq("id", realId).then(function(res) {
+            if (res.error) { if (showToast) showToast("Erreur : " + res.error.message, "error"); else alert("Erreur : " + res.error.message); return; }
+            setCmds(function(prev) {
+              return prev.map(function(x) { return x.id === c.id ? Object.assign({}, x, { lignes: newLignes }) : x; });
+            });
+            // Purge une eventuelle saisie en cours sur cette ligne
+            cmdSetDraft(c, newLignes, idx, 0);
+            if (showToast) showToast(newLignes[idx].abandonne ? "Ligne grisee : ne sera pas envoyee (retiree du decompte)" : "Ligne reintegree au decompte", "success");
+          });
+        });
       }
 
       var deleteCommande = function(id) {
@@ -27674,7 +27708,8 @@
           var avc = cmdAvancement(lignes, draftC);
           var etatBadge = lignes.length === 0 ? null : h("span", { style: { display: "inline-block", marginLeft: 6, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: avc.complet ? "rgba(34,197,94,0.18)" : (avc.qteEnvoyee > 0 ? "rgba(245,158,11,0.18)" : "rgba(148,163,184,0.15)"), color: avc.complet ? "#86efac" : (avc.qteEnvoyee > 0 ? "#fde68a" : "#cbd5e1"), border: "1px solid " + (avc.complet ? "rgba(34,197,94,0.45)" : (avc.qteEnvoyee > 0 ? "rgba(245,158,11,0.45)" : "rgba(148,163,184,0.35)")) } },
             avc.complet ? "COMPLET" : (avc.qteEnvoyee > 0 ? "PARTIEL " + avc.nbServies + "/" + avc.total : "RIEN ENVOYE"));
-          var resteTxt = lignes.length === 0 ? "" : (avc.complet ? " · tout est envoye" : " · reste " + (avc.total - avc.nbServies) + " article" + ((avc.total - avc.nbServies) > 1 ? "s" : "") + " a envoyer");
+          var resteTxt = lignes.length === 0 ? "" : ((avc.complet ? " · tout est envoye" : " · reste " + (avc.total - avc.nbServies) + " article" + ((avc.total - avc.nbServies) > 1 ? "s" : "") + " a envoyer")
+            + (avc.nbAbandon > 0 ? " · " + avc.nbAbandon + " ne sera" + (avc.nbAbandon > 1 ? "ont" : "") + " pas envoye" + (avc.nbAbandon > 1 ? "s" : "") : ""));
           return h(React.Fragment, { key: "k-" + c.id },
             rowHeader({
               name: h("span", null, name, sourceBadge, urgenceBadge, etatBadge),
@@ -27728,20 +27763,25 @@
                     // Le champ affiche ce qu'on envoie MAINTENANT (repart de 0 apres
                     // enregistrement). Valeur brute pour permettre la frappe "2,5".
                     var valChamp = draftC && draftC[i] != null ? draftC[i] : 0;
-                    return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, opacity: ligneComplete ? 0.72 : 1 } },
+                    // Ligne ABANDONNEE : grisee, hors decompte, mais visible
+                    var abandonneL = !!l.abandonne;
+                    return h("div", { key: i, style: { padding: "10px 0", borderBottom: i < lignes.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", fontSize: 13, opacity: abandonneL ? 0.45 : (ligneComplete ? 0.72 : 1) } },
                       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } },
                         // Case a cocher : ligne entierement envoyee
-                        h("input", { type: "checkbox", checked: ligneComplete, onChange: function(e) { cmdToggleLigne(c, lignes, i, e.target.checked); },
-                          title: "Marquer cette ligne comme entierement envoyee",
-                          style: { width: 19, height: 19, accentColor: "#22c55e", cursor: "pointer", flexShrink: 0, marginTop: 2 } }),
+                        h("input", { type: "checkbox", checked: !abandonneL && ligneComplete, disabled: abandonneL, onChange: function(e) { cmdToggleLigne(c, lignes, i, e.target.checked); },
+                          title: abandonneL ? "Ligne hors decompte (ne sera pas envoyee)" : "Marquer cette ligne comme entierement envoyee",
+                          style: { width: 19, height: 19, accentColor: "#22c55e", cursor: abandonneL ? "not-allowed" : "pointer", flexShrink: 0, marginTop: 2 } }),
                         h("div", { style: { flex: "1 1 180px", minWidth: 0 } },
                           h("div", null,
-                            h("span", { style: { fontWeight: 600, textDecoration: ligneComplete ? "line-through" : "none" } }, designation),
-                            refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null
+                            h("span", { style: { fontWeight: 600, textDecoration: (ligneComplete || abandonneL) ? "line-through" : "none", color: abandonneL ? "#71717a" : undefined } }, designation),
+                            refStr ? h("span", { style: { marginLeft: 8, color: "#a1a1aa", fontSize: 11, fontFamily: "monospace" } }, refStr) : null,
+                            abandonneL ? h("span", { style: { marginLeft: 8, display: "inline-block", padding: "1px 8px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, background: "rgba(148,163,184,0.15)", border: "1px solid rgba(148,163,184,0.35)", color: "#cbd5e1", verticalAlign: 1 } }, "NE SERA PAS ENVOYE") : null
                           ),
                           // Etat de la ligne : demande - deja envoye = reste
-                          h("div", { style: { fontSize: 10.5, fontWeight: 700, marginTop: 3, color: ligneComplete ? "#86efac" : (envoye > 0 ? "#fde68a" : "#71717a") } },
-                            ligneComplete
+                          h("div", { style: { fontSize: 10.5, fontWeight: 700, marginTop: 3, color: abandonneL ? "#71717a" : ligneComplete ? "#86efac" : (envoye > 0 ? "#fde68a" : "#71717a") } },
+                            abandonneL
+                              ? "Hors decompte - ne sera jamais envoye"
+                              : ligneComplete
                               ? "Complet" + (saisie > 0 ? " apres enregistrement" : "")
                               : (qty > 0
                                   ? (dejaEnvoye > 0 ? "Deja envoye " + cmdFmtQte(dejaEnvoye) + " sur " + cmdFmtQte(qty) + " · reste " + cmdFmtQte(resteL) + " " + unit : "Reste tout a envoyer (" + cmdFmtQte(qty) + " " + unit + ")")
@@ -27766,16 +27806,22 @@
                             h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "J'envoie"),
                             h("input", { type: "text", inputMode: "decimal", value: String(valChamp),
                               onChange: function(e) { cmdSetDraft(c, lignes, i, e.target.value); },
-                              disabled: ligneComplete && saisie === 0,
-                              title: ligneComplete && saisie === 0 ? "Ligne deja entierement envoyee" : (qty > 0 ? "Reste " + cmdFmtQte(cmdResteAvant(l)) + " a envoyer" : "Aucune quantite demandee sur cette ligne"),
-                              style: { width: 66, padding: "6px 8px", background: ligneComplete && saisie === 0 ? "rgba(0,0,0,0.15)" : "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: ligneComplete && saisie === 0 ? "#52525b" : "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
+                              disabled: abandonneL || (ligneComplete && saisie === 0),
+                              title: abandonneL ? "Ligne hors decompte (ne sera pas envoyee)" : ligneComplete && saisie === 0 ? "Ligne deja entierement envoyee" : (qty > 0 ? "Reste " + cmdFmtQte(cmdResteAvant(l)) + " a envoyer" : "Aucune quantite demandee sur cette ligne"),
+                              style: { width: 66, padding: "6px 8px", background: (abandonneL || (ligneComplete && saisie === 0)) ? "rgba(0,0,0,0.15)" : "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, color: (abandonneL || (ligneComplete && saisie === 0)) ? "#52525b" : "#fafafa", fontSize: 13, fontFamily: "monospace", textAlign: "right" } })
                           ),
                           h("div", null,
                             h("span", { style: { display: "block", fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#71717a", marginBottom: 3 } }, "Reste du"),
-                            h("div", { style: { fontWeight: 700, color: resteL > 0 ? "#a78bfa" : "#86efac", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } },
-                              (qty > 0 ? cmdFmtQte(resteL) : "—") + " " + unit),
-                            qty > 0 && dejaEnvoye > 0 ? h("div", { style: { fontSize: 9.5, color: "#71717a", textAlign: "right", marginTop: 2 } }, "sur " + cmdFmtQte(qty)) : null
-                          )
+                            h("div", { style: { fontWeight: 700, color: abandonneL ? "#71717a" : resteL > 0 ? "#a78bfa" : "#86efac", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", textAlign: "right", paddingTop: 4 } },
+                              abandonneL ? "—" : ((qty > 0 ? cmdFmtQte(resteL) : "—") + " " + unit)),
+                            !abandonneL && qty > 0 && dejaEnvoye > 0 ? h("div", { style: { fontSize: 9.5, color: "#71717a", textAlign: "right", marginTop: 2 } }, "sur " + cmdFmtQte(qty)) : null
+                          ),
+                          // Bascule "ne sera jamais envoye" : grise la ligne et la
+                          // retire du decompte (elle reste visible). Re-clic = retour.
+                          h("button", { onClick: function() { cmdToggleAbandon(c, lignes, i); },
+                            title: abandonneL ? "Reintegrer cette ligne dans le decompte" : "Cet article ne sera JAMAIS envoye : griser la ligne et la retirer du decompte (elle reste visible)",
+                            style: { marginTop: 16, width: 30, height: 30, background: abandonneL ? "rgba(244,63,94,0.15)" : "rgba(255,255,255,0.05)", border: "1px solid " + (abandonneL ? "rgba(244,63,94,0.40)" : "rgba(255,255,255,0.10)"), borderRadius: 7, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                            h(Icon, { name: "ban", size: 14, color: abandonneL ? "#fda4af" : "#71717a" }))
                         )
                       ),
                       photos.length > 0 ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 72px), 1fr))", gap: 6, marginTop: 8 } },
