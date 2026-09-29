@@ -9467,6 +9467,9 @@
       var activeTab = _at[0]; var setActiveTab = _at[1];
       var _vm = useState("annuel");
       var viewMode = _vm[0]; var setViewMode = _vm[1];
+      // Tolerance de decalage (semaines) pour l'onglet Optimisation N+1
+      var _tolOpt = useState(6);
+      var tolSemOpt = _tolOpt[0]; var setTolSemOpt = _tolOpt[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
       var setDeclarations = ctx.setDbDeclarations;
@@ -10336,6 +10339,349 @@
         });
       }
 
+      // ═══ Machines requises par semaine + Optimisation N+1 ═══════════════
+      // Flotte reelle = engins (sondeuses) non reformes ; les VL sont exclus.
+      // La charge vient des affectations REELLES (chantier_equipements) :
+      // pour chaque jour, machines DISTINCTES affectees ; par semaine (blocs
+      // de 7 jours depuis le 1er janvier), on garde le MAX journalier.
+      var enginActifSet = {};
+      equipements.forEach(function(eqFl) {
+        if (eqFl.Categorie === "Vehicule") return;
+        if (eqFl.Statut === "Reforme" || eqFl.Statut === "Hors service") return;
+        enginActifSet[String(eqFl.Id)] = true;
+      });
+      var flotteMachines = Object.keys(enginActifSet).length;
+      var MOIS_COURTS_CH = ["Jan", "Fev", "Mar", "Avr", "Mai", "Jun", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"];
+
+      function chargeMachinesParSemaine(yearC) {
+        var y0C = new Date(yearC, 0, 1);
+        var nbJoursC = Math.round((new Date(yearC, 11, 31) - y0C) / 86400000) + 1;
+        var parJourC = [];
+        for (var iC = 0; iC < nbJoursC; iC++) parJourC.push(null);
+        (ctx.dbChantierEquipements || []).forEach(function(ceC) {
+          if (!ceC || !ceC.dateDebut || !ceC.dateFin) return;
+          if (!enginActifSet[String(ceC.equipementId)]) return;
+          var dA = parseDate(String(ceC.dateDebut).substring(0, 10));
+          var dB = parseDate(String(ceC.dateFin).substring(0, 10));
+          if (!dA || !dB || isNaN(dA.getTime()) || isNaN(dB.getTime())) return;
+          var jA = Math.max(0, Math.round((dA - y0C) / 86400000));
+          var jB = Math.min(nbJoursC - 1, Math.round((dB - y0C) / 86400000));
+          for (var jC = jA; jC <= jB; jC++) {
+            if (!parJourC[jC]) parJourC[jC] = {};
+            parJourC[jC][String(ceC.equipementId)] = 1;
+          }
+        });
+        var semC = [];
+        for (var sC = 0; sC < 52; sC++) semC.push(0);
+        for (var j2C = 0; j2C < nbJoursC; j2C++) {
+          if (!parJourC[j2C]) continue;
+          var s2C = Math.min(51, Math.floor(j2C / 7));
+          var nC = Object.keys(parJourC[j2C]).length;
+          if (nC > semC[s2C]) semC[s2C] = nC;
+        }
+        return semC;
+      }
+
+      // series = [{ vals: [52 valeurs], couleur: function(v), opacite, decalX, retraitW }]
+      function svgChargeMachines(series, hauteurSvg) {
+        var Ws = 1160, Hs = hauteurSvg || 150, padL = 34, padB = 20, padT = 14;
+        var iw = Ws - padL - 10, ih = Hs - padT - padB;
+        var maxV = flotteMachines;
+        series.forEach(function(sr) { sr.vals.forEach(function(v) { if (v > maxV) maxV = v; }); });
+        maxV = maxV + 1;
+        var bw = iw / 52;
+        var kids = [];
+        for (var g = 1; g <= maxV; g++) {
+          var yG = padT + ih - (g / maxV) * ih;
+          kids.push(h("line", { key: "gl" + g, x1: padL, y1: yG, x2: Ws - 10, y2: yG, stroke: "rgba(255,255,255,0.05)" }));
+          kids.push(h("text", { key: "gt" + g, x: padL - 6, y: yG + 3, textAnchor: "end", fontSize: 9, fill: "#71717a" }, String(g)));
+        }
+        series.forEach(function(sr, si) {
+          sr.vals.forEach(function(v, iV) {
+            if (v <= 0) return;
+            var xB = padL + iV * bw + (sr.decalX || 0);
+            var bh = (v / maxV) * ih;
+            kids.push(h("rect", { key: "b" + si + "_" + iV, x: xB, y: padT + ih - bh, width: Math.max(bw - 2 - (sr.retraitW || 0), 1), height: bh, rx: 2, fill: sr.couleur(v), opacity: sr.opacite || 1 }));
+          });
+        });
+        var yF = padT + ih - (flotteMachines / maxV) * ih;
+        kids.push(h("line", { key: "fl", x1: padL, y1: yF, x2: Ws - 10, y2: yF, stroke: "#f59e0b", strokeWidth: 1.8, strokeDasharray: "6 4" }));
+        kids.push(h("text", { key: "ft", x: Ws - 12, y: yF - 5, textAnchor: "end", fontSize: 10, fontWeight: 700, fill: "#fbbf24" }, "Flotte : " + flotteMachines));
+        for (var mS = 0; mS < 12; mS++) {
+          kids.push(h("text", { key: "mt" + mS, x: padL + (mS + 0.5) * (iw / 12), y: Hs - 5, textAnchor: "middle", fontSize: 9, fill: "#71717a" }, MOIS_COURTS_CH[mS]));
+        }
+        return h("svg", { viewBox: "0 0 " + Ws + " " + Hs, style: { width: "100%", height: "auto", display: "block" } }, kids);
+      }
+
+      function legendeChargeMachines(avecOriginal) {
+        var items = [];
+        if (avecOriginal) items.push(h("span", { key: "lo", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "rgba(255,255,255,0.25)", display: "inline-block" } }), "Planning original"));
+        items.push(h("span", { key: "lv", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "#22c55e", display: "inline-block" } }), avecOriginal ? "Planning propose" : "Dans la flotte"));
+        items.push(h("span", { key: "lr", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "#f43f5e", display: "inline-block" } }), "Au-dessus de la flotte"));
+        items.push(h("span", { key: "lf", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { display: "inline-block", width: 16, height: 0, borderTop: "2px dashed #f59e0b" } }), "Flotte disponible (" + flotteMachines + " machine" + (flotteMachines > 1 ? "s" : "") + ")"));
+        return h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 10.5, color: "#94a3b8", marginTop: 10 } }, items);
+      }
+
+      // ── Bande « Machines requises par semaine » (donnees reelles annee affichee) ──
+      function bandeMachinesRequises(yearB) {
+        var chargeB = chargeMachinesParSemaine(yearB);
+        var picB = 0;
+        chargeB.forEach(function(v) { if (v > picB) picB = v; });
+        var iPicB = chargeB.indexOf(picB);
+        var nbSurB = chargeB.filter(function(v) { return v > flotteMachines; }).length;
+        return h("div", { key: "bandeMach" + yearB, style: { marginTop: 16, background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", padding: 16 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
+            h(Icon, { name: "wrench", size: 15, color: "#a5b4fc" }),
+            h("span", { style: { fontSize: 14, fontWeight: 700, color: "#fafafa" } }, "Machines requises par semaine — " + yearB),
+            h("span", { style: { fontSize: 11, color: "#71717a", fontWeight: 500 } }, "machines distinctes affectees le meme jour (Planning engins)")
+          ),
+          picB === 0
+            ? h("div", { style: { padding: "18px 8px", textAlign: "center", color: "#71717a", fontSize: 13, fontStyle: "italic" } }, "Aucune affectation machine sur " + yearB + ". Glisse des engins sur les chantiers dans l'onglet Planning engins pour voir la charge.")
+            : h(React.Fragment, null,
+                svgChargeMachines([{ vals: chargeB, couleur: function(v) { return v > flotteMachines ? "#f43f5e" : "#22c55e"; } }], 150),
+                legendeChargeMachines(false),
+                h("div", { style: { marginTop: 10, fontSize: 12.5, color: "#cbd5e1" } },
+                  "Pic : ",
+                  h("b", { style: { color: picB > flotteMachines ? "#fda4af" : "#86efac" } }, picB + " machine" + (picB > 1 ? "s" : "")),
+                  " (semaine " + (iPicB + 1) + ", " + MOIS_COURTS_CH[Math.min(11, Math.floor(iPicB / 4.34))] + ")",
+                  nbSurB > 0
+                    ? h("b", { style: { color: "#fda4af" } }, " - " + nbSurB + " semaine" + (nbSurB > 1 ? "s" : "") + " au-dessus de la flotte")
+                    : h("span", { style: { color: "#86efac" } }, " - aucune semaine en surcharge")
+                )
+              )
+        );
+      }
+
+      // ── Onglet Optimisation N+1 : le moteur decale les chantiers (dans la
+      // limite autorisee) pour reduire le nombre de machines necessaires en
+      // simultane, en restant au plus pres des dates demandees. SIMULATION
+      // uniquement : ne modifie ni le planning reel ni le tableau de bord.
+      function renderOptimisationN1() {
+        var yearOpt = currentMonth.getFullYear() + 1;
+        var y0Opt = new Date(yearOpt, 0, 1);
+        var y1Opt = new Date(yearOpt, 11, 31);
+        var nbJoursOpt = Math.round((y1Opt - y0Opt) / 86400000) + 1;
+        function semOfOpt(j) { return Math.max(0, Math.min(51, Math.floor(j / 7))); }
+
+        var chListOpt = chantiers.filter(function(chO) {
+          if (chO.statut === "Termine") return false;
+          if (!chO.dateDebut || !chO.dateFin) return false;
+          var dD = parseDate(chO.dateDebut); var dF = parseDate(chO.dateFin);
+          if (!dD || !dF || isNaN(dD.getTime()) || isNaN(dF.getTime())) return false;
+          return dD <= y1Opt && dF >= y0Opt;
+        });
+
+        // Besoin machines d'un chantier = pic d'engins affectes en simultane
+        // (Planning engins) ; sans planning machines : 1 (meme convention que
+        // le previsionnel de la fiche chantier).
+        function machinesRequisesChantier(chId) {
+          var listM = (ctx.dbChantierEquipements || []).filter(function(ceM) {
+            return ceM && String(ceM.chantierId) === String(chId) && enginActifSet[String(ceM.equipementId)] && ceM.dateDebut && ceM.dateFin;
+          });
+          if (listM.length === 0) return 1;
+          var picM = 1;
+          listM.forEach(function(ceM) {
+            var dM = parseDate(String(ceM.dateDebut).substring(0, 10));
+            if (!dM || isNaN(dM.getTime())) return;
+            var seenM = {}; var nM = 0;
+            listM.forEach(function(oM) {
+              var odM = parseDate(String(oM.dateDebut).substring(0, 10));
+              var ofM = parseDate(String(oM.dateFin).substring(0, 10));
+              if (!odM || !ofM || isNaN(odM.getTime()) || isNaN(ofM.getTime())) return;
+              if (dM >= odM && dM <= ofM) {
+                var kM = String(oM.equipementId);
+                if (!seenM[kM]) { seenM[kM] = 1; nM++; }
+              }
+            });
+            if (nM > picM) picM = nM;
+          });
+          return picM;
+        }
+
+        // ── Moteur glouton deterministe (valide en demo) : chantiers tries par
+        // machines x duree decroissant ; pour chacun on teste tous les decalages
+        // autorises (0, +-1, +-2... semaines) et on garde celui qui minimise
+        // (pic, surcharge cumulee, |decalage|). Un chantier deja demarre avant
+        // le 1er janvier ne bouge pas (contrainte physique, pas un verrou).
+        var propsOpt = chListOpt.map(function(chO) {
+          var dD2 = parseDate(chO.dateDebut); var dF2 = parseDate(chO.dateFin);
+          var debO = Math.round((dD2 - y0Opt) / 86400000);
+          var finO = Math.round((dF2 - y0Opt) / 86400000);
+          return { ch: chO, deb: debO, fin: finO, debOrig: debO, finOrig: finO, machines: machinesRequisesChantier(chO.id), mobile: debO >= 0, decalSem: 0 };
+        });
+        // Les chantiers NON decalables passent en premier : leur charge est
+        // posee avant que le moteur ne place les autres (sinon il pourrait
+        // decaler un chantier mobile PILE sur un chantier deja demarre).
+        var ordreOpt = propsOpt.slice().sort(function(a, b) {
+          if (a.mobile !== b.mobile) return a.mobile ? 1 : -1;
+          return (b.machines * (b.fin - b.deb)) - (a.machines * (a.fin - a.deb));
+        });
+        var chargeOpt = [];
+        for (var iO = 0; iO < 52; iO++) chargeOpt.push(0);
+        ordreOpt.forEach(function(cO) {
+          var meilleur = { cout: Infinity, decal: 0 };
+          var decalsO = [0];
+          if (cO.mobile) { for (var dO = 1; dO <= tolSemOpt; dO++) { decalsO.push(dO); decalsO.push(-dO); } }
+          decalsO.forEach(function(dSem) {
+            var debT = cO.debOrig + dSem * 7;
+            var finT = cO.finOrig + dSem * 7;
+            if (dSem !== 0 && (debT < 0 || debT > nbJoursOpt - 1)) return;
+            // Interdit de "cacher" de la charge en poussant la fin du chantier
+            // au-dela du 31/12 (elle sortirait du calcul et serait reportee
+            // sur N+2) - sauf si le chantier debordait DEJA a l'origine.
+            if (dSem !== 0 && finT > nbJoursOpt - 1 && cO.finOrig <= nbJoursOpt - 1) return;
+            var picT = 0, surchT = 0;
+            var s0T = semOfOpt(Math.max(debT, 0)), s1T = semOfOpt(Math.min(finT, nbJoursOpt - 1));
+            for (var sT = s0T; sT <= s1T; sT++) {
+              var vT = chargeOpt[sT] + cO.machines;
+              if (vT > picT) picT = vT;
+              if (vT > flotteMachines) surchT += vT - flotteMachines;
+            }
+            // Le pic domine STRICTEMENT la surcharge cumulee (qui peut depasser
+            // 100 sur un chantier long), la surcharge domine la fidelite.
+            var coutT = picT * 10000000 + surchT * 1000 + Math.abs(dSem);
+            if (coutT < meilleur.cout) meilleur = { cout: coutT, decal: dSem };
+          });
+          cO.decalSem = meilleur.decal;
+          cO.deb = cO.debOrig + meilleur.decal * 7;
+          cO.fin = cO.finOrig + meilleur.decal * 7;
+          var p0 = semOfOpt(Math.max(cO.deb, 0)), p1 = semOfOpt(Math.min(cO.fin, nbJoursOpt - 1));
+          for (var sP = p0; sP <= p1; sP++) chargeOpt[sP] += cO.machines;
+        });
+
+        function chargeSemaineProps(useOrig) {
+          var wS = [];
+          for (var iW = 0; iW < 52; iW++) wS.push(0);
+          propsOpt.forEach(function(pW) {
+            var debW = useOrig ? pW.debOrig : pW.deb;
+            var finW = useOrig ? pW.finOrig : pW.fin;
+            var dCl = Math.max(debW, 0), fCl = Math.min(finW, nbJoursOpt - 1);
+            if (fCl < dCl) return;
+            for (var sW = semOfOpt(dCl); sW <= semOfOpt(fCl); sW++) wS[sW] += pW.machines;
+          });
+          return wS;
+        }
+        var chargeAvant = chargeSemaineProps(true);
+        var chargeApres = chargeSemaineProps(false);
+        var picAvant = 0, picApres = 0;
+        chargeAvant.forEach(function(v) { if (v > picAvant) picAvant = v; });
+        chargeApres.forEach(function(v) { if (v > picApres) picApres = v; });
+        // Garde-fou : si la proposition est PIRE que l'original (pic plus
+        // haut), on garde le planning d'origine tel quel.
+        if (picApres > picAvant) {
+          propsOpt.forEach(function(pG) { pG.decalSem = 0; pG.deb = pG.debOrig; pG.fin = pG.finOrig; });
+          chargeApres = chargeSemaineProps(false);
+          picApres = picAvant;
+        }
+        var surAvant = chargeAvant.filter(function(v) { return v > flotteMachines; }).length;
+        var surApres = chargeApres.filter(function(v) { return v > flotteMachines; }).length;
+        var nbDecales = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
+
+        function carteOpt(accCol, label, badge, badgeCol, val, valCol, sous) {
+          return h("div", { style: { flex: 1, minWidth: 170, background: "rgba(13,15,26,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderLeft: "3px solid " + accCol, borderRadius: 12, padding: "11px 14px" } },
+            h("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: 0.8, color: "#94a3b8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 } },
+              h("span", null, label),
+              badge ? h("span", { style: { marginLeft: "auto", fontSize: 9.5, fontWeight: 800, padding: "2px 8px", borderRadius: 999, background: badgeCol.bg, color: badgeCol.tx, border: "1px solid " + badgeCol.bd } }, badge) : null
+            ),
+            h("div", { style: { fontSize: 20, fontWeight: 800, marginTop: 7, color: valCol } }, val),
+            h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 2 } }, sous)
+          );
+        }
+        var BV_OPT = { bg: "rgba(34,197,94,0.16)", tx: "#86efac", bd: "rgba(34,197,94,0.4)" };
+        var BG_OPT = { bg: "rgba(255,255,255,0.08)", tx: "#d4d4d8", bd: "rgba(255,255,255,0.2)" };
+
+        function pctOpt(j) { return Math.max(0, Math.min(100, (j / nbJoursOpt) * 100)); }
+        var moisHeaderOpt = MOIS_COURTS_CH.map(function(nomM, idxM) {
+          var startP = pctOpt(Math.round((new Date(yearOpt, idxM, 1) - y0Opt) / 86400000));
+          var endP = idxM < 11 ? pctOpt(Math.round((new Date(yearOpt, idxM + 1, 1) - y0Opt) / 86400000)) : 100;
+          return h("div", { key: "moh" + idxM, style: { position: "absolute", left: startP + "%", width: (endP - startP) + "%", textAlign: "center", fontSize: 10, fontWeight: 600, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5 } }, nomM);
+        });
+
+        var cardOptStyle = { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", padding: 16, marginBottom: 16 };
+
+        if (chListOpt.length === 0) {
+          return h("div", { style: cardOptStyle },
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 8 } }, "Planification optimisee " + yearOpt),
+            h("div", { style: { padding: "24px 10px", textAlign: "center", color: "#71717a", fontSize: 13.5 } },
+              "Aucun chantier sur " + yearOpt + ". Cree d'abord les chantiers " + yearOpt + " (onglet Chantiers, avec les dates demandees par les clients), puis reviens ici : le moteur proposera un calendrier qui fait tout tenir avec le moins de machines possible.")
+          );
+        }
+
+        var propsAffiche = propsOpt.slice().sort(function(a, b) { return a.debOrig - b.debOrig; });
+
+        return h("div", null,
+          // KPI
+          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 } },
+            carteOpt("#94a3b8", "Pic machines (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
+            carteOpt("#22c55e", "Pic machines (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > flotteMachines ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
+            carteOpt("#6366f1", "Chantiers decales", null, null, nbDecales + " / " + propsOpt.length, "#a5b4fc", "les autres restent aux dates demandees"),
+            carteOpt("#f59e0b", "Flotte requise", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "flotte actuelle : " + flotteMachines + " engin" + (flotteMachines > 1 ? "s" : ""))
+          ),
+          // Gantt propose
+          h("div", { style: cardOptStyle },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" } },
+              h("span", { style: { fontSize: 15, fontWeight: 700 } }, "Planification proposee " + yearOpt),
+              h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, fontSize: 12, fontWeight: 600, color: "#cbd5e1" } },
+                "Decalage max autorise :",
+                h("input", { type: "range", min: 0, max: 12, value: tolSemOpt, onChange: function(e) { setTolSemOpt(parseInt(e.target.value, 10) || 0); }, style: { width: 140 } }),
+                h("b", { style: { color: "#a5b4fc", minWidth: 46 } }, tolSemOpt + " sem.")
+              )
+            ),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 12 } },
+              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur decale les chantiers (dans la limite autorisee) pour reduire le nombre de machines necessaires en simultane, en restant au plus pres des dates d'origine. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
+            h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
+            propsAffiche.map(function(pR, idxR) {
+              var colR = ENGIN_PALETTE[idxR % ENGIN_PALETTE.length];
+              var lP = pctOpt(pR.deb), wP = Math.max(pctOpt(pR.fin + 1) - lP, 0.8);
+              var ghost = null;
+              if (pR.decalSem !== 0) {
+                var loP = pctOpt(pR.debOrig), woP = Math.max(pctOpt(pR.finOrig + 1) - loP, 0.8);
+                ghost = h("div", { style: { position: "absolute", left: loP + "%", width: woP + "%", top: 3, bottom: 3, borderRadius: 5, border: "1.5px dashed rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)" } });
+              }
+              var anDebR = parseDate(pR.ch.dateDebut).getFullYear();
+              var decalTxt = !pR.mobile ? ("commence en " + anDebR + " (non decalable)") : (pR.decalSem === 0 ? "dates demandees conservees" : ("decale de " + (pR.decalSem > 0 ? "+" : "") + pR.decalSem + " semaine" + (Math.abs(pR.decalSem) > 1 ? "s" : "")));
+              return h("div", { key: "optRow" + pR.ch.id, style: { display: "grid", gridTemplateColumns: "190px 1fr", alignItems: "center", marginBottom: 7 } },
+                h("div", { style: { fontSize: 12.5, fontWeight: 700, paddingRight: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+                  pR.ch.titre,
+                  !pR.mobile ? h("span", { style: { fontSize: 9, color: "#fbbf24", border: "1px solid rgba(245,158,11,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "DEBUT " + anDebR) : null,
+                  h("span", { style: { fontSize: 10, color: "#71717a", fontWeight: 600, display: "block" } }, (pR.ch.client || "client ?") + " - " + pR.machines + " machine" + (pR.machines > 1 ? "s" : ""))
+                ),
+                h("div", { style: { position: "relative", height: 26, background: "rgba(0,0,0,0.25)", borderRadius: 6, overflow: "hidden" }, title: pR.ch.titre + " : " + decalTxt },
+                  ghost,
+                  h("div", { style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap" } }, pR.machines + " mach.")
+                )
+              );
+            })
+          ),
+          // Charge avant / apres
+          h("div", { style: cardOptStyle },
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines requises par semaine — avant / apres"),
+            svgChargeMachines([
+              { vals: chargeAvant, couleur: function() { return "rgba(255,255,255,0.22)"; }, retraitW: 8 },
+              { vals: chargeApres, couleur: function(v) { return v > flotteMachines ? "#f43f5e" : "#22c55e"; }, decalX: 5, retraitW: 8 }
+            ], 170),
+            legendeChargeMachines(true)
+          ),
+          // Decalages proposes
+          h("div", { style: cardOptStyle },
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 10 } }, "Decalages proposes"),
+            propsAffiche.map(function(pD) {
+              var txtD, colD;
+              if (!pD.mobile) { txtD = "commence en " + parseDate(pD.ch.dateDebut).getFullYear() + " (non decalable)"; colD = "#71717a"; }
+              else if (pD.decalSem === 0) { txtD = "inchange"; colD = "#86efac"; }
+              else { txtD = (pD.decalSem > 0 ? "+" : "") + pD.decalSem + " semaine" + (Math.abs(pD.decalSem) > 1 ? "s" : ""); colD = "#fde68a"; }
+              return h("div", { key: "dec" + pD.ch.id, style: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", fontSize: 12.5 } },
+                h("span", { style: { fontWeight: 700 } }, pD.ch.titre, h("span", { style: { color: "#71717a", fontWeight: 600 } }, " (" + (pD.ch.client || "client ?") + ")")),
+                h("span", { style: { color: colD, fontWeight: 700 } }, txtD)
+              );
+            }),
+            h("div", { style: { marginTop: 12, border: "1px dashed rgba(245,158,11,0.5)", borderRadius: 10, background: "rgba(245,158,11,0.07)", color: "#fde68a", padding: "11px 15px", fontSize: 12, lineHeight: 1.55 } },
+              h("b", null, "Simulation uniquement : "),
+              "cet onglet ne modifie ni le planning reel ni le tableau de bord. Pour appliquer une proposition, ajuste les dates du chantier sur sa fiche (onglet Chantiers).")
+          )
+        );
+      }
+
       // ── Vue Annuelle (12 mois) ──
       function renderAnnuel() {
         var year = currentMonth.getFullYear();
@@ -10819,9 +11165,9 @@
         // Chantiers et Planning engins raisonnent a l'ANNEE (filtre + saut annuel) ;
         // Declarations / Renouvellements gardent la navigation mensuelle en vue liste.
         h("div", { style: { marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
-          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? String(currentMonth.getFullYear()) : currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
-          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? 12 : 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || activeTab === "optimisation" || viewMode === "annuel") ? -12 : -1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
+          h("div", { style: { fontSize: 14, fontWeight: 600, minWidth: 120, textAlign: "center" } }, activeTab === "optimisation" ? String(currentMonth.getFullYear() + 1) : (activeTab === "chantiers" || activeTab === "maintenances" || viewMode === "annuel") ? String(currentMonth.getFullYear()) : currentMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
+          h("button", { onClick: function() { setCurrentMonth(addMonthsFn(currentMonth, (activeTab === "chantiers" || activeTab === "maintenances" || activeTab === "optimisation" || viewMode === "annuel") ? 12 : 1)); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
           h("div", { style: { marginLeft: "auto", display: "flex", gap: 8 } },
             h("button", { onClick: function() { setViewMode("annuel"); }, style: { background: viewMode === "annuel" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: viewMode === "annuel" ? "white" : "#a1a1aa", border: "1px solid " + (viewMode === "annuel" ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "calendar-range", size: 14, color: viewMode === "annuel" ? "white" : "#a1a1aa" })),
             h("button", { onClick: function() { setViewMode("liste"); }, style: { background: viewMode === "liste" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "rgba(255,255,255,0.05)", color: viewMode === "liste" ? "white" : "#a1a1aa", border: "1px solid " + (viewMode === "liste" ? "rgba(129,140,248,0.5)" : "rgba(255,255,255,0.1)"), padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "list", size: 14, color: viewMode === "liste" ? "white" : "#a1a1aa" }))
@@ -10830,6 +11176,7 @@
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 0 } },
           h("button", { onClick: function() { setActiveTab("chantiers"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "chantiers" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "transparent", color: activeTab === "chantiers" ? "white" : "#a1a1aa", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Chantiers"),
           h("button", { onClick: function() { setActiveTab("maintenances"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "maintenances" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "transparent", color: activeTab === "maintenances" ? "white" : "#a1a1aa", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Planning engins"),
+          h("button", { onClick: function() { setActiveTab("optimisation"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "optimisation" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "transparent", color: activeTab === "optimisation" ? "white" : "#a1a1aa", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Optimisation " + (currentMonth.getFullYear() + 1)),
           h("button", { onClick: function() { setActiveTab("declarations"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "declarations" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "transparent", color: activeTab === "declarations" ? "white" : "#a1a1aa", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Declarations"),
           h("button", { onClick: function() { setActiveTab("renouvellements"); }, style: { padding: "12px 16px", border: "none", background: activeTab === "renouvellements" ? "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)" : "transparent", color: activeTab === "renouvellements" ? "white" : "#a1a1aa", cursor: "pointer", fontSize: 14, fontWeight: 600, borderRadius: "6px 6px 0 0", transition: "all 0.2s" } }, "Renouvellements")
         ),
@@ -10939,7 +11286,7 @@
             return chantiersAnneePlan.length > 0
               ? h("div", { style: _gridCh }, chantiersAnneePlan.map(renderChantierCard))
               : h("div", { style: { color: "#71717a", textAlign: "center", padding: 30, fontStyle: "italic" } }, "Aucun chantier sur " + anneePlanning);
-          }()) : renderAnnuel()
+          }()) : h(React.Fragment, null, renderAnnuel(), bandeMachinesRequises(currentMonth.getFullYear()))
         ),
         activeTab === "maintenances" && (function() {
           // ── Setup local pour l'onglet Planning engins ──
@@ -11255,6 +11602,8 @@
                 todayPctLocal >= 0 ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#a1a1aa", marginLeft: "auto" } }, h("div", { style: { width: 2, height: 12, background: "#7c3aed" } }), "Aujourd'hui") : null
               )
             ),
+            // ── Bande machines requises (charge de la flotte, donnees reelles) ──
+            bandeMachinesRequises(year),
             // ── Fenetre d'edition precise (mode crayon / bouton +) ──
             editCE ? h(Modal, { title: editCE.id != null ? "Modifier l'affectation" : "Affecter un engin", onClose: function() { setEditCE(null); }, size: 480 },
               h("div", { style: { display: "grid", gap: 4 } },
@@ -11287,6 +11636,7 @@
             ) : null
           );
         }()),
+        activeTab === "optimisation" && renderOptimisationN1(),
         showModal && renderModalForm(),
         dragPreview.active && h("div", {
           style: { position: "fixed", left: dragPreview.x + 14, top: dragPreview.y - 32, background: "rgba(15,23,42,0.92)", color: "white", padding: "6px 10px", borderRadius: 4, fontSize: 12, fontWeight: 600, pointerEvents: "none", zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,0.25)", whiteSpace: "nowrap" }
@@ -35834,7 +36184,7 @@
             var results = await Promise.all([
               fetchAllRows(function() { return supabase.from("affectations").select("*").order("id"); }),
               supabase.from("paliers_primes").select("*").order("site").order("seuil_mh"),
-              supabase.from("chantier_equipements").select("*"),
+              fetchAllRows(function() { return supabase.from("chantier_equipements").select("*").order("id"); }),
               supabase.from("demandes_financement").select("*").order("created_at", { ascending: false }),
               fetchAllRows(function() { return supabase.from("releves_journaliers").select("*").order("date_releve", { ascending: false }).order("id"); }),
               // Rapports forage : light fetch (sans signatures lourdes en base64)
@@ -36180,7 +36530,7 @@
           },
           // Planning machines : un engin affecte a un chantier change le previsionnel
           // de metrage, donc le CA projete et la tresorerie previsionnelle.
-          chantier_equipements: function() { supabase.from("chantier_equipements").select("*").then(res => { if (res.data) setDbChantierEquipements(res.data.map(chantierEquipementFromDb)); }); },
+          chantier_equipements: function() { fetchAllRows(function() { return supabase.from("chantier_equipements").select("*").order("id"); }).then(res => { if (res.data && !res.error) setDbChantierEquipements(res.data.map(chantierEquipementFromDb)); }); },
           // FEC : un import de compta change les frais generaux, les marges cash et
           // tout le previsionnel de tresorerie. Pagine comme au chargement initial.
           ecritures_compta: async function() {
