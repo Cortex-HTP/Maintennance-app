@@ -7040,7 +7040,6 @@
       var showToast = ctx.showToast;
       var _acces = useState(null); var acces = _acces[0]; var setAcces = _acces[1];
       var _busy = useState(null); var busy = _busy[0]; var setBusy = _busy[1];
-      var _pinAffiche = useState(null); var pinAffiche = _pinAffiche[0]; var setPinAffiche = _pinAffiche[1];
       var PORTAIL_API_BASE = "https://employes-psi.vercel.app";
       var PORTAIL_URL = PORTAIL_API_BASE + "/portail.html";
 
@@ -7065,7 +7064,13 @@
 
       var mapAcces = {};
       (acces || []).forEach(function(a) { mapAcces[String(a.chantier_id)] = a; });
-      var chantiersAff = chantiersAnneeCourante(dbChantiers).slice().sort(function(a, b) {
+      // Chantiers de l'annee + TOUT chantier ayant deja un acces (audit : un
+      // acces actif sur un chantier d'une autre annee doit rester revocable).
+      var baseAnnee = chantiersAnneeCourante(dbChantiers);
+      var idsAnnee = {};
+      baseAnnee.forEach(function(c) { idsAnnee[String(c.id)] = 1; });
+      var horsAnnee = (dbChantiers || []).filter(function(c) { return !idsAnnee[String(c.id)] && mapAcces[String(c.id)]; });
+      var chantiersAff = baseAnnee.concat(horsAnnee).sort(function(a, b) {
         return String(a.titre || "").localeCompare(String(b.titre || ""), "fr", { sensitivity: "base" });
       });
 
@@ -7075,7 +7080,7 @@
         appel({ action: "generate", chantier_id: c.id }, function(j) {
           setBusy(null);
           if (!j) return;
-          setPinAffiche({ chantier: c, pin: j.pin });
+          if (showToast) showToast("Code genere pour " + c.titre + " : " + j.pin, "success");
           chargerStatus();
         });
       };
@@ -7089,25 +7094,16 @@
         });
       };
       var copier = function(txt, msg) {
-        try { navigator.clipboard.writeText(txt).then(function() { if (showToast) showToast(msg, "success"); }); } catch (e) {}
+        try { navigator.clipboard.writeText(txt).then(function() { if (showToast) showToast(msg, "success"); }).catch(function() {}); } catch (e) {}
       };
 
       return h("div", null,
         h("div", { style: { fontSize: 12.5, color: "#a1a1aa", marginBottom: 14, lineHeight: 1.55 } },
           "Le portail client (", h("span", { style: { color: "#a5b4fc", fontWeight: 700 } }, PORTAIL_URL.replace("https://", "")),
           ") permet au client d'un SITE de suivre ses rapports, son avancement et ses statistiques — sans aucun prix ni CA. ",
-          "1 code PIN = 1 chantier. Le code n'est affiche qu'une seule fois : note-le au moment de la generation.",
+          "1 code PIN = 1 chantier. Le code reste affiche ici en permanence (regenerable / revocable a tout moment).",
           h("button", { onClick: function() { copier(PORTAIL_URL, "Lien du portail copie"); }, style: { marginLeft: 8, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#cbd5e1", fontFamily: "inherit", fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer" } }, "Copier le lien du portail")
         ),
-        pinAffiche ? h("div", { style: { marginBottom: 16, padding: "14px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(34,197,94,0.14), rgba(34,197,94,0.04))", border: "1px solid rgba(34,197,94,0.4)" } },
-          h("div", { style: { fontSize: 12, fontWeight: 700, color: "#86efac", marginBottom: 6 } }, "Code genere pour " + pinAffiche.chantier.titre + " — note-le maintenant, il ne sera plus jamais affiche :"),
-          h("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
-            h("span", { style: { fontSize: 30, fontWeight: 800, letterSpacing: 6, fontVariantNumeric: "tabular-nums", color: "#fafafa" } }, pinAffiche.pin),
-            h(Button, { variant: "secondary", onClick: function() { copier(pinAffiche.pin, "Code PIN copie"); } }, "Copier le code"),
-            h(Button, { variant: "secondary", onClick: function() { copier("Suivi de forage " + (pinAffiche.chantier.titre || "") + " :\n" + PORTAIL_URL + "\nCode d'acces : " + pinAffiche.pin, "Message pret a envoyer copie"); } }, "Copier lien + code"),
-            h(Button, { variant: "secondary", onClick: function() { setPinAffiche(null); } }, "Masquer")
-          )
-        ) : null,
         acces === null ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20 } }, "Chargement...") :
         h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
           chantiersAff.map(function(c) {
@@ -7122,6 +7118,14 @@
               h("div", { style: { flex: 1, minWidth: 140 } },
                 h("div", { style: { fontWeight: 700, fontSize: 13.5 } }, c.titre || ""),
                 h("div", { style: { fontSize: 11.5, color: "#71717a" } }, (c.client ? c.client + " — " : "") + (c.site || ""))),
+              // Code du client RE-AFFICHABLE en permanence (les clients oublient
+              // leurs codes) ; les acces generes avant cette version n'ont pas
+              // le code en clair en base -> Regenerer pour l'obtenir.
+              etat === "actif" ? (a.pin
+                ? h("span", { style: { display: "inline-flex", alignItems: "center", gap: 8 } },
+                    h("span", { style: { fontSize: 17, fontWeight: 800, letterSpacing: 3, fontVariantNumeric: "tabular-nums", color: "#fafafa", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "4px 12px" } }, a.pin),
+                    h("button", { onClick: function() { copier("Suivi de forage " + (c.titre || "") + " :\n" + PORTAIL_URL + "\nCode d'acces : " + a.pin, "Lien + code copies"); }, title: "Copier le lien du portail + le code", style: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#cbd5e1", fontFamily: "inherit", fontSize: 11, fontWeight: 700, padding: "4px 10px", cursor: "pointer" } }, "Copier"))
+                : h("span", { style: { fontSize: 11.5, color: "#fbbf24" } }, "code non re-affichable (ancienne version) — Regenerer")) : null,
               pill,
               h(Button, { variant: "secondary", disabled: busy === c.id, onClick: function() { genererPin(c, etat === "actif"); } },
                 busy === c.id ? "..." : (etat === "actif" ? "Regenerer" : "Generer un code")),
