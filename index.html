@@ -29368,7 +29368,7 @@
             h("select", { value: moisSel, onChange: function(e) { setValPeriode(e.target.value); }, style: { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "6px 10px", color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", cursor: "pointer" } },
               moisRecentsVal.map(function(p) { return h("option", { key: p.mois, value: p.mois }, p.label); })
             ),
-            h("span", { style: { fontSize: 11.5, color: "#71717a" } }, "Periode calculee par chantier selon son jour de cloture (fiche chantier, defaut 25) - envoi auto a la cloture aux SIGNATAIRES des rapports, relance manuelle ici")
+            h("span", { style: { fontSize: 11.5, color: "#71717a" } }, "Periode calculee par chantier selon son jour de cloture (fiche chantier, defaut 25) - destinataire : signataire CONFIGURE du chantier (Administration > Destinataires emails, role Signataire), sinon signataires des rapports de la periode")
           ),
           // Lignes chantiers
           chList.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun chantier actif.") :
@@ -29401,6 +29401,13 @@
             else {
               var sigs = (snapDest && snapDest.signataires) || [];
               var sigsNoMail = (snapDest && snapDest.signatairesSansEmail) || [];
+              // Signataire(s) CONFIGURES pour ce chantier (Administration >
+              // Destinataires emails, role "Signataire", actif) : reglage MAITRE,
+              // prioritaire sur les signataires des rapports (miroir serveur).
+              var sigCfg = (destChantier || [])
+                .filter(function(d) { return String(d.scope_id) === String(c.id) && d.role === "signataire" && d.email; })
+                .map(function(d) { return String(d.email).trim().toLowerCase(); })
+                .filter(function(e, i, a) { return a.indexOf(e) === i; });
               // Destinataires deja configures pour CE chantier (Administration >
               // Destinataires emails). Scope global exclu : ce sont les adresses
               // internes Wallis, jamais le client.
@@ -29408,8 +29415,9 @@
                 .filter(function(d) { return String(d.scope_id) === String(c.id) && d.role !== "cc" && d.email; })
                 .map(function(d) { return String(d.email).trim().toLowerCase(); })
                 .filter(function(e, i, a) { return a.indexOf(e) === i; });
-              var histo = (sigs.length || destsCfg.length) ? [] : histoEmailsChantier(c, sigsNoMail);
-              if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
+              var histo = (sigCfg.length || sigs.length || destsCfg.length) ? [] : histoEmailsChantier(c, sigsNoMail);
+              if (sigCfg.length) { destAffiche = sigCfg.slice(0, 3).join(", ") + " (signataire configure)"; destOk = true; }
+              else if (sigs.length) { destAffiche = sigs.map(function(s) { return s.email; }).join(", "); destOk = true; }
               // Emails clients deja parametres pour ce chantier
               else if (destsCfg.length) { destAffiche = destsCfg.slice(0, 3).join(", ") + " (destinataires chantier)"; destOk = true; }
               // Email deja present en base sur des rapports signes anterieurement
