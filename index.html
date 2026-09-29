@@ -21226,6 +21226,29 @@
           if (!isNaN(v)) setSoldeManuel(v);
         }
       }, [ctx.parametres]);
+      // ── Decouvert autorise (banque) : parametres.tresorerie_decouvert ──
+      // Saisi en POSITIF (ex. 10 000 000) ; la courbe trace la ligne rouge a
+      // -decouvert et le point bas s'evalue contre cette limite, pas contre 0.
+      var _decAut = useState(0);
+      var decouvertAutorise = _decAut[0]; var setDecouvertAutorise = _decAut[1];
+      useEffect(function() {
+        var pD = (ctx.parametres || []).find(function(x) { return x && x.categorie === "tresorerie_decouvert"; });
+        if (pD && pD.valeur != null && pD.valeur !== "") {
+          var vD = Math.abs(parseFloat(pD.valeur));
+          if (!isNaN(vD)) setDecouvertAutorise(vD);
+        }
+      }, [ctx.parametres]);
+      async function saveDecouvertAutorise(val) {
+        var existingD = (ctx.parametres || []).find(function(x) { return x && x.categorie === "tresorerie_decouvert"; });
+        if (existingD) {
+          var resD = await supabase.from("parametres").update({ valeur: String(val) }).eq("id", existingD.id);
+          if (resD.error) throw new Error(resD.error.message);
+        } else {
+          var resD2 = await supabase.from("parametres").insert({ categorie: "tresorerie_decouvert", valeur: String(val), ordre: 0 });
+          if (resD2.error) throw new Error(resD2.error.message);
+        }
+        setDecouvertAutorise(val);
+      }
       async function saveSoldeManuel(val) {
         var existing = (ctx.parametres || []).find(function(x) { return x && x.categorie === "tresorerie_solde_actuel"; });
         if (existing) {
@@ -24419,6 +24442,9 @@
             var valsTr = trMois.map(function(x) { return x.solde; });
             var maxVt = Math.max.apply(null, valsTr);
             var minVt = Math.min.apply(null, valsTr);
+            // Le domaine inclut la ligne du decouvert autorise pour qu'elle
+            // reste toujours visible sur la courbe
+            if (decouvertAutorise > 0) minVt = Math.min(minVt, -decouvertAutorise);
             // Marge de 10 % au-dessus et au-dessous pour aerer
             var marge = Math.max(1, (maxVt - minVt) * 0.10);
             if (minVt > 0) minVt = 0; else minVt = minVt - marge;
@@ -24466,7 +24492,26 @@
                       try { await saveSoldeManuel(v); } catch (e) { alert("Erreur : " + e.message); }
                     },
                     style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", color: "#c7d2fe", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
-                  }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel")
+                  }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel"),
+                  h("button", {
+                    onClick: async function() {
+                      var curD = decouvertAutorise > 0 ? String(decouvertAutorise) : "";
+                      var inputD = window.prompt("Decouvert AUTORISE par la banque, en XPF POSITIF (ex: 10000000 pour 10 MF).\nLa courbe trace une ligne rouge a -decouvert et le point bas s'evalue contre cette limite.\nLaisser vide pour retirer.", curD);
+                      if (inputD === null) return;
+                      if (inputD.trim() === "") {
+                        try {
+                          var exD = (ctx.parametres || []).find(function(x) { return x && x.categorie === "tresorerie_decouvert"; });
+                          if (exD) { await supabase.from("parametres").delete().eq("id", exD.id); }
+                          setDecouvertAutorise(0);
+                        } catch (e) { alert("Erreur : " + e.message); }
+                        return;
+                      }
+                      var vD2 = Math.abs(parseFloat(inputD.replace(/\s/g, "").replace(",", ".")));
+                      if (isNaN(vD2)) { alert("Nombre invalide"); return; }
+                      try { await saveDecouvertAutorise(vD2); } catch (e) { alert("Erreur : " + e.message); }
+                    },
+                    style: { fontSize: 10, padding: "3px 10px", background: "rgba(244,63,94,0.12)", border: "1px solid rgba(244,63,94,0.35)", color: "#fda4af", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
+                  }, decouvertAutorise > 0 ? "Decouvert " + fmtCaTr(decouvertAutorise) : "Decouvert autorise")
                 ),
                 h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 3 } }, estVueN1
                   ? ("Previsionnel " + anneeCible + " : MEME moteur que la courbe " + now2.getFullYear() + " - le CA vient des chantiers du Calendrier (metrage x prix repartis sur leur periode ; vitesse mesuree pour les chantiers deja en production). Chaque mois ENCAISSE ET PAIE les travaux du mois precedent (clients et fournisseurs a 30 j) : encaissement = CA du mois M-1, depenses variables (gasoil, consommables... au cout/m mesure sur le reel bancaire " + now2.getFullYear() + ") = metrage du mois M-1. + salaires, frais generaux (donnees " + now2.getFullYear() + ") et emprunts mois par mois (fins de prets deduites). Net mensuel = marge des travaux du mois precedent - charges fixes. Solde de depart = solde projete au 31/12/" + now2.getFullYear() + ".")
@@ -24493,11 +24538,26 @@
                   h("div", { style: { fontSize: 18, fontWeight: 800, color: soldeFinTr >= soldeInit ? "#86efac" : "#fda4af", fontFamily: "monospace" } }, fmtCaTr(soldeFinTr) + " XPF"),
                   h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, "Delta " + (soldeFinTr - soldeInit >= 0 ? "+" : "") + fmtCaTr(soldeFinTr - soldeInit))
                 ),
-                h("div", { style: { padding: "10px 12px", background: minSoldeTr < 0 ? "rgba(244,63,94,0.10)" : "rgba(251,191,36,0.10)", border: "1px solid " + (minSoldeTr < 0 ? "rgba(244,63,94,0.30)" : "rgba(251,191,36,0.30)"), borderRadius: 8 } },
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Point le plus bas"),
-                  h("div", { style: { fontSize: 18, fontWeight: 800, color: minSoldeTr < 0 ? "#fda4af" : "#fde68a", fontFamily: "monospace" } }, fmtCaTr(minSoldeTr) + " XPF"),
-                  h("div", { style: { fontSize: 10, color: "#a1a1aa", marginTop: 2 } }, trMois[minIdxTr].d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }))
-                )
+                (function() {
+                  // Point bas evalue contre le DECOUVERT AUTORISE (pas contre 0) :
+                  // rouge = limite bancaire depassee, ambre = dans le decouvert,
+                  // jaune doux = positif. Marge affichee quand un decouvert est saisi.
+                  var limiteDec = -(decouvertAutorise || 0);
+                  var depasseDec = decouvertAutorise > 0 && minSoldeTr < limiteDec;
+                  var dansDecouvert = minSoldeTr < 0 && !depasseDec;
+                  var bgPB = depasseDec ? "rgba(244,63,94,0.16)" : dansDecouvert ? "rgba(251,146,60,0.12)" : "rgba(251,191,36,0.10)";
+                  var bdPB = depasseDec ? "rgba(244,63,94,0.45)" : dansDecouvert ? "rgba(251,146,60,0.35)" : "rgba(251,191,36,0.30)";
+                  var colPB = depasseDec ? "#fda4af" : dansDecouvert ? "#fdba74" : "#fde68a";
+                  return h("div", { style: { padding: "10px 12px", background: bgPB, border: "1px solid " + bdPB, borderRadius: 8 } },
+                    h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 4 } }, "Point le plus bas"),
+                    h("div", { style: { fontSize: 18, fontWeight: 800, color: colPB, fontFamily: "monospace" } }, fmtCaTr(minSoldeTr) + " XPF"),
+                    h("div", { style: { fontSize: 10, color: depasseDec ? "#fda4af" : "#a1a1aa", marginTop: 2, fontWeight: depasseDec ? 700 : 400 } },
+                      trMois[minIdxTr].d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })
+                      + (decouvertAutorise > 0 ? (depasseDec
+                          ? " - DEPASSE le decouvert de " + fmtCaTr(limiteDec - minSoldeTr)
+                          : " - marge sur decouvert : " + fmtCaTr(minSoldeTr - limiteDec)) : ""))
+                  );
+                }())
               );
               }()),
               // ── Comparatif REEL vs PREVU (annee a date) : 2 lignes de barres ──
@@ -24548,7 +24608,8 @@
                 h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#818cf8", verticalAlign: "middle", marginRight: 6 } }), "Solde net cumule"),
                 h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Moyenne : " + fmtCaTr(moyenneSolde) + " XPF"),
                 h("span", { style: { color: "#71717a" } }, "Seuil zero"),
-                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #f43f5e", verticalAlign: "middle", marginRight: 6 } }))
+                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #f43f5e", verticalAlign: "middle", marginRight: 6 } })),
+                decouvertAutorise > 0 ? h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #ef4444", verticalAlign: "middle", marginRight: 6 } }), "Decouvert autorise : -" + fmtCaTr(decouvertAutorise) + " XPF") : null
               ),
               // ── SVG polyline + aire degradee + moyenne pointillee (style carburant) ──
               h("div", { style: { width: "100%" } },
@@ -24573,6 +24634,11 @@
                   trMois.length > 1 ? h("path", { d: "M " + xForT(0) + "," + yZeroT + " L " + linePts + " L " + xForT(trMois.length - 1) + "," + yZeroT + " Z", fill: moyenneSolde >= 0 ? "url(#tresorerie-grad-pos)" : "url(#tresorerie-grad-neg)" }) : null,
                   // Ligne zero (seuil rouge pointille)
                   yZeroT >= padT.t && yZeroT <= padT.t + iht ? h("line", { x1: padT.l, y1: yZeroT, x2: padT.l + iwt, y2: yZeroT, stroke: "#f43f5e", strokeWidth: 1.5, strokeDasharray: "5 4", opacity: 0.65 }) : null,
+                  // Ligne DECOUVERT AUTORISE (limite banque, rouge vif)
+                  decouvertAutorise > 0 ? h("g", null,
+                    h("line", { x1: padT.l, y1: yForT(-decouvertAutorise), x2: padT.l + iwt, y2: yForT(-decouvertAutorise), stroke: "#ef4444", strokeWidth: 2, strokeDasharray: "9 4", opacity: 0.9 }),
+                    h("text", { x: padT.l + iwt - 4, y: yForT(-decouvertAutorise) - 5, textAnchor: "end", fontSize: 9, fill: "#fda4af", fontFamily: "monospace", fontWeight: 700 }, "Decouvert autorise -" + fmtCaTr(decouvertAutorise))
+                  ) : null,
                   // Ligne moyenne (jaune pointille, comme carburant)
                   h("line", { x1: padT.l, y1: yForT(moyenneSolde), x2: padT.l + iwt, y2: yForT(moyenneSolde), stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }),
                   // Ligne verticale "Aujourd'hui" (separe passe reel Compta et futur projete)
