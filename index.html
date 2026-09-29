@@ -7029,6 +7029,109 @@
           h(Button, { variant: "danger", onClick: onConfirm }, h(IconText, { icon: "trash-2", size: 14 }, confirmLabel))));
     }
 
+    // ─── Editeur Acces portail client (codes PIN par chantier) ─────────
+    // Genere / revoque les codes PIN du portail client (portail.html de l'app
+    // Employes). Le PIN est hache cote serveur (endpoint portail-admin) : il
+    // n'est affiche qu'UNE seule fois, a la generation. Regenerer un code
+    // invalide l'ancien ET les sessions ouvertes avec.
+    function PortailClientEditor() {
+      var ctx = useAppData();
+      var dbChantiers = ctx.dbChantiers || [];
+      var showToast = ctx.showToast;
+      var _acces = useState(null); var acces = _acces[0]; var setAcces = _acces[1];
+      var _busy = useState(null); var busy = _busy[0]; var setBusy = _busy[1];
+      var _pinAffiche = useState(null); var pinAffiche = _pinAffiche[0]; var setPinAffiche = _pinAffiche[1];
+      var PORTAIL_API_BASE = "https://employes-psi.vercel.app";
+      var PORTAIL_URL = PORTAIL_API_BASE + "/portail.html";
+
+      var appel = function(body, cb) {
+        supabase.auth.getSession().then(function(s) {
+          var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
+          if (!tkn) { if (showToast) showToast("Session expiree, reconnecte-toi.", "error"); cb(null); return; }
+          fetch(PORTAIL_API_BASE + "/api/portail-admin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
+            body: JSON.stringify(body)
+          }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+            .then(function(out) {
+              if (!out.ok || !out.j || !out.j.ok) { if (showToast) showToast("Portail : " + ((out.j && out.j.error) || "erreur serveur"), "error"); cb(null); return; }
+              cb(out.j);
+            })
+            .catch(function(e) { if (showToast) showToast("Portail : " + (e && e.message), "error"); cb(null); });
+        });
+      };
+      var chargerStatus = function() { appel({ action: "status" }, function(j) { setAcces(j ? (j.acces || []) : []); }); };
+      useEffect(function() { chargerStatus(); }, []);
+
+      var mapAcces = {};
+      (acces || []).forEach(function(a) { mapAcces[String(a.chantier_id)] = a; });
+      var chantiersAff = chantiersAnneeCourante(dbChantiers).slice().sort(function(a, b) {
+        return String(a.titre || "").localeCompare(String(b.titre || ""), "fr", { sensitivity: "base" });
+      });
+
+      var genererPin = function(c, dejaActif) {
+        if (dejaActif && !confirm("Regenerer le code du portail pour " + c.titre + " ?\n\nL'ancien code cessera IMMEDIATEMENT de fonctionner (sessions ouvertes comprises).")) return;
+        setBusy(c.id);
+        appel({ action: "generate", chantier_id: c.id }, function(j) {
+          setBusy(null);
+          if (!j) return;
+          setPinAffiche({ chantier: c, pin: j.pin });
+          chargerStatus();
+        });
+      };
+      var revoquerPin = function(c) {
+        if (!confirm("Revoquer l'acces portail de " + c.titre + " ?\n\nLe client ne pourra plus se connecter (regenerable a tout moment).")) return;
+        setBusy(c.id);
+        appel({ action: "revoke", chantier_id: c.id }, function(j) {
+          setBusy(null);
+          if (j && showToast) showToast("Acces portail revoque pour " + c.titre, "success");
+          chargerStatus();
+        });
+      };
+      var copier = function(txt, msg) {
+        try { navigator.clipboard.writeText(txt).then(function() { if (showToast) showToast(msg, "success"); }); } catch (e) {}
+      };
+
+      return h("div", null,
+        h("div", { style: { fontSize: 12.5, color: "#a1a1aa", marginBottom: 14, lineHeight: 1.55 } },
+          "Le portail client (", h("span", { style: { color: "#a5b4fc", fontWeight: 700 } }, PORTAIL_URL.replace("https://", "")),
+          ") permet au client d'un SITE de suivre ses rapports, son avancement et ses statistiques — sans aucun prix ni CA. ",
+          "1 code PIN = 1 chantier. Le code n'est affiche qu'une seule fois : note-le au moment de la generation.",
+          h("button", { onClick: function() { copier(PORTAIL_URL, "Lien du portail copie"); }, style: { marginLeft: 8, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#cbd5e1", fontFamily: "inherit", fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer" } }, "Copier le lien du portail")
+        ),
+        pinAffiche ? h("div", { style: { marginBottom: 16, padding: "14px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(34,197,94,0.14), rgba(34,197,94,0.04))", border: "1px solid rgba(34,197,94,0.4)" } },
+          h("div", { style: { fontSize: 12, fontWeight: 700, color: "#86efac", marginBottom: 6 } }, "Code genere pour " + pinAffiche.chantier.titre + " — note-le maintenant, il ne sera plus jamais affiche :"),
+          h("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+            h("span", { style: { fontSize: 30, fontWeight: 800, letterSpacing: 6, fontVariantNumeric: "tabular-nums", color: "#fafafa" } }, pinAffiche.pin),
+            h(Button, { variant: "secondary", onClick: function() { copier(pinAffiche.pin, "Code PIN copie"); } }, "Copier le code"),
+            h(Button, { variant: "secondary", onClick: function() { copier("Suivi de forage " + (pinAffiche.chantier.titre || "") + " :\n" + PORTAIL_URL + "\nCode d'acces : " + pinAffiche.pin, "Message pret a envoyer copie"); } }, "Copier lien + code"),
+            h(Button, { variant: "secondary", onClick: function() { setPinAffiche(null); } }, "Masquer")
+          )
+        ) : null,
+        acces === null ? h("p", { style: { color: "#71717a", textAlign: "center", padding: 20 } }, "Chargement...") :
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          chantiersAff.map(function(c) {
+            var a = mapAcces[String(c.id)];
+            var etat = !a ? "aucun" : (a.actif ? "actif" : "revoque");
+            var pill = etat === "actif"
+              ? h("span", { style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.4)", color: "#86efac", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700 } }, "Actif")
+              : etat === "revoque"
+              ? h("span", { style: { background: "rgba(244,63,94,0.15)", border: "1px solid rgba(244,63,94,0.4)", color: "#fda4af", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700 } }, "Revoque")
+              : h("span", { style: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#a1a1aa", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700 } }, "Aucun code");
+            return h("div", { key: c.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, flexWrap: "wrap" } },
+              h("div", { style: { flex: 1, minWidth: 140 } },
+                h("div", { style: { fontWeight: 700, fontSize: 13.5 } }, c.titre || ""),
+                h("div", { style: { fontSize: 11.5, color: "#71717a" } }, (c.client ? c.client + " — " : "") + (c.site || ""))),
+              pill,
+              h(Button, { variant: "secondary", disabled: busy === c.id, onClick: function() { genererPin(c, etat === "actif"); } },
+                busy === c.id ? "..." : (etat === "actif" ? "Regenerer" : "Generer un code")),
+              etat === "actif" ? h(Button, { variant: "danger", disabled: busy === c.id, onClick: function() { revoquerPin(c); } }, "Revoquer") : null
+            );
+          })
+        )
+      );
+    }
+
     // ─── Editeur Destinataires emails (categorie speciale de Parametres) ─
     // Stocke dans la table destinataires_emails (1 ligne DB = 1 (email + role + scope + type_doc)).
     // UI : regroupe par (email + role + scope_type + scope_id + actif), avec 5 cases a cocher
@@ -7301,6 +7404,7 @@
         { key: "frequence_plan",       label: "Frequences de plan",   lucide: "calendar",      group: "admin" },
         { key: "technicien",           label: "Techniciens",          lucide: "user-round",    group: "admin" },
         { key: "destinataires_emails", label: "Destinataires emails", lucide: "mail",          group: "admin" },
+        { key: "portail_client",       label: "Acces portail client", lucide: "key",           group: "admin" },
       ];
       const [selected, setSelected] = useState("type_engin");
       const [newValeur, setNewValeur] = useState("");
@@ -7402,6 +7506,8 @@
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700 } }, (categories.find((c) => c.key === selected) || {}).label),
             selected === "destinataires_emails"
               ? h(DestinatairesEmailsEditor, null)
+              : selected === "portail_client"
+              ? h(PortailClientEditor, null)
               : selected === "rf_activites_facturables"
               ? h(ActivitesFacturablesEditor, null)
               : h(React.Fragment, null,
