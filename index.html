@@ -1240,6 +1240,17 @@
       if (!isFinite(y1)) y1 = y0;
       return annee >= y0 && annee <= y1;
     }
+    // Filtre STANDARD des listes deroulantes de chantiers : seulement ceux qui
+    // touchent l'ANNEE EN COURS (les fiches de l'annee suivante saisies en
+    // avance polluaient tous les selects avec des doublons de titres).
+    // keepId : valeur deja selectionnee, toujours conservee dans la liste pour
+    // ne pas casser une donnee historique rattachee a un chantier hors annee.
+    function chantiersAnneeCourante(liste, keepId) {
+      var anC = new Date().getFullYear();
+      return (liste || []).filter(function(c) {
+        return chantierToucheAnneeCal(c, anC) || (keepId != null && keepId !== "" && String(c.id) === String(keepId));
+      });
+    }
     function resolveRapportChantierId(r, chantierBySite) {
       var chId = (r.chantier_id != null) ? r.chantier_id : null;
       if (chId == null) {
@@ -7223,7 +7234,7 @@
                     isChantier
                       ? h("select", { style: inputSm, value: g.scope_id || "", onChange: function(e) { updateGroup(g, { scope_id: parseInt(e.target.value) || null }); } },
                           h("option", { value: "" }, "-- Choisir --"),
-                          dbChantiers.map(function(c) { return h("option", { key: c.id, value: c.id }, chantierOptionLabel(c)); })
+                          chantiersAnneeCourante(dbChantiers, g.scope_id).map(function(c) { return h("option", { key: c.id, value: c.id }, chantierOptionLabel(c)); })
                         )
                       : h("span", { style: { color: "#71717a", fontStyle: "italic", fontSize: 11 } }, "N/A")
                   ),
@@ -11807,12 +11818,13 @@
                 var chSrcColor = r.chantierSource === "planning" ? "#86efac" : r.chantierSource === "memoire" ? "#86efac" : r.chantierSource === "code-sondeuse" ? "#86efac" : r.chantierSource === "site" ? "#fde68a" : r.chantierSource === "manuel" ? "#a5b4fc" : "#fcd34d";
                 // Liste des chantiers pour selection manuelle : prefere ceux qui matchent le site
                 var sitePrefix = (r.siteNom || "").toUpperCase().trim();
-                var chCandidats = sitePrefix ? chantiers.filter(function(c) {
+                var chAnneeImp = chantiersAnneeCourante(chantiers, null);
+                var chCandidats = sitePrefix ? chAnneeImp.filter(function(c) {
                   var t = (c.titre || "").toUpperCase();
                   var s = (c.site || "").toUpperCase();
                   return t.indexOf(sitePrefix) >= 0 || s === sitePrefix || s.indexOf(sitePrefix) >= 0;
-                }) : chantiers;
-                if (chCandidats.length === 0) chCandidats = chantiers;
+                }) : chAnneeImp;
+                if (chCandidats.length === 0) chCandidats = chAnneeImp;
                 // Compte les autres lignes similaires (meme sondeuse+site, sans chantier)
                 var similarCount = rows.filter(function(other) { return other !== r && other.sondeuseCode === r.sondeuseCode && other.siteNom === r.siteNom && !other.chOk; }).length;
                 return h("tr", { key: i, style: { background: bg, borderBottom: "1px solid rgba(255,255,255,0.04)" } },
@@ -20831,7 +20843,7 @@
           h(FormField, { label: "Chantier lie (optionnel)" },
             h("select", { style: selectStyle, value: f.chantierId || "", onChange: (e) => upd("chantierId", e.target.value ? parseInt(e.target.value) : null) },
               h("option", { value: "" }, "-- Aucun --"),
-              (chantiers || []).map((c) => h("option", { key: c.id, value: c.id }, chantierOptionLabel(c))))),
+              chantiersAnneeCourante(chantiers, f.chantierId).map((c) => h("option", { key: c.id, value: c.id }, chantierOptionLabel(c))))),
           h(FormField, { label: "Intervention liee (optionnel)" },
             h("select", { style: selectStyle, value: f.interventionId || "", onChange: (e) => upd("interventionId", e.target.value || null) },
               h("option", { value: "" }, "-- Aucune --"),
@@ -23009,7 +23021,7 @@
           h("span", { style: lblStyle }, "Chantier"),
           h("select", { value: chantierF, onChange: function(e) { setChantierF(e.target.value); }, style: ddStyle },
             h("option", { value: "all" }, "Tous chantiers"),
-            (dbChantiers || []).map(function(c) { return h("option", { key: c.id, value: String(c.id) }, chantierOptionLabel(c)); })
+            chantiersAnneeCourante(dbChantiers, chantierF !== "all" ? chantierF : null).map(function(c) { return h("option", { key: c.id, value: String(c.id) }, chantierOptionLabel(c)); })
           ),
           h("span", { style: lblStyle }, "Sondeuse"),
           h("select", { value: sondeuseF, onChange: function(e) { setSondeuseF(e.target.value); }, style: ddStyle },
@@ -32566,7 +32578,7 @@
     // météo Open-Meteo, stats historiques + financier + personnel, recommandations.
     function EcranPrevisionnel({ initialChantierId }) {
       var ctx = useAppData();
-      var chantiersActifs = (ctx.dbChantiers || []).filter(function(c) { return c.statut !== "Termine"; });
+      var chantiersActifs = chantiersAnneeCourante((ctx.dbChantiers || []).filter(function(c) { return c.statut !== "Termine"; }), initialChantierId);
       var defaultId = initialChantierId || (chantiersActifs[0] && chantiersActifs[0].id) || null;
       var _sel = useState(defaultId); var selectedId = _sel[0]; var setSelectedId = _sel[1];
       var _meteo = useState(null); var meteo = _meteo[0]; var setMeteo = _meteo[1];
