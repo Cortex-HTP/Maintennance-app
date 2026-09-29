@@ -24064,12 +24064,14 @@
                 caChantiersMi = caChantiersRealMi; caActivitesMi = caActivitesRealMi; // pour info
                 monthDetail = { kind: "reel", reelIn: mvtReel.in, reelOut: mvtReel.out, reelInFin: mvtReel.inFin || 0, reelOutFin: mvtReel.outFin || 0, reelInterne: mvtReel.interne || 0, caTerrain: caChantiersRealMi + caActivitesRealMi };
               } else if (estCourant && mvtReel && (((mvtReel.in || 0) > 0) || ((mvtReel.out || 0) > 0))) {
-                // ── MOIS EN COURS = COMPTABILISE a date + PLANIFIE restant ──
+                // ── MOIS EN COURS = COMPTABILISE a date + PLANIFIE au PRORATA ──
                 // Comptabilise = mouvements bancaires 512 deja saisis ce mois-ci.
-                // Planifie restant = ce qu'il reste pour atteindre le previsionnel PLEIN du
-                // mois = max(0, projection pleine - deja comptabilise). Le mois ne descend
-                // donc jamais sous le previsionnel ; on affiche la part deja passee + le reste
-                // planifie. (Evite l'effondrement : encaissements clients a ~30j, compta partielle.)
+                // Planifie restant = projection pleine du mois x (jours restants /
+                // jours du mois). Avant : max(0, projection pleine - reel), donc le
+                // mois ne descendait JAMAIS sous le previsionnel meme le 29 - un
+                // mois reellement en dessous du plan restait affiche au plan
+                // (demande Tomy : la realite + ce qui peut encore se passer sur
+                // les jours restants, pas la totalite des depenses prevues).
                 var moisTravailEncC = mi2 - 1;
                 var caChProjC = moisTravailEncC >= 0 ? caTravailChParMois[moisTravailEncC] : 0;
                 var caAcProjC = moisTravailEncC >= 0 ? caTravailAcParMois[moisTravailEncC] : 0;
@@ -24077,10 +24079,12 @@
                 var decaissTheoriqueC = salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mi2) + factFrsMi;
                 var decProjMoisC = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheoriqueC) : decaissTheoriqueC;
                 var reelInC = mvtReel.in || 0, reelOutC = mvtReel.out || 0;
-                var encPlanifResteC = Math.max(0, encProjMoisC - reelInC);
-                var decPlanifResteC = Math.max(0, decProjMoisC - reelOutC);
-                encaiss = reelInC + encPlanifResteC;   // = max(reelInC, encProjMoisC)
-                decaiss = reelOutC + decPlanifResteC;  // = max(reelOutC, decProjMoisC)
+                var joursMoisC = dMEnd.getDate();
+                var fracRestanteC = Math.max(0, (joursMoisC - Math.min(now2.getDate(), joursMoisC)) / joursMoisC);
+                var encPlanifResteC = Math.round(encProjMoisC * fracRestanteC);
+                var decPlanifResteC = Math.round(decProjMoisC * fracRestanteC);
+                encaiss = reelInC + encPlanifResteC;
+                decaiss = reelOutC + decPlanifResteC;
                 source = "reel_partiel";
                 caChantiersMi = caChProjC; caActivitesMi = caAcProjC;
                 monthDetail = {
@@ -24658,7 +24662,7 @@
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.reelIn))
                                 ),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#a5b4fc" } },
-                                  h("span", null, "+ Planifie restant (previsionnel)"),
+                                  h("span", null, "+ Planifie restant (prorata des jours restants)"),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.encPlanifReste))
                                 ),
                                 h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginTop: 2 } }, "Previsionnel plein du mois : " + fmtCaTr(det.encProjMois)),
@@ -24708,7 +24712,7 @@
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.reelOut))
                                 ),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#a5b4fc" } },
-                                  h("span", null, "+ Planifie restant (previsionnel)"),
+                                  h("span", null, "+ Planifie restant (prorata des jours restants)"),
                                   h("span", { style: { fontFamily: "monospace" } }, "-" + fmtCaTr(det.decPlanifReste))
                                 ),
                                 h("div", { style: { fontSize: 10.5, fontStyle: "italic", opacity: 0.6, marginTop: 2 } }, "Previsionnel plein du mois : -" + fmtCaTr(det.decProjMois)),
