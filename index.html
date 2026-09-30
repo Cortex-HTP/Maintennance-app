@@ -9472,6 +9472,10 @@
       // [{ ch: pseudo-chantier avec _simu/_simFam/_simMachines }]
       var _simAjouts = useState([]);
       var simAjouts = _simAjouts[0]; var setSimAjouts = _simAjouts[1];
+      // Affectations SIMULEES (chantier existant POSE sur une machine dans
+      // l'onglet Optimisation) : [{ id, chId, eqId, dateDebut, dateFin }]
+      var _simAffs = useState([]);
+      var simAffs = _simAffs[0]; var setSimAffs = _simAffs[1];
       var _ajoutForm = useState(null);
       var ajoutForm = _ajoutForm[0]; var setAjoutForm = _ajoutForm[1];
       var ctx = useAppData();
@@ -10480,11 +10484,19 @@
         // + les chantiers AJOUTES a la simulation (hypothetiques)
         simAjouts.forEach(function(sa) { chListOpt.push(sa.ch); });
 
+        // Affectations = REELLES (Planning engins) + SIMULEES (posees dans
+        // cet onglet par glisser-deposer) : les simulees comptent aussi dans
+        // le besoin machines et la famille du chantier
+        var cesSimulesOpt = simAffs.map(function(sa) {
+          return { id: sa.id, chantierId: sa.chId, equipementId: sa.eqId, dateDebut: sa.dateDebut, dateFin: sa.dateFin, _simAff: true };
+        });
+        var cesTousOpt = (ctx.dbChantierEquipements || []).concat(cesSimulesOpt);
+
         // Besoin machines d'un chantier = pic d'engins affectes en simultane
-        // (Planning engins) ; sans planning machines : 1 (meme convention que
-        // le previsionnel de la fiche chantier).
+        // (Planning engins + simulation) ; sans planning machines : 1 (meme
+        // convention que le previsionnel de la fiche chantier).
         function machinesRequisesChantier(chId) {
-          var listM = (ctx.dbChantierEquipements || []).filter(function(ceM) {
+          var listM = cesTousOpt.filter(function(ceM) {
             return ceM && String(ceM.chantierId) === String(chId) && enginActifSet[String(ceM.equipementId)] && ceM.dateDebut && ceM.dateFin;
           });
           if (listM.length === 0) return 1;
@@ -10613,10 +10625,10 @@
         function poolChantier(chO) {
           // 0) Chantier ajoute a la simulation : famille choisie dans la fenetre
           if (chO._simFam) return chO._simFam;
-          // 1) Machines AFFECTEES (Planning engins) : une machine speciale
-          //    affectee classe le chantier dans sa famille
+          // 1) Machines AFFECTEES (Planning engins + simulation) : une
+          //    machine speciale affectee classe le chantier dans sa famille
           var famsC = {};
-          (ctx.dbChantierEquipements || []).forEach(function(ceF) {
+          cesTousOpt.forEach(function(ceF) {
             if (!ceF || String(ceF.chantierId) !== String(chO.id)) return;
             var eqC = eqParIdOpt[String(ceF.equipementId)];
             if (eqC) famsC[familleEngin(eqC)] = 1;
@@ -10760,6 +10772,7 @@
         }
         function retirerAjoutSim(idSim) {
           setSimAjouts(simAjouts.filter(function(sa) { return sa.ch.id !== idSim; }));
+          setSimAffs(simAffs.filter(function(sa) { return String(sa.chId) !== String(idSim); }));
           setSimDec(function(prev) { var n = {}; Object.keys(prev).forEach(function(k) { if (k !== String(idSim)) n[k] = prev[k]; }); return n; });
           setSimMsg("Chantier retire de la simulation.");
         }
@@ -10790,7 +10803,7 @@
         // chantier (connexion dans les deux sens, comme la demo validee)
         var NOMS_FAM = { standard: "aircore", heliporte: "heliportee", carotte: "carotteuse" };
         var affsSim = [];
-        (ctx.dbChantierEquipements || []).forEach(function(ceS) {
+        cesTousOpt.forEach(function(ceS) {
           if (!ceS || !ceS.dateDebut || !ceS.dateFin) return;
           var pProp = null;
           for (var iPr = 0; iPr < propsOpt.length; iPr++) { if (String(propsOpt[iPr].ch.id) === String(ceS.chantierId)) { pProp = propsOpt[iPr]; break; } }
@@ -10803,7 +10816,7 @@
           var decJ = simDec[pProp.ch.id] || 0;
           if (finA + decJ < 0 || debA + decJ > nbJoursOpt - 1) return;
           var eqSimId = simSwap[ceS.id] != null ? simSwap[ceS.id] : ceS.equipementId;
-          affsSim.push({ ce: ceS, p: pProp, deb: debA, fin: finA, decJ: decJ, eqId: String(eqSimId), eqOrigId: String(ceS.equipementId) });
+          affsSim.push({ ce: ceS, p: pProp, deb: debA, fin: finA, decJ: decJ, eqId: String(eqSimId), eqOrigId: String(ceS.equipementId), simAff: !!ceS._simAff });
         });
         var ordreFamL = { carotte: 0, heliporte: 1, standard: 2 };
         var lanesEq = equipements.filter(function(eqL) { return enginActifSet[String(eqL.Id)]; }).sort(function(a, b) {
@@ -10862,6 +10875,39 @@
             ? "Echange : " + aff.p.ch.titre + " passe sur " + eqDst.Title + ", " + concurrents.map(function(b) { return b.p.ch.titre; }).join(" + ") + " passe sur " + eqSrc.Title + "."
             : aff.p.ch.titre + " passe de " + eqSrc.Title + " a " + eqDst.Title + ".");
         }
+        // Deposer un CHANTIER existant (barre du Gantt du haut) sur une ligne
+        // machine : cree une affectation SIMULEE aux dates du chantier (une
+        // par periode de travail). Meme famille obligatoire.
+        function deposerChantierSurMachine(ev, pP) {
+          var lanes = document.querySelectorAll("[data-sim-lane]");
+          var cibleId = null;
+          for (var iL = 0; iL < lanes.length; iL++) {
+            var rL = lanes[iL].getBoundingClientRect();
+            if (ev.clientY >= rL.top && ev.clientY <= rL.bottom) { cibleId = lanes[iL].getAttribute("data-sim-lane"); break; }
+          }
+          if (cibleId == null) return;
+          var eqDst = eqParIdOpt[String(cibleId)];
+          if (!eqDst) return;
+          if (familleEngin(eqDst) !== pP.pool) {
+            setSimMsg("Refus : " + eqDst.Title + " est une machine " + NOMS_FAM[familleEngin(eqDst)] + ", le chantier " + pP.ch.titre + " est " + NOMS_FAM[pP.pool] + ".");
+            return;
+          }
+          function isoJour(j) {
+            var dI = new Date(y0Opt.getTime() + j * 86400000);
+            return dI.getFullYear() + "-" + String(dI.getMonth() + 1).padStart(2, "0") + "-" + String(dI.getDate()).padStart(2, "0");
+          }
+          var baseId = Date.now();
+          var nouv = pP.segs.map(function(sg, iSg) {
+            return { id: "sa-" + baseId + "-" + iSg, chId: pP.ch.id, eqId: eqDst.Id, dateDebut: isoJour(sg.deb), dateFin: isoJour(sg.fin) };
+          });
+          setSimAffs(simAffs.concat(nouv));
+          setSimMsg(pP.ch.titre + " pose sur " + eqDst.Title + " (simulation) - clic droit sur la barre pour retirer.");
+        }
+        function retirerSimAff(idSa) {
+          setSimAffs(simAffs.filter(function(sa) { return sa.id !== idSa; }));
+          setSimSwap(function(prev) { var n = {}; Object.keys(prev).forEach(function(k) { if (k !== String(idSa)) n[k] = prev[k]; }); return n; });
+          setSimMsg("Affectation simulee retiree.");
+        }
         function demarrerDragSim(e, pP, affSim) {
           if (e.button !== 0) return;
           e.preventDefault(); e.stopPropagation();
@@ -10897,7 +10943,10 @@
           }
           function surUp(ev) {
             detacher();
-            if (affSim && axe === "v") finDropMachine(ev, affSim);
+            if (axe === "v") {
+              if (affSim) finDropMachine(ev, affSim);
+              else deposerChantierSurMachine(ev, pP);
+            }
           }
           function surBlur() { detacher(); }
           document.addEventListener("mousemove", surMove);
@@ -10990,7 +11039,7 @@
                 var lP = pctOpt(sg.deb + decR), wP = Math.max(pctOpt(sg.fin + 1 + decR) - lP, 0.8);
                 return h("div", { key: "sg" + iS,
                   onMouseDown: function(e) { demarrerDragSim(e, pR); },
-                  title: pR.mobile ? "Glisser pour decaler (aimante a la semaine)" : "Commence avant le 1er janvier : non decalable",
+                  title: pR.mobile ? "Glisser horizontalement pour decaler (aimante a la semaine) - glisser VERS LE BAS sur une ligne machine pour lui donner cette machine (simulation)" : "Commence avant le 1er janvier : non decalable - glisser vers une ligne machine pour lui donner une machine (simulation)",
                   style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap", cursor: pR.mobile ? "grab" : "default", userSelect: "none" } }, iS === 0 ? (pR.machines + " mach.") : null);
               });
               var anDebR = parseDate(pR.ch.dateDebut).getFullYear();
@@ -11028,7 +11077,7 @@
           h("div", { style: cardOptStyle },
             h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 6 } }, "Affectations machines — connectees au planning"),
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10 } },
-              "Une ligne par machine, une barre par affectation (Planning engins). Glisser HORIZONTALEMENT decale le chantier entier (les barres du haut suivent). Glisser VERTICALEMENT sur une autre ligne change de machine - si la cible est prise sur la periode, les deux machines sont echangees ; meme famille uniquement. Deux barres de la meme machine qui se chevauchent = liseret rouge."),
+              "Une ligne par machine, une barre par affectation (Planning engins). POUR DONNER UNE MACHINE A UN CHANTIER : glisse sa barre depuis le Gantt du haut jusqu'a la ligne machine voulue - une affectation [SIM] se cree a ses dates (clic droit pour la retirer). Glisser une barre HORIZONTALEMENT decale le chantier entier ; VERTICALEMENT sur une autre ligne = changer de machine (echange si la cible est prise ; meme famille uniquement). Deux barres de la meme machine qui se chevauchent = liseret rouge."),
             simMsg ? h("div", { style: { fontSize: 11.5, color: "#fde68a", fontWeight: 600, marginBottom: 10 } }, simMsg) : null,
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             affsSim.length === 0
@@ -11058,10 +11107,11 @@
                           morceaux.push(h("div", { key: "gh" + a.ce.id, style: { position: "absolute", left: pctOpt(a.deb) + "%", width: Math.max(pctOpt(a.fin + 1) - pctOpt(a.deb), 0.8) + "%", top: 3, bottom: 3, borderRadius: 5, border: "1.5px dashed rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)", pointerEvents: "none" } }));
                         }
                         var lA = pctOpt(a.deb + a.decJ), wA = Math.max(pctOpt(a.fin + 1 + a.decJ) - lA, 0.8);
-                        var libA = a.p.ch.titre + (a.eqId !== a.eqOrigId ? " [ex " + ((eqParIdOpt[a.eqOrigId] || {}).Title || "?") + "]" : "") + (a.decJ !== 0 ? " (" + (a.decJ > 0 ? "+" : "") + (a.decJ / 7) + " sem)" : "");
+                        var libA = a.p.ch.titre + (a.simAff ? " [SIM]" : "") + (a.eqId !== a.eqOrigId ? " [ex " + ((eqParIdOpt[a.eqOrigId] || {}).Title || "?") + "]" : "") + (a.decJ !== 0 ? " (" + (a.decJ > 0 ? "+" : "") + (a.decJ / 7) + " sem)" : "");
                         morceaux.push(h("div", { key: "aff" + a.ce.id,
                           onMouseDown: function(e) { demarrerDragSim(e, a.p, a); },
-                          title: libA + " - glisser : horizontal = decaler le chantier, vertical = changer de machine",
+                          onContextMenu: a.simAff ? function(e) { e.preventDefault(); retirerSimAff(a.ce.id); } : undefined,
+                          title: libA + " - glisser : horizontal = decaler le chantier, vertical = changer de machine" + (a.simAff ? " - clic droit : retirer (simulation)" : ""),
                           style: { position: "absolute", left: lA + "%", width: wA + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colL.start + ", " + colL.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap", cursor: "grab", userSelect: "none", outline: enConflit[iA] ? "2px solid #f43f5e" : "none", outlineOffset: 1, zIndex: 2 } }, libA));
                         return h(React.Fragment, { key: "frag" + a.ce.id }, morceaux);
                       })
