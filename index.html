@@ -12936,7 +12936,6 @@
       st.textContent = [
         "@keyframes meteoRainStreak{from{transform:translate3d(0,-12vh,0) rotate(12deg);opacity:0}8%{opacity:.75}92%{opacity:.75}to{transform:translate3d(-12vh,110vh,0) rotate(12deg);opacity:0}}",
         "@keyframes meteoCloudDrift{from{transform:translateX(-40vw)}to{transform:translateX(140vw)}}",
-        "@keyframes meteoLightning{0%,84%,100%{opacity:0;background:#fff}85%{opacity:.65;background:#fff}86%{opacity:0;background:#fff}87%{opacity:.45;background:#dde9ff}88%{opacity:0;background:#fff}}",
         "@keyframes meteoSunPulse{0%,100%{opacity:.7;transform:scale(1)}50%{opacity:.9;transform:scale(1.06)}}",
         ".meteo-bg{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;opacity:.5;mask-image:linear-gradient(180deg,#000 0%,#000 70%,transparent 100%);-webkit-mask-image:linear-gradient(180deg,#000 0%,#000 70%,transparent 100%)}",
         ".meteo-sky{position:absolute;inset:0;transition:background 2s ease}",
@@ -12944,7 +12943,6 @@
         ".meteo-drop-heavy{width:1.2px;height:60px;background:linear-gradient(180deg,transparent 0%,rgba(165,180,252,.44) 55%,rgba(199,210,254,.60) 100%)}",
         ".meteo-drop-back{opacity:.40;height:26px;width:.8px;animation-duration:2s !important;filter:blur(.5px)}",
         ".meteo-cloud{position:absolute;pointer-events:none;border-radius:50%;animation:meteoCloudDrift linear infinite;will-change:transform;filter:blur(28px)}",
-        ".meteo-flash{position:absolute;inset:0;background:#fff;animation:meteoLightning 8s infinite;mix-blend-mode:screen;opacity:0}",
         ".meteo-sun-glow{position:absolute;top:8%;right:13%;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,rgba(251,191,36,.22) 0%,rgba(252,211,77,.10) 35%,transparent 70%);animation:meteoSunPulse 7s ease-in-out infinite;filter:blur(6px)}",
         ".meteo-sun-rays{position:absolute;top:8%;right:13%;width:520px;height:520px;background:conic-gradient(from 0deg,rgba(251,191,36,.06),transparent 22deg,rgba(251,191,36,.06) 45deg,transparent 67deg,rgba(251,191,36,.06) 90deg,transparent 112deg,rgba(251,191,36,.06) 135deg,transparent 157deg,rgba(251,191,36,.06) 180deg,transparent 202deg,rgba(251,191,36,.06) 225deg,transparent 247deg,rgba(251,191,36,.06) 270deg,transparent 292deg,rgba(251,191,36,.06) 315deg,transparent 337deg,rgba(251,191,36,.06));mask:radial-gradient(circle,#000 0%,#000 22%,transparent 65%);-webkit-mask:radial-gradient(circle,#000 0%,#000 22%,transparent 65%);animation:meteoCloudDrift 110s linear infinite reverse;filter:blur(3px)}"
       ].join("");
@@ -13038,8 +13036,10 @@
         clouds,
         dropsBack,
         dropsFront,
-        fog,
-        isStorm ? h("div", { className: "meteo-flash" }) : null
+        fog
+        // Flash d'eclair retire a la demande de Tomy (2026-10-01) : le plein
+        // ecran blanc periodique etait desagreable. L'orage garde sa pluie
+        // dense et ses nuages sombres.
       );
     }
 
@@ -20104,12 +20104,18 @@
       var activeChantiers = chantiers.filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; });
 
       // Auto-creation des paliers manquants pour les sites de chantiers (1 fois)
+      // GARDE-FOU (incident 2026-10-01, grilles TIEBAGHI/KOPETO polluees) :
+      // ne JAMAIS auto-creer tant que la table paliers semble VIDE - c'est le
+      // symptome d'un chargement pas termine ou en echec, pas d'une base
+      // neuve. Sinon le gabarit par defaut (240/320/400/480) s'insere
+      // par-dessus les vraies grilles de tous les sites.
       useEffect(function() {
+        if ((ctx.dbPaliers || []).length === 0) return;
         if (sitesFromChantiers.length === 0) return;
         sitesFromChantiers.forEach(function(siteName) {
-          ensureSiteExists(siteName, paliers, ctx.setDbPaliers, null);
+          ensureSiteExists(siteName, ctx.dbPaliers, ctx.setDbPaliers, null);
         });
-      }, [sitesFromChantiers.join("|")]);
+      }, [sitesFromChantiers.join("|"), (ctx.dbPaliers || []).length === 0]);
 
       // Group chantiers by site
       var chantiersBySite = {};
