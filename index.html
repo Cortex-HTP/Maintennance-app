@@ -635,12 +635,11 @@
     function equipementFromDb(r) {
       var extra = {};
       try { if (r.notes) extra = JSON.parse(r.notes); } catch(e) { extra = { _text: r.notes }; }
-      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienGamme: String(extra.dernierEntretienGamme ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), ProchainControleTechnique: extra.prochainControleTechnique || "", Notes: extra._text || "" };
+      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), ProchainControleTechnique: extra.prochainControleTechnique || "", Notes: extra._text || "" };
     }
     function equipementToDb(e) {
       var notesObj = {};
       if (e.DernierEntretienH) notesObj.dernierEntretienH = parseFloat(e.DernierEntretienH) || 0;
-      if (e.DernierEntretienGamme && parseFloat(e.DernierEntretienGamme) > 0) notesObj.dernierEntretienGamme = parseFloat(e.DernierEntretienGamme);
       if (e.DernierEntretienKM) notesObj.dernierEntretienKM = parseFloat(e.DernierEntretienKM) || 0;
       if (e.ProchainControleTechnique) notesObj.prochainControleTechnique = String(e.ProchainControleTechnique).substring(0, 10);
       if (e.Notes) notesObj._text = e.Notes;
@@ -1944,42 +1943,36 @@
     // de cycles de visite ont ete atteints par l'horametre actuel, et on
     // soustrait le nombre d'interventions preventives deja faites.
     // Calcule le prochain seuil de maintenance pour un plan donne
-    // Base d'echeance d'un plan quand la GAMME du dernier entretien est connue
-    // (fiche equipement, champ « Gamme effectuee ») : la gamme declaree et
-    // toutes les plus petites sont reputees faites a baseH ; les gammes PLUS
-    // GROSSES sont supposees faites au dernier multiple rond de leur frequence
-    // avant baseH (ex. vidange 250H a 2250 : la 500H precedente est supposee a
-    // 2000, donc la prochaine tombe a 2500 et absorbe la 250H). Sans gamme
-    // declaree : comportement historique (baseH pour toutes les gammes).
-    function baseEntretienPlan(baseH, gammeH, freqVal) {
-      var b = parseFloat(baseH) || 0;
-      var g = parseFloat(gammeH) || 0;
-      if (b <= 0 || g <= 0 || !(freqVal > 0)) return b;
-      if (freqVal <= g) return b;
-      return Math.floor(b / freqVal) * freqVal;
-    }
-
-    // Prochain seuil = prochain multiple de freqVal apres le dernier entretien connu
-    // isDue = vrai si le compteur a DEPASSE le seuil (strictement)
-    // atThreshold = vrai si le compteur est exactement au seuil
-    function computeNextDue(freqVal, freqType, currentVal, baseVal, planInterventions) {
-      if (planInterventions.length > 0) {
-        var cyclesBase = Math.floor(baseVal / freqVal);
-        var maxCompleted = planInterventions.reduce(function(a, i) { return Math.max(a, parseInt(i.CycleNumber || 0)); }, cyclesBase);
-        var nextDue = (maxCompleted + 1) * freqVal;
+    // ── Echeances aux MULTIPLES RONDS du compteur (modele valide par Tomy,
+    // 2026-09-30) : chaque gamme tombe sur les multiples de SA frequence
+    // (250H -> 2500, 2750... ; 500H -> 2500, 3000... ; 1000H -> 3000). Une
+    // visite Terminee a une valeur V (horametre/km de l'intervention) valide
+    // le jalon rond <= V pour TOUTES les gammes, quel que soit son libelle :
+    // la visite faite a 2500 vaut le jalon 2500 de la 250H ET de la 500H.
+    // Le « Dernier entretien H/KM » de la fiche valide pareil. Quand deux
+    // gammes tombent au meme jalon, la plus grosse absorbe (hierarchie en
+    // aval). isDue reste vrai tant que le jalon depasse n'est pas valide
+    // (jamais de saut silencieux au seuil suivant - cf. 431 442 NC a
+    // 155 555 km, base 140 000, plan 10 000 : le 150 000 depasse reste DU).
+    // planInterventions = interventions Terminees de l'EQUIPEMENT (tous plans
+    // confondus) ; planTitle = plan courant (fallback CycleNumber, qui est
+    // exprime en cycles de CE plan, donc reserve a ses propres interventions).
+    function computeNextDue(freqVal, freqType, currentVal, baseVal, planInterventions, planTitle) {
+      var valide = -1;
+      var b = parseFloat(baseVal) || 0;
+      if (b > 0) valide = Math.floor(b / freqVal) * freqVal;
+      (planInterventions || []).forEach(function(i) {
+        var v = parseFloat(freqType === "h" ? i.Horametre : i.KM) || 0;
+        if (!(v > 0) && i.CycleNumber != null && planTitle && (i.Plan || "").toLowerCase() === String(planTitle).toLowerCase()) {
+          v = (parseInt(i.CycleNumber) || 0) * freqVal;
+        }
+        if (!(v > 0)) return;
+        var jalon = Math.floor(v / freqVal) * freqVal;
+        if (jalon > valide) valide = jalon;
+      });
+      if (valide >= 0) {
+        var nextDue = valide + freqVal;
         return { nextDue: nextDue, isDue: currentVal > nextDue, atThreshold: currentVal === nextDue };
-      }
-      if (baseVal > 0) {
-        // Prochain seuil = base + freq : le premier entretien COMPLET apres le
-        // dernier fait. S'il est DEPASSE, la visite reste DUE tant qu'elle n'est
-        // pas faite. (L'ancien calcul en ceil() arrondissait toujours au-dessus
-        // du compteur actuel : des qu'un seuil etait franchi sans entretien,
-        // l'alerte sautait silencieusement au seuil suivant et une visite en
-        // retard ne se declenchait JAMAIS — ex. 431 442 NC a 155 555 km avec
-        // entretien base 140 000 et plan 10 000 km : le seuil 150 000 depasse
-        // etait ignore, prochain affiche 160 000.)
-        var nextDue2 = baseVal + freqVal;
-        return { nextDue: nextDue2, isDue: currentVal > nextDue2, atThreshold: currentVal === nextDue2 };
       }
       // Aucun historique : considerer tout comme fait
       var cyclesAtteints = Math.floor(currentVal / freqVal);
@@ -2008,14 +2001,16 @@
         else return;
         if (freqVal === 0) return;
         var currentVal = freqType === "h" ? horam : km;
-        var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
+        var baseVal = freqType === "h" ? baseH : baseKM;
+        // Multiples ronds : TOUTE intervention preventive Terminee de
+        // l'equipement (quel que soit son plan) valide les jalons <= sa valeur
         var planInts = interventions.filter((i) =>
           i.Type === "Preventive" &&
           (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
-          (i.Plan || "").toLowerCase() === p.Title.toLowerCase() &&
+          (i.Plan || "") !== "" &&
           (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine")
         );
-        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts, p.Title);
         var seuil = parseInt(p.SeuilAlerte || 50);
         var reste = result.nextDue - currentVal;
         if (result.isDue || result.atThreshold || (reste > 0 && reste <= seuil)) {
@@ -2064,11 +2059,11 @@
         else return;
         if (freqVal === 0) return;
         var currentVal = freqType === "h" ? horam : km;
-        var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
+        var baseVal = freqType === "h" ? baseH : baseKM;
         var planInts = interventions.filter(function(i) {
-          return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
+          return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "") !== "" && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
         });
-        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+        var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts, p.Title);
         // Si deja du, pas d'alerte anticipee (c'est gere par computeVisitesADeclencher)
         if (result.isDue || result.atThreshold) return;
         var seuilDecl = parseInt(p.SeuilAlerte || 50);
@@ -2766,11 +2761,11 @@
           else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
           if (freqVal === 0) return;
           var currentVal = freqType === "h" ? horam : km;
-          var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
+          var baseVal = freqType === "h" ? baseH : baseKM;
           var planInts = interventions.filter(function(i) {
-            return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
+            return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "") !== "" && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
           });
-          var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+          var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts, p.Title);
           var seuil = parseInt(p.SeuilAlerte || 50);
           var reste = result.nextDue - currentVal;
           if (result.isDue) {
@@ -3704,23 +3699,8 @@
 
     // ─── Formulaire Equipement ──────────────────────────────────────────
     function EquipementForm({ onSave, onCancel, editItem }) {
-      const { isAdmin, plans } = useAppData();
-      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienGamme: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate(), Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
-      // Gammes H disponibles (frequences horametre des plans) pour le champ
-      // « Gamme du dernier entretien » ; fallback 250/500/1000 sans plans
-      const gammesH = (function() {
-        var setG = {};
-        (plans || []).forEach(function(p) {
-          if (p.Statut === "Suspendu") return;
-          var fr = String(p.Frequence || "");
-          var mH = fr.match(/horametre\s*(\d+)/i) || fr.match(/^(\d+)\s*h/i);
-          if (mH && parseInt(mH[1]) > 0) setG[parseInt(mH[1])] = true;
-        });
-        var arr = Object.keys(setG).map(function(x) { return parseInt(x, 10); });
-        if (arr.length === 0) arr = [250, 500, 1000];
-        arr.sort(function(a, b) { return a - b; });
-        return arr;
-      }());
+      const { isAdmin } = useAppData();
+      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate(), Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
       const [saving, setSaving] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // On ne peut modifier l'horametre/KM manuellement que si admin et en mode edition.
@@ -3748,10 +3728,7 @@
             h("option", { value: "" }, "--"), localisations.map((x) => h("option", { key: x, value: x }, x)))),
           h(FormField, { label: "Horametre (h)" + (horametreEditable ? "" : " (admin)") }, h("input", { type: "number", style: horametreEditable ? inputStyle : lockedInput, value: f.Horametre, onChange: (e) => upd("Horametre", e.target.value), readOnly: !horametreEditable, title: horametreEditable ? "" : "Reserve a l'admin. Utilisez un releve pour mettre a jour." })),
           h(FormField, { label: "Kilometrage (km)" + (horametreEditable ? "" : " (admin)") }, h("input", { type: "number", style: horametreEditable ? inputStyle : lockedInput, value: f.KM, onChange: (e) => upd("KM", e.target.value), readOnly: !horametreEditable, title: horametreEditable ? "" : "Reserve a l'admin. Utilisez un releve pour mettre a jour." })),
-          h(FormField, { label: "Dernier entretien H (h)" }, h("input", { type: "number", style: inputStyle, value: f.DernierEntretienH, onChange: (e) => upd("DernierEntretienH", e.target.value), placeholder: "Ex: 4800", title: "Horametre du dernier entretien connu avant l'application" })),
-          h(FormField, { label: "Gamme du dernier entretien" }, h("select", { style: selectStyle, value: f.DernierEntretienGamme || "", onChange: (e) => upd("DernierEntretienGamme", e.target.value), title: "Quelle visite a ete faite a cet horametre ? Les visites plus grosses sont supposees faites au dernier multiple rond avant (ex. vidange 250H a 2250 : la prochaine 500H tombe a 2500 et absorbe la 250H). Laisser sur Je ne sais pas = comportement actuel." },
-            h("option", { value: "" }, "Je ne sais pas"),
-            gammesH.map((g) => h("option", { key: g, value: String(g) }, (g === gammesH[0] ? "Vidange " : "Visite ") + g + "H")))),
+          h(FormField, { label: "Dernier entretien H (h)" }, h("input", { type: "number", style: inputStyle, value: f.DernierEntretienH, onChange: (e) => upd("DernierEntretienH", e.target.value), placeholder: "Ex: 4800", title: "Horametre du dernier entretien connu avant l'application. Les echeances tombent sur les multiples RONDS de chaque gamme (ex. 2250 : prochaine 250H a 2500, qui est aussi le jalon 500H)." })),
           h(FormField, { label: "Dernier entretien KM" }, h("input", { type: "number", style: inputStyle, value: f.DernierEntretienKM, onChange: (e) => upd("DernierEntretienKM", e.target.value), placeholder: "Ex: 45000", title: "Kilometrage du dernier entretien connu avant l'application" })),
           h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.Statut, onChange: (e) => upd("Statut", e.target.value) },
             ["En service", "En panne", "En maintenance", "Reforme"].map((x) => h("option", { key: x, value: x }, x)))),
@@ -4010,7 +3987,7 @@
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, "Informations generales"),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
-              [["Code", eq.Title], ["Categorie", eq.Categorie || "Engin"], ["Type", eq.Type], ["Marque", eq.Marque || "\u2014"], ["Modele", eq.Modele || "\u2014"], ["Numero de serie", eq.NumeroSerie || "\u2014"], ["Annee", eq.Annee || "\u2014"], ["Localisation", eq.Localisation || "\u2014"], ["Horametre", fmtNum(hmActuel) + " h"], ["KM", fmtNum(kmActuel) + " km"], ["Dernier entretien H", eq.DernierEntretienH ? fmtNum(eq.DernierEntretienH) + " h" + (parseFloat(eq.DernierEntretienGamme) > 0 ? " (gamme " + parseFloat(eq.DernierEntretienGamme) + "H)" : "") : "\u2014"], ["Dernier entretien KM", eq.DernierEntretienKM ? fmtNum(eq.DernierEntretienKM) + " km" : "\u2014"], ["Mise en service", eq.DateMiseEnService || "\u2014"]].map(([label, val]) =>
+              [["Code", eq.Title], ["Categorie", eq.Categorie || "Engin"], ["Type", eq.Type], ["Marque", eq.Marque || "\u2014"], ["Modele", eq.Modele || "\u2014"], ["Numero de serie", eq.NumeroSerie || "\u2014"], ["Annee", eq.Annee || "\u2014"], ["Localisation", eq.Localisation || "\u2014"], ["Horametre", fmtNum(hmActuel) + " h"], ["KM", fmtNum(kmActuel) + " km"], ["Dernier entretien H", eq.DernierEntretienH ? fmtNum(eq.DernierEntretienH) + " h" : "\u2014"], ["Dernier entretien KM", eq.DernierEntretienKM ? fmtNum(eq.DernierEntretienKM) + " km" : "\u2014"], ["Mise en service", eq.DateMiseEnService || "\u2014"]].map(([label, val]) =>
                 h("div", { key: label },
                   h("div", { style: { fontSize: 11, color: "#71717a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" } }, label),
                   h("div", { style: { fontSize: 15, fontWeight: 600, color: "#fafafa", marginTop: 2 } }, val)))),
@@ -10284,14 +10261,14 @@
           else return;
           if (freqVal === 0) return;
           var currentVal = freqType === "h" ? horam : km;
-          var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
+          var baseVal = freqType === "h" ? baseH : baseKM;
           var planInts = interventionsData.filter(function(i) {
             return i.Type === "Preventive" &&
               (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
-              (i.Plan || "").toLowerCase() === p.Title.toLowerCase() &&
+              (i.Plan || "") !== "" &&
               (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
           });
-          var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts);
+          var result = computeNextDue(freqVal, freqType, currentVal, baseVal, planInts, p.Title);
           var seuilAlerte = parseInt(p.SeuilAlerte || 50);
           var reste = result.nextDue - currentVal;
           var inSeuil = reste > 0 && reste <= seuilAlerte;
@@ -36832,7 +36809,7 @@
               if (freqNum === 0) return;
 
               var currentVal = typeCycle === "h" ? horam : km;
-              var baseVal = typeCycle === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqNum) : baseKM;
+              var baseVal = typeCycle === "h" ? baseH : baseKM;
 
               const myInts = interventions.filter((i) =>
                 i.Type === "Preventive" &&
@@ -36844,12 +36821,20 @@
               // ET qu'on les exclut de pending, l'auto-gen croit qu'un cycle est valide et
               // cree une nouvelle [Auto] au cycle suivant, alors que l'ancienne reste en DB
               // (statut En cours). -> doublons. Le filtre auto-gen doit rester strict.
-              var terminatedInts = myInts.filter((i) => i.Statut_Intervention === "Termine");
+              // Multiples ronds : les Terminees de TOUS les plans de l'equipement
+              // valident les jalons (une visite a 2500 vaut 250H ET 500H) ;
+              // le pending, lui, reste PAR plan (gestion des doublons [Auto]).
+              var terminatedInts = interventions.filter((i) =>
+                i.Type === "Preventive" &&
+                (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
+                (i.Plan || "") !== "" &&
+                i.Statut_Intervention === "Termine"
+              );
               const pending = myInts.filter((i) =>
                 i.Statut_Intervention !== "Termine" && (/^\[auto\]/i.test(i.Title || "") || i.CycleNumber != null)
               );
 
-              var result = computeNextDue(freqNum, typeCycle, currentVal, baseVal, terminatedInts);
+              var result = computeNextDue(freqNum, typeCycle, currentVal, baseVal, terminatedInts, p.Title);
               var seuilDecl = parseInt(p.SeuilAlerte || 50);
               var reste = result.nextDue - currentVal;
               var isDue = result.isDue || result.atThreshold;
