@@ -30255,7 +30255,7 @@
         return out.slice(0, 3);
       };
       // force=true : renvoi EXPLICITE d'une periode DEJA VALIDEE par le client
-      // (apres le double avertissement) — le serveur annule alors la validation,
+      // (apres l'avertissement detaille) — le serveur annule alors la validation,
       // la signature et l'imputation existantes avant de renvoyer un nouveau lien.
       var envoyerValidation = function(chantierId, mois, perDebut, force) {
         var key = chantierId + "|" + perDebut;
@@ -30516,9 +30516,11 @@
             else pill = h("span", { style: pillStyle("rgba(251,191,36,0.12)", "rgba(251,191,36,0.40)", "#fde68a"), title: "Le cron a prepare le releve et le rafraichit chaque jour avec les rapports en retard. Verifie les metrages puis clique Envoyer au client - rien ne part tout seul." }, "A envoyer - verifie les metrages");
             var sending = sendingValId === (c.id + "|" + per.debut);
             var peutEnvoyer = (statut === "brouillon" || statut === "refuse" || statut === "envoye") && !enCours;
-            // Renvoi possible meme APRES validation client (jamais apres facturation) :
-            // action volontaire avec double avertissement, la validation est annulee.
-            var renvoiApresValide = statut === "valide" && !enCours;
+            // Renvoi possible meme APRES validation client (jamais apres facturation,
+            // ni si une facture est deja partie cote Cortex alors que le statut est
+            // reste 'valide') : action volontaire avec avertissement detaille, la
+            // validation est annulee cote serveur.
+            var renvoiApresValide = statut === "valide" && !enCours && !(v && v.facture_envoyee_at);
             return h("div", { key: "vc-" + c.id, style: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px", marginBottom: 8, background: "rgba(0,0,0,0.20)" } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
                 h("strong", { style: { fontSize: 13.5, color: "#e5e7eb" } }, c.titre, chantierClientBadge(c)),
@@ -30587,7 +30589,7 @@
                 return h("div", { style: { marginTop: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.35)" } },
                   h("div", { style: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 } },
                     h("span", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#7dd3fc" } }, "Imputation client"),
-                    h("span", { style: { fontSize: 12.5, fontWeight: 800, color: "#e5e7eb" } }, multiBc ? ordreBc.length + " bons de commande" : "BC " + (imp.bc || "?")),
+                    h("span", { style: { fontSize: 12.5, fontWeight: 800, color: "#e5e7eb" } }, multiBc ? ordreBc.length + " bons de commande" : "BC " + (ordreBc[0] || imp.bc || "?")),
                     multiBc ? h("span", { style: { fontSize: 11, fontWeight: 800, padding: "1px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.45)", color: "#fde68a" } }, ordreBc.length + " factures a etablir (une par BC)") : null,
                     h("span", { style: { fontSize: 11, color: "#71717a" } }, "par " + (imp.par || "?") + " le " + fmtD(imp.le))
                   ),
@@ -30649,7 +30651,7 @@
                   variant: "secondary",
                   disabled: sending || !destOk,
                   onClick: function() {
-                    if (!confirm("ATTENTION : ce releve a DEJA ETE VALIDE par " + (v && v.validataire_nom ? v.validataire_nom : "le client") + (v && v.validated_at ? " le " + fmtD(v.validated_at) : "") + ".\n\nRenvoyer pour validation va :\n- ANNULER la validation et la signature actuelles\n- EFFACER l'imputation deja transmise (BC, comptes) si elle existe\n- envoyer un NOUVEAU lien au client (l'ancien devient invalide)\n\n" + c.titre + " - " + per.label + "\n\nConfirmer le renvoi a " + destAffiche + " ?")) return;
+                    if (!confirm("ATTENTION : ce releve a DEJA ETE VALIDE par " + (v && v.validataire_nom ? v.validataire_nom : "le client") + (v && v.validated_at ? " le " + fmtD(v.validated_at) : "") + ".\n\nRenvoyer pour validation va :\n- ANNULER la validation et la signature actuelles\n- EFFACER l'imputation deja transmise (BC, comptes) si elle existe\n- envoyer un NOUVEAU lien au client (l'ancien devient invalide)\n\n" + c.titre + " - " + per.label + "\n\nConfirmer le renvoi ? (destinataires recalcules a l'envoi - dernier envoi : " + destAffiche + ")")) return;
                     envoyerValidation(c.id, moisSel, per.debut, true);
                   }
                 }, h(IconText, { icon: "send", size: 13 }, sending ? "Envoi..." : "Renvoyer pour validation (deja valide)")) : null,
