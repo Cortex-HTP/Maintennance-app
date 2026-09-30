@@ -30254,7 +30254,10 @@
         }
         return out.slice(0, 3);
       };
-      var envoyerValidation = function(chantierId, mois, perDebut) {
+      // force=true : renvoi EXPLICITE d'une periode DEJA VALIDEE par le client
+      // (apres le double avertissement) — le serveur annule alors la validation,
+      // la signature et l'imputation existantes avant de renvoyer un nouveau lien.
+      var envoyerValidation = function(chantierId, mois, perDebut, force) {
         var key = chantierId + "|" + perDebut;
         setSendingValId(key);
         supabase.auth.getSession().then(function(s) {
@@ -30263,7 +30266,7 @@
           fetch(EMPLOYES_API_BASE + "/api/send-validation-recap", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
-            body: JSON.stringify({ chantier_id: chantierId, mois: mois })
+            body: JSON.stringify({ chantier_id: chantierId, mois: mois, force: force === true })
           }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
             .then(function(out) {
               setSendingValId(null);
@@ -30513,6 +30516,9 @@
             else pill = h("span", { style: pillStyle("rgba(251,191,36,0.12)", "rgba(251,191,36,0.40)", "#fde68a"), title: "Le cron a prepare le releve et le rafraichit chaque jour avec les rapports en retard. Verifie les metrages puis clique Envoyer au client - rien ne part tout seul." }, "A envoyer - verifie les metrages");
             var sending = sendingValId === (c.id + "|" + per.debut);
             var peutEnvoyer = (statut === "brouillon" || statut === "refuse" || statut === "envoye") && !enCours;
+            // Renvoi possible meme APRES validation client (jamais apres facturation) :
+            // action volontaire avec double avertissement, la validation est annulee.
+            var renvoiApresValide = statut === "valide" && !enCours;
             return h("div", { key: "vc-" + c.id, style: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 14px", marginBottom: 8, background: "rgba(0,0,0,0.20)" } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
                 h("strong", { style: { fontSize: 13.5, color: "#e5e7eb" } }, c.titre, chantierClientBadge(c)),
@@ -30552,41 +30558,63 @@
                 })
               ) : null,
               // Imputation transmise par le client (chantiers actives) : BC,
-              // comptes et repartition Preex/Planif a reporter sur la facture
-              v && v.imputation ? h("div", { style: { marginTop: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.35)" } },
-                h("div", { style: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 } },
-                  h("span", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#7dd3fc" } }, "Imputation client"),
-                  h("span", { style: { fontSize: 12.5, fontWeight: 800, color: "#e5e7eb" } }, "BC " + (v.imputation.bc || "?")),
-                  h("span", { style: { fontSize: 11, color: "#71717a" } }, "par " + (v.imputation.par || "?") + " le " + fmtD(v.imputation.le))
-                ),
-                (v.imputation.buckets || []).filter(function(b) { return (parseFloat(b.volume_m) || 0) > 0; }).map(function(b, bi) {
-                  return h("div", { key: bi, style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "#cbd5e1", padding: "2px 0" } },
-                    h("span", { style: { fontWeight: 700, minWidth: 110 } }, b.label),
-                    h("span", null, (parseFloat(b.volume_m) || 0).toLocaleString("fr-FR") + " m"),
-                    h("span", { style: { color: "#7dd3fc" } }, "compte " + (b.compte || "?")),
-                    h("span", { style: { marginLeft: "auto", fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(b.montant || 0)) + " XPF")
+              // comptes et repartition Preex/Planif a reporter sur la facture.
+              // Lignes GROUPEES PAR BON DE COMMANDE : chaque BC = une facture
+              // distincte (retro-compat : ancien format mono-BC sans b.bc).
+              v && v.imputation ? (function() {
+                var imp = v.imputation;
+                var lignesImp = (imp.buckets || []).filter(function(b) { return (parseFloat(b.volume_m) || 0) > 0; })
+                  .map(function(b) { return { bc: b.bc, label: b.label, vol_m: parseFloat(b.volume_m) || 0, qte: (parseFloat(b.volume_m) || 0).toLocaleString("fr-FR") + " m", compte: b.compte, montant: parseFloat(b.montant) || 0 }; });
+                var att = imp.attente && (parseFloat(imp.attente.heures) || 0) > 0 ? imp.attente : null;
+                if (att) lignesImp.push({ bc: att.bc, label: "Attente", vol_m: 0, qte: (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h", compte: att.compte, montant: parseFloat(att.montant) || 0 });
+                var ordreBc = [];
+                var parBc = {};
+                lignesImp.forEach(function(l) {
+                  var k = String(l.bc || imp.bc || "?");
+                  if (!parBc[k]) { parBc[k] = []; ordreBc.push(k); }
+                  parBc[k].push(l);
+                });
+                var multiBc = ordreBc.length > 1;
+                var ligneRow = function(l, key) {
+                  return h("div", { key: key, style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "#cbd5e1", padding: "2px 0" } },
+                    h("span", { style: { fontWeight: 700, minWidth: 110 } }, l.label),
+                    h("span", null, l.qte),
+                    h("span", { style: { color: "#7dd3fc" } }, "compte " + (l.compte || "?")),
+                    h("span", { style: { marginLeft: "auto", fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(l.montant)) + " XPF")
                   );
-                }),
-                v.imputation.attente && (parseFloat(v.imputation.attente.heures) || 0) > 0 ? h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "#cbd5e1", padding: "2px 0" } },
-                  h("span", { style: { fontWeight: 700, minWidth: 110 } }, "Attente"),
-                  h("span", null, (parseFloat(v.imputation.attente.heures) || 0).toLocaleString("fr-FR") + " h"),
-                  h("span", { style: { color: "#7dd3fc" } }, "compte " + (v.imputation.attente.compte || "?")),
-                  h("span", { style: { marginLeft: "auto", fontWeight: 700, color: "#a5b4fc" } }, fmtNum(Math.round(v.imputation.attente.montant || 0)) + " XPF")
-                ) : null,
-                // Ligne de TOTAUX (controle : doit retomber sur le releve)
-                (function() {
-                  var bks = (v.imputation.buckets || []).filter(function(b) { return (parseFloat(b.volume_m) || 0) > 0; });
-                  var totM = bks.reduce(function(s, b) { return s + (parseFloat(b.volume_m) || 0); }, 0);
-                  var totX = bks.reduce(function(s, b) { return s + (parseFloat(b.montant) || 0); }, 0);
-                  var att = v.imputation.attente || {};
-                  var totXAll = totX + (parseFloat(att.montant) || 0);
-                  return h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, padding: "6px 0 0", marginTop: 4, borderTop: "1px solid rgba(56,189,248,0.25)", color: "#e5e7eb", fontWeight: 800 } },
-                    h("span", { style: { minWidth: 110 } }, "TOTAL"),
-                    h("span", null, totM.toLocaleString("fr-FR") + " m" + ((parseFloat(att.heures) || 0) > 0 ? " + " + (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h attente" : "")),
-                    h("span", { style: { marginLeft: "auto", color: "#7dd3fc" } }, fmtNum(Math.round(totXAll)) + " XPF")
-                  );
-                })()
-              ) : null,
+                };
+                var totMAll = Math.round(lignesImp.reduce(function(s, l) { return s + l.vol_m; }, 0) * 10) / 10;
+                return h("div", { style: { marginTop: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.35)" } },
+                  h("div", { style: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 } },
+                    h("span", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#7dd3fc" } }, "Imputation client"),
+                    h("span", { style: { fontSize: 12.5, fontWeight: 800, color: "#e5e7eb" } }, multiBc ? ordreBc.length + " bons de commande" : "BC " + (imp.bc || "?")),
+                    multiBc ? h("span", { style: { fontSize: 11, fontWeight: 800, padding: "1px 8px", borderRadius: 999, background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.45)", color: "#fde68a" } }, ordreBc.length + " factures a etablir (une par BC)") : null,
+                    h("span", { style: { fontSize: 11, color: "#71717a" } }, "par " + (imp.par || "?") + " le " + fmtD(imp.le))
+                  ),
+                  ordreBc.map(function(bcK, gi) {
+                    var lignesG = parBc[bcK];
+                    var totG = lignesG.reduce(function(s, l) { return s + l.montant; }, 0);
+                    if (!multiBc) return h("div", { key: "g" + gi }, lignesG.map(function(l, li) { return ligneRow(l, li); }));
+                    return h("div", { key: "g" + gi, style: { marginTop: gi > 0 ? 8 : 0, padding: "6px 10px", borderRadius: 8, background: "rgba(0,0,0,0.18)", border: "1px solid rgba(56,189,248,0.20)" } },
+                      h("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 2 } },
+                        h("span", { style: { fontSize: 12, fontWeight: 800, color: "#7dd3fc" } }, "BC " + bcK),
+                        h("span", { style: { fontSize: 10.5, color: "#71717a", fontWeight: 700 } }, "Facture " + (gi + 1) + "/" + ordreBc.length),
+                        h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: "#e5e7eb" } }, fmtNum(Math.round(totG)) + " XPF")
+                      ),
+                      lignesG.map(function(l, li) { return ligneRow(l, li); })
+                    );
+                  }),
+                  // Ligne de TOTAUX (controle : doit retomber sur le releve)
+                  (function() {
+                    var totXAll = lignesImp.reduce(function(s, l) { return s + l.montant; }, 0);
+                    return h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, padding: "6px 0 0", marginTop: 4, borderTop: "1px solid rgba(56,189,248,0.25)", color: "#e5e7eb", fontWeight: 800 } },
+                      h("span", { style: { minWidth: 110 } }, "TOTAL"),
+                      h("span", null, totMAll.toLocaleString("fr-FR") + " m" + (att ? " + " + (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h attente" : "")),
+                      h("span", { style: { marginLeft: "auto", color: "#7dd3fc" } }, fmtNum(Math.round(totXAll)) + " XPF")
+                    );
+                  })()
+                );
+              })() : null,
               // Imputation ACTIVEE sur le chantier mais pas encore transmise :
               // rendre l'attente VISIBLE (releve valide, repartition a venir)
               v && !v.imputation && statut === "valide" && c.imputationClient === true ? h("div", { style: { marginTop: 8, padding: "8px 14px", borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px dashed rgba(251,191,36,0.45)", display: "flex", alignItems: "center", gap: 8 } },
@@ -30616,6 +30644,15 @@
                     envoyerValidation(c.id, moisSel, per.debut);
                   }
                 }, h(IconText, { icon: "send", size: 13 }, sending ? "Envoi..." : (statut === "envoye" ? "Relancer" : "Envoyer au client"))) : null,
+                // Renvoi apres validation : bouton distinct + avertissement detaille
+                canEnvoyerValidationCli && renvoiApresValide ? h(Button, {
+                  variant: "secondary",
+                  disabled: sending || !destOk,
+                  onClick: function() {
+                    if (!confirm("ATTENTION : ce releve a DEJA ETE VALIDE par " + (v && v.validataire_nom ? v.validataire_nom : "le client") + (v && v.validated_at ? " le " + fmtD(v.validated_at) : "") + ".\n\nRenvoyer pour validation va :\n- ANNULER la validation et la signature actuelles\n- EFFACER l'imputation deja transmise (BC, comptes) si elle existe\n- envoyer un NOUVEAU lien au client (l'ancien devient invalide)\n\n" + c.titre + " - " + per.label + "\n\nConfirmer le renvoi a " + destAffiche + " ?")) return;
+                    envoyerValidation(c.id, moisSel, per.debut, true);
+                  }
+                }, h(IconText, { icon: "send", size: 13 }, sending ? "Envoi..." : "Renvoyer pour validation (deja valide)")) : null,
                 !destOk && !enCours && destAide ? h("span", { style: { fontSize: 11.5, color: "#fbbf24", alignSelf: "center" } }, destAide) : null,
                 destOk && nbJours === 0 && statut === "brouillon" && !enCours ? h("span", { style: { fontSize: 11.5, color: "#71717a", alignSelf: "center" } }, "Aucun rapport sur la periode") : null
               )
