@@ -1241,6 +1241,20 @@
       if (!isFinite(y1)) y1 = y0;
       return annee >= y0 && annee <= y1;
     }
+    // Chevauchement au MOIS pres (mois 0-indexe) : un chantier TERMINE reste
+    // visible dans les mois ou il etait actif (planning, primes verifiables),
+    // sans polluer les mois posterieurs a sa fin. Sans dates : visible (mieux
+    // vaut du bruit qu'un historique masque).
+    function chantierToucheMoisCal(c, annee, mois) {
+      var mDeb = new Date(annee, mois, 1);
+      var mFin = new Date(annee, mois + 1, 0);
+      var d0 = c && c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00") : null;
+      var d1 = c && c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
+      if (!d0 && !d1) return true;
+      if (d0 && !isNaN(d0.getTime()) && d0 > mFin) return false;
+      if (d1 && !isNaN(d1.getTime()) && d1 < mDeb) return false;
+      return true;
+    }
     // Filtre STANDARD des listes deroulantes de chantiers : seulement ceux qui
     // touchent l'ANNEE EN COURS (les fiches de l'annee suivante saisies en
     // avance polluaient tous les selects avec des doublons de titres).
@@ -17554,7 +17568,14 @@
       var daysInMonth = getDaysInMonthPe(currentMonth);
       var dayLetters = ["D", "L", "M", "M", "J", "V", "S"];
 
-      var activeChantiers = chantiers.filter(function(c) { return (c.statut === "En cours" || c.statut === "A venir") && chantierToucheAnneeCal(c, currentMonth.getFullYear()); });
+      var activeChantiers = chantiers.filter(function(c) {
+        if (c.statut === "En cours" || c.statut === "A venir") return chantierToucheAnneeCal(c, currentMonth.getFullYear());
+        // Un chantier TERMINE reste visible (grille, palette, resolution des
+        // rapports par lieu) dans les mois ou il etait actif : ses affectations
+        // passees restent lisibles et les primes verifiables.
+        if (c.statut === "Termine") return chantierToucheMoisCal(c, currentMonth.getFullYear(), currentMonth.getMonth());
+        return false;
+      });
 
       function getChantierColor(chId) {
         // Couleur STABLE par id de chantier (et plus par position dans la liste
@@ -18063,6 +18084,32 @@
                   boxShadow: isActive ? "0 0 0 3px " + color + "40" : "none",
                   transition: "all 0.15s",
                   borderStyle: "dashed"
+                }
+              },
+                h("div", { style: { width: 16, height: 16, borderRadius: 4, background: color, opacity: 0.7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "white" } }, ch.titre.charAt(0)),
+                ch.titre
+              );
+            }),
+            // Chantiers TERMINES actifs sur le mois affiche : toujours peignables
+            // (correction d'historique) et lisibles dans la grille
+            activeChantiers.filter(function(c) { return c.statut === "Termine"; }).length > 0 ? h("div", { style: { width: 1, height: 28, background: "rgba(16,185,129,0.25)", margin: "0 4px" } }) : null,
+            activeChantiers.filter(function(c) { return c.statut === "Termine"; }).length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#6ee7b7", textTransform: "uppercase" } }, "Termines:") : null,
+            activeChantiers.filter(function(c) { return c.statut === "Termine"; }).map(function(ch) {
+              var idx = activeChantiers.indexOf(ch);
+              var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
+              var isActive = brush === ch.id;
+              return h("button", {
+                key: ch.id,
+                onClick: function() { setBrush(isActive ? null : ch.id); },
+                style: {
+                  display: "flex", alignItems: "center", gap: 8, padding: "8px 14px",
+                  border: isActive ? "2px solid " + color : "1px solid rgba(16,185,129,0.3)",
+                  borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                  background: isActive ? color + "30" : "rgba(16,185,129,0.06)",
+                  color: isActive ? "#fafafa" : "#d4d4d8",
+                  boxShadow: isActive ? "0 0 0 3px " + color + "40" : "none",
+                  transition: "all 0.15s",
+                  opacity: isActive ? 1 : 0.8
                 }
               },
                 h("div", { style: { width: 16, height: 16, borderRadius: 4, background: color, opacity: 0.7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "white" } }, ch.titre.charAt(0)),
@@ -20883,11 +20930,16 @@
 
       // ── Recap all sites for current period ──
       var recapByEmployee = {};
+      // joursParSite : distingue "present sur le site mais prime 0" (affiche 0)
+      // de "jamais sur ce site" (affiche -) - un employe de passage reste VISIBLE
+      var recapJoursByEmployee = {};
       sites.forEach(function(site) {
         var data = calcPrimesForSitePeriod(site, currentPeriod);
         data.forEach(function(row) {
+          if (!recapJoursByEmployee[row.employeId]) recapJoursByEmployee[row.employeId] = {};
+          recapJoursByEmployee[row.employeId][site] = (row.details && row.details[0] && row.details[0].jours) || 0;
           if (!recapByEmployee[row.employeId]) {
-            recapByEmployee[row.employeId] = { employe: row.employe, totalPrime: 0, sites: {} };
+            recapByEmployee[row.employeId] = { employe: row.employe, employeId: row.employeId, totalPrime: 0, sites: {} };
           }
           recapByEmployee[row.employeId].totalPrime += row.totalPrime;
           recapByEmployee[row.employeId].sites[site] = row.totalPrime;
@@ -21025,11 +21077,15 @@
                     h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, color: "#fafafa" }) }, row.employe),
                     sitesEnCours.map(function(s) {
                       var val = row.sites[s] || 0;
-                      return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#86efac" : "#71717a", background: "rgba(34,197,94,0.08)" }) }, val > 0 ? fmtNum(Math.round(val)) : "-");
+                      var jSite = (recapJoursByEmployee[row.employeId] || {})[s] || 0;
+                      // "0" = present sur le site cette periode mais prime nulle
+                      // (visible, cliquable pour comprendre) ; "-" = pas sur ce site
+                      return h("td", { key: s, title: val === 0 && jSite > 0 ? jSite + " jour(s) comptes sur ce site, prime nulle - cliquer la ligne du site pour le detail" : undefined, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#86efac" : jSite > 0 ? "#fbbf24" : "#71717a", background: "rgba(34,197,94,0.08)" }) }, val > 0 ? fmtNum(Math.round(val)) : jSite > 0 ? "0" : "-");
                     }),
                     sitesAutres.map(function(s) {
                       var val = row.sites[s] || 0;
-                      return h("td", { key: s, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#d4d4d8" : "#52525b" }) }, val > 0 ? fmtNum(Math.round(val)) : "-");
+                      var jSite = (recapJoursByEmployee[row.employeId] || {})[s] || 0;
+                      return h("td", { key: s, title: val === 0 && jSite > 0 ? jSite + " jour(s) comptes sur ce site, prime nulle" : undefined, style: Object.assign({}, tdStyle, { textAlign: "right", color: val > 0 ? "#d4d4d8" : jSite > 0 ? "#fbbf24" : "#52525b" }) }, val > 0 ? fmtNum(Math.round(val)) : jSite > 0 ? "0" : "-");
                     }),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, color: "#a78bfa" }) }, fmtNum(Math.round(row.totalPrime)) + " XPF")
                   );
