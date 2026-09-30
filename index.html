@@ -9468,6 +9468,12 @@
       var simSwap = _simSwap[0]; var setSimSwap = _simSwap[1];
       var _simMsg = useState("");
       var simMsg = _simMsg[0]; var setSimMsg = _simMsg[1];
+      // Chantiers AJOUTES a la simulation (hypothetiques, pas en base) :
+      // [{ ch: pseudo-chantier avec _simu/_simFam/_simMachines }]
+      var _simAjouts = useState([]);
+      var simAjouts = _simAjouts[0]; var setSimAjouts = _simAjouts[1];
+      var _ajoutForm = useState(null);
+      var ajoutForm = _ajoutForm[0]; var setAjoutForm = _ajoutForm[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
       var setDeclarations = ctx.setDbDeclarations;
@@ -10471,6 +10477,8 @@
           if (!dD || !dF || isNaN(dD.getTime()) || isNaN(dF.getTime())) return false;
           return dD <= y1Opt && dF >= y0Opt;
         });
+        // + les chantiers AJOUTES a la simulation (hypothetiques)
+        simAjouts.forEach(function(sa) { chListOpt.push(sa.ch); });
 
         // Besoin machines d'un chantier = pic d'engins affectes en simultane
         // (Planning engins) ; sans planning machines : 1 (meme convention que
@@ -10527,7 +10535,7 @@
           var segsO = segmentsChantier(chO);
           var debO = segsO.length ? segsO[0].deb : 0;
           var finO = segsO.length ? segsO[segsO.length - 1].fin : 0;
-          return { ch: chO, segs: segsO, deb: debO, fin: finO, debOrig: debO, finOrig: finO, machines: machinesRequisesChantier(chO.id), mobile: debO >= 0, decalSem: 0 };
+          return { ch: chO, segs: segsO, deb: debO, fin: finO, debOrig: debO, finOrig: finO, machines: chO._simMachines || machinesRequisesChantier(chO.id), simu: !!chO._simu, mobile: debO >= 0, decalSem: 0 };
         }).filter(function(pF) { return pF.segs.length > 0; });
 
         // Semaines occupees par un chantier pour un decalage donne (dedupe si
@@ -10603,6 +10611,8 @@
         var capCarot = nbCarotDet > 0 ? nbCarotDet : 1;
         var capStandard = Math.max(flotteMachines - nbHeliDet - nbCarotDet, 0);
         function poolChantier(chO) {
+          // 0) Chantier ajoute a la simulation : famille choisie dans la fenetre
+          if (chO._simFam) return chO._simFam;
           // 1) Machines AFFECTEES (Planning engins) : une machine speciale
           //    affectee classe le chantier dans sa famille
           var famsC = {};
@@ -10733,6 +10743,25 @@
         }
         function reinitialiserSim() {
           setSimDec({}); setSimSwap({}); setSimMsg("");
+        }
+        function ouvrirAjoutSim() {
+          setAjoutForm({ titre: "", fam: "standard", machines: 1, debut: yearOpt + "-02-01", fin: yearOpt + "-06-30" });
+        }
+        function enregistrerAjoutSim() {
+          var fA = ajoutForm;
+          if (!fA.titre || !String(fA.titre).trim()) { alert("Donne un titre au chantier."); return; }
+          if (!fA.debut || !fA.fin || String(fA.fin) < String(fA.debut)) { alert("Dates invalides : la fin doit etre apres le debut."); return; }
+          var dDA = parseDate(fA.debut), dFA = parseDate(fA.fin);
+          if (!dDA || !dFA || isNaN(dDA.getTime()) || isNaN(dFA.getTime()) || dFA < y0Opt || dDA > y1Opt) { alert("Le chantier doit toucher l'annee " + yearOpt + "."); return; }
+          var idSim = "sim-" + Date.now();
+          setSimAjouts(simAjouts.concat([{ ch: { id: idSim, titre: String(fA.titre).trim(), client: "simulation", dateDebut: fA.debut, dateFin: fA.fin, statut: "A venir", _simu: true, _simFam: fA.fam, _simMachines: Math.max(1, parseInt(fA.machines, 10) || 1) } }]));
+          setAjoutForm(null);
+          setSimMsg("Chantier « " + String(fA.titre).trim() + " » ajoute a la simulation.");
+        }
+        function retirerAjoutSim(idSim) {
+          setSimAjouts(simAjouts.filter(function(sa) { return sa.ch.id !== idSim; }));
+          setSimDec(function(prev) { var n = {}; Object.keys(prev).forEach(function(k) { if (k !== String(idSim)) n[k] = prev[k]; }); return n; });
+          setSimMsg("Chantier retire de la simulation.");
         }
 
         // Metriques : le graphique et les KPI principaux portent sur le pool
@@ -10939,6 +10968,7 @@
                 "Tolerance IA :",
                 h("input", { type: "range", min: 0, max: 12, value: tolSemOpt, onChange: function(e) { setTolSemOpt(parseInt(e.target.value, 10) || 0); }, style: { width: 110 } }),
                 h("b", { style: { color: "#a5b4fc", minWidth: 46 } }, tolSemOpt + " sem."),
+                h("button", { onClick: ouvrirAjoutSim, title: "Ajouter un chantier HYPOTHETIQUE a la simulation (rien en base)", style: { padding: "7px 14px", border: "1px solid rgba(34,197,94,0.45)", borderRadius: 8, background: "rgba(34,197,94,0.12)", color: "#86efac", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "+ Ajouter un chantier"),
                 h("button", { onClick: lancerIA, style: { padding: "7px 14px", border: "none", borderRadius: 8, background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Caler automatiquement (IA)"),
                 h("button", { onClick: reinitialiserSim, style: { padding: "7px 14px", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 8, background: "rgba(255,255,255,0.06)", color: "#e4e4e7", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Reinitialiser")
               )
@@ -10970,6 +11000,8 @@
                   pR.ch.titre,
                   pR.pool === "heliporte" ? h("span", { style: { fontSize: 9, color: "#67e8f9", border: "1px solid rgba(34,211,238,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "HELIPORTE") : null,
                   pR.pool === "carotte" ? h("span", { style: { fontSize: 9, color: "#f9a8d4", border: "1px solid rgba(244,114,182,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "CAROTTE") : null,
+                  pR.simu ? h("span", { style: { fontSize: 9, color: "#fde68a", border: "1px solid rgba(245,158,11,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "SIMULATION") : null,
+                  pR.simu ? h("button", { onClick: function() { retirerAjoutSim(pR.ch.id); }, title: "Retirer ce chantier de la simulation", style: { marginLeft: 6, width: 16, height: 16, border: "none", borderRadius: 8, background: "rgba(244,63,94,0.25)", color: "#fda4af", cursor: "pointer", fontSize: 10, fontWeight: 800, padding: 0, verticalAlign: 1 } }, "X") : null,
                   !pR.mobile ? h("span", { style: { fontSize: 9, color: "#fbbf24", border: "1px solid rgba(245,158,11,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "DEBUT " + anDebR) : null,
                   h("span", { style: { fontSize: 10, color: "#71717a", fontWeight: 600, display: "block" } }, (pR.ch.client || "client ?") + " - " + pR.machines + " machine" + (pR.machines > 1 ? "s" : "") + (pR.segs.length > 1 ? " - " + pR.segs.length + " periodes" : ""))
                 ),
@@ -11068,7 +11100,26 @@
             h("div", { style: { marginTop: 12, border: "1px dashed rgba(245,158,11,0.5)", borderRadius: 10, background: "rgba(245,158,11,0.07)", color: "#fde68a", padding: "11px 15px", fontSize: 12, lineHeight: 1.55 } },
               h("b", null, "Simulation uniquement : "),
               "rien n'est ecrit en base - ni les dates des chantiers, ni les affectations machines, ni le tableau de bord. Pour appliquer une decision : dates du chantier sur sa fiche (onglet Chantiers), machines dans Planning engins. Un bouton « Appliquer au planning reel » pourra etre ajoute si tu le souhaites.")
-          )
+          ),
+          // Fenetre d'ajout d'un chantier a la simulation
+          ajoutForm ? h(Modal, { title: "Ajouter un chantier a la simulation", onClose: function() { setAjoutForm(null); }, size: 480 },
+            h(FormField, { label: "Titre" }, h("input", { style: inputStyle, value: ajoutForm.titre, placeholder: "ex. Poya (prospect)", onChange: function(e) { setAjoutForm(Object.assign({}, ajoutForm, { titre: e.target.value })); } })),
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(FormField, { label: "Famille" }, h("select", { style: selectStyle, value: ajoutForm.fam, onChange: function(e) { setAjoutForm(Object.assign({}, ajoutForm, { fam: e.target.value })); } },
+                h("option", { value: "standard" }, "Aircore terrestre"),
+                h("option", { value: "heliporte" }, "Heliporte"),
+                h("option", { value: "carotte" }, "Carotte"))),
+              h(FormField, { label: "Machines necessaires" }, h("input", { type: "number", min: 1, style: inputStyle, value: ajoutForm.machines, onChange: function(e) { setAjoutForm(Object.assign({}, ajoutForm, { machines: e.target.value })); } }))
+            ),
+            h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(FormField, { label: "Debut" }, h("input", { type: "date", style: inputStyle, value: ajoutForm.debut, onChange: function(e) { setAjoutForm(Object.assign({}, ajoutForm, { debut: e.target.value })); } })),
+              h(FormField, { label: "Fin" }, h("input", { type: "date", style: inputStyle, value: ajoutForm.fin, onChange: function(e) { setAjoutForm(Object.assign({}, ajoutForm, { fin: e.target.value })); } }))
+            ),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10 } }, "Chantier HYPOTHETIQUE : il n'existe que dans cette simulation, rien n'est cree en base. Tu peux ensuite le glisser comme les autres, l'IA le prend en compte, et la croix rouge le retire. Pour le creer POUR DE VRAI : onglet Chantiers, bouton Nouveau."),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end" } },
+              h(Button, { variant: "secondary", onClick: function() { setAjoutForm(null); } }, "Annuler"),
+              h(Button, { onClick: enregistrerAjoutSim }, "Ajouter a la simulation"))
+          ) : null
         );
       }
 
