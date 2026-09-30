@@ -21163,7 +21163,19 @@
               h("button", { onClick: function() {
                 var objVal = getObjectifForSite(paliers, displaySite);
                 var moyVal = getMoyenneForSite(paliers, displaySite);
-                supabase.from("paliers_primes").insert({ site: displaySite, seuil_mh: 0, coefficient: 0, objectif_mh: objVal, moyenne_jour: moyVal }).select().single().then(function(res) {
+                // Le nouveau palier CONTINUE la grille (dernier seuil + pas
+                // habituel) au lieu de naitre a 0 - qui le faisait apparaitre
+                // EN HAUT de la liste triee par seuil. Coefficient = celui du
+                // dernier palier : effet NEUTRE sur les primes tant qu'il
+                // n'est pas edite (un coef 0 au-dessus du max couperait les
+                // primes des meilleurs).
+                var sitePals = (paliers || []).filter(function(pp) { return pp.site === displaySite; }).sort(function(a, b) { return a.seuilMh - b.seuilMh; });
+                var dernier = sitePals.length ? sitePals[sitePals.length - 1] : null;
+                var pas = sitePals.length >= 2 ? (sitePals[sitePals.length - 1].seuilMh - sitePals[sitePals.length - 2].seuilMh) : Math.round((parseFloat(moyVal) || 400) * 0.2);
+                if (!(pas > 0)) pas = 100;
+                var nvSeuil = dernier ? (parseFloat(dernier.seuilMh) || 0) + pas : 0;
+                var nvCoef = dernier ? (parseInt(dernier.coefficient, 10) || 0) : 0;
+                supabase.from("paliers_primes").insert({ site: displaySite, seuil_mh: nvSeuil, coefficient: nvCoef, objectif_mh: objVal, moyenne_jour: moyVal }).select().single().then(function(res) {
                   if (res.error) { alert("Erreur: " + res.error.message); return; }
                   ctx.setDbPaliers(paliers.concat(palierFromDb(res.data)));
                 });
