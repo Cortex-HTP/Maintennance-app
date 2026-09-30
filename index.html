@@ -1288,6 +1288,7 @@
       var chantierBySite = buildChantierBySite(dbChantiers);
       (rapports || []).forEach(function(r) {
         if (!r || !r.non_productif) return;
+        if (r.statut === "brouillon") return; // brouillon jamais envoye : ne peint rien
         var cid = resolveRapportChantierId(r, chantierBySite);
         var d = r.date_rapport ? String(r.date_rapport).substring(0, 10) : null;
         if (cid == null || !d) return;
@@ -1354,6 +1355,9 @@
       var rapportByMachineDate = {};
       var empRapportsList = {};
       rapportsCtx.forEach(function(r) {
+        // Un rapport BROUILLON (jamais envoye) ne compte NULLE PART - meme
+        // regle que le planning (avant, il comptait dans les primes !)
+        if (r.statut === "brouillon") return;
         if (!r.date_rapport || !r.sondeuse_code) return;
         var d = String(r.date_rapport).substring(0, 10);
         var rSite = siteOfRapport(r);
@@ -1436,6 +1440,7 @@
       });
       rapportsCtx.forEach(function(rNp) {
         if (!rNp || !rNp.date_rapport) return;
+        if (rNp.statut === "brouillon") return;
         if (siteOfRapport(rNp) !== site) return;
         var dNp = String(rNp.date_rapport).substring(0, 10);
         siteWorkDaySet[dNp] = true;
@@ -1502,9 +1507,24 @@
         var adjMetrage = 0, adjJours = 0;
         var datesComptees = {};
         var nbTravailViaRapport = 0;
+        // Sites des rapports de CET employe, par date (rapports envoyes)
+        var rapSiteByDate = {};
+        (empRapportsList[emp.id] || []).forEach(function(rS) {
+          if (!rapSiteByDate[rS.date]) rapSiteByDate[rS.date] = rS.site;
+        });
         empAffOnSite.forEach(function(a) {
           var tj = a.typeJour || "travail";
           var dateStr = a.dateAffectation;
+          // ── REGLE « le rapport envoye fait foi » (2026-10-01) ──
+          // Si l'employe figure dans un rapport ce jour-la, la ligne manuelle
+          // de type travail (ou ferie) S'EFFACE devant le rapport :
+          // - rapport sur un AUTRE site : le jour sera compte la-bas (avant :
+          //   un jour, deux sites, deux primes - vecu Mathieu Nakety/SMT 15/09)
+          // - rapport sur CE site : la completion via rapports comptera le
+          //   jour avec le metrage de la machine (source unique)
+          // Les evenements personnels (conge, maladie, panne...) restent
+          // prioritaires et sont traites normalement ci-dessous.
+          if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) return;
           datesComptees[dateStr] = true;
           var chId = a.chantierId;
           var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
@@ -19598,6 +19618,7 @@
       var sitesData = {};
       (rapports || []).forEach(function(r) {
         if (!r.date_rapport) return;
+        if (r.statut === "brouillon") return; // brouillon jamais envoye : exclu (meme regle que le planning)
         var iso = String(r.date_rapport).substring(0, 10);
         var d = new Date(iso + "T00:00:00");
         if (d < period.start || d > period.end) return;
@@ -20296,6 +20317,9 @@
         // empRapportsList : maintenant stocke aussi le site pour pouvoir filtrer par site
         var empRapportsList = {};
         rapportsCtx.forEach(function(r) {
+          // Un rapport BROUILLON (jamais envoye) ne compte NULLE PART - meme
+          // regle que le planning (avant, il comptait dans les primes !)
+          if (r.statut === "brouillon") return;
           if (!r.date_rapport || !r.sondeuse_code) return;
           var d = String(r.date_rapport).substring(0, 10);
           var rSite = siteOfRapport(r);
@@ -20372,6 +20396,7 @@
         });
         (rapportsCtx || []).forEach(function(rNp) {
           if (!rNp || !rNp.date_rapport) return;
+          if (rNp.statut === "brouillon") return;
           if (siteOfRapport(rNp) !== site) return;
           var dNp = String(rNp.date_rapport).substring(0, 10);
           siteWorkDaySet[dNp] = true;
@@ -20468,9 +20493,21 @@
           // Permet de diagnostiquer pourquoi 2 employes qui travaillent pareil ont
           // des primes differentes (name matching foireux, releve manquant, etc.)
           var daysDetail = [];
+          // Sites des rapports de CET employe, par date (rapports envoyes)
+          var rapSiteByDate = {};
+          (empRapportsList[emp.id] || []).forEach(function(rS) {
+            if (!rapSiteByDate[rS.date]) rapSiteByDate[rS.date] = rS.site;
+          });
           empAffOnSite.forEach(function(a) {
             var tj = a.typeJour || "travail";
             var dateStr = a.dateAffectation;
+            // ── REGLE « le rapport envoye fait foi » (2026-10-01) ──
+            // Un rapport ce jour-la efface la ligne manuelle travail/ferie :
+            // autre site -> le jour est compte la-bas (fini le jour double,
+            // vecu Mathieu Nakety/SMT 15/09) ; meme site -> la completion via
+            // rapports comptera le jour avec le metrage machine. Les
+            // evenements personnels restent prioritaires.
+            if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) return;
             var chId = a.chantierId;
             // Override saisie si type panne/intemperies/non_productif
             var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
