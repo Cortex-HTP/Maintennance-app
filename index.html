@@ -17722,7 +17722,14 @@
           // la presence de l'employe dans l'equipe d'un rapport prouve qu'il a travaille,
           // donc le rapport prime sur le ferie (demande metier). Les autres types
           // (conge, maladie, panne...) restent prioritaires sur le rapport.
-          if (existingAff && existingAff.typeJour !== "ferie") return;
+          // Un rapport ENVOYE peint TOUJOURS le planning (demande Tomy
+          // 2026-10-01 : « prendre les affectations avec les rapports
+          // envoyes »). Une affectation explicite reste prioritaire SAUF :
+          // - jour ferie (la presence au rapport prouve le travail)
+          // - MASQUE (chantier vide, type travail) : les masques sont
+          //   ABANDONNES - ceux restes en base deviennent inertes
+          var estMasquePe = existingAff && existingAff.chantierId == null && (existingAff.typeJour || "travail") === "travail";
+          if (existingAff && existingAff.typeJour !== "ferie" && !estMasquePe) return;
           affMap[key] = { chantierId: chId, typeJour: "travail", auto: true, fromRapport: true };
         });
       });
@@ -17815,22 +17822,19 @@
         };
         if ((chantierId === "" || chantierId === null) && tj === "travail") {
           // ── Gomme sur une case issue d'un RAPPORT DE FORAGE ──
-          // L'affectation affichee est alors VIRTUELLE (deduite de l'equipe du
-          // rapport) : il n'y a rien a supprimer en base, la case se repeignait
-          // aussitot et la gomme paraissait inoperante. On enregistre donc une
-          // ligne "masque" (chantier vide) qui prime sur le rapport.
+          // Les MASQUES sont abandonnes (2026-10-01) : un rapport ENVOYE fait
+          // foi et peint toujours le planning. La gomme ne touche pas a ces
+          // cases (skip silencieux : le balayage passe au travers sans spam) ;
+          // si l'equipe d'un rapport est fausse, on corrige le rapport.
           if (rapportCoverPe[empId + "-" + dateStr]) {
-            // Deja masquee : rien a faire (evite un aller-retour qui ferait
-            // reapparaitre le rapport a la gomme suivante).
-            if (existing && existing.chantierId == null && (existing.typeJour || "travail") === "travail") return;
-            // UPSERT sur (personnel_id, date_affectation) : une ligne peut deja
-            // exister en base sans etre dans l'etat local (synchro conges, autre
-            // onglet, latence realtime) -> un insert brut violerait la contrainte
-            // unique ("duplicate key ... affectations_personnel_id_date_...").
-            supabase.from("affectations").upsert({ personnel_id: empId, date_affectation: dateStr, type_jour: "travail", chantier_id: null }, { onConflict: "personnel_id,date_affectation" }).select().single().then(function(res) {
-              if (res.error) { alert("Erreur: " + res.error.message); return; }
-              majLigne(affectationFromDb(res.data));
-            });
+            // S'il reste une ligne explicite (ex. ancien masque), on la purge
+            // au passage - la case restera peinte par le rapport.
+            if (existing) {
+              supabase.from("affectations").delete().eq("personnel_id", empId).eq("date_affectation", dateStr).then(function(res) {
+                if (res.error) { alert("Erreur: " + res.error.message); return; }
+                majLigne(null);
+              });
+            }
             return;
           }
           // Gomme : suppression par (personne, date) - marche meme si la ligne
@@ -17865,6 +17869,12 @@
           return;
         }
         if (brush === "eraser") {
+          if (rapportCoverPe[empId + "-" + dateStr]) {
+            setAffectation(empId, dateStr, "", "travail"); // purge une eventuelle ligne residuelle
+            setPainting(false); // l'alerte va avaler le mouseup
+            alert("Cette case vient d'un rapport de forage ENVOYE : elle ne se gomme pas depuis le planning.\nSi l'equipe du rapport est fausse, corrige le rapport lui-meme.");
+            return;
+          }
           setAffectation(empId, dateStr, "", "travail");
         } else if (isPersonnelEvent(brush)) {
           setAffectation(empId, dateStr, null, brush);
