@@ -10498,83 +10498,167 @@
           return picM;
         }
 
-        // ── Moteur glouton deterministe (valide en demo) : chantiers tries par
-        // machines x duree decroissant ; pour chacun on teste tous les decalages
-        // autorises (0, +-1, +-2... semaines) et on garde celui qui minimise
-        // (pic, surcharge cumulee, |decalage|). Un chantier deja demarre avant
-        // le 1er janvier ne bouge pas (contrainte physique, pas un verrou).
+        // ── Segments d'un chantier : ses PERIODES DE TRAVAIL (coupures saisies
+        // sur la fiche, ex. Kopeto janvier-mars puis reprise avril), sinon un
+        // bloc continu. Un decalage deplace TOUT le motif (les coupures avec) ;
+        // pendant une coupure le chantier ne consomme AUCUNE machine.
+        function segmentsChantier(chO) {
+          function versSegs(brut) {
+            var segs = [];
+            brut.forEach(function(sg) {
+              var dS = parseDate(String(sg.d).substring(0, 10));
+              var fS = parseDate(String(sg.f).substring(0, 10));
+              if (!dS || !fS || isNaN(dS.getTime()) || isNaN(fS.getTime())) return;
+              segs.push({ deb: Math.round((dS - y0Opt) / 86400000), fin: Math.round((fS - y0Opt) / 86400000) });
+            });
+            segs.sort(function(a, b) { return a.deb - b.deb; });
+            return segs;
+          }
+          var pers = Array.isArray(chO.periodes) ? chO.periodes.filter(function(pS) { return pS && pS.debut && pS.fin && String(pS.fin) >= String(pS.debut); }) : [];
+          var segs = pers.length >= 1 ? versSegs(pers.map(function(pS) { return { d: pS.debut, f: pS.fin }; })) : [];
+          // Periodes toutes illisibles -> retomber sur le bloc continu plutot
+          // que de faire disparaitre le chantier en silence
+          if (segs.length === 0) segs = versSegs([{ d: chO.dateDebut, f: chO.dateFin }]);
+          return segs;
+        }
+
         var propsOpt = chListOpt.map(function(chO) {
-          var dD2 = parseDate(chO.dateDebut); var dF2 = parseDate(chO.dateFin);
-          var debO = Math.round((dD2 - y0Opt) / 86400000);
-          var finO = Math.round((dF2 - y0Opt) / 86400000);
-          return { ch: chO, deb: debO, fin: finO, debOrig: debO, finOrig: finO, machines: machinesRequisesChantier(chO.id), mobile: debO >= 0, decalSem: 0 };
-        });
-        // Les chantiers NON decalables passent en premier : leur charge est
-        // posee avant que le moteur ne place les autres (sinon il pourrait
-        // decaler un chantier mobile PILE sur un chantier deja demarre).
-        var ordreOpt = propsOpt.slice().sort(function(a, b) {
-          if (a.mobile !== b.mobile) return a.mobile ? 1 : -1;
-          return (b.machines * (b.fin - b.deb)) - (a.machines * (a.fin - a.deb));
-        });
-        var chargeOpt = [];
-        for (var iO = 0; iO < 52; iO++) chargeOpt.push(0);
-        ordreOpt.forEach(function(cO) {
-          var meilleur = { cout: Infinity, decal: 0 };
-          var decalsO = [0];
-          if (cO.mobile) { for (var dO = 1; dO <= tolSemOpt; dO++) { decalsO.push(dO); decalsO.push(-dO); } }
-          decalsO.forEach(function(dSem) {
-            var debT = cO.debOrig + dSem * 7;
-            var finT = cO.finOrig + dSem * 7;
-            if (dSem !== 0 && (debT < 0 || debT > nbJoursOpt - 1)) return;
-            // Interdit de "cacher" de la charge en poussant la fin du chantier
-            // au-dela du 31/12 (elle sortirait du calcul et serait reportee
-            // sur N+2) - sauf si le chantier debordait DEJA a l'origine.
-            if (dSem !== 0 && finT > nbJoursOpt - 1 && cO.finOrig <= nbJoursOpt - 1) return;
-            var picT = 0, surchT = 0;
-            var s0T = semOfOpt(Math.max(debT, 0)), s1T = semOfOpt(Math.min(finT, nbJoursOpt - 1));
-            for (var sT = s0T; sT <= s1T; sT++) {
-              var vT = chargeOpt[sT] + cO.machines;
-              if (vT > picT) picT = vT;
-              if (vT > flotteMachines) surchT += vT - flotteMachines;
-            }
-            // Le pic domine STRICTEMENT la surcharge cumulee (qui peut depasser
-            // 100 sur un chantier long), la surcharge domine la fidelite.
-            var coutT = picT * 10000000 + surchT * 1000 + Math.abs(dSem);
-            if (coutT < meilleur.cout) meilleur = { cout: coutT, decal: dSem };
+          var segsO = segmentsChantier(chO);
+          var debO = segsO.length ? segsO[0].deb : 0;
+          var finO = segsO.length ? segsO[segsO.length - 1].fin : 0;
+          return { ch: chO, segs: segsO, deb: debO, fin: finO, debOrig: debO, finOrig: finO, machines: machinesRequisesChantier(chO.id), mobile: debO >= 0, decalSem: 0 };
+        }).filter(function(pF) { return pF.segs.length > 0; });
+
+        // Semaines occupees par un chantier pour un decalage donne (dedupe si
+        // deux periodes tombent dans la meme semaine)
+        function semainesProp(pP, dSem) {
+          // Memoise par (chantier, decalage) : appele ~100 000 fois dans le
+          // pire cas de la boucle K, le cache ramene ca a quelques centaines
+          if (!pP._semCache) pP._semCache = {};
+          if (pP._semCache[dSem]) return pP._semCache[dSem];
+          var dec = dSem * 7; var setS = {};
+          pP.segs.forEach(function(sg) {
+            var dCl = Math.max(sg.deb + dec, 0), fCl = Math.min(sg.fin + dec, nbJoursOpt - 1);
+            if (fCl < dCl) return;
+            for (var s = semOfOpt(dCl); s <= semOfOpt(fCl); s++) setS[s] = 1;
           });
-          cO.decalSem = meilleur.decal;
-          cO.deb = cO.debOrig + meilleur.decal * 7;
-          cO.fin = cO.finOrig + meilleur.decal * 7;
-          var p0 = semOfOpt(Math.max(cO.deb, 0)), p1 = semOfOpt(Math.min(cO.fin, nbJoursOpt - 1));
-          for (var sP = p0; sP <= p1; sP++) chargeOpt[sP] += cO.machines;
-        });
+          pP._semCache[dSem] = Object.keys(setS);
+          return pP._semCache[dSem];
+        }
+        function poserProp(w, pP, dSem, signe) {
+          semainesProp(pP, dSem).forEach(function(k) { w[k] += pP.machines * signe; });
+        }
+        function decalOk(pP, dSem) {
+          if (dSem === 0) return true;
+          if (!pP.mobile) return false;
+          var debT = pP.debOrig + dSem * 7;
+          var finT = pP.finOrig + dSem * 7;
+          if (debT < 0 || debT > nbJoursOpt - 1) return false;
+          // Interdit de "cacher" de la charge en poussant la fin au-dela du
+          // 31/12 (reportee sur N+2 et sortie du calcul). Un chantier qui
+          // deborde DEJA ne peut pas etre pousse encore plus a droite.
+          if (finT > nbJoursOpt - 1 && pP.finOrig <= nbJoursOpt - 1) return false;
+          if (pP.finOrig > nbJoursOpt - 1 && dSem > 0) return false;
+          return true;
+        }
+        // Cout d'un placement pour une flotte cible K : depassement au-dessus
+        // de K (prioritaire), puis pic atteint, puis fidelite aux dates.
+        function coutProp(w, pP, dSem, K) {
+          var over = 0, pic = 0;
+          semainesProp(pP, dSem).forEach(function(k) {
+            var v = w[k] + pP.machines;
+            if (v > pic) pic = v;
+            if (v > K) over += v - K;
+          });
+          return over * 100000000 + pic * 10000 + Math.abs(dSem);
+        }
 
         function chargeSemaineProps(useOrig) {
           var wS = [];
           for (var iW = 0; iW < 52; iW++) wS.push(0);
-          propsOpt.forEach(function(pW) {
-            var debW = useOrig ? pW.debOrig : pW.deb;
-            var finW = useOrig ? pW.finOrig : pW.fin;
-            var dCl = Math.max(debW, 0), fCl = Math.min(finW, nbJoursOpt - 1);
-            if (fCl < dCl) return;
-            for (var sW = semOfOpt(dCl); sW <= semOfOpt(fCl); sW++) wS[sW] += pW.machines;
-          });
+          propsOpt.forEach(function(pW) { poserProp(wS, pW, useOrig ? 0 : pW.decalSem, 1); });
           return wS;
         }
         var chargeAvant = chargeSemaineProps(true);
-        var chargeApres = chargeSemaineProps(false);
-        var picAvant = 0, picApres = 0;
+        var picAvant = 0;
         chargeAvant.forEach(function(v) { if (v > picAvant) picAvant = v; });
+
+        // ── Moteur « caler le tout » : on cherche la plus PETITE flotte K qui
+        // passe (charge <= K chaque semaine) en decalant les chantiers mobiles
+        // (jamais au-dela de la tolerance), avec des passes d'amelioration.
+        // Les chantiers demarres avant le 1er janvier sont poses d'abord
+        // (contrainte physique). Deterministe : meme resultat a chaque calcul.
+        var mobilesOpt = propsOpt.filter(function(p) { return p.mobile; });
+        var chargeBase = [];
+        for (var iB = 0; iB < 52; iB++) chargeBase.push(0);
+        propsOpt.forEach(function(p) { if (!p.mobile) poserProp(chargeBase, p, 0, 1); });
+        var picBaseK = 0;
+        chargeBase.forEach(function(v) { if (v > picBaseK) picBaseK = v; });
+        var maxMachK = 1;
+        propsOpt.forEach(function(p) { if (p.machines > maxMachK) maxMachK = p.machines; });
+        var decalsTous = [0];
+        for (var dT = 1; dT <= tolSemOpt; dT++) { decalsTous.push(-dT); decalsTous.push(dT); }
+        var ordreK = mobilesOpt.slice().sort(function(a, b) { return (b.machines * (b.finOrig - b.debOrig)) - (a.machines * (a.finOrig - a.debOrig)); });
+        var meilleurRes = null;
+        var Kdep = Math.max(picBaseK, maxMachK, 1);
+        for (var K = Kdep; K <= Math.max(picAvant, Kdep); K++) {
+          var wK = chargeBase.slice();
+          // Placement initial (gros chantiers d'abord)
+          ordreK.forEach(function(p) {
+            var best = { cout: Infinity, decal: 0 };
+            decalsTous.forEach(function(dSem) {
+              if (!decalOk(p, dSem)) return;
+              var c = coutProp(wK, p, dSem, K);
+              if (c < best.cout) best = { cout: c, decal: dSem };
+            });
+            p.decalSem = best.decal;
+            poserProp(wK, p, p.decalSem, 1);
+          });
+          // Passes d'amelioration : on ressort chaque chantier et on le
+          // replace au mieux, jusqu'a stabilite
+          for (var passK = 0; passK < 12; passK++) {
+            var bouge = 0;
+            ordreK.forEach(function(p) {
+              poserProp(wK, p, p.decalSem, -1);
+              var best2 = { cout: Infinity, decal: p.decalSem };
+              decalsTous.forEach(function(dSem) {
+                if (!decalOk(p, dSem)) return;
+                var c2 = coutProp(wK, p, dSem, K);
+                if (c2 < best2.cout) best2 = { cout: c2, decal: dSem };
+              });
+              if (best2.decal !== p.decalSem) bouge++;
+              p.decalSem = best2.decal;
+              poserProp(wK, p, p.decalSem, 1);
+            });
+            if (bouge === 0) break;
+          }
+          var picK = 0;
+          wK.forEach(function(v) { if (v > picK) picK = v; });
+          if (!meilleurRes || picK < meilleurRes.pic) {
+            meilleurRes = { pic: picK, decals: mobilesOpt.map(function(p) { return p.decalSem; }) };
+          }
+          if (picK <= K) break; // plus petite flotte qui passe : trouvee
+        }
+        if (meilleurRes) {
+          mobilesOpt.forEach(function(p, iR) { p.decalSem = meilleurRes.decals[iR]; });
+        }
+        propsOpt.forEach(function(p) { p.deb = p.debOrig + p.decalSem * 7; p.fin = p.finOrig + p.decalSem * 7; });
+
+        var chargeApres = chargeSemaineProps(false);
+        var picApres = 0;
         chargeApres.forEach(function(v) { if (v > picApres) picApres = v; });
-        // Garde-fou : si la proposition est PIRE que l'original (pic plus
-        // haut), on garde le planning d'origine tel quel.
-        if (picApres > picAvant) {
+        var surAvant = chargeAvant.filter(function(v) { return v > flotteMachines; }).length;
+        var surApres = chargeApres.filter(function(v) { return v > flotteMachines; }).length;
+        // Garde-fou : on ne decale que si ca ameliore VRAIMENT (pic plus bas,
+        // ou meme pic mais moins de semaines en surcharge). Sinon on garde le
+        // planning d'origine tel quel - pas de mouvement pour rien.
+        var nbDecalesBrut = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
+        if (nbDecalesBrut > 0 && (picApres > picAvant || (picApres === picAvant && surApres >= surAvant))) {
           propsOpt.forEach(function(pG) { pG.decalSem = 0; pG.deb = pG.debOrig; pG.fin = pG.finOrig; });
           chargeApres = chargeSemaineProps(false);
           picApres = picAvant;
+          surApres = surAvant;
         }
-        var surAvant = chargeAvant.filter(function(v) { return v > flotteMachines; }).length;
-        var surApres = chargeApres.filter(function(v) { return v > flotteMachines; }).length;
         var nbDecales = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
 
         function carteOpt(accCol, label, badge, badgeCol, val, valCol, sous) {
@@ -10615,7 +10699,7 @@
             carteOpt("#94a3b8", "Pic machines (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
             carteOpt("#22c55e", "Pic machines (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > flotteMachines ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
             carteOpt("#6366f1", "Chantiers decales", null, null, nbDecales + " / " + propsOpt.length, "#a5b4fc", "les autres restent aux dates demandees"),
-            carteOpt("#f59e0b", "Flotte requise", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "flotte actuelle : " + flotteMachines + " engin" + (flotteMachines > 1 ? "s" : ""))
+            carteOpt("#f59e0b", "Flotte minimale", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "flotte actuelle : " + flotteMachines + " - moins de machines en simultane = moins d'equipes")
           ),
           // Gantt propose
           h("div", { style: cardOptStyle },
@@ -10628,27 +10712,33 @@
               )
             ),
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 12 } },
-              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur decale les chantiers (dans la limite autorisee) pour reduire le nombre de machines necessaires en simultane, en restant au plus pres des dates d'origine. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
+              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             propsAffiche.map(function(pR, idxR) {
               var colR = ENGIN_PALETTE[idxR % ENGIN_PALETTE.length];
-              var lP = pctOpt(pR.deb), wP = Math.max(pctOpt(pR.fin + 1) - lP, 0.8);
-              var ghost = null;
-              if (pR.decalSem !== 0) {
-                var loP = pctOpt(pR.debOrig), woP = Math.max(pctOpt(pR.finOrig + 1) - loP, 0.8);
-                ghost = h("div", { style: { position: "absolute", left: loP + "%", width: woP + "%", top: 3, bottom: 3, borderRadius: 5, border: "1.5px dashed rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)" } });
-              }
+              var decR = pR.decalSem * 7;
+              // Fantomes : le motif ORIGINAL (periodes comprises) si decale
+              var ghosts = pR.decalSem !== 0 ? pR.segs.map(function(sg, iG) {
+                var loP = pctOpt(sg.deb), woP = Math.max(pctOpt(sg.fin + 1) - loP, 0.8);
+                return h("div", { key: "gh" + iG, style: { position: "absolute", left: loP + "%", width: woP + "%", top: 3, bottom: 3, borderRadius: 5, border: "1.5px dashed rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)" } });
+              }) : null;
+              // Barres pleines : un segment par periode de travail (les
+              // coupures restent VISIBLES et se decalent avec le chantier)
+              var barres = pR.segs.map(function(sg, iS) {
+                var lP = pctOpt(sg.deb + decR), wP = Math.max(pctOpt(sg.fin + 1 + decR) - lP, 0.8);
+                return h("div", { key: "sg" + iS, style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap" } }, iS === 0 ? (pR.machines + " mach.") : null);
+              });
               var anDebR = parseDate(pR.ch.dateDebut).getFullYear();
               var decalTxt = !pR.mobile ? ("commence en " + anDebR + " (non decalable)") : (pR.decalSem === 0 ? "dates demandees conservees" : ("decale de " + (pR.decalSem > 0 ? "+" : "") + pR.decalSem + " semaine" + (Math.abs(pR.decalSem) > 1 ? "s" : "")));
               return h("div", { key: "optRow" + pR.ch.id, style: { display: "grid", gridTemplateColumns: "190px 1fr", alignItems: "center", marginBottom: 7 } },
                 h("div", { style: { fontSize: 12.5, fontWeight: 700, paddingRight: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
                   pR.ch.titre,
                   !pR.mobile ? h("span", { style: { fontSize: 9, color: "#fbbf24", border: "1px solid rgba(245,158,11,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "DEBUT " + anDebR) : null,
-                  h("span", { style: { fontSize: 10, color: "#71717a", fontWeight: 600, display: "block" } }, (pR.ch.client || "client ?") + " - " + pR.machines + " machine" + (pR.machines > 1 ? "s" : ""))
+                  h("span", { style: { fontSize: 10, color: "#71717a", fontWeight: 600, display: "block" } }, (pR.ch.client || "client ?") + " - " + pR.machines + " machine" + (pR.machines > 1 ? "s" : "") + (pR.segs.length > 1 ? " - " + pR.segs.length + " periodes" : ""))
                 ),
-                h("div", { style: { position: "relative", height: 26, background: "rgba(0,0,0,0.25)", borderRadius: 6, overflow: "hidden" }, title: pR.ch.titre + " : " + decalTxt },
-                  ghost,
-                  h("div", { style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap" } }, pR.machines + " mach.")
+                h("div", { style: { position: "relative", height: 26, background: "rgba(0,0,0,0.25)", borderRadius: 6, overflow: "hidden" }, title: pR.ch.titre + " : " + decalTxt + (pR.segs.length > 1 ? " - " + pR.segs.length + " periodes de travail (coupures conservees)" : "") },
+                  ghosts,
+                  barres
                 )
               );
             })
