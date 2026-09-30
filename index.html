@@ -635,11 +635,12 @@
     function equipementFromDb(r) {
       var extra = {};
       try { if (r.notes) extra = JSON.parse(r.notes); } catch(e) { extra = { _text: r.notes }; }
-      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), ProchainControleTechnique: extra.prochainControleTechnique || "", Notes: extra._text || "" };
+      return { Id: r.id, Title: r.immatriculation || "", Nom: r.nom || "", Type: r.type || "", Categorie: r.categorie === "vl" ? "Vehicule" : "Engin", Localisation: r.localisation || "", Horametre: String(r.horametre_actuel ?? 0), KM: String(r.km_actuel ?? 0), Statut: STATUT_EQ_TO_UI[r.statut] || "En service", DateMiseEnService: r.date_mise_en_service || "", Marque: r.marque || "", Modele: r.modele || "", NumeroSerie: r.numero_serie || "", Annee: r.annee || null, DernierEntretienH: String(extra.dernierEntretienH ?? ""), DernierEntretienGamme: String(extra.dernierEntretienGamme ?? ""), DernierEntretienKM: String(extra.dernierEntretienKM ?? ""), ProchainControleTechnique: extra.prochainControleTechnique || "", Notes: extra._text || "" };
     }
     function equipementToDb(e) {
       var notesObj = {};
       if (e.DernierEntretienH) notesObj.dernierEntretienH = parseFloat(e.DernierEntretienH) || 0;
+      if (e.DernierEntretienGamme && parseFloat(e.DernierEntretienGamme) > 0) notesObj.dernierEntretienGamme = parseFloat(e.DernierEntretienGamme);
       if (e.DernierEntretienKM) notesObj.dernierEntretienKM = parseFloat(e.DernierEntretienKM) || 0;
       if (e.ProchainControleTechnique) notesObj.prochainControleTechnique = String(e.ProchainControleTechnique).substring(0, 10);
       if (e.Notes) notesObj._text = e.Notes;
@@ -1943,6 +1944,21 @@
     // de cycles de visite ont ete atteints par l'horametre actuel, et on
     // soustrait le nombre d'interventions preventives deja faites.
     // Calcule le prochain seuil de maintenance pour un plan donne
+    // Base d'echeance d'un plan quand la GAMME du dernier entretien est connue
+    // (fiche equipement, champ « Gamme effectuee ») : la gamme declaree et
+    // toutes les plus petites sont reputees faites a baseH ; les gammes PLUS
+    // GROSSES sont supposees faites au dernier multiple rond de leur frequence
+    // avant baseH (ex. vidange 250H a 2250 : la 500H precedente est supposee a
+    // 2000, donc la prochaine tombe a 2500 et absorbe la 250H). Sans gamme
+    // declaree : comportement historique (baseH pour toutes les gammes).
+    function baseEntretienPlan(baseH, gammeH, freqVal) {
+      var b = parseFloat(baseH) || 0;
+      var g = parseFloat(gammeH) || 0;
+      if (b <= 0 || g <= 0 || !(freqVal > 0)) return b;
+      if (freqVal <= g) return b;
+      return Math.floor(b / freqVal) * freqVal;
+    }
+
     // Prochain seuil = prochain multiple de freqVal apres le dernier entretien connu
     // isDue = vrai si le compteur a DEPASSE le seuil (strictement)
     // atThreshold = vrai si le compteur est exactement au seuil
@@ -1992,7 +2008,7 @@
         else return;
         if (freqVal === 0) return;
         var currentVal = freqType === "h" ? horam : km;
-        var baseVal = freqType === "h" ? baseH : baseKM;
+        var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
         var planInts = interventions.filter((i) =>
           i.Type === "Preventive" &&
           (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
@@ -2048,7 +2064,7 @@
         else return;
         if (freqVal === 0) return;
         var currentVal = freqType === "h" ? horam : km;
-        var baseVal = freqType === "h" ? baseH : baseKM;
+        var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
         var planInts = interventions.filter(function(i) {
           return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
         });
@@ -2750,7 +2766,7 @@
           else if (matchK) { freqVal = parseInt(matchK[1]); freqType = "km"; }
           if (freqVal === 0) return;
           var currentVal = freqType === "h" ? horam : km;
-          var baseVal = freqType === "h" ? baseH : baseKM;
+          var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
           var planInts = interventions.filter(function(i) {
             return i.Type === "Preventive" && (i.EquipementId === eq.Id || i.Equipement === eq.Title) && (i.Plan || "").toLowerCase() === p.Title.toLowerCase() && (i.Statut_Intervention === "Termine" || derivedStatusFromGamme(i) === "Termine");
           });
@@ -3688,8 +3704,23 @@
 
     // ─── Formulaire Equipement ──────────────────────────────────────────
     function EquipementForm({ onSave, onCancel, editItem }) {
-      const { isAdmin } = useAppData();
-      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate(), Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
+      const { isAdmin, plans } = useAppData();
+      const [f, setF] = useState(editItem || { Title: "", Nom: "", Categorie: "Engin", Type: "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienGamme: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate(), Marque: "", Modele: "", NumeroSerie: "", Annee: "" });
+      // Gammes H disponibles (frequences horametre des plans) pour le champ
+      // « Gamme du dernier entretien » ; fallback 250/500/1000 sans plans
+      const gammesH = (function() {
+        var setG = {};
+        (plans || []).forEach(function(p) {
+          if (p.Statut === "Suspendu") return;
+          var fr = String(p.Frequence || "");
+          var mH = fr.match(/horametre\s*(\d+)/i) || fr.match(/^(\d+)\s*h/i);
+          if (mH && parseInt(mH[1]) > 0) setG[parseInt(mH[1])] = true;
+        });
+        var arr = Object.keys(setG).map(function(x) { return parseInt(x, 10); });
+        if (arr.length === 0) arr = [250, 500, 1000];
+        arr.sort(function(a, b) { return a - b; });
+        return arr;
+      }());
       const [saving, setSaving] = useState(false);
       const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
       // On ne peut modifier l'horametre/KM manuellement que si admin et en mode edition.
@@ -3718,6 +3749,9 @@
           h(FormField, { label: "Horametre (h)" + (horametreEditable ? "" : " (admin)") }, h("input", { type: "number", style: horametreEditable ? inputStyle : lockedInput, value: f.Horametre, onChange: (e) => upd("Horametre", e.target.value), readOnly: !horametreEditable, title: horametreEditable ? "" : "Reserve a l'admin. Utilisez un releve pour mettre a jour." })),
           h(FormField, { label: "Kilometrage (km)" + (horametreEditable ? "" : " (admin)") }, h("input", { type: "number", style: horametreEditable ? inputStyle : lockedInput, value: f.KM, onChange: (e) => upd("KM", e.target.value), readOnly: !horametreEditable, title: horametreEditable ? "" : "Reserve a l'admin. Utilisez un releve pour mettre a jour." })),
           h(FormField, { label: "Dernier entretien H (h)" }, h("input", { type: "number", style: inputStyle, value: f.DernierEntretienH, onChange: (e) => upd("DernierEntretienH", e.target.value), placeholder: "Ex: 4800", title: "Horametre du dernier entretien connu avant l'application" })),
+          h(FormField, { label: "Gamme du dernier entretien" }, h("select", { style: selectStyle, value: f.DernierEntretienGamme || "", onChange: (e) => upd("DernierEntretienGamme", e.target.value), title: "Quelle visite a ete faite a cet horametre ? Les visites plus grosses sont supposees faites au dernier multiple rond avant (ex. vidange 250H a 2250 : la prochaine 500H tombe a 2500 et absorbe la 250H). Laisser sur Je ne sais pas = comportement actuel." },
+            h("option", { value: "" }, "Je ne sais pas"),
+            gammesH.map((g) => h("option", { key: g, value: String(g) }, (g === gammesH[0] ? "Vidange " : "Visite ") + g + "H")))),
           h(FormField, { label: "Dernier entretien KM" }, h("input", { type: "number", style: inputStyle, value: f.DernierEntretienKM, onChange: (e) => upd("DernierEntretienKM", e.target.value), placeholder: "Ex: 45000", title: "Kilometrage du dernier entretien connu avant l'application" })),
           h(FormField, { label: "Statut" }, h("select", { style: selectStyle, value: f.Statut, onChange: (e) => upd("Statut", e.target.value) },
             ["En service", "En panne", "En maintenance", "Reforme"].map((x) => h("option", { key: x, value: x }, x)))),
@@ -3976,7 +4010,7 @@
           h(Card, null,
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, "Informations generales"),
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
-              [["Code", eq.Title], ["Categorie", eq.Categorie || "Engin"], ["Type", eq.Type], ["Marque", eq.Marque || "\u2014"], ["Modele", eq.Modele || "\u2014"], ["Numero de serie", eq.NumeroSerie || "\u2014"], ["Annee", eq.Annee || "\u2014"], ["Localisation", eq.Localisation || "\u2014"], ["Horametre", fmtNum(hmActuel) + " h"], ["KM", fmtNum(kmActuel) + " km"], ["Dernier entretien H", eq.DernierEntretienH ? fmtNum(eq.DernierEntretienH) + " h" : "\u2014"], ["Dernier entretien KM", eq.DernierEntretienKM ? fmtNum(eq.DernierEntretienKM) + " km" : "\u2014"], ["Mise en service", eq.DateMiseEnService || "\u2014"]].map(([label, val]) =>
+              [["Code", eq.Title], ["Categorie", eq.Categorie || "Engin"], ["Type", eq.Type], ["Marque", eq.Marque || "\u2014"], ["Modele", eq.Modele || "\u2014"], ["Numero de serie", eq.NumeroSerie || "\u2014"], ["Annee", eq.Annee || "\u2014"], ["Localisation", eq.Localisation || "\u2014"], ["Horametre", fmtNum(hmActuel) + " h"], ["KM", fmtNum(kmActuel) + " km"], ["Dernier entretien H", eq.DernierEntretienH ? fmtNum(eq.DernierEntretienH) + " h" + (parseFloat(eq.DernierEntretienGamme) > 0 ? " (gamme " + parseFloat(eq.DernierEntretienGamme) + "H)" : "") : "\u2014"], ["Dernier entretien KM", eq.DernierEntretienKM ? fmtNum(eq.DernierEntretienKM) + " km" : "\u2014"], ["Mise en service", eq.DateMiseEnService || "\u2014"]].map(([label, val]) =>
                 h("div", { key: label },
                   h("div", { style: { fontSize: 11, color: "#71717a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" } }, label),
                   h("div", { style: { fontSize: 15, fontWeight: 600, color: "#fafafa", marginTop: 2 } }, val)))),
@@ -10250,7 +10284,7 @@
           else return;
           if (freqVal === 0) return;
           var currentVal = freqType === "h" ? horam : km;
-          var baseVal = freqType === "h" ? baseH : baseKM;
+          var baseVal = freqType === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqVal) : baseKM;
           var planInts = interventionsData.filter(function(i) {
             return i.Type === "Preventive" &&
               (i.EquipementId === eq.Id || i.Equipement === eq.Title) &&
@@ -10383,10 +10417,12 @@
       }
 
       // series = [{ vals: [52 valeurs], couleur: function(v), opacite, decalX, retraitW }]
-      function svgChargeMachines(series, hauteurSvg) {
+      // capS : capacite tracee en pointille (defaut : flotte totale)
+      function svgChargeMachines(series, hauteurSvg, capS) {
+        var capV = capS != null ? capS : flotteMachines;
         var Ws = 1160, Hs = hauteurSvg || 150, padL = 34, padB = 20, padT = 14;
         var iw = Ws - padL - 10, ih = Hs - padT - padB;
-        var maxV = flotteMachines;
+        var maxV = capV;
         series.forEach(function(sr) { sr.vals.forEach(function(v) { if (v > maxV) maxV = v; }); });
         maxV = maxV + 1;
         var bw = iw / 52;
@@ -10404,21 +10440,22 @@
             kids.push(h("rect", { key: "b" + si + "_" + iV, x: xB, y: padT + ih - bh, width: Math.max(bw - 2 - (sr.retraitW || 0), 1), height: bh, rx: 2, fill: sr.couleur(v), opacity: sr.opacite || 1 }));
           });
         });
-        var yF = padT + ih - (flotteMachines / maxV) * ih;
+        var yF = padT + ih - (capV / maxV) * ih;
         kids.push(h("line", { key: "fl", x1: padL, y1: yF, x2: Ws - 10, y2: yF, stroke: "#f59e0b", strokeWidth: 1.8, strokeDasharray: "6 4" }));
-        kids.push(h("text", { key: "ft", x: Ws - 12, y: yF - 5, textAnchor: "end", fontSize: 10, fontWeight: 700, fill: "#fbbf24" }, "Flotte : " + flotteMachines));
+        kids.push(h("text", { key: "ft", x: Ws - 12, y: yF - 5, textAnchor: "end", fontSize: 10, fontWeight: 700, fill: "#fbbf24" }, "Flotte : " + capV));
         for (var mS = 0; mS < 12; mS++) {
           kids.push(h("text", { key: "mt" + mS, x: padL + (mS + 0.5) * (iw / 12), y: Hs - 5, textAnchor: "middle", fontSize: 9, fill: "#71717a" }, MOIS_COURTS_CH[mS]));
         }
         return h("svg", { viewBox: "0 0 " + Ws + " " + Hs, style: { width: "100%", height: "auto", display: "block" } }, kids);
       }
 
-      function legendeChargeMachines(avecOriginal) {
+      function legendeChargeMachines(avecOriginal, capS) {
+        var capV = capS != null ? capS : flotteMachines;
         var items = [];
         if (avecOriginal) items.push(h("span", { key: "lo", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "rgba(255,255,255,0.25)", display: "inline-block" } }), "Planning original"));
         items.push(h("span", { key: "lv", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "#22c55e", display: "inline-block" } }), avecOriginal ? "Planning propose" : "Dans la flotte"));
         items.push(h("span", { key: "lr", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "#f43f5e", display: "inline-block" } }), "Au-dessus de la flotte"));
-        items.push(h("span", { key: "lf", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { display: "inline-block", width: 16, height: 0, borderTop: "2px dashed #f59e0b" } }), "Flotte disponible (" + flotteMachines + " machine" + (flotteMachines > 1 ? "s" : "") + ")"));
+        items.push(h("span", { key: "lf", style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { display: "inline-block", width: 16, height: 0, borderTop: "2px dashed #f59e0b" } }), "Flotte disponible (" + capV + " machine" + (capV > 1 ? "s" : "") + ")"));
         return h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 10.5, color: "#94a3b8", marginTop: 10 } }, items);
       }
 
@@ -10573,92 +10610,137 @@
           return over * 100000000 + pic * 10000 + Math.abs(dSem);
         }
 
-        function chargeSemaineProps(useOrig) {
+        // ── Pools de machines (info Tomy 2026-09-30) : le CAROTTE utilise une
+        // machine speciale (1 carotteuse), l'HELIPORTE 2 machines speciales
+        // (Sondeuse KT), le reste du parc est interchangeable. Un chantier
+        // heliporte ne peut prendre QUE les machines heliportees : chaque pool
+        // est donc optimise contre SA propre capacite.
+        var nbHeliDet = 0, nbCarotDet = 0;
+        equipements.forEach(function(eqP) {
+          if (!enginActifSet[String(eqP.Id)]) return;
+          var tyP = String(eqP.Type || "").toLowerCase();
+          if (/carott/.test(tyP)) nbCarotDet++;
+          else if (/\bkt\b|h[eé]liport/.test(tyP)) nbHeliDet++;
+        });
+        var capHeli = nbHeliDet > 0 ? nbHeliDet : 2;
+        var capCarot = nbCarotDet > 0 ? nbCarotDet : 1;
+        var capStandard = Math.max(flotteMachines - nbHeliDet - nbCarotDet, 0);
+        function poolChantier(chO) {
+          var sP = (String(chO.titre || "") + " " + String(chO.site || "")).toLowerCase();
+          if (/carott/.test(sP)) return "carotte";
+          if (/h[eé]liport/.test(sP)) return "heliporte";
+          return "standard";
+        }
+        propsOpt.forEach(function(p) { p.pool = poolChantier(p.ch); });
+
+        function chargeSemainePool(poolKey, useOrig) {
           var wS = [];
           for (var iW = 0; iW < 52; iW++) wS.push(0);
-          propsOpt.forEach(function(pW) { poserProp(wS, pW, useOrig ? 0 : pW.decalSem, 1); });
+          propsOpt.forEach(function(pW) { if (pW.pool === poolKey) poserProp(wS, pW, useOrig ? 0 : pW.decalSem, 1); });
           return wS;
         }
-        var chargeAvant = chargeSemaineProps(true);
-        var picAvant = 0;
-        chargeAvant.forEach(function(v) { if (v > picAvant) picAvant = v; });
+        function picDe(arr) { var m = 0; arr.forEach(function(v) { if (v > m) m = v; }); return m; }
 
-        // ── Moteur « caler le tout » : on cherche la plus PETITE flotte K qui
-        // passe (charge <= K chaque semaine) en decalant les chantiers mobiles
-        // (jamais au-dela de la tolerance), avec des passes d'amelioration.
-        // Les chantiers demarres avant le 1er janvier sont poses d'abord
-        // (contrainte physique). Deterministe : meme resultat a chaque calcul.
-        var mobilesOpt = propsOpt.filter(function(p) { return p.mobile; });
-        var chargeBase = [];
-        for (var iB = 0; iB < 52; iB++) chargeBase.push(0);
-        propsOpt.forEach(function(p) { if (!p.mobile) poserProp(chargeBase, p, 0, 1); });
-        var picBaseK = 0;
-        chargeBase.forEach(function(v) { if (v > picBaseK) picBaseK = v; });
-        var maxMachK = 1;
-        propsOpt.forEach(function(p) { if (p.machines > maxMachK) maxMachK = p.machines; });
         var decalsTous = [0];
         for (var dT = 1; dT <= tolSemOpt; dT++) { decalsTous.push(-dT); decalsTous.push(dT); }
-        var ordreK = mobilesOpt.slice().sort(function(a, b) { return (b.machines * (b.finOrig - b.debOrig)) - (a.machines * (a.finOrig - a.debOrig)); });
-        var meilleurRes = null;
-        var Kdep = Math.max(picBaseK, maxMachK, 1);
-        for (var K = Kdep; K <= Math.max(picAvant, Kdep); K++) {
-          var wK = chargeBase.slice();
-          // Placement initial (gros chantiers d'abord)
-          ordreK.forEach(function(p) {
-            var best = { cout: Infinity, decal: 0 };
-            decalsTous.forEach(function(dSem) {
-              if (!decalOk(p, dSem)) return;
-              var c = coutProp(wK, p, dSem, K);
-              if (c < best.cout) best = { cout: c, decal: dSem };
-            });
-            p.decalSem = best.decal;
-            poserProp(wK, p, p.decalSem, 1);
-          });
-          // Passes d'amelioration : on ressort chaque chantier et on le
-          // replace au mieux, jusqu'a stabilite
-          for (var passK = 0; passK < 12; passK++) {
-            var bouge = 0;
+
+        // ── Moteur « caler le tout », PAR POOL : on cherche la plus PETITE
+        // flotte K qui passe (charge <= K chaque semaine) en decalant les
+        // chantiers mobiles (jamais au-dela de la tolerance), avec des passes
+        // d'amelioration. Les chantiers demarres avant le 1er janvier sont
+        // poses d'abord (contrainte physique). Deterministe. Garde-fou par
+        // pool : aucun decalage si ni pic ni surcharge ne s'ameliorent.
+        function optimiserPool(poolKey, capPool) {
+          var propsPool = propsOpt.filter(function(p) { return p.pool === poolKey; });
+          if (propsPool.length === 0) return;
+          var mobilesP = propsPool.filter(function(p) { return p.mobile; });
+          var chargeBase = [];
+          for (var iB = 0; iB < 52; iB++) chargeBase.push(0);
+          propsPool.forEach(function(p) { if (!p.mobile) poserProp(chargeBase, p, 0, 1); });
+          var chargeAvP = chargeSemainePool(poolKey, true);
+          var picAvP = picDe(chargeAvP);
+          var picBaseK = picDe(chargeBase);
+          var maxMachK = 1;
+          propsPool.forEach(function(p) { if (p.machines > maxMachK) maxMachK = p.machines; });
+          var ordreK = mobilesP.slice().sort(function(a, b) { return (b.machines * (b.finOrig - b.debOrig)) - (a.machines * (a.finOrig - a.debOrig)); });
+          var meilleurRes = null;
+          var Kdep = Math.max(picBaseK, maxMachK, 1);
+          for (var K = Kdep; K <= Math.max(picAvP, Kdep); K++) {
+            var wK = chargeBase.slice();
+            // Placement initial (gros chantiers d'abord)
             ordreK.forEach(function(p) {
-              poserProp(wK, p, p.decalSem, -1);
-              var best2 = { cout: Infinity, decal: p.decalSem };
+              var best = { cout: Infinity, decal: 0 };
               decalsTous.forEach(function(dSem) {
                 if (!decalOk(p, dSem)) return;
-                var c2 = coutProp(wK, p, dSem, K);
-                if (c2 < best2.cout) best2 = { cout: c2, decal: dSem };
+                var c = coutProp(wK, p, dSem, K);
+                if (c < best.cout) best = { cout: c, decal: dSem };
               });
-              if (best2.decal !== p.decalSem) bouge++;
-              p.decalSem = best2.decal;
+              p.decalSem = best.decal;
               poserProp(wK, p, p.decalSem, 1);
             });
-            if (bouge === 0) break;
+            // Passes d'amelioration : on ressort chaque chantier et on le
+            // replace au mieux, jusqu'a stabilite
+            for (var passK = 0; passK < 12; passK++) {
+              var bouge = 0;
+              ordreK.forEach(function(p) {
+                poserProp(wK, p, p.decalSem, -1);
+                var best2 = { cout: Infinity, decal: p.decalSem };
+                decalsTous.forEach(function(dSem) {
+                  if (!decalOk(p, dSem)) return;
+                  var c2 = coutProp(wK, p, dSem, K);
+                  if (c2 < best2.cout) best2 = { cout: c2, decal: dSem };
+                });
+                if (best2.decal !== p.decalSem) bouge++;
+                p.decalSem = best2.decal;
+                poserProp(wK, p, p.decalSem, 1);
+              });
+              if (bouge === 0) break;
+            }
+            var picK = picDe(wK);
+            if (!meilleurRes || picK < meilleurRes.pic) {
+              meilleurRes = { pic: picK, decals: mobilesP.map(function(p) { return p.decalSem; }) };
+            }
+            if (picK <= K) break; // plus petite flotte qui passe : trouvee
           }
-          var picK = 0;
-          wK.forEach(function(v) { if (v > picK) picK = v; });
-          if (!meilleurRes || picK < meilleurRes.pic) {
-            meilleurRes = { pic: picK, decals: mobilesOpt.map(function(p) { return p.decalSem; }) };
+          if (meilleurRes) {
+            mobilesP.forEach(function(p, iR) { p.decalSem = meilleurRes.decals[iR]; });
           }
-          if (picK <= K) break; // plus petite flotte qui passe : trouvee
+          // Garde-fou du pool : on ne decale que si ca ameliore VRAIMENT (pic
+          // plus bas, ou meme pic mais moins de semaines au-dessus de la
+          // capacite du pool). Sinon dates d'origine - pas de mouvement pour rien.
+          var chargeApP = chargeSemainePool(poolKey, false);
+          var picApP = picDe(chargeApP);
+          var surAvP = chargeAvP.filter(function(v) { return v > capPool; }).length;
+          var surApP = chargeApP.filter(function(v) { return v > capPool; }).length;
+          var aBouge = propsPool.some(function(p) { return p.decalSem !== 0; });
+          if (aBouge && (picApP > picAvP || (picApP === picAvP && surApP >= surAvP))) {
+            propsPool.forEach(function(pG) { pG.decalSem = 0; });
+          }
         }
-        if (meilleurRes) {
-          mobilesOpt.forEach(function(p, iR) { p.decalSem = meilleurRes.decals[iR]; });
-        }
+        optimiserPool("standard", capStandard);
+        optimiserPool("heliporte", capHeli);
+        optimiserPool("carotte", capCarot);
         propsOpt.forEach(function(p) { p.deb = p.debOrig + p.decalSem * 7; p.fin = p.finOrig + p.decalSem * 7; });
 
-        var chargeApres = chargeSemaineProps(false);
-        var picApres = 0;
-        chargeApres.forEach(function(v) { if (v > picApres) picApres = v; });
-        var surAvant = chargeAvant.filter(function(v) { return v > flotteMachines; }).length;
-        var surApres = chargeApres.filter(function(v) { return v > flotteMachines; }).length;
-        // Garde-fou : on ne decale que si ca ameliore VRAIMENT (pic plus bas,
-        // ou meme pic mais moins de semaines en surcharge). Sinon on garde le
-        // planning d'origine tel quel - pas de mouvement pour rien.
-        var nbDecalesBrut = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
-        if (nbDecalesBrut > 0 && (picApres > picAvant || (picApres === picAvant && surApres >= surAvant))) {
-          propsOpt.forEach(function(pG) { pG.decalSem = 0; pG.deb = pG.debOrig; pG.fin = pG.finOrig; });
-          chargeApres = chargeSemaineProps(false);
-          picApres = picAvant;
-          surApres = surAvant;
-        }
+        // Metriques : le graphique et les KPI principaux portent sur le pool
+        // STANDARD (le levier principal) ; les pools speciaux ont leur etat dedie.
+        var chargeAvant = chargeSemainePool("standard", true);
+        var chargeApres = chargeSemainePool("standard", false);
+        var picAvant = picDe(chargeAvant);
+        var picApres = picDe(chargeApres);
+        var surAvant = chargeAvant.filter(function(v) { return v > capStandard; }).length;
+        var surApres = chargeApres.filter(function(v) { return v > capStandard; }).length;
+        var specPools = [
+          { key: "heliporte", label: "Heliporte", cap: capHeli, machLabel: capHeli + " sondeuse" + (capHeli > 1 ? "s" : "") + " heliportee" + (capHeli > 1 ? "s" : "") },
+          { key: "carotte", label: "Carotte", cap: capCarot, machLabel: capCarot + " carotteuse" + (capCarot > 1 ? "s" : "") }
+        ].map(function(sp) {
+          var lst = propsOpt.filter(function(p) { return p.pool === sp.key; });
+          return {
+            key: sp.key, label: sp.label, cap: sp.cap, machLabel: sp.machLabel, nb: lst.length,
+            picAv: picDe(chargeSemainePool(sp.key, true)),
+            picAp: picDe(chargeSemainePool(sp.key, false))
+          };
+        }).filter(function(sp) { return sp.nb > 0; });
         var nbDecales = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
 
         function carteOpt(accCol, label, badge, badgeCol, val, valCol, sous) {
@@ -10694,13 +10776,28 @@
         var propsAffiche = propsOpt.slice().sort(function(a, b) { return a.debOrig - b.debOrig; });
 
         return h("div", null,
-          // KPI
-          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 } },
-            carteOpt("#94a3b8", "Pic machines (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
-            carteOpt("#22c55e", "Pic machines (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > flotteMachines ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
+          // KPI (pool standard = le levier ; les machines speciales ont leur carte)
+          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 } },
+            carteOpt("#94a3b8", "Pic standard (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
+            carteOpt("#22c55e", "Pic standard (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > capStandard ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
             carteOpt("#6366f1", "Chantiers decales", null, null, nbDecales + " / " + propsOpt.length, "#a5b4fc", "les autres restent aux dates demandees"),
-            carteOpt("#f59e0b", "Flotte minimale", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "flotte actuelle : " + flotteMachines + " - moins de machines en simultane = moins d'equipes")
+            carteOpt("#f59e0b", "Flotte minimale (standard)", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "dispo : " + capStandard + " standard + " + capHeli + " heliportees + " + capCarot + " carotteuse" + (capCarot > 1 ? "s" : ""))
           ),
+          // Machines speciales : chaque famille est verifiee contre SA capacite
+          specPools.length > 0 ? h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 } },
+            specPools.map(function(sp) {
+              var okSp = sp.picAp <= sp.cap;
+              var col = sp.key === "heliporte" ? "#22d3ee" : "#f472b6";
+              return h("div", { key: "spc" + sp.key, style: { flex: 1, minWidth: 230, background: "rgba(13,15,26,0.55)", border: "1px solid " + (okSp ? "rgba(255,255,255,0.08)" : "rgba(244,63,94,0.5)"), borderLeft: "3px solid " + col, borderRadius: 12, padding: "11px 14px" } },
+                h("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: 0.8, color: "#94a3b8", textTransform: "uppercase" } }, "Chantiers " + sp.label + " (" + sp.nb + ")"),
+                h("div", { style: { fontSize: 15, fontWeight: 800, marginTop: 6, color: okSp ? "#86efac" : "#fda4af" } },
+                  "pic " + sp.picAv + (sp.picAp !== sp.picAv ? " > " + sp.picAp : "") + " / " + sp.machLabel),
+                h("div", { style: { fontSize: 10.5, color: okSp ? "#71717a" : "#fda4af", marginTop: 2 } },
+                  okSp ? "ca passe avec les machines speciales disponibles"
+                       : "IMPOSSIBLE avec " + sp.machLabel + " : augmente le decalage autorise ou revois les dates de ces chantiers")
+              );
+            })
+          ) : null,
           // Gantt propose
           h("div", { style: cardOptStyle },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" } },
@@ -10712,7 +10809,7 @@
               )
             ),
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 12 } },
-              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
+              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Machines speciales : les chantiers HELIPORTE n'utilisent que les " + capHeli + " sondeuses heliportees et le CAROTTE la carotteuse (reconnus par leur titre) - chaque famille est calee contre sa propre capacite. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             propsAffiche.map(function(pR, idxR) {
               var colR = ENGIN_PALETTE[idxR % ENGIN_PALETTE.length];
@@ -10733,6 +10830,8 @@
               return h("div", { key: "optRow" + pR.ch.id, style: { display: "grid", gridTemplateColumns: "190px 1fr", alignItems: "center", marginBottom: 7 } },
                 h("div", { style: { fontSize: 12.5, fontWeight: 700, paddingRight: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
                   pR.ch.titre,
+                  pR.pool === "heliporte" ? h("span", { style: { fontSize: 9, color: "#67e8f9", border: "1px solid rgba(34,211,238,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "HELIPORTE") : null,
+                  pR.pool === "carotte" ? h("span", { style: { fontSize: 9, color: "#f9a8d4", border: "1px solid rgba(244,114,182,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "CAROTTE") : null,
                   !pR.mobile ? h("span", { style: { fontSize: 9, color: "#fbbf24", border: "1px solid rgba(245,158,11,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "DEBUT " + anDebR) : null,
                   h("span", { style: { fontSize: 10, color: "#71717a", fontWeight: 600, display: "block" } }, (pR.ch.client || "client ?") + " - " + pR.machines + " machine" + (pR.machines > 1 ? "s" : "") + (pR.segs.length > 1 ? " - " + pR.segs.length + " periodes" : ""))
                 ),
@@ -10745,12 +10844,12 @@
           ),
           // Charge avant / apres
           h("div", { style: cardOptStyle },
-            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines requises par semaine — avant / apres"),
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines standard requises par semaine — avant / apres"),
             svgChargeMachines([
               { vals: chargeAvant, couleur: function() { return "rgba(255,255,255,0.22)"; }, retraitW: 8 },
-              { vals: chargeApres, couleur: function(v) { return v > flotteMachines ? "#f43f5e" : "#22c55e"; }, decalX: 5, retraitW: 8 }
-            ], 170),
-            legendeChargeMachines(true)
+              { vals: chargeApres, couleur: function(v) { return v > capStandard ? "#f43f5e" : "#22c55e"; }, decalX: 5, retraitW: 8 }
+            ], 170, capStandard),
+            legendeChargeMachines(true, capStandard)
           ),
           // Decalages proposes
           h("div", { style: cardOptStyle },
@@ -36733,7 +36832,7 @@
               if (freqNum === 0) return;
 
               var currentVal = typeCycle === "h" ? horam : km;
-              var baseVal = typeCycle === "h" ? baseH : baseKM;
+              var baseVal = typeCycle === "h" ? baseEntretienPlan(baseH, eq.DernierEntretienGamme, freqNum) : baseKM;
 
               const myInts = interventions.filter((i) =>
                 i.Type === "Preventive" &&
