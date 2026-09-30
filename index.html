@@ -17786,6 +17786,11 @@
         if (mCle >= moisCourantCle) return false;
         if (moisDeverrouillesPe[mCle]) return false;
         var lblV = new Date(mCle + "-01T00:00:00").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+        // La boite de confirmation AVALE le relachement de souris : sans ce
+        // reset, painting restait actif et le simple SURVOL continuait de
+        // peindre/effacer apres le deverrouillage (vecu : affectations
+        // effacees a la gomme sans aucun clic, 2026-10-01).
+        setPainting(false);
         if (window.confirm("Le planning de " + lblV + " est cloture (mois passe, deja pris en compte pour les primes et les heures).\n\nDeverrouiller la modification de ce mois pour cette session ?")) {
           setMoisDeverrouillesPe(function(prev) { var nV = Object.assign({}, prev); nV[mCle] = true; return nV; });
           return false;
@@ -17867,7 +17872,11 @@
           setAffectation(empId, dateStr, brush, "travail");
         }
       }
-      function handleCellEnter(empId, dateStr) {
+      function handleCellEnter(empId, dateStr, ev) {
+        // Bouton de souris PAS enfonce -> on ne peint jamais au simple survol
+        // (le mouseup peut etre perdu dans une boite de dialogue ou hors
+        // fenetre : painting resterait bloque a true)
+        if (ev && ev.buttons === 0) { if (painting) setPainting(false); return; }
         if (painting && brush) {
           // Balayage : on saute silencieusement les jours hors contrat
           if (brush !== "eraser") {
@@ -18158,7 +18167,7 @@
                         e.preventDefault();
                         if (brush) { setPainting(true); handleCellClick(emp.id, dateStr); }
                       },
-                      onMouseEnter: function() { handleCellEnter(emp.id, dateStr); },
+                      onMouseEnter: function(e) { handleCellEnter(emp.id, dateStr, e); },
                       style: {
                         padding: 2, borderBottom: "1px solid rgba(255,255,255,0.04)", textAlign: "center",
                         cursor: brush ? "pointer" : "default",
@@ -36565,6 +36574,10 @@
       const [recoveryMode, setRecoveryMode] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
       const [dataLoading, setDataLoading] = useState(false);
+      // Echec de chargement : bandeau persistant + relances automatiques
+      // (un echec reseau passager laissait l'app completement vide - vecu)
+      const [loadError, setLoadError] = useState(null);
+      const loadRetryRef = React.useRef(0);
       const [currentPage, setCurrentPage] = useState("statistiques");
       const [pageData, setPageData] = useState(null);
       const [interventions, setInterventions] = useState([]);
@@ -36797,7 +36810,19 @@
             if (carbRes.error) { console.warn("Table consommations_carburant:", carbRes.error.message); }
             else setDbCarburants(carbRes.data || []);
           } catch (e) { console.warn("Fetch consommations_carburant:", e.message); }
-        } catch (e) { showToast("Erreur chargement : " + e.message, "error"); }
+          // Chargement complet reussi : on efface l'etat d'erreur
+          loadRetryRef.current = 0;
+          setLoadError(null);
+        } catch (e) {
+          showToast("Erreur chargement : " + e.message, "error");
+          setLoadError(e && e.message ? e.message : "erreur reseau");
+          // Relance automatique (3 tentatives espacees de 3/6/9 s) : sans ca,
+          // un echec passager laissait l'app VIDE jusqu'au F5 manuel.
+          if (loadRetryRef.current < 3) {
+            loadRetryRef.current += 1;
+            setTimeout(function() { loadAll(); }, 3000 * loadRetryRef.current);
+          }
+        }
         finally { setDataLoading(false); }
       }, []);
 
@@ -38111,6 +38136,13 @@
             // Decalage sous le bouton hamburger sur mobile
             bpInfo.isMobile ? h("div", { style: { height: 44 } }) : null,
             dataLoading && h("div", { style: { position: "absolute", top: bpInfo.isMobile ? 60 : 20, right: 20, display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#a1a1aa" } }, h("div", { className: "loader", style: { width: 20, height: 20, borderWidth: 2 } }), "Chargement..."),
+            // Bandeau persistant d'echec de chargement (avec relance) : un
+            // echec reseau laissait l'app vide avec un simple toast de 3 s
+            loadError && !dataLoading ? h("div", { style: { position: "sticky", top: 0, zIndex: 300, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "10px 16px", marginBottom: 12, background: "rgba(244,63,94,0.14)", border: "1px solid rgba(244,63,94,0.45)", borderRadius: 10, color: "#fda4af", fontSize: 13, fontWeight: 600 } },
+              h(Icon, { name: "alert-triangle", size: 16, color: "#fda4af" }),
+              "Le chargement des donnees a echoue (" + loadError + "). Certaines pages peuvent etre vides ou incompletes.",
+              h("button", { onClick: function() { loadRetryRef.current = 0; loadAll(); }, style: { marginLeft: "auto", padding: "6px 14px", border: "none", borderRadius: 8, background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Recharger les donnees")
+            ) : null,
             !isAdmin && (pendingValidations.filter(function(p) { return p.submittedBy === userEmail; }).length > 0 || validationLog.filter(function(l) { return l.submittedBy === userEmail; }).length > 0) && h(PendingBannerUser, { pendingValidations: pendingValidations, userEmail: userEmail, updatePendingItem: contextValue.updatePendingItem, deletePendingItem: contextValue.deletePendingItem }),
             renderPage()),
           h(Toast, { message: toast.message, type: toast.type })));
