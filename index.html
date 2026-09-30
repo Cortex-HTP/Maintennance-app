@@ -787,7 +787,7 @@
       return false;
     }
     function chantierFromDb(r) {
-      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, prixMetreParType: r.prix_metre_par_type || {}, pmtEnBase: !!(r.prix_metre_par_type && Object.keys(r.prix_metre_par_type).length), depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true, imputationClient: r.imputation_client === true, impEnBase: r.imputation_client !== undefined, periodes: Array.isArray(r.periodes) ? r.periodes : [], periodesEnBase: r.periodes !== undefined };
+      return { id: r.id, titre: r.titre || "", client: r.client || "", emailContact: r.email_contact || "", jourCloture: r.jour_cloture_facturation != null ? parseInt(r.jour_cloture_facturation) : 25, dateDebut: r.date_debut || "", dateFin: r.date_fin || "", metrage: r.metrage || 0, prixMetre: r.prix_metre || 0, prixAttente: r.prix_attente || 0, prixDeplacement: r.prix_deplacement || 0, pdepEnBase: r.prix_deplacement !== undefined, prixMetreParType: r.prix_metre_par_type || {}, pmtEnBase: !!(r.prix_metre_par_type && Object.keys(r.prix_metre_par_type).length), depensesPrevues: r.depenses_prevues || 0, statut: r.statut || "A venir", site: r.site || "", latitude: r.latitude != null ? parseFloat(r.latitude) : null, longitude: r.longitude != null ? parseFloat(r.longitude) : null, carburantClient: r.carburant_client === true, imputationClient: r.imputation_client === true, impEnBase: r.imputation_client !== undefined, periodes: Array.isArray(r.periodes) ? r.periodes : [], periodesEnBase: r.periodes !== undefined };
     }
     function chantierToDb(c) {
       var lat = c.latitude !== "" && c.latitude !== null && c.latitude !== undefined ? parseFloat(c.latitude) : null;
@@ -799,6 +799,10 @@
       // pas joue (colonne inconnue) — la sauvegarde doit rester possible.
       var pmt = chantierPrixParTypeToDb(c);
       if (pmt !== null || c.pmtEnBase === true) ret.prix_metre_par_type = pmt;
+      // Meme prudence PGRST204 pour le prix deplacement : n'envoie la colonne
+      // que si un prix est saisi ou si elle existait deja en base (tant que
+      // sql_prix_deplacement.sql n'est pas joue, la sauvegarde doit passer).
+      if ((parseInt(c.prixDeplacement) || 0) > 0 || c.pdepEnBase === true) ret.prix_deplacement = parseInt(c.prixDeplacement) || 0;
       // Meme prudence PGRST204 pour le drapeau imputation client : n'envoie la
       // colonne que si elle est cochee ou existait deja en base (tant que
       // sql_imputation_client.sql n'est pas joue, la sauvegarde doit passer).
@@ -9600,7 +9604,7 @@
       };
 
       // ── CRUD Chantiers ──
-      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false }); setShowModal(true); };
+      var openNewChant = function() { setEditing({ _type: "chant", id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISO(new Date()), dateFin: formatDateISO(addMonthsFnLocal(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, prixDeplacement: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false }); setShowModal(true); };
       var openEditChant = function(c) { setEditing(Object.assign({}, c, { _type: "chant" })); setShowModal(true); };
       var saveChant = function(f) {
         var siteName = f.newSite ? f.newSite.trim() : f.site;
@@ -11640,7 +11644,8 @@
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 } },
               h(FormField, { label: "Metrage (m)" }, h("input", { type: "number", style: inputStyle, value: f.metrage, onChange: function(e) { upd("metrage", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix au metre (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.prixMetre, onChange: function(e) { upd("prixMetre", parseInt(e.target.value) || 0); } })),
-              h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
+              h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } })),
+              h(FormField, { label: "Prix deplacement (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixDeplacement || 0, onChange: function(e) { upd("prixDeplacement", parseInt(e.target.value) || 0); }, title: "Prix horaire de l'activite DEPLACEMENT (facturable). 0 = facturee au prix attente comme avant." }))
             ),
             champPrixParType(f, upd),
             champCarburantClient(f, upd),
@@ -13583,6 +13588,35 @@
         }
         return 0;
       }
+      // ── Prix DEPLACEMENT par chantier (0 = repli prix attente) ──
+      // L'activite DEPLACEMENT est facturable a son propre prix horaire
+      // (chantiers.prix_deplacement) ; les autres activites restent au prix attente.
+      var prixDeplByChantier = {}, prixDeplBySite = {};
+      (dbChantiers || []).forEach(function(c) {
+        var pd = parseFloat(c.prixDeplacement) || 0;
+        prixDeplByChantier[String(c.id)] = pd;
+        if (c.site && pd > 0) {
+          var skD = String(c.site).toUpperCase().trim();
+          if (!prixDeplBySite[skD] || (c.dateDebut || "") > (prixDeplBySite[skD].dateDebut || "")) prixDeplBySite[skD] = { prix: pd, dateDebut: c.dateDebut || "" };
+        }
+      });
+      function lookupPrixActivite(r, libU) {
+        if (String(libU || "").trim() === "DEPLACEMENT") {
+          var pdA = 0;
+          if (r.chantier_id != null && (prixDeplByChantier[String(r.chantier_id)] || 0) > 0) pdA = prixDeplByChantier[String(r.chantier_id)];
+          else if (r.lieu) {
+            var lkD = String(r.lieu).toUpperCase().trim();
+            if (prixDeplBySite[lkD]) pdA = prixDeplBySite[lkD].prix;
+            else {
+              var bestD = 0, bestLenD = 0, keysD = Object.keys(prixDeplBySite);
+              for (var iD = 0; iD < keysD.length; iD++) { var skD2 = keysD[iD]; if (skD2.indexOf(lkD) >= 0 || lkD.indexOf(skD2) >= 0) { var mlD = Math.min(skD2.length, lkD.length); if (mlD > bestLenD) { bestD = prixDeplBySite[skD2].prix; bestLenD = mlD; } } }
+              pdA = bestD;
+            }
+          }
+          if (pdA > 0) return pdA;
+        }
+        return lookupPrixAttente(r);
+      }
       var facturablesActSet = {};
       (parametres || []).forEach(function(p) { if (p && p.categorie === "rf_activites_facturables" && p.valeur) facturablesActSet[String(p.valeur).toUpperCase().trim()] = true; });
 
@@ -13618,7 +13652,7 @@
           }
           var libU = String(a && a.libelle || "").toUpperCase().trim();
           if (facturablesActSet[libU]) {
-            var paR = lookupPrixAttente(r);
+            var paR = lookupPrixActivite(r, libU);
             if (paR > 0) sondeusesMap[code].caFacturationActivites += (durBtw(a.debut, a.fin) / 60) * paR;
           }
         });
@@ -14996,7 +15030,7 @@
 
       // CRUD handlers
       var openNewChantier = function() {
-        setEditing({ id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false });
+        setEditing({ id: null, titre: "", client: "", emailContact: "", jourCloture: 25, dateDebut: formatDateISOAv(new Date()), dateFin: formatDateISOAv(addMonthsAv(new Date(), 3)), metrage: 0, prixMetre: 0, prixAttente: 0, prixDeplacement: 0, depensesPrevues: 0, statut: "A venir", site: "", latitude: null, longitude: null, carburantClient: false });
         setShowModal(true);
       };
       var openEditChantier = function(c) {
@@ -15519,7 +15553,8 @@
               h(FormField, { label: "Metrage (m)" }, h("input", { type: "number", style: inputStyle, value: f.metrage, onChange: function(e) { upd("metrage", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Prix/m (XPF)" }, h("input", { type: "number", style: inputStyle, value: f.prixMetre, onChange: function(e) { upd("prixMetre", parseInt(e.target.value) || 0); } })),
               h(FormField, { label: "Depenses prevues" }, h("input", { type: "number", style: inputStyle, value: f.depensesPrevues, onChange: function(e) { upd("depensesPrevues", parseInt(e.target.value) || 0); } })),
-              h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } }))
+              h(FormField, { label: "Prix attente (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixAttente || 0, onChange: function(e) { upd("prixAttente", parseInt(e.target.value) || 0); } })),
+              h(FormField, { label: "Prix deplacement (XPF/h)" }, h("input", { type: "number", style: inputStyle, value: f.prixDeplacement || 0, onChange: function(e) { upd("prixDeplacement", parseInt(e.target.value) || 0); }, title: "Prix horaire de l'activite DEPLACEMENT (facturable). 0 = facturee au prix attente comme avant." }))
             ),
             champPrixParType(f, upd),
             champCarburantClient(f, upd),
@@ -23552,6 +23587,35 @@
         }
         return 0;
       };
+      // ── Prix DEPLACEMENT par chantier (0 = repli prix attente) ──
+      // L'activite DEPLACEMENT est facturable a son propre prix horaire
+      // (chantiers.prix_deplacement) ; les autres activites restent au prix attente.
+      var prixDeplByChantier = {}, prixDeplBySite = {};
+      (dbChantiers || []).forEach(function(c) {
+        var pd = parseFloat(c.prixDeplacement) || 0;
+        prixDeplByChantier[String(c.id)] = pd;
+        if (c.site && pd > 0) {
+          var skD = String(c.site).toUpperCase().trim();
+          if (!prixDeplBySite[skD] || (c.dateDebut || "") > (prixDeplBySite[skD].dateDebut || "")) prixDeplBySite[skD] = { prix: pd, dateDebut: c.dateDebut || "" };
+        }
+      });
+      function lookupPrixActivite(r, libU) {
+        if (String(libU || "").trim() === "DEPLACEMENT") {
+          var pdA = 0;
+          if (r.chantier_id != null && (prixDeplByChantier[String(r.chantier_id)] || 0) > 0) pdA = prixDeplByChantier[String(r.chantier_id)];
+          else if (r.lieu) {
+            var lkD = String(r.lieu).toUpperCase().trim();
+            if (prixDeplBySite[lkD]) pdA = prixDeplBySite[lkD].prix;
+            else {
+              var bestD = 0, bestLenD = 0, keysD = Object.keys(prixDeplBySite);
+              for (var iD = 0; iD < keysD.length; iD++) { var skD2 = keysD[iD]; if (skD2.indexOf(lkD) >= 0 || lkD.indexOf(skD2) >= 0) { var mlD = Math.min(skD2.length, lkD.length); if (mlD > bestLenD) { bestD = prixDeplBySite[skD2].prix; bestLenD = mlD; } } }
+              pdA = bestD;
+            }
+          }
+          if (pdA > 0) return pdA;
+        }
+        return lookupPrixAttente(r);
+      }
       var facturablesActSet = {};
       (parametres || []).forEach(function(p) { if (p && p.categorie === "rf_activites_facturables" && p.valeur) facturablesActSet[String(p.valeur).toUpperCase().trim()] = true; });
 
@@ -23576,7 +23640,7 @@
           // Regle unique : drapeau explicite a.facturable prioritaire sur la liste
           var estFactA = (a && a.facturable === true) || ((!a || a.facturable !== false) && facturablesActSet[libU]);
           if (!estFactA) return;
-          var paY = lookupPrixAttente(r);
+          var paY = lookupPrixActivite(r, libU);
           if (paY > 0) {
             var caActA = (durBtw(a.debut, a.fin) / 60) * paY;
             if (dansYtdF) caFactYTD += caActA;
@@ -23621,7 +23685,7 @@
           // uniquement pour les activites facturables (rf_activites_facturables).
           var libU = String(a && a.libelle || "").toUpperCase().trim();
           if (facturablesActSet[libU]) {
-            var paR2 = lookupPrixAttente(r);
+            var paR2 = lookupPrixActivite(r, libU);
             if (paR2 > 0) sondeusesMap[code].caFacturationActivites += (durBtw(a.debut, a.fin) / 60) * paR2;
           }
         });
@@ -25067,7 +25131,7 @@
               actsR.forEach(function(a) {
                 var libU = String(a && a.libelle || "").toUpperCase().trim();
                 if (!facturablesActSet[libU]) return;
-                var paM = lookupPrixAttente(r);
+                var paM = lookupPrixActivite(r, libU);
                 if (paM > 0) caActivitesRealiseParMois[moisR] += (durBtw(a.debut, a.fin) / 60) * paM;
               });
             });
@@ -27633,6 +27697,34 @@
         setExpanded(isExp ? null : key);
       };
 
+      // ── Rapports EN COURS DE REMPLISSAGE (table rapports_en_cours) ──
+      // Lignes de suivi poussees par la tablette PENDANT le remplissage : le
+      // rapport n'arrive en base qu'a l'envoi final, mais l'admin voit deja
+      // qu'il y a du mouvement (machine, chantier, etape, derniere activite).
+      // Tolerant : tant que la table n'existe pas, la liste reste vide.
+      var _rapsEnCours = useState([]);
+      var rapsEnCours = _rapsEnCours[0]; var setRapsEnCours = _rapsEnCours[1];
+      useEffect(function() {
+        var cancelled = false;
+        var loadEnCours = function() {
+          try {
+            supabase.from("rapports_en_cours").select("*").order("last_seen_at", { ascending: false }).limit(30).then(function(res) {
+              if (cancelled || res.error) return;
+              setRapsEnCours(res.data || []);
+            });
+          } catch (e) {}
+        };
+        loadEnCours();
+        var chEc = null;
+        try {
+          chEc = supabase.channel("rapports_en_cours_live")
+            .on("postgres_changes", { event: "*", schema: "public", table: "rapports_en_cours" }, loadEnCours)
+            .subscribe();
+        } catch (e) {}
+        var timerEc = setInterval(loadEnCours, 60000);
+        return function() { cancelled = true; clearInterval(timerEc); if (chEc) { try { supabase.removeChannel(chEc); } catch (e) {} } };
+      }, []);
+
       // ── Realtime + filet de securite (en pause pendant l'edition d'un rapport) ──
       // Realtime : des qu'une des tables surveillees change (nouveau rapport, releve,
       // demande...), on rafraichit SILENCIEUSEMENT (setLoading gate ci-dessus). Plus besoin
@@ -29174,6 +29266,39 @@
       };
 
       // ── Render onglet "Rapports" ──
+      // Bandeau "en cours de remplissage" : lignes fraiches (< 4 h) uniquement,
+      // les brouillons abandonnes vieillissent et disparaissent tout seuls.
+      var renderEnCoursRemplissage = function() {
+        var nowEc = Date.now();
+        var frais = (rapsEnCours || []).filter(function(ec) {
+          var t = ec && ec.last_seen_at ? new Date(ec.last_seen_at).getTime() : 0;
+          return t > 0 && (nowEc - t) < 4 * 3600 * 1000;
+        });
+        if (frais.length === 0) return null;
+        var ilYA = function(iso) {
+          var mn = Math.max(0, Math.round((nowEc - new Date(iso).getTime()) / 60000));
+          if (mn < 1) return "a l'instant";
+          if (mn < 60) return "il y a " + mn + " min";
+          return "il y a " + Math.floor(mn / 60) + " h " + (mn % 60 > 0 ? (mn % 60) + " min" : "");
+        };
+        return h("div", { style: { marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px dashed rgba(251,191,36,0.45)" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
+            h(Icon, { name: "edit-3", size: 14, color: "#fde68a" }),
+            h("span", { style: { fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#fde68a" } }, "En cours de remplissage (" + frais.length + ")"),
+            h("span", { style: { fontSize: 11, color: "#a1a1aa" } }, "le rapport n'arrivera ici qu'une fois envoye par le sondeur")
+          ),
+          frais.map(function(ec, ei) {
+            return h("div", { key: ei, style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12.5, color: "#e5e7eb", padding: "3px 0", alignItems: "baseline" } },
+              h("span", { style: { fontWeight: 800, color: "#fde68a" } }, ec.sondeuse_code || "?"),
+              h("span", null, ec.chantier_label || "chantier ?"),
+              ec.sondeur_nom ? h("span", { style: { color: "#a1a1aa" } }, ec.sondeur_nom) : null,
+              h("span", { style: { color: "#a5b4fc", fontWeight: 700 } }, "etape " + (ec.etape || 1) + "/" + (ec.total_etapes || 3)),
+              (parseFloat(ec.nb_sondages) || 0) > 0 ? h("span", { style: { color: "#a1a1aa" } }, ec.nb_sondages + " sondage(s)") : null,
+              h("span", { style: { marginLeft: "auto", fontSize: 11, color: "#71717a" } }, ilYA(ec.last_seen_at))
+            );
+          })
+        );
+      };
       var renderRapports = function() {
         var list = applyFilter(raps).filter(function(r) {
           if (filtMachineRap !== "__all__" && String(r.sondeuse_code || "").toUpperCase().trim() !== filtMachineRap) return false;
@@ -29186,8 +29311,10 @@
           }
           return true;
         });
-        if (list.length === 0) return h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage (filtres actifs ?).");
-        return h("div", null, list.map(function(r) {
+        if (list.length === 0) return h("div", null,
+          renderEnCoursRemplissage(),
+          h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage (filtres actifs ?)."));
+        return h("div", null, renderEnCoursRemplissage(), list.map(function(r) {
           var isExp = expanded === ("r-" + r.id);
           var sondages = Array.isArray(r.sondages) ? r.sondages : [];
           var equipe = Array.isArray(r.equipe) ? r.equipe : [];
@@ -30625,6 +30752,10 @@
                   .map(function(b) { return { bc: b.bc, label: b.label, vol_m: parseFloat(b.volume_m) || 0, qte: (parseFloat(b.volume_m) || 0).toLocaleString("fr-FR") + " m", compte: b.compte, montant: parseFloat(b.montant) || 0 }; });
                 var att = imp.attente && (parseFloat(imp.attente.heures) || 0) > 0 ? imp.attente : null;
                 if (att) lignesImp.push({ bc: att.bc, label: "Attente", vol_m: 0, qte: (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h", compte: att.compte, montant: parseFloat(att.montant) || 0 });
+                // Deplacement : ligne distincte (prix propre) quand le chantier
+                // a un prix deplacement configure
+                var depImp = imp.deplacement && (parseFloat(imp.deplacement.heures) || 0) > 0 ? imp.deplacement : null;
+                if (depImp) lignesImp.push({ bc: depImp.bc, label: "Deplacement", vol_m: 0, qte: (parseFloat(depImp.heures) || 0).toLocaleString("fr-FR") + " h", compte: depImp.compte, montant: parseFloat(depImp.montant) || 0 });
                 var ordreBc = [];
                 var parBc = {};
                 lignesImp.forEach(function(l) {
@@ -30667,7 +30798,7 @@
                     var totXAll = lignesImp.reduce(function(s, l) { return s + l.montant; }, 0);
                     return h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, padding: "6px 0 0", marginTop: 4, borderTop: "1px solid rgba(56,189,248,0.25)", color: "#e5e7eb", fontWeight: 800 } },
                       h("span", { style: { minWidth: 110 } }, "TOTAL"),
-                      h("span", null, totMAll.toLocaleString("fr-FR") + " m" + (att ? " + " + (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h attente" : "")),
+                      h("span", null, totMAll.toLocaleString("fr-FR") + " m" + (att ? " + " + (parseFloat(att.heures) || 0).toLocaleString("fr-FR") + " h attente" : "") + (depImp ? " + " + (parseFloat(depImp.heures) || 0).toLocaleString("fr-FR") + " h depl." : "")),
                       h("span", { style: { marginLeft: "auto", color: "#7dd3fc" } }, fmtNum(Math.round(totXAll)) + " XPF")
                     );
                   })()
