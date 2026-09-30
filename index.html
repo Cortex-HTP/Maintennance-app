@@ -9459,6 +9459,15 @@
       // Tolerance de decalage (semaines) pour l'onglet Optimisation N+1
       var _tolOpt = useState(6);
       var tolSemOpt = _tolOpt[0]; var setTolSemOpt = _tolOpt[1];
+      // Simulation interactive Optimisation N+1 : decalages poses a la main
+      // (drag) ou par le bouton IA + echanges de machines simules. AUCUNE
+      // ecriture en base : bac a sable pur.
+      var _simDec = useState({});      // { chantierId: decal en JOURS (multiple de 7) }
+      var simDec = _simDec[0]; var setSimDec = _simDec[1];
+      var _simSwap = useState({});     // { chantier_equipement_id: equipement_id simule }
+      var simSwap = _simSwap[0]; var setSimSwap = _simSwap[1];
+      var _simMsg = useState("");
+      var simMsg = _simMsg[0]; var setSimMsg = _simMsg[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
       var setDeclarations = ctx.setDbDeclarations;
@@ -10702,10 +10711,29 @@
             propsPool.forEach(function(pG) { pG.decalSem = 0; });
           }
         }
-        optimiserPool("standard", capStandard);
-        optimiserPool("heliporte", capHeli);
-        optimiserPool("carotte", capCarot);
-        propsOpt.forEach(function(p) { p.deb = p.debOrig + p.decalSem * 7; p.fin = p.finOrig + p.decalSem * 7; });
+        // ── Mode INTERACTIF : les decalages viennent de l'ETAT (simDec, en
+        // jours), poses a la main par glisser-deposer ou par le bouton IA.
+        // Le moteur ne tourne plus a chaque rendu. Re-clamp au chargement :
+        // un decalage pose sur une autre annee (chantier a cheval) ou devenu
+        // invalide apres modification des dates est ramene dans les bornes.
+        propsOpt.forEach(function(p) {
+          p.decalSem = clampDecalSim(p, simDec[p.ch.id] || 0) / 7;
+          p.deb = p.debOrig + p.decalSem * 7;
+          p.fin = p.finOrig + p.decalSem * 7;
+        });
+        function lancerIA() {
+          propsOpt.forEach(function(p) { p.decalSem = 0; });
+          optimiserPool("standard", capStandard);
+          optimiserPool("heliporte", capHeli);
+          optimiserPool("carotte", capCarot);
+          var mIA = {};
+          propsOpt.forEach(function(p) { if (p.decalSem !== 0) mIA[p.ch.id] = p.decalSem * 7; });
+          setSimDec(mIA);
+          setSimMsg("Proposition IA appliquee (tolerance " + tolSemOpt + " sem) - ajuste ensuite les barres a la main.");
+        }
+        function reinitialiserSim() {
+          setSimDec({}); setSimSwap({}); setSimMsg("");
+        }
 
         // Metriques : le graphique et les KPI principaux portent sur le pool
         // STANDARD (le levier principal) ; les pools speciaux ont leur etat dedie.
@@ -10727,6 +10755,126 @@
           };
         }).filter(function(sp) { return sp.nb > 0; });
         var nbDecales = propsOpt.filter(function(p) { return p.decalSem !== 0; }).length;
+
+        // ── Affectations machines SIMULEES dans la fenetre N+1 ──
+        // machine simulee = simSwap sinon la vraie ; dates decalees avec le
+        // chantier (connexion dans les deux sens, comme la demo validee)
+        var NOMS_FAM = { standard: "aircore", heliporte: "heliportee", carotte: "carotteuse" };
+        var affsSim = [];
+        (ctx.dbChantierEquipements || []).forEach(function(ceS) {
+          if (!ceS || !ceS.dateDebut || !ceS.dateFin) return;
+          var pProp = null;
+          for (var iPr = 0; iPr < propsOpt.length; iPr++) { if (String(propsOpt[iPr].ch.id) === String(ceS.chantierId)) { pProp = propsOpt[iPr]; break; } }
+          if (!pProp) return;
+          var dS = parseDate(String(ceS.dateDebut).substring(0, 10));
+          var fS = parseDate(String(ceS.dateFin).substring(0, 10));
+          if (!dS || !fS || isNaN(dS.getTime()) || isNaN(fS.getTime())) return;
+          var debA = Math.round((dS - y0Opt) / 86400000);
+          var finA = Math.round((fS - y0Opt) / 86400000);
+          var decJ = simDec[pProp.ch.id] || 0;
+          if (finA + decJ < 0 || debA + decJ > nbJoursOpt - 1) return;
+          var eqSimId = simSwap[ceS.id] != null ? simSwap[ceS.id] : ceS.equipementId;
+          affsSim.push({ ce: ceS, p: pProp, deb: debA, fin: finA, decJ: decJ, eqId: String(eqSimId), eqOrigId: String(ceS.equipementId) });
+        });
+        var ordreFamL = { carotte: 0, heliporte: 1, standard: 2 };
+        var lanesEq = equipements.filter(function(eqL) { return enginActifSet[String(eqL.Id)]; }).sort(function(a, b) {
+          var fa = ordreFamL[familleEngin(a)], fb = ordreFamL[familleEngin(b)];
+          if (fa !== fb) return fa - fb;
+          return String(a.Title || "").localeCompare(String(b.Title || ""));
+        });
+
+        // ── Drag simulation : horizontal = decaler le CHANTIER (et toutes
+        // ses machines suivent) ; sur une barre machine, un drop VERTICAL sur
+        // une autre ligne change/echange la machine (meme famille seulement)
+        function clampDecalSim(pP, nv) {
+          nv = Math.round(nv / 7) * 7;
+          if (!pP.mobile) return 0;
+          if (pP.debOrig + nv < 0) nv = Math.ceil((-pP.debOrig) / 7) * 7;
+          if (pP.debOrig + nv > nbJoursOpt - 1) nv = Math.floor((nbJoursOpt - 1 - pP.debOrig) / 7) * 7;
+          if (pP.finOrig <= nbJoursOpt - 1 && pP.finOrig + nv > nbJoursOpt - 1) nv = Math.floor((nbJoursOpt - 1 - pP.finOrig) / 7) * 7;
+          if (pP.finOrig > nbJoursOpt - 1 && nv > 0) nv = 0;
+          return nv;
+        }
+        function finDropMachine(ev, aff) {
+          var lanes = document.querySelectorAll("[data-sim-lane]");
+          var cibleId = null;
+          for (var iL = 0; iL < lanes.length; iL++) {
+            var rL = lanes[iL].getBoundingClientRect();
+            if (ev.clientY >= rL.top && ev.clientY <= rL.bottom) { cibleId = lanes[iL].getAttribute("data-sim-lane"); break; }
+          }
+          if (cibleId == null || String(cibleId) === aff.eqId) return;
+          var eqSrc = eqParIdOpt[aff.eqId], eqDst = eqParIdOpt[String(cibleId)];
+          if (!eqSrc || !eqDst) return;
+          if (familleEngin(eqSrc) !== familleEngin(eqDst)) {
+            setSimMsg("Refus : " + eqDst.Title + " est une machine " + NOMS_FAM[familleEngin(eqDst)] + ", le chantier " + aff.p.ch.titre + " demande une " + NOMS_FAM[familleEngin(eqSrc)] + ".");
+            return;
+          }
+          var aD = aff.deb + aff.decJ, aF = aff.fin + aff.decJ;
+          // Echange seulement avec les affectations VRAIMENT concurrentes
+          // (recouvrement > 40 % de la plus courte) ; un petit chevauchement
+          // reste sur place et s'affiche en conflit, a arbitrer a la main
+          var concurrents = affsSim.filter(function(b) {
+            if (b === aff || b.eqId !== String(cibleId)) return false;
+            var bD = b.deb + b.decJ, bF = b.fin + b.decJ;
+            var ov = Math.min(aF, bF) - Math.max(aD, bD);
+            if (ov <= 0) return false;
+            return ov > 0.4 * Math.min(aF - aD, bF - bD);
+          });
+          setSimSwap(function(prev) {
+            var n = {}; Object.keys(prev).forEach(function(k) { n[k] = prev[k]; });
+            function poserSwap(ceId, versEqId, origEqId) {
+              if (String(versEqId) === String(origEqId)) delete n[ceId]; else n[ceId] = versEqId;
+            }
+            poserSwap(aff.ce.id, eqDst.Id, aff.ce.equipementId);
+            concurrents.forEach(function(b) { poserSwap(b.ce.id, eqSrc.Id, b.ce.equipementId); });
+            return n;
+          });
+          setSimMsg(concurrents.length
+            ? "Echange : " + aff.p.ch.titre + " passe sur " + eqDst.Title + ", " + concurrents.map(function(b) { return b.p.ch.titre; }).join(" + ") + " passe sur " + eqSrc.Title + "."
+            : aff.p.ch.titre + " passe de " + eqSrc.Title + " a " + eqDst.Title + ".");
+        }
+        function demarrerDragSim(e, pP, affSim) {
+          if (e.button !== 0) return;
+          e.preventDefault(); e.stopPropagation();
+          var piste = e.currentTarget.parentElement;
+          var largeur = (piste && piste.getBoundingClientRect().width) || 1;
+          var x0 = e.clientX, y0 = e.clientY;
+          var decInit = simDec[pP.ch.id] || 0;
+          // Verrouillage d'axe : on decide horizontal OU vertical apres 6 px,
+          // sinon un glisser vertical decalerait d'une semaine au passage (et
+          // un horizontal qui derive changerait de machine)
+          var axe = null;
+          function detacher() {
+            document.removeEventListener("mousemove", surMove);
+            document.removeEventListener("mouseup", surUp);
+            window.removeEventListener("blur", surBlur);
+          }
+          function surMove(ev) {
+            if (ev.buttons === 0) { detacher(); return; } // bouton relache hors fenetre
+            var dx = ev.clientX - x0, dy = ev.clientY - y0;
+            if (!axe) {
+              if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+              axe = Math.abs(dx) >= Math.abs(dy) ? "h" : "v";
+              if (axe === "h") setSimMsg("");
+            }
+            if (axe !== "h") return;
+            var nv = clampDecalSim(pP, decInit + dx / largeur * nbJoursOpt);
+            setSimDec(function(prev) {
+              if ((prev[pP.ch.id] || 0) === nv) return prev;
+              var n = {}; Object.keys(prev).forEach(function(k) { n[k] = prev[k]; });
+              if (nv === 0) delete n[pP.ch.id]; else n[pP.ch.id] = nv;
+              return n;
+            });
+          }
+          function surUp(ev) {
+            detacher();
+            if (affSim && axe === "v") finDropMachine(ev, affSim);
+          }
+          function surBlur() { detacher(); }
+          document.addEventListener("mousemove", surMove);
+          document.addEventListener("mouseup", surUp);
+          window.addEventListener("blur", surBlur);
+        }
 
         function carteOpt(accCol, label, badge, badgeCol, val, valCol, sous) {
           return h("div", { style: { flex: 1, minWidth: 170, background: "rgba(13,15,26,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderLeft: "3px solid " + accCol, borderRadius: 12, padding: "11px 14px" } },
@@ -10787,14 +10935,16 @@
           h("div", { style: cardOptStyle },
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" } },
               h("span", { style: { fontSize: 15, fontWeight: 700 } }, "Planification proposee " + yearOpt),
-              h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, fontSize: 12, fontWeight: 600, color: "#cbd5e1" } },
-                "Decalage max autorise :",
-                h("input", { type: "range", min: 0, max: 12, value: tolSemOpt, onChange: function(e) { setTolSemOpt(parseInt(e.target.value, 10) || 0); }, style: { width: 140 } }),
-                h("b", { style: { color: "#a5b4fc", minWidth: 46 } }, tolSemOpt + " sem.")
+              h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, fontSize: 12, fontWeight: 600, color: "#cbd5e1", flexWrap: "wrap" } },
+                "Tolerance IA :",
+                h("input", { type: "range", min: 0, max: 12, value: tolSemOpt, onChange: function(e) { setTolSemOpt(parseInt(e.target.value, 10) || 0); }, style: { width: 110 } }),
+                h("b", { style: { color: "#a5b4fc", minWidth: 46 } }, tolSemOpt + " sem."),
+                h("button", { onClick: lancerIA, style: { padding: "7px 14px", border: "none", borderRadius: 8, background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Caler automatiquement (IA)"),
+                h("button", { onClick: reinitialiserSim, style: { padding: "7px 14px", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 8, background: "rgba(255,255,255,0.06)", color: "#e4e4e7", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Reinitialiser")
               )
             ),
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 12 } },
-              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Familles : les chantiers HELIPORTE n'utilisent que les " + capHeli + " sondeuses heliportees (D03, D16), le CAROTTE la carotteuse (FS1 - Kopeto), le reste tourne sur le parc AIRCORE terrestre - chaque famille est calee contre sa propre capacite (reconnue par les machines affectees au chantier, sinon par le titre). Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
+              "GLISSE une barre pour decaler un chantier (aimante a la semaine) : le contour pointille reste sur les dates d'origine et ses machines suivent en dessous. Le bouton IA propose un calage (dans la tolerance) que tu retouches ensuite a la main ; le garde-fou de l'IA ne decale jamais pour rien. Les chantiers a coupures gardent leur motif. Familles : HELIPORTE = " + capHeli + " sondeuses (D03, D16), CAROTTE = la carotteuse (FS1 - Kopeto), le reste = parc AIRCORE terrestre ; chaque famille est calee contre sa propre capacite. Besoin machines = pic d'engins affectes (Planning engins), sinon 1. SIMULATION uniquement : rien n'est ecrit."),
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             propsAffiche.map(function(pR, idxR) {
               var colR = FAMILLE_COULEURS[pR.pool] || FAMILLE_COULEURS.standard;
@@ -10808,7 +10958,10 @@
               // coupures restent VISIBLES et se decalent avec le chantier)
               var barres = pR.segs.map(function(sg, iS) {
                 var lP = pctOpt(sg.deb + decR), wP = Math.max(pctOpt(sg.fin + 1 + decR) - lP, 0.8);
-                return h("div", { key: "sg" + iS, style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap" } }, iS === 0 ? (pR.machines + " mach.") : null);
+                return h("div", { key: "sg" + iS,
+                  onMouseDown: function(e) { demarrerDragSim(e, pR); },
+                  title: pR.mobile ? "Glisser pour decaler (aimante a la semaine)" : "Commence avant le 1er janvier : non decalable",
+                  style: { position: "absolute", left: lP + "%", width: wP + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colR.start + ", " + colR.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap", cursor: pR.mobile ? "grab" : "default", userSelect: "none" } }, iS === 0 ? (pR.machines + " mach.") : null);
               });
               var anDebR = parseDate(pR.ch.dateDebut).getFullYear();
               var decalTxt = !pR.mobile ? ("commence en " + anDebR + " (non decalable)") : (pR.decalSem === 0 ? "dates demandees conservees" : ("decale de " + (pR.decalSem > 0 ? "+" : "") + pR.decalSem + " semaine" + (Math.abs(pR.decalSem) > 1 ? "s" : "")));
@@ -10839,6 +10992,51 @@
                 "Dates demandees (si decale)")
             )
           ),
+          // ── Affectations machines (connectees aux chantiers ci-dessus) ──
+          h("div", { style: cardOptStyle },
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 6 } }, "Affectations machines — connectees au planning"),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10 } },
+              "Une ligne par machine, une barre par affectation (Planning engins). Glisser HORIZONTALEMENT decale le chantier entier (les barres du haut suivent). Glisser VERTICALEMENT sur une autre ligne change de machine - si la cible est prise sur la periode, les deux machines sont echangees ; meme famille uniquement. Deux barres de la meme machine qui se chevauchent = liseret rouge."),
+            simMsg ? h("div", { style: { fontSize: 11.5, color: "#fde68a", fontWeight: 600, marginBottom: 10 } }, simMsg) : null,
+            h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
+            affsSim.length === 0
+              ? h("div", { style: { padding: "16px 8px", textAlign: "center", color: "#71717a", fontSize: 12.5, fontStyle: "italic" } }, "Aucune affectation machine sur " + yearOpt + " : glisse des engins sur les chantiers dans l'onglet Planning engins, elles apparaitront ici.")
+              : lanesEq.map(function(eqL) {
+                  var famL = familleEngin(eqL);
+                  var colL = FAMILLE_COULEURS[famL] || FAMILLE_COULEURS.standard;
+                  var affsL = affsSim.filter(function(a) { return a.eqId === String(eqL.Id); });
+                  // Toutes les lanes restent visibles : une machine LIBRE est
+                  // justement une cible de depot interessante
+                  var enConflit = {};
+                  for (var iC = 0; iC < affsL.length; iC++) for (var jC = iC + 1; jC < affsL.length; jC++) {
+                    var aC = affsL[iC], bC = affsL[jC];
+                    if (aC.deb + aC.decJ <= bC.fin + bC.decJ && bC.deb + bC.decJ <= aC.fin + aC.decJ) { enConflit[iC] = 1; enConflit[jC] = 1; }
+                  }
+                  return h("div", { key: "lane" + eqL.Id, style: { display: "grid", gridTemplateColumns: "190px 1fr", alignItems: "center", marginBottom: 7 } },
+                    h("div", { style: { fontSize: 12.5, fontWeight: 700, paddingRight: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+                      eqL.Title,
+                      famL === "heliporte" ? h("span", { style: { fontSize: 9, color: "#67e8f9", border: "1px solid rgba(34,211,238,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "HELIPORTE") : null,
+                      famL === "carotte" ? h("span", { style: { fontSize: 9, color: "#f9a8d4", border: "1px solid rgba(244,114,182,0.5)", borderRadius: 999, padding: "1px 7px", fontWeight: 800, marginLeft: 6, verticalAlign: 1 } }, "CAROTTE") : null,
+                      h("span", { style: { fontSize: 10, color: Object.keys(enConflit).length ? "#fda4af" : "#71717a", fontWeight: 600, display: "block" } }, affsL.length + " affectation" + (affsL.length > 1 ? "s" : "") + (Object.keys(enConflit).length ? " - CONFLIT" : ""))
+                    ),
+                    h("div", { "data-sim-lane": String(eqL.Id), style: { position: "relative", height: 26, background: "rgba(0,0,0,0.25)", borderRadius: 6 } },
+                      affsL.map(function(a, iA) {
+                        var morceaux = [];
+                        if (a.decJ !== 0) {
+                          morceaux.push(h("div", { key: "gh" + a.ce.id, style: { position: "absolute", left: pctOpt(a.deb) + "%", width: Math.max(pctOpt(a.fin + 1) - pctOpt(a.deb), 0.8) + "%", top: 3, bottom: 3, borderRadius: 5, border: "1.5px dashed rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)", pointerEvents: "none" } }));
+                        }
+                        var lA = pctOpt(a.deb + a.decJ), wA = Math.max(pctOpt(a.fin + 1 + a.decJ) - lA, 0.8);
+                        var libA = a.p.ch.titre + (a.eqId !== a.eqOrigId ? " [ex " + ((eqParIdOpt[a.eqOrigId] || {}).Title || "?") + "]" : "") + (a.decJ !== 0 ? " (" + (a.decJ > 0 ? "+" : "") + (a.decJ / 7) + " sem)" : "");
+                        morceaux.push(h("div", { key: "aff" + a.ce.id,
+                          onMouseDown: function(e) { demarrerDragSim(e, a.p, a); },
+                          title: libA + " - glisser : horizontal = decaler le chantier, vertical = changer de machine",
+                          style: { position: "absolute", left: lA + "%", width: wA + "%", top: 3, bottom: 3, borderRadius: 5, background: "linear-gradient(135deg, " + colL.start + ", " + colL.end + ")", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 800, color: "white", textShadow: "0 1px 2px rgba(0,0,0,0.5)", overflow: "hidden", whiteSpace: "nowrap", cursor: "grab", userSelect: "none", outline: enConflit[iA] ? "2px solid #f43f5e" : "none", outlineOffset: 1, zIndex: 2 } }, libA));
+                        return h(React.Fragment, { key: "frag" + a.ce.id }, morceaux);
+                      })
+                    )
+                  );
+                })
+          ),
           // Charge avant / apres
           h("div", { style: cardOptStyle },
             h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines aircore requises par semaine — avant / apres"),
@@ -10848,9 +11046,15 @@
             ], 170, capStandard),
             legendeChargeMachines(true, capStandard)
           ),
-          // Decalages proposes
+          // Decalages et echanges
           h("div", { style: cardOptStyle },
-            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 10 } }, "Decalages proposes"),
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 10 } }, "Tes decalages et echanges"),
+            affsSim.filter(function(a) { return a.eqId !== a.eqOrigId; }).map(function(a) {
+              return h("div", { key: "sw" + a.ce.id, style: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", fontSize: 12.5 } },
+                h("span", { style: { fontWeight: 700 } }, a.p.ch.titre),
+                h("span", { style: { color: "#67e8f9", fontWeight: 700 } }, "machine " + ((eqParIdOpt[a.eqOrigId] || {}).Title || "?") + " remplacee par " + ((eqParIdOpt[a.eqId] || {}).Title || "?"))
+              );
+            }),
             propsAffiche.map(function(pD) {
               var txtD, colD;
               if (!pD.mobile) { txtD = "commence en " + parseDate(pD.ch.dateDebut).getFullYear() + " (non decalable)"; colD = "#71717a"; }
@@ -10863,7 +11067,7 @@
             }),
             h("div", { style: { marginTop: 12, border: "1px dashed rgba(245,158,11,0.5)", borderRadius: 10, background: "rgba(245,158,11,0.07)", color: "#fde68a", padding: "11px 15px", fontSize: 12, lineHeight: 1.55 } },
               h("b", null, "Simulation uniquement : "),
-              "cet onglet ne modifie ni le planning reel ni le tableau de bord. Pour appliquer une proposition, ajuste les dates du chantier sur sa fiche (onglet Chantiers).")
+              "rien n'est ecrit en base - ni les dates des chantiers, ni les affectations machines, ni le tableau de bord. Pour appliquer une decision : dates du chantier sur sa fiche (onglet Chantiers), machines dans Planning engins. Un bouton « Appliquer au planning reel » pourra etre ajoute si tu le souhaites.")
           )
         );
       }
