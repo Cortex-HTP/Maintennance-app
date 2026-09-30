@@ -22,8 +22,10 @@ create table if not exists rapports_en_cours (
 
 alter table rapports_en_cours enable row level security;
 
--- Metadonnees non sensibles, ecrites par la tablette (cle anon) et lues par
--- l'admin : acces complet anon, comme le flux rapports_forage cote tablette.
+-- Metadonnees non sensibles et EPHEMERES (purgees a l'envoi, ignorees apres
+-- 4 h), ecrites par la tablette (cle anon) et lues par l'admin. Acces complet
+-- anon ASSUME : la tablette n'a pas d'identite par ligne, et les noms des
+-- equipiers sont deja lisibles en anon via rapports_forage (meme cle).
 drop policy if exists "rapports_en_cours_all" on rapports_en_cours;
 create policy "rapports_en_cours_all" on rapports_en_cours
   for all using (true) with check (true);

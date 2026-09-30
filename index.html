@@ -13603,7 +13603,9 @@
       function lookupPrixActivite(r, libU) {
         if (String(libU || "").trim() === "DEPLACEMENT") {
           var pdA = 0;
-          if (r.chantier_id != null && (prixDeplByChantier[String(r.chantier_id)] || 0) > 0) pdA = prixDeplByChantier[String(r.chantier_id)];
+          // Chantier connu : SON prix deplacement fait foi (0 = repli prix
+          // attente direct, jamais le prix d'un autre chantier du meme site)
+          if (r.chantier_id != null) pdA = prixDeplByChantier[String(r.chantier_id)] || 0;
           else if (r.lieu) {
             var lkD = String(r.lieu).toUpperCase().trim();
             if (prixDeplBySite[lkD]) pdA = prixDeplBySite[lkD].prix;
@@ -17754,14 +17756,19 @@
         // Un lieu vide (ou fait d'espaces) matchait le PREMIER chantier par
         // ordre alphabetique via indexOf("") : jamais de repli sur lieu vide.
         if (!lk) return null;
-        var exact = (activeChantiers || []).find(function(c) {
+        // Les chantiers EN COURS priment sur les Termines du meme site (mois
+        // de transition : le rapport se rattache au chantier encore actif)
+        var poolPe = (activeChantiers || []).slice().sort(function(a, b) {
+          return (a.statut === "Termine" ? 1 : 0) - (b.statut === "Termine" ? 1 : 0);
+        });
+        var exact = poolPe.find(function(c) {
           return String(c.site || "").toUpperCase().trim() === lk;
         });
         if (exact) return exact.id;
         // Repli partiel (libelles historiques) : uniquement entre libelles
         // significatifs, pour eviter les faux matchs de sous-chaines courtes.
         if (lk.length < 3) return null;
-        var match = (activeChantiers || []).find(function(c) {
+        var match = poolPe.find(function(c) {
           var s = String(c.site || "").toUpperCase().trim();
           return s.length >= 3 && (s.indexOf(lk) >= 0 || lk.indexOf(s) >= 0);
         });
@@ -18053,7 +18060,7 @@
         // KPIs
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 16, marginBottom: 24 } },
           h(KPICard, { icon: h(Icon, { name: "users", size: 32, color: "#a78bfa" }), label: "Employes", value: String(personnel.length), color: "#a78bfa" }),
-          h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#059669" }), label: "Chantiers actifs", value: String(activeChantiers.length), color: "#059669" }),
+          h(KPICard, { icon: h(Icon, { name: "briefcase", size: 32, color: "#059669" }), label: "Chantiers actifs", value: String(activeChantiers.filter(function(c) { return c.statut !== "Termine"; }).length), color: "#059669" }),
           h(KPICard, { icon: h(Icon, { name: "calendar-check", size: 32, color: "#d97706" }), label: "Affectations ce mois", value: String(totalAffectations), color: "#d97706" })
         ),
         // Alerte conflits : planifie sur un chantier alors qu'un conge est demande
@@ -18081,8 +18088,7 @@
           h("div", { style: { fontSize: 12, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 } }, "Outil de peinture"),
           h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
             activeChantiers.filter(function(c) { return c.statut === "En cours"; }).map(function(ch) {
-              var idx = activeChantiers.indexOf(ch);
-              var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
+              var color = getChantierColor(ch.id);
               var isActive = brush === ch.id;
               return h("button", {
                 key: ch.id,
@@ -18104,8 +18110,7 @@
             activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("div", { style: { width: 1, height: 28, background: "rgba(99,102,241,0.25)", margin: "0 4px" } }) : null,
             activeChantiers.filter(function(c) { return c.statut === "A venir"; }).length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase" } }, "A venir:") : null,
             activeChantiers.filter(function(c) { return c.statut === "A venir"; }).map(function(ch) {
-              var idx = activeChantiers.indexOf(ch);
-              var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
+              var color = getChantierColor(ch.id);
               var isActive = brush === ch.id;
               return h("button", {
                 key: ch.id,
@@ -18130,8 +18135,7 @@
             activeChantiers.filter(function(c) { return c.statut === "Termine"; }).length > 0 ? h("div", { style: { width: 1, height: 28, background: "rgba(16,185,129,0.25)", margin: "0 4px" } }) : null,
             activeChantiers.filter(function(c) { return c.statut === "Termine"; }).length > 0 ? h("span", { style: { fontSize: 10, fontWeight: 700, color: "#6ee7b7", textTransform: "uppercase" } }, "Termines:") : null,
             activeChantiers.filter(function(c) { return c.statut === "Termine"; }).map(function(ch) {
-              var idx = activeChantiers.indexOf(ch);
-              var color = CHANTIER_COLORS[idx % CHANTIER_COLORS.length];
+              var color = getChantierColor(ch.id);
               var isActive = brush === ch.id;
               return h("button", {
                 key: ch.id,
@@ -23602,7 +23606,9 @@
       function lookupPrixActivite(r, libU) {
         if (String(libU || "").trim() === "DEPLACEMENT") {
           var pdA = 0;
-          if (r.chantier_id != null && (prixDeplByChantier[String(r.chantier_id)] || 0) > 0) pdA = prixDeplByChantier[String(r.chantier_id)];
+          // Chantier connu : SON prix deplacement fait foi (0 = repli prix
+          // attente direct, jamais le prix d'un autre chantier du meme site)
+          if (r.chantier_id != null) pdA = prixDeplByChantier[String(r.chantier_id)] || 0;
           else if (r.lieu) {
             var lkD = String(r.lieu).toUpperCase().trim();
             if (prixDeplBySite[lkD]) pdA = prixDeplBySite[lkD].prix;
