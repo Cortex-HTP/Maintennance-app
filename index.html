@@ -10565,28 +10565,58 @@
           return over * 100000000 + pic * 10000 + Math.abs(dSem);
         }
 
-        // ── Pools de machines (info Tomy 2026-09-30) : le CAROTTE utilise une
-        // machine speciale (1 carotteuse), l'HELIPORTE 2 machines speciales
-        // (Sondeuse KT), le reste du parc est interchangeable. Un chantier
-        // heliporte ne peut prendre QUE les machines heliportees : chaque pool
-        // est donc optimise contre SA propre capacite.
+        // ── Familles de machines (info Tomy 2026-09-30) : CAROTTE = la
+        // carotteuse FS1/FS01 (chantier Kopeto), HELIPORTE = D03 et D16,
+        // le reste = AIRCORE terrestre (interchangeable). Un chantier
+        // heliporte ne peut prendre QUE les machines heliportees : chaque
+        // famille est optimisee contre SA propre capacite. Detection par
+        // Type d'engin si renseigne (« carott » / « heliport »), sinon par
+        // immatriculation (liste ci-dessus).
+        function familleEngin(eqF) {
+          var tyF = String(eqF.Type || "").toLowerCase();
+          if (/carott/.test(tyF)) return "carotte";
+          if (/h[eé]liport/.test(tyF)) return "heliporte";
+          var imF = String(eqF.Title || "").toUpperCase().replace(/\s/g, "");
+          if (imF === "FS1" || imF === "FS01") return "carotte";
+          if (imF === "D03" || imF === "D16") return "heliporte";
+          return "standard";
+        }
+        var eqParIdOpt = {};
         var nbHeliDet = 0, nbCarotDet = 0;
         equipements.forEach(function(eqP) {
+          eqParIdOpt[String(eqP.Id)] = eqP;
           if (!enginActifSet[String(eqP.Id)]) return;
-          var tyP = String(eqP.Type || "").toLowerCase();
-          if (/carott/.test(tyP)) nbCarotDet++;
-          else if (/\bkt\b|h[eé]liport/.test(tyP)) nbHeliDet++;
+          var famP = familleEngin(eqP);
+          if (famP === "carotte") nbCarotDet++;
+          else if (famP === "heliporte") nbHeliDet++;
         });
         var capHeli = nbHeliDet > 0 ? nbHeliDet : 2;
         var capCarot = nbCarotDet > 0 ? nbCarotDet : 1;
         var capStandard = Math.max(flotteMachines - nbHeliDet - nbCarotDet, 0);
         function poolChantier(chO) {
+          // 1) Machines AFFECTEES (Planning engins) : une machine speciale
+          //    affectee classe le chantier dans sa famille
+          var famsC = {};
+          (ctx.dbChantierEquipements || []).forEach(function(ceF) {
+            if (!ceF || String(ceF.chantierId) !== String(chO.id)) return;
+            var eqC = eqParIdOpt[String(ceF.equipementId)];
+            if (eqC) famsC[familleEngin(eqC)] = 1;
+          });
+          if (famsC.carotte) return "carotte";
+          if (famsC.heliporte) return "heliporte";
+          // 2) Titre/site : Kopeto = chantier de la carotteuse (convention Tomy)
           var sP = (String(chO.titre || "") + " " + String(chO.site || "")).toLowerCase();
-          if (/carott/.test(sP)) return "carotte";
+          if (/carott|kopeto/.test(sP)) return "carotte";
           if (/h[eé]liport/.test(sP)) return "heliporte";
           return "standard";
         }
         propsOpt.forEach(function(p) { p.pool = poolChantier(p.ch); });
+        // Couleurs par famille (Gantt du previsionnel)
+        var FAMILLE_COULEURS = {
+          standard: { start: "#6366f1", end: "#4338ca", nom: "Aircore terrestre" },
+          heliporte: { start: "#22d3ee", end: "#0e7490", nom: "Heliporte" },
+          carotte: { start: "#f472b6", end: "#be185d", nom: "Carotte" }
+        };
 
         function chargeSemainePool(poolKey, useOrig) {
           var wS = [];
@@ -10733,10 +10763,10 @@
         return h("div", null,
           // KPI (pool standard = le levier ; les machines speciales ont leur carte)
           h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 } },
-            carteOpt("#94a3b8", "Pic standard (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
-            carteOpt("#22c55e", "Pic standard (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > capStandard ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
+            carteOpt("#94a3b8", "Pic aircore (original)", null, null, picAvant + " mach.", "#e4e4e7", surAvant + " semaine" + (surAvant > 1 ? "s" : "") + " en surcharge"),
+            carteOpt("#22c55e", "Pic aircore (propose)", picApres < picAvant ? "-" + (picAvant - picApres) : "=", picApres < picAvant ? BV_OPT : BG_OPT, picApres + " mach.", picApres > capStandard ? "#fda4af" : "#86efac", surApres + " semaine" + (surApres > 1 ? "s" : "") + " en surcharge"),
             carteOpt("#6366f1", "Chantiers decales", null, null, nbDecales + " / " + propsOpt.length, "#a5b4fc", "les autres restent aux dates demandees"),
-            carteOpt("#f59e0b", "Flotte minimale (standard)", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "dispo : " + capStandard + " standard + " + capHeli + " heliportees + " + capCarot + " carotteuse" + (capCarot > 1 ? "s" : ""))
+            carteOpt("#f59e0b", "Flotte minimale (aircore)", null, null, Math.max(picApres, 1) + " machine" + (picApres > 1 ? "s" : ""), "#fde68a", "dispo : " + capStandard + " aircore + " + capHeli + " heliportees + " + capCarot + " carotteuse" + (capCarot > 1 ? "s" : ""))
           ),
           // Machines speciales : chaque famille est verifiee contre SA capacite
           specPools.length > 0 ? h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 } },
@@ -10764,10 +10794,10 @@
               )
             ),
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 12 } },
-              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Machines speciales : les chantiers HELIPORTE n'utilisent que les " + capHeli + " sondeuses heliportees et le CAROTTE la carotteuse (reconnus par leur titre) - chaque famille est calee contre sa propre capacite. Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
+              "Barres pleines = planning propose - contours pointilles = dates demandees. Le moteur cherche la plus PETITE flotte qui passe : il cale les chantiers (dans la limite autorisee) pour tout faire tenir avec le moins de machines en simultane - donc le moins d'equipes - sans jamais surcharger, en restant au plus pres des dates demandees. Les chantiers a coupures (periodes de travail de la fiche) gardent leur motif : la coupure se decale avec. Familles : les chantiers HELIPORTE n'utilisent que les " + capHeli + " sondeuses heliportees (D03, D16), le CAROTTE la carotteuse (FS1 - Kopeto), le reste tourne sur le parc AIRCORE terrestre - chaque famille est calee contre sa propre capacite (reconnue par les machines affectees au chantier, sinon par le titre). Besoin machines = pic d'engins affectes au chantier (Planning engins), sinon 1."),
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             propsAffiche.map(function(pR, idxR) {
-              var colR = ENGIN_PALETTE[idxR % ENGIN_PALETTE.length];
+              var colR = FAMILLE_COULEURS[pR.pool] || FAMILLE_COULEURS.standard;
               var decR = pR.decalSem * 7;
               // Fantomes : le motif ORIGINAL (periodes comprises) si decale
               var ghosts = pR.decalSem !== 0 ? pR.segs.map(function(sg, iG) {
@@ -10795,11 +10825,23 @@
                   barres
                 )
               );
-            })
+            }),
+            // Legende des familles de machines
+            h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 10.5, color: "#94a3b8", marginTop: 12 } },
+              ["standard", "heliporte", "carotte"].map(function(fk) {
+                var fc = FAMILLE_COULEURS[fk];
+                return h("span", { key: "legf" + fk, style: { display: "inline-flex", alignItems: "center", gap: 6 } },
+                  h("span", { style: { width: 10, height: 10, borderRadius: 3, background: "linear-gradient(135deg, " + fc.start + ", " + fc.end + ")", display: "inline-block" } }),
+                  fc.nom);
+              }),
+              h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6 } },
+                h("span", { style: { display: "inline-block", width: 16, height: 10, borderRadius: 3, border: "1.5px dashed rgba(255,255,255,0.35)" } }),
+                "Dates demandees (si decale)")
+            )
           ),
           // Charge avant / apres
           h("div", { style: cardOptStyle },
-            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines standard requises par semaine — avant / apres"),
+            h("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 12 } }, "Machines aircore requises par semaine — avant / apres"),
             svgChargeMachines([
               { vals: chargeAvant, couleur: function() { return "rgba(255,255,255,0.22)"; }, retraitW: 8 },
               { vals: chargeApres, couleur: function(v) { return v > capStandard ? "#f43f5e" : "#22c55e"; }, decalX: 5, retraitW: 8 }
