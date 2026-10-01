@@ -20741,7 +20741,7 @@
               if (rapSiteByDate[dateStr].site !== site && !ailleursRapSet[dateStr]) {
                 joursAilleurs += 1;
                 ailleursRapSet[dateStr] = true;
-                daysDetail.push({ date: dateStr, type: "ailleurs-rapport", machine: null, metrage: 0, source: "rapport envoye sur un autre site (" + rapSiteByDate[dateStr].site + ") - exclu du m/h, prime proratisee" });
+                daysDetail.push({ date: dateStr, type: "ailleurs-rapport", machine: null, metrage: 0, autreSite: rapSiteByDate[dateStr].site, autreM: rapSiteByDate[dateStr].m, source: "rapport envoye sur un autre site (" + rapSiteByDate[dateStr].site + ") - exclu du m/h, prime proratisee" });
               }
               return;
             }
@@ -20940,7 +20940,7 @@
             if (rapSiteByDate[r.date] && rapSiteByDate[r.date].site !== site) {
               joursAilleurs += 1;
               datesDejaComptees[r.date] = true;
-              daysDetail.push({ date: r.date, type: "ailleurs-rapport", machine: r.sondeuse, metrage: 0, source: "2 rapports le meme jour : site primaire = " + rapSiteByDate[r.date].site + " (plus grand metrage) - exclu du m/h, prime proratisee" });
+              daysDetail.push({ date: r.date, type: "ailleurs-rapport", machine: r.sondeuse, metrage: 0, autreSite: rapSiteByDate[r.date].site, autreM: rapSiteByDate[r.date].m, source: "2 rapports le meme jour : site primaire = " + rapSiteByDate[r.date].site + " (plus grand metrage) - exclu du m/h, prime proratisee" });
               return;
             }
             // Rapport confirme sa presence : on compte comme travail. Jour NON
@@ -20990,7 +20990,8 @@
                 // plus le m/h du site, la prime est proratisee)
                 joursAilleurs += 1;
                 datesDejaComptees[dStrAbs] = true;
-                daysDetail.push({ date: dStrAbs, type: "ailleurs", machine: null, metrage: 0, source: "jour sur un autre site (rapport) - exclu du m/h, prime proratisee" });
+                var rjAbsA = (empRapportsList[emp.id] || []).find(function(x) { return x.date === dStrAbs; });
+                daysDetail.push({ date: dStrAbs, type: "ailleurs", machine: rjAbsA ? rjAbsA.sondeuse : null, metrage: 0, autreSite: rjAbsA ? rjAbsA.site : null, autreM: rjAbsA ? rjAbsA.m : null, source: "jour sur un autre site (" + ((rjAbsA && rjAbsA.site) || "rapport") + ") - exclu du m/h, prime proratisee" });
               } else if (externalDaySet[dStrAbs]) {
                 credAbs = siteMoyenne; srcAbs = "absent un jour panne/cause externe - moyenne complete";
               } else {
@@ -21082,7 +21083,8 @@
             if (!otherSite || otherSite === site) return; // pas autre site identifiable
             // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
             joursAilleurs += 1;
-            daysDetail.push({ date: a.dateAffectation, type: "ailleurs-" + tj, machine: null, metrage: 0, source: "jour sur autre site (" + otherSite + ") - exclu du m/h, prime proratisee" });
+            var rjAillA = (empRapportsList[emp.id] || []).find(function(x) { return x.date === a.dateAffectation && x.site === otherSite; });
+            daysDetail.push({ date: a.dateAffectation, type: "ailleurs-" + tj, machine: rjAillA ? rjAillA.sondeuse : null, metrage: 0, autreSite: otherSite, autreM: rjAillA ? rjAillA.m : null, source: "jour sur autre site (" + otherSite + ") - exclu du m/h, prime proratisee" });
           });
 
           // Verifier que l'employe a au moins 1 JOUR TRAVAIL REEL sur ce site
@@ -21596,7 +21598,7 @@
                     h("td", { style: { padding: "8px 10px", fontFamily: "monospace" } }, d.date),
                     h("td", { style: { padding: "8px 10px" } }, h("span", { style: { fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(255,255,255,0.04)", border: "1px solid " + typeColor, color: typeColor } }, d.type)),
                     h("td", { style: { padding: "8px 10px", fontFamily: "monospace", color: d.machine ? "#fde68a" : "#52525b" } }, d.machine || "—"),
-                    h("td", { style: { padding: "8px 10px", fontFamily: "monospace", textAlign: "right", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#52525b" } }, fmtNum(Math.round(d.metrage)) + " m"),
+                    h("td", { style: { padding: "8px 10px", fontFamily: "monospace", textAlign: "right", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#52525b" } }, d.type.indexOf("ailleurs") === 0 && d.autreSite ? h("span", { style: { color: "#9ca3af", opacity: 0.8 } }, "\u2192 " + d.autreSite + (d.autreM != null ? " (" + fmtNum(Math.round(d.autreM)) + " m)" : "")) : fmtNum(Math.round(d.metrage)) + " m"),
                     h("td", { style: { padding: "8px 10px", fontSize: 11, color: "#cbd5e1" } }, d.source)
                   );
                 })
@@ -21618,9 +21620,13 @@
           };
           var cellCmp = function(d) {
             if (!d) return h("span", { style: { color: "#52525b", fontStyle: "italic" } }, "(rien)");
-            return h("span", { title: d.source || "", style: { display: "inline-flex", gap: 6, alignItems: "baseline" } },
-              h("span", { style: { fontSize: 10.5, padding: "1px 7px", borderRadius: 4, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.18)", color: "#cbd5e1", whiteSpace: "nowrap" } }, d.type),
-              h("span", { style: { fontFamily: "monospace", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#71717a" } }, fmtNum(Math.round(d.metrage)) + " m")
+            var estAilleursC = d.type.indexOf("ailleurs") === 0;
+            // Jour AILLEURS = ne concerne pas le site affiche -> tout en GRISE
+            return h("span", { title: d.source || "", style: { display: "inline-flex", gap: 6, alignItems: "baseline", flexWrap: "wrap", opacity: estAilleursC ? 0.55 : 1 } },
+              h("span", { style: { fontSize: 10.5, padding: "1px 7px", borderRadius: 4, background: "rgba(255,255,255,0.05)", border: "1px solid " + (estAilleursC ? "rgba(107,114,128,0.45)" : "rgba(255,255,255,0.18)"), color: estAilleursC ? "#9ca3af" : "#cbd5e1", whiteSpace: "nowrap" } }, d.type),
+              estAilleursC
+                ? h("span", { style: { fontSize: 11.5, fontWeight: 700, color: "#9ca3af", whiteSpace: "nowrap" } }, "\u2192 " + (d.autreSite || "site ?") + (d.autreM != null ? " (" + fmtNum(Math.round(d.autreM)) + " m la-bas)" : ""))
+                : h("span", { style: { fontFamily: "monospace", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#71717a" } }, fmtNum(Math.round(d.metrage)) + " m")
             );
           };
           var nbDiff = 0;
