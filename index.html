@@ -1405,6 +1405,7 @@
         return null;
       }
       var rapportByMachineDate = {};
+      var rapportNpByMachineDate = {};
       var empRapportsList = {};
       rapportsCtx.forEach(function(r) {
         // Un rapport BROUILLON (jamais envoye) ne compte NULLE PART - meme
@@ -1419,6 +1420,10 @@
         if (rSite === site) {
           if (!rapportByMachineDate[r.sondeuse_code]) rapportByMachineDate[r.sondeuse_code] = {};
           rapportByMachineDate[r.sondeuse_code][d] = (rapportByMachineDate[r.sondeuse_code][d] || 0) + (parseFloat(r.total_metres) || 0);
+          if (r.non_productif === true) {
+            if (!rapportNpByMachineDate[r.sondeuse_code]) rapportNpByMachineDate[r.sondeuse_code] = {};
+            rapportNpByMachineDate[r.sondeuse_code][d] = true;
+          }
         }
         (r.equipe || []).forEach(function(m) {
           if (!m) return;
@@ -1589,7 +1594,15 @@
           //   jour avec le metrage de la machine (source unique)
           // Les evenements personnels (conge, maladie, panne...) restent
           // prioritaires et sont traites normalement ci-dessous.
-          if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) return;
+          if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
+            // Rapport envoye sur un AUTRE site ce jour : le jour part au
+            // prorata (avant : il disparaissait totalement - 'raison inconnue')
+            if (rapSiteByDate[dateStr] !== site && !datesComptees[dateStr]) {
+              joursAilleurs += 1;
+              datesComptees[dateStr] = true;
+            }
+            return;
+          }
           datesComptees[dateStr] = true;
           var chId = a.chantierId;
           var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
@@ -1692,9 +1705,11 @@
           if (!inEmpWindow(rj.date)) return;
           if (datesComptees[rj.date]) return;
           datesComptees[rj.date] = true;
-          // Jour NON PRODUCTIF (rapport NP / panne / intemperies - peint OU
-          // automatique) : moyenne jour, jamais le 0 m du rapport NP
-          if (externalDaySet[rj.date]) {
+          // Jour NON PRODUCTIF : critere = le RAPPORT de SA machine (sur ce
+          // site) est NP -> moyenne. PAS externalDaySet : ce set est pollue
+          // par les affectations NP personnelles d'UN employe et transformait
+          // les journees REELLES de toute l'equipe en moyenne (vecu Ouaco).
+          if (rapportNpByMachineDate[rj.sondeuse] && rapportNpByMachineDate[rj.sondeuse][rj.date]) {
             adjMetrage += siteMoyenne;
           } else {
             var vRj = getMetrageMachineForDate(rj.sondeuse, rj.date);
@@ -20440,6 +20455,7 @@
         // a moyenne_jour_site. Si l'employe n'a pas de machine identifiable -> fallback siteMoyenne.
         var rapportsCtx = ctx.dbRapportsForage || [];
         var rapportByMachineDate = {};
+        var rapportNpByMachineDate = {};
         // Mapping code court -> personnel_id (pour matcher m.id des rapports)
         var codeToPid = {};
         var nameKeyToPid = {};
@@ -20483,6 +20499,10 @@
           if (rSite === site) {
             if (!rapportByMachineDate[r.sondeuse_code]) rapportByMachineDate[r.sondeuse_code] = {};
             rapportByMachineDate[r.sondeuse_code][d] = (rapportByMachineDate[r.sondeuse_code][d] || 0) + (parseFloat(r.total_metres) || 0);
+            if (r.non_productif === true) {
+              if (!rapportNpByMachineDate[r.sondeuse_code]) rapportNpByMachineDate[r.sondeuse_code] = {};
+              rapportNpByMachineDate[r.sondeuse_code][d] = true;
+            }
           }
           (r.equipe || []).forEach(function(m) {
             if (!m) return;
@@ -20660,6 +20680,7 @@
           (empRapportsList[emp.id] || []).forEach(function(rS) {
             if (!rapSiteByDate[rS.date]) rapSiteByDate[rS.date] = rS.site;
           });
+          var ailleursRapSet = {};
           empAffOnSite.forEach(function(a) {
             var tj = a.typeJour || "travail";
             var dateStr = a.dateAffectation;
@@ -20669,7 +20690,16 @@
             // vecu Mathieu Nakety/SMT 15/09) ; meme site -> la completion via
             // rapports comptera le jour avec le metrage machine. Les
             // evenements personnels restent prioritaires.
-            if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) return;
+            if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
+              // Rapport envoye sur un AUTRE site ce jour : le jour part au
+              // prorata (avant : il disparaissait - 'IGNORE raison inconnue')
+              if (rapSiteByDate[dateStr] !== site && !ailleursRapSet[dateStr]) {
+                joursAilleurs += 1;
+                ailleursRapSet[dateStr] = true;
+                daysDetail.push({ date: dateStr, type: "ailleurs-rapport", machine: null, metrage: 0, source: "rapport envoye sur un autre site (" + rapSiteByDate[dateStr] + ") - exclu du m/h, prime proratisee" });
+              }
+              return;
+            }
             var chId = a.chantierId;
             // Override saisie si type panne/intemperies/non_productif
             var saisieEntry = (chId && saisies[chId]) ? saisies[chId][dateStr] : null;
@@ -20862,9 +20892,9 @@
             // automatique) : moyenne jour, jamais le 0 m du rapport NP.
             var dayMetrage;
             var srcVR;
-            if (externalDaySet[r.date]) {
+            if (rapportNpByMachineDate[r.sondeuse] && rapportNpByMachineDate[r.sondeuse][r.date]) {
               dayMetrage = siteMoyenne;
-              srcVR = "rapport equipe machine " + r.sondeuse + " - jour NON PRODUCTIF : moyenne site creditee";
+              srcVR = "rapport equipe machine " + r.sondeuse + " - rapport NON PRODUCTIF : moyenne site creditee";
             } else {
               var metrageMachine = getMetrageMachineForDate(r.sondeuse, r.date);
               dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
