@@ -1446,6 +1446,25 @@
         var v = rapportByMachineDate[sondeuse][dateStr];
         return (v != null) ? v : null;
       }
+      function siteDernierTravail(empId, dateStr) {
+        // Dernier jour TRAVAILLE connu avant dateStr : affectations travail
+        // avec chantier ET rapports (source de verite). Retourne le SITE.
+        var best = null;
+        (affectations || []).forEach(function(af) {
+          if (af.personnelId !== empId || !af.chantierId) return;
+          if (!(af.typeJour === "travail" || !af.typeJour)) return;
+          if (!af.dateAffectation || af.dateAffectation >= dateStr) return;
+          var sDT = chantierToSite[af.chantierId];
+          if (!sDT) return;
+          if (!best || af.dateAffectation > best.date) best = { date: af.dateAffectation, site: sDT };
+        });
+        (empRapportsList[empId] || []).forEach(function(rjDT) {
+          if (!rjDT.date || rjDT.date >= dateStr || !rjDT.site) return;
+          if (!best || rjDT.date > best.date) best = { date: rjDT.date, site: rjDT.site };
+        });
+        return best ? best.site : null;
+      }
+
 
       // ── Jours a cause EXTERNE sur ce site (panne / intemperies / non productif) ──
       // Sert au rattrapage CONGE : si la machine a fait 0 m ce jour-la PARCE QUE
@@ -1483,10 +1502,7 @@
         var onSite2 = false;
         if (a2.chantierId && externalChIds.indexOf(a2.chantierId) >= 0) onSite2 = true;
         else if (!a2.chantierId) {
-          var lastW2 = affectations.filter(function(af) {
-            return af.personnelId === a2.personnelId && af.chantierId && af.dateAffectation < a2.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-          }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-          if (lastW2.length > 0 && chantierToSite[lastW2[0].chantierId] === site) onSite2 = true;
+          if (siteDernierTravail(a2.personnelId, a2.dateAffectation) === site) onSite2 = true;
         }
         if (onSite2) externalDaySet[a2.dateAffectation] = true;
       });
@@ -1518,14 +1534,9 @@
           if (!inEmpWindow(a.dateAffectation)) return false;
           if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
           if (!a.chantierId) {
-            var lastWork = affectations.filter(function(af) {
-              return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-            }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-            if (lastWork.length > 0) {
-              var lastCh = chantiers.find(function(c) { return c.id === lastWork[0].chantierId; });
-              var lastSite = lastCh ? lastCh.site || "" : "";
-              return lastSite === site;
-            }
+            // Dernier jour TRAVAILLE connu (affectations ET rapports) : un
+            // conge pris pendant une mission ailleurs ne revient plus ici
+            return siteDernierTravail(emp.id, a.dateAffectation) === site;
           }
           return false;
         });
@@ -1740,21 +1751,12 @@
           if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
           var alreadyOnSite = false;
           if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
-          if (!a.chantierId) {
-            var prevsX = affectations.filter(function(af) {
-              return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-            }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-            if (prevsX.length > 0 && chantierToSite[prevsX[0].chantierId] === site) alreadyOnSite = true;
-          }
+          var sdtA = !a.chantierId ? siteDernierTravail(emp.id, a.dateAffectation) : null;
+          if (!a.chantierId && sdtA === site) alreadyOnSite = true;
           if (alreadyOnSite) return;
           var otherSite = null;
           if (a.chantierId) { otherSite = chantierToSite[a.chantierId]; }
-          else {
-            var prevsY = affectations.filter(function(af) {
-              return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-            }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-            if (prevsY.length > 0) otherSite = chantierToSite[prevsY[0].chantierId];
-          }
+          else { otherSite = sdtA; }
           if (!otherSite || otherSite === site) return;
           // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
           joursAilleurs += 1;
@@ -20508,6 +20510,25 @@
           var v = rapportByMachineDate[sondeuse][dateStr];
           return (v != null) ? v : null;
         }
+        function siteDernierTravail(empId, dateStr) {
+          // Dernier jour TRAVAILLE connu avant dateStr : affectations travail
+          // avec chantier ET rapports (source de verite). Retourne le SITE.
+          var best = null;
+          (affectations || []).forEach(function(af) {
+            if (af.personnelId !== empId || !af.chantierId) return;
+            if (!(af.typeJour === "travail" || !af.typeJour)) return;
+            if (!af.dateAffectation || af.dateAffectation >= dateStr) return;
+            var sDT = chantierToSite[af.chantierId];
+            if (!sDT) return;
+            if (!best || af.dateAffectation > best.date) best = { date: af.dateAffectation, site: sDT };
+          });
+          (empRapportsList[empId] || []).forEach(function(rjDT) {
+            if (!rjDT.date || rjDT.date >= dateStr || !rjDT.site) return;
+            if (!best || rjDT.date > best.date) best = { date: rjDT.date, site: rjDT.site };
+          });
+          return best ? best.site : null;
+        }
+
 
         // ── Jours a cause EXTERNE sur ce site (panne / intemperies / non productif) ──
         // Meme regle que calcPrimesForSiteHelper (module) : un jour de panne, le
@@ -20535,10 +20556,7 @@
           var onSite2 = false;
           if (a2.chantierId && siteChIds.indexOf(a2.chantierId) >= 0) onSite2 = true;
           else if (!a2.chantierId) {
-            var lastW2 = (affectations || []).filter(function(af) {
-              return af.personnelId === a2.personnelId && af.chantierId && af.dateAffectation < a2.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-            }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-            if (lastW2.length > 0 && chantierToSite[lastW2[0].chantierId] === site) onSite2 = true;
+            if (siteDernierTravail(a2.personnelId, a2.dateAffectation) === site) onSite2 = true;
           }
           if (onSite2) externalDaySet[a2.dateAffectation] = true;
         });
@@ -20582,15 +20600,9 @@
             // travaillait sur ce site avant)
             if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
             if (!a.chantierId) {
-              // Trouver le dernier chantier travaille avant cette date
-              var lastWork = affectations.filter(function(af) {
-                return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-              }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-              if (lastWork.length > 0) {
-                var lastCh = chantiers.find(function(c) { return c.id === lastWork[0].chantierId; });
-                var lastSite = lastCh ? lastCh.site || "" : "";
-                return lastSite === site;
-              }
+              // Dernier jour TRAVAILLE connu (affectations ET rapports) : un
+              // conge pris pendant une mission ailleurs ne revient plus ici
+              return siteDernierTravail(emp.id, a.dateAffectation) === site;
             }
             return false;
           });
@@ -20960,22 +20972,15 @@
             // Determiner si l'affectation est sur ce site (auquel cas deja traitee)
             var alreadyOnSite = false;
             if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
-            if (!a.chantierId) {
-              var prevsX = (affectations || []).filter(function(af) {
-                return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-              }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-              if (prevsX.length > 0 && chantierToSite[prevsX[0].chantierId] === site) alreadyOnSite = true;
-            }
+            var sdtAe = !a.chantierId ? siteDernierTravail(emp.id, a.dateAffectation) : null;
+            if (!a.chantierId && sdtAe === site) alreadyOnSite = true;
             if (alreadyOnSite) return;
             // Determiner si l'affectation est sur un AUTRE site identifiable
             var otherSite = null;
             if (a.chantierId) {
               otherSite = chantierToSite[a.chantierId];
             } else {
-              var prevsY = (affectations || []).filter(function(af) {
-                return af.personnelId === emp.id && af.chantierId && af.dateAffectation < a.dateAffectation && (af.typeJour === "travail" || !af.typeJour);
-              }).sort(function(x, y) { return x.dateAffectation > y.dateAffectation ? -1 : 1; });
-              if (prevsY.length > 0) otherSite = chantierToSite[prevsY[0].chantierId];
+              otherSite = sdtAe;
             }
             if (!otherSite || otherSite === site) return; // pas autre site identifiable
             // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
