@@ -20361,6 +20361,18 @@
       // Modal diagnostic : { employe, site, details } pour breakdown jour-par-jour
       var _diagRow = useState(null);
       var diagRow = _diagRow[0]; var setDiagRow = _diagRow[1];
+      // Comparateur : 2 lignes selectionnees -> detail cote a cote jour par jour
+      var _cmpSel = useState([]);
+      var cmpSel = _cmpSel[0]; var setCmpSel = _cmpSel[1];
+      var toggleCmp = function(row) {
+        setCmpSel(function(prev) {
+          var dejale = prev.some(function(x) { return x.employeId === row.employeId; });
+          if (dejale) return prev.filter(function(x) { return x.employeId !== row.employeId; });
+          var entree = { employe: row.employe, employeId: row.employeId, det: row.details[0] };
+          if (prev.length >= 2) return [prev[1], entree];
+          return prev.concat([entree]);
+        });
+      };
 
       // Union des sites : ceux configures dans paliers + ceux utilises par les chantiers
       // (meme si pas encore de palier configure)
@@ -21386,6 +21398,10 @@
                     idx === 0 ? h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, verticalAlign: "top" }), rowSpan: row.details.length },
                       h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
                         h("button", { onClick: function() { setDiagRow({ employe: row.employe, employeId: row.employeId, det: row.details[0] }); }, title: "Voir le detail jour par jour", style: { background: "rgba(129,140,248,0.20)", border: "1px solid rgba(129,140,248,0.45)", borderRadius: 6, padding: "5px 7px", cursor: "pointer", display: "inline-flex", alignItems: "center" } }, h(Icon, { name: "search", size: 13, color: "#a5b4fc" })),
+                        (function() {
+                          var selCmp = cmpSel.some(function(x) { return x.employeId === row.employeId; });
+                          return h("button", { onClick: function() { toggleCmp(row); }, title: "Comparer : selectionne 2 employes pour voir leurs details cote a cote (les jours qui different sont surlignes)", style: { background: selCmp ? "rgba(251,191,36,0.25)" : "rgba(255,255,255,0.05)", border: "1px solid " + (selCmp ? "rgba(251,191,36,0.6)" : "rgba(255,255,255,0.12)"), borderRadius: 6, padding: "5px 7px", cursor: "pointer", display: "inline-flex", alignItems: "center" } }, h(Icon, { name: "users", size: 13, color: selCmp ? "#fde68a" : "#a1a1aa" }));
+                        })(),
                         h("span", null, row.employe)
                       )
                     ) : null,
@@ -21587,7 +21603,67 @@
               )
             )
           )
-        ) : null
+        ) : null,
+        // ── Modal COMPARAISON : 2 employes cote a cote, jour par jour ──
+        cmpSel.length === 2 ? (function() {
+          var cA = cmpSel[0], cB = cmpSel[1];
+          var mapA = {}, mapB = {};
+          (cA.det.daysDetail || []).forEach(function(d) { if (d.type.indexOf("SKIP") !== 0) mapA[d.date] = d; });
+          (cB.det.daysDetail || []).forEach(function(d) { if (d.type.indexOf("SKIP") !== 0) mapB[d.date] = d; });
+          var datesCmp = [];
+          Object.keys(mapA).concat(Object.keys(mapB)).forEach(function(dt) { if (datesCmp.indexOf(dt) < 0) datesCmp.push(dt); });
+          datesCmp.sort();
+          var kpiCmp = function(r) {
+            return r.det.jours + " j site · " + (r.det.joursAilleurs || 0) + " ailleurs · " + fmtNum(Math.round(r.det.metrage)) + " m · m/h " + (r.det.mhRealise || 0).toFixed(2) + " · part " + Math.round((r.det.prorataSite != null ? r.det.prorataSite : 1) * 100) + "% · PRIME " + fmtNum(Math.round(r.det.prime)) + " XPF";
+          };
+          var cellCmp = function(d) {
+            if (!d) return h("span", { style: { color: "#52525b", fontStyle: "italic" } }, "(rien)");
+            return h("span", { title: d.source || "", style: { display: "inline-flex", gap: 6, alignItems: "baseline" } },
+              h("span", { style: { fontSize: 10.5, padding: "1px 7px", borderRadius: 4, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.18)", color: "#cbd5e1", whiteSpace: "nowrap" } }, d.type),
+              h("span", { style: { fontFamily: "monospace", fontWeight: 700, color: d.metrage > 0 ? "#86efac" : "#71717a" } }, fmtNum(Math.round(d.metrage)) + " m")
+            );
+          };
+          var nbDiff = 0;
+          var lignesCmp = datesCmp.map(function(dt) {
+            var dA = mapA[dt], dB = mapB[dt];
+            var diffC = (!dA) !== (!dB) || (dA && dB && (dA.type !== dB.type || Math.round(dA.metrage) !== Math.round(dB.metrage)));
+            if (diffC) nbDiff++;
+            return { dt: dt, dA: dA, dB: dB, diff: diffC };
+          });
+          return h(Modal, { title: "Comparaison - " + cA.employe + " vs " + cB.employe, onClose: function() { setCmpSel([]); }, size: 1000 },
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
+              [cA, cB].map(function(r, i) {
+                return h("div", { key: i, style: { padding: "8px 12px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.25)" } },
+                  h("div", { style: { fontWeight: 800, color: "#e5e7eb", marginBottom: 2 } }, r.employe),
+                  h("div", { style: { fontSize: 11.5, color: "#a5b4fc" } }, kpiCmp(r))
+                );
+              })
+            ),
+            h("div", { style: { fontSize: 11.5, color: nbDiff > 0 ? "#fde68a" : "#86efac", marginBottom: 8, fontWeight: 700 } },
+              nbDiff > 0 ? nbDiff + " jour(s) different(s) (surlignes) : c'est la toute l'explication de l'ecart de prime." : "Aucune difference jour par jour : l'ecart vient de la grille (paliers/objectif) ou du prorata."),
+            h("div", { style: { overflowX: "auto", maxHeight: 480 } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+                h("thead", { style: { position: "sticky", top: 0, background: "rgba(28,30,42,0.98)" } },
+                  h("tr", null,
+                    h("th", { style: { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: "#a1a1aa", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, "Date"),
+                    h("th", { style: { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: "#a5b4fc", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, cA.employe),
+                    h("th", { style: { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: "#7dd3fc", borderBottom: "1px solid rgba(255,255,255,0.10)" } }, cB.employe)
+                  )
+                ),
+                h("tbody", null,
+                  lignesCmp.map(function(l, li) {
+                    return h("tr", { key: li, style: { borderBottom: "1px solid rgba(255,255,255,0.04)", background: l.diff ? "rgba(251,191,36,0.10)" : "transparent", borderLeft: l.diff ? "3px solid #f59e0b" : "3px solid transparent" } },
+                      h("td", { style: { padding: "7px 10px", fontFamily: "monospace" } }, l.dt),
+                      h("td", { style: { padding: "7px 10px" } }, cellCmp(l.dA)),
+                      h("td", { style: { padding: "7px 10px" } }, cellCmp(l.dB))
+                    );
+                  })
+                )
+              )
+            ),
+            h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 8, fontStyle: "italic" } }, "Survole un jour pour voir sa source exacte. Un jour present d'un seul cote, un type different (conge vs travail) ou un metrage different explique l'ecart - corrige au Planning Employes si une case est fausse.")
+          );
+        })() : null
       );
     }
 
