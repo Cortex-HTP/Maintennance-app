@@ -1539,6 +1539,19 @@
       affectations.forEach(function(aF) {
         if ((aF.typeJour || "") === "ferie" && aF.dateAffectation) feriesSetSite[aF.dateAffectation] = true;
       });
+      // Jours d'ACTIVITE du site dans la periode (rapports/saisies + feries) :
+      // denominateur de la PART de prime - identique pour tous les employes du
+      // site, pour que "meme travail sur le site = meme prime".
+      var nbJoursActiviteSite = 0;
+      (function() {
+        var dJA = typeof periodStart === "string" ? new Date(periodStart + "T00:00:00") : new Date(periodStart);
+        var dJB = typeof periodEnd === "string" ? new Date(periodEnd + "T00:00:00") : new Date(periodEnd);
+        while (dJA <= dJB) {
+          var sJA = dJA.getFullYear() + "-" + String(dJA.getMonth() + 1).padStart(2, "0") + "-" + String(dJA.getDate()).padStart(2, "0");
+          if (siteWorkDaySet[sJA] || feriesSetSite[sJA]) nbJoursActiviteSite++;
+          dJA.setDate(dJA.getDate() + 1);
+        }
+      })();
 
       var results = [];
       personnel.forEach(function(emp) {
@@ -1832,7 +1845,7 @@
         // plus), et la prime est multipliee par la part de jours site dans la
         // periode. Un permanent (0 jour ailleurs) est STRICTEMENT inchange ;
         // 2 bons jours sur 17 donnent 2/17 de la prime pleine (anti-sprint).
-        var prorataSite = adjJours / (adjJours + joursAilleurs);
+        var prorataSite = nbJoursActiviteSite > 0 ? Math.min(1, adjJours / nbJoursActiviteSite) : 1;
         var primeFinale = diff > 0 && coef > 0 ? diff * coef * prorataSite : 0;
         if (primeFinale > 0) results.push({ employe: emp, totalPrime: primeFinale });
       });
@@ -20654,6 +20667,18 @@
         (affectations || []).forEach(function(aF) {
           if ((aF.typeJour || "") === "ferie" && aF.dateAffectation) feriesSetSite[aF.dateAffectation] = true;
         });
+        // Jours d'ACTIVITE du site dans la periode : denominateur de la PART
+        // (miroir helper) - identique pour tous, "meme travail = meme prime"
+        var nbJoursActiviteSite = 0;
+        (function() {
+          var dJA = typeof period.start === "string" ? new Date(period.start + "T00:00:00") : new Date(period.start);
+          var dJB = typeof period.end === "string" ? new Date(period.end + "T00:00:00") : new Date(period.end);
+          while (dJA <= dJB) {
+            var sJA = dJA.getFullYear() + "-" + String(dJA.getMonth() + 1).padStart(2, "0") + "-" + String(dJA.getDate()).padStart(2, "0");
+            if (siteWorkDaySet[sJA] || feriesSetSite[sJA]) nbJoursActiviteSite++;
+            dJA.setDate(dJA.getDate() + 1);
+          }
+        })();
 
         personnel.forEach(function(emp) {
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
@@ -21124,7 +21149,7 @@
           // PRIME PRORATISEE : miroir exact de calcPrimesForSiteHelper (voir
           // le commentaire la-bas). Permanent = inchange, passager = part des
           // jours site.
-          var prorataSite = adjJours / (adjJours + joursAilleurs);
+          var prorataSite = nbJoursActiviteSite > 0 ? Math.min(1, adjJours / nbJoursActiviteSite) : 1;
           var primeFinale = diff > 0 && coef > 0 ? diff * coef * prorataSite : 0;
           // Diagnostic supplementaire : combien d'affectations existent au TOTAL
           // pour cet employe dans la periode (toutes sites confondus), et combien
