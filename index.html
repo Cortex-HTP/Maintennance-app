@@ -1361,9 +1361,15 @@
     //   { chantiers, chantiersBySite, chantierToSite, paliers, affectations, saisies,
     //     personnel, releves, rapportsForage }
     function calcPrimesForSiteHelper(site, periodStart, periodEnd, deps) {
+      // Garde-fou (audit mineur 9) : sans debut de periode (Stats 'all'), les
+      // boucles jour-par-jour partiraient de 1970 (gel ecran). Borne : 1 an.
+      if (!periodStart) periodStart = new Date(new Date(periodEnd || Date.now()).getTime() - 366 * 86400000);
       var siteCh = (deps.chantiersBySite && deps.chantiersBySite[site]) || [];
       if (siteCh.length === 0) return [];
-      var siteChIds = siteCh.map(function(c) { return c.id; });
+      // M1 audit : TOUS les chantiers du site (statut inclus), comme l'ecran -
+      // un jour peint sur un sous-chantier 'A venir' du site n'est plus perdu
+      var siteChIds = (deps.chantiers || []).filter(function(c) { return c.site === site; }).map(function(c) { return c.id; });
+      if (siteChIds.length === 0) siteChIds = siteCh.map(function(c) { return c.id; });
       var paliers = deps.paliers || [];
       var siteMoyenne = getMoyenneForSite(paliers, site);
       var objectif = getObjectifForSite(paliers, site);
@@ -1435,7 +1441,7 @@
           }
           if (!pid) return;
           if (!empRapportsList[pid]) empRapportsList[pid] = [];
-          empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code, site: rSite });
+          empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code, site: rSite, m: parseFloat(r.total_metres) || 0 });
         });
       });
       function getMachineEmpForDate(pid, dateStr) {
@@ -1470,7 +1476,8 @@
         });
         (empRapportsList[empId] || []).forEach(function(rjDT) {
           if (!rjDT.date || rjDT.date >= dateStr || !rjDT.site) return;
-          if (!best || rjDT.date > best.date) best = { date: rjDT.date, site: rjDT.site };
+          // >= : a date egale le RAPPORT fait foi sur l'affectation peinte
+      if (!best || rjDT.date >= best.date) best = { date: rjDT.date, site: rjDT.site };
         });
         return best ? best.site : null;
       }
@@ -1505,7 +1512,10 @@
       });
       affectations.forEach(function(a2) {
         var t2 = a2.typeJour || "";
-        if (t2 !== "panne" && t2 !== "intemperies" && t2 !== "non_productif") return;
+        // M3 audit : le non_productif PERSONNEL d'un employe ne marque plus la
+        // journee du SITE (il reste traite pour LUI par effectiveType) -
+        // seuls panne/intemperies sont des evenements de site
+        if (t2 !== "panne" && t2 !== "intemperies") return;
         // Borne a la periode calculee : seuls ces jours peuvent croiser un conge
         // de la periode, et ca evite de payer la resolution de site hors sujet.
         if (!a2.dateAffectation || !isDateInPeriodFn(a2.dateAffectation, periodStart, periodEnd)) return;
@@ -1580,7 +1590,11 @@
         // Sites des rapports de CET employe, par date (rapports envoyes)
         var rapSiteByDate = {};
         (empRapportsList[emp.id] || []).forEach(function(rS) {
-          if (!rapSiteByDate[rS.date]) rapSiteByDate[rS.date] = rS.site;
+          var curRS = rapSiteByDate[rS.date];
+          // Site PRIMAIRE deterministe du jour : rapport au plus grand metrage
+          // (tie-break alphabetique) - 2 rapports / 2 sites le meme jour ne
+          // dependent plus de l'ordre de chargement (M2 audit)
+          if (!curRS || (rS.m || 0) > curRS.m || ((rS.m || 0) === curRS.m && String(rS.site) < String(curRS.site))) rapSiteByDate[rS.date] = { site: rS.site, m: rS.m || 0 };
         });
         empAffOnSite.forEach(function(a) {
           var tj = a.typeJour || "travail";
@@ -1597,7 +1611,7 @@
           if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
             // Rapport envoye sur un AUTRE site ce jour : le jour part au
             // prorata (avant : il disparaissait totalement - 'raison inconnue')
-            if (rapSiteByDate[dateStr] !== site && !datesComptees[dateStr]) {
+            if (rapSiteByDate[dateStr].site !== site && !datesComptees[dateStr]) {
               joursAilleurs += 1;
               datesComptees[dateStr] = true;
             }
@@ -1648,15 +1662,17 @@
               var vMachine = getMetrageMachineForDate(machineW, dateStr);
               if (vMachine !== null) dayMetrage = vMachine;
             }
+            var aSourceW = machineW ? (getMetrageMachineForDate(machineW, dateStr) !== null) : false;
             if (dayMetrage === 0) {
               if (releveByDate[dateStr] && releveByDate[dateStr].length > 0) {
                 releveByDate[dateStr].forEach(function(r) { dayMetrage += parseFloat(r.metrage) || 0; });
-              } else if (saisieVal > 0) { dayMetrage = saisieVal; }
+                aSourceW = true;
+              } else if (saisieVal > 0) { dayMetrage = saisieVal; aSourceW = true; }
             }
             // AUCUNE source de metrage (vecu Aubert/Tontouta 14/09) : le
-            // planning fait foi, le jour travaille credite la MOYENNE au lieu
-            // d'ecraser le m/h a 0 (meme logique que ferie/NP/panne)
-            if (dayMetrage === 0) dayMetrage = siteMoyenne;
+            // planning fait foi -> moyenne. Un rapport machine a 0 m REEL
+            // (non NP) reste 0, coherent avec l'equipe du rapport (min 5).
+            if (dayMetrage === 0 && !aSourceW) dayMetrage = siteMoyenne;
             adjMetrage += dayMetrage; adjJours += 1;
           }
         });
@@ -1704,6 +1720,13 @@
           if (!isDateInPeriodFn(rj.date, periodStart, periodEnd)) return;
           if (!inEmpWindow(rj.date)) return;
           if (datesComptees[rj.date]) return;
+          // M2 audit : 2 rapports / 2 sites le meme jour -> le jour appartient
+          // au site PRIMAIRE (plus grand metrage) ; ici il part au prorata
+          if (rapSiteByDate[rj.date] && rapSiteByDate[rj.date].site !== site) {
+            joursAilleurs += 1;
+            datesComptees[rj.date] = true;
+            return;
+          }
           datesComptees[rj.date] = true;
           // Jour NON PRODUCTIF : critere = le RAPPORT de SA machine (sur ce
           // site) est NP -> moyenne. PAS externalDaySet : ce set est pollue
@@ -1768,7 +1791,9 @@
           if (datesComptees[a.dateAffectation]) return;
           if (!inEmpWindow(a.dateAffectation)) return;
           var tj = a.typeJour || "travail";
-          if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
+          // M5 audit : ces jours comptent cote site B (ferie=moyenne, maladie/
+          // arret=+1j) -> ils comptent donc AILLEURS ici aussi, sinon le
+          // prorata du site A est gonfle (somme des prorata > 1)
           var alreadyOnSite = false;
           if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
           var sdtA = !a.chantierId ? siteDernierTravail(emp.id, a.dateAffectation) : null;
@@ -20514,7 +20539,7 @@
             }
             if (!pid) return;
             if (!empRapportsList[pid]) empRapportsList[pid] = [];
-            empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code, site: rSite });
+            empRapportsList[pid].push({ date: d, sondeuse: r.sondeuse_code, site: rSite, m: parseFloat(r.total_metres) || 0 });
           });
         });
         // Cherche la machine de l'employe POUR LE SITE COURANT (pas globalement).
@@ -20553,7 +20578,8 @@
           });
           (empRapportsList[empId] || []).forEach(function(rjDT) {
             if (!rjDT.date || rjDT.date >= dateStr || !rjDT.site) return;
-            if (!best || rjDT.date > best.date) best = { date: rjDT.date, site: rjDT.site };
+            // >= : a date egale le RAPPORT fait foi sur l'affectation peinte
+      if (!best || rjDT.date >= best.date) best = { date: rjDT.date, site: rjDT.site };
           });
           return best ? best.site : null;
         }
@@ -20578,7 +20604,10 @@
         });
         (affectations || []).forEach(function(a2) {
           var t2 = a2.typeJour || "";
-          if (t2 !== "panne" && t2 !== "intemperies" && t2 !== "non_productif") return;
+          // M3 audit : le non_productif PERSONNEL d'un employe ne marque plus la
+        // journee du SITE (il reste traite pour LUI par effectiveType) -
+        // seuls panne/intemperies sont des evenements de site
+        if (t2 !== "panne" && t2 !== "intemperies") return;
           // Borne a la periode calculee : seuls ces jours peuvent croiser un conge
           // de la periode, et ca evite de payer la resolution de site hors sujet.
           if (!a2.dateAffectation || !isDateInPeriod(a2.dateAffectation, period.start, period.end)) return;
@@ -20678,7 +20707,11 @@
           // Sites des rapports de CET employe, par date (rapports envoyes)
           var rapSiteByDate = {};
           (empRapportsList[emp.id] || []).forEach(function(rS) {
-            if (!rapSiteByDate[rS.date]) rapSiteByDate[rS.date] = rS.site;
+            var curRS = rapSiteByDate[rS.date];
+          // Site PRIMAIRE deterministe du jour : rapport au plus grand metrage
+          // (tie-break alphabetique) - 2 rapports / 2 sites le meme jour ne
+          // dependent plus de l'ordre de chargement (M2 audit)
+          if (!curRS || (rS.m || 0) > curRS.m || ((rS.m || 0) === curRS.m && String(rS.site) < String(curRS.site))) rapSiteByDate[rS.date] = { site: rS.site, m: rS.m || 0 };
           });
           var ailleursRapSet = {};
           empAffOnSite.forEach(function(a) {
@@ -20693,10 +20726,10 @@
             if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
               // Rapport envoye sur un AUTRE site ce jour : le jour part au
               // prorata (avant : il disparaissait - 'IGNORE raison inconnue')
-              if (rapSiteByDate[dateStr] !== site && !ailleursRapSet[dateStr]) {
+              if (rapSiteByDate[dateStr].site !== site && !ailleursRapSet[dateStr]) {
                 joursAilleurs += 1;
                 ailleursRapSet[dateStr] = true;
-                daysDetail.push({ date: dateStr, type: "ailleurs-rapport", machine: null, metrage: 0, source: "rapport envoye sur un autre site (" + rapSiteByDate[dateStr] + ") - exclu du m/h, prime proratisee" });
+                daysDetail.push({ date: dateStr, type: "ailleurs-rapport", machine: null, metrage: 0, source: "rapport envoye sur un autre site (" + rapSiteByDate[dateStr].site + ") - exclu du m/h, prime proratisee" });
               }
               return;
             }
@@ -20804,6 +20837,10 @@
                 } else if (saisieVal > 0) {
                   dayMetrage = saisieVal;
                   workSource = "saisie chantier (" + saisieVal + " m)";
+                } else if (machineW && getMetrageMachineForDate(machineW, dateStr) !== null) {
+                  // Rapport machine EXISTANT a 0 m reel (non NP) : 0 conserve,
+                  // coherent avec l'equipe du rapport (completion a 0)
+                  workSource = "machine " + machineW + " : rapport a 0 m reel (0 conserve)";
                 } else {
                   // AUCUNE source de metrage (vecu Aubert/Tontouta 14/09) : le
                   // planning fait foi -> moyenne site creditee (meme logique
@@ -20887,6 +20924,13 @@
             if (!isDateInPeriod(r.date, period.start, period.end)) return;
             if (!dateEnvelopeEmploye(r.date)) return;
             if (datesDejaComptees[r.date]) return;
+            // M2 audit : jour multi-rapports -> compte sur le site PRIMAIRE
+            if (rapSiteByDate[r.date] && rapSiteByDate[r.date].site !== site) {
+              joursAilleurs += 1;
+              datesDejaComptees[r.date] = true;
+              daysDetail.push({ date: r.date, type: "ailleurs-rapport", machine: r.sondeuse, metrage: 0, source: "2 rapports le meme jour : site primaire = " + rapSiteByDate[r.date].site + " (plus grand metrage) - exclu du m/h, prime proratisee" });
+              return;
+            }
             // Rapport confirme sa presence : on compte comme travail. Jour NON
             // PRODUCTIF (rapport NP / panne / intemperies - peint OU
             // automatique) : moyenne jour, jamais le 0 m du rapport NP.
@@ -21007,7 +21051,9 @@
             if (datesDejaComptees[a.dateAffectation]) return;
             if (!dateEnvelopeEmploye(a.dateAffectation)) return;
             var tj = a.typeJour || "travail";
-            if (tj === "ferie" || tj === "arret" || tj === "maladie") return;
+            // M5 audit : ces jours comptent cote site B (ferie=moyenne, maladie/
+          // arret=+1j) -> ils comptent donc AILLEURS ici aussi, sinon le
+          // prorata du site A est gonfle (somme des prorata > 1)
             // Determiner si l'affectation est sur ce site (auquel cas deja traitee)
             var alreadyOnSite = false;
             if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
