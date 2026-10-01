@@ -1321,6 +1321,40 @@
     }
 
     // ─── Helper module-level : calcul EXACT des primes de metrage ──────
+    // ── Fenetre d'emploi MULTI-CONTRATS (CDD successifs) ──
+    // La fiche personnel garde le contrat COURANT (dateEmbauche/dateFinContrat)
+    // + l'historique des contrats precedents (contratsHistorique, alimente
+    // automatiquement par la re-embauche). Un jour est "sous contrat" s'il
+    // tombe dans N'IMPORTE LEQUEL de ces contrats : les primes d'un salarie
+    // re-embauche couvrent TOUTES ses periodes (cas Guy Stuart 2026-10-01).
+    // Convention identique partout : debut inclus, fin = premier jour NON
+    // employe (strict).
+    function fenetresEmploi(emp) {
+      var out = [];
+      if (!emp) return out;
+      (Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : []).forEach(function(ct) {
+        if (!ct || (!ct.dateEmbauche && !ct.dateFinContrat)) return;
+        out.push({
+          debut: ct.dateEmbauche ? String(ct.dateEmbauche).substring(0, 10) : null,
+          fin: ct.dateFinContrat ? String(ct.dateFinContrat).substring(0, 10) : null
+        });
+      });
+      out.push({
+        debut: emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null,
+        fin: emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null
+      });
+      return out;
+    }
+    function dansFenetreEmploi(emp, dateStr) {
+      var fen = fenetresEmploi(emp);
+      if (fen.length === 0) return true;
+      for (var iF = 0; iF < fen.length; iF++) {
+        if (fen[iF].debut && dateStr < fen[iF].debut) continue;
+        if (fen[iF].fin && dateStr >= fen[iF].fin) continue;
+        return true;
+      }
+      return false;
+    }
     // Replique la logique de calcPrimesForSitePeriod (ex-EcranPrimes) pour qu'elle soit
     // reutilisable depuis EcranStatistiques (cout reel inclut les primes).
     // Inputs : site (string), periodStart/End (Date), deps :
@@ -1474,14 +1508,10 @@
       personnel.forEach(function(emp) {
         var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
         var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
-        // Fenetre d'emploi pour ce salarie (utilisee pour filtrer + rattraper les jours hors fenetre)
-        var dateEmbStr = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null;
-        var dateFinStr = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null;
-        function inEmpWindow(dateStr) {
-          if (dateEmbStr && dateStr < dateEmbStr) return false;
-          if (dateFinStr && dateStr >= dateFinStr) return false;
-          return true;
-        }
+        // Fenetre d'emploi pour ce salarie : contrat courant + TOUS les CDD
+        // precedents (contratsHistorique) — un re-embauche garde ses primes
+        // sur ses anciennes periodes
+        function inEmpWindow(dateStr) { return dansFenetreEmploi(emp, dateStr); }
         var empAffOnSite = affectations.filter(function(a) {
           if (a.personnelId !== emp.id) return false;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return false;
@@ -1550,7 +1580,13 @@
           var saisieType = saisieEntry ? getSaisieType(saisieEntry) : "normal";
           var saisieVal = saisieEntry ? (parseFloat(getSaisieVal(saisieEntry)) || 0) : 0;
           var effectiveType = (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif" || saisieType === "arret") ? saisieType : tj;
-          if (effectiveType === "ferie") return;
+          if (effectiveType === "ferie") {
+            // REGLE (2026-10-01, Tomy) : ferie chome = MOYENNE JOUR creditee
+            // dans la prime (comme panne/NP - l'employe n'y est pour rien).
+            // Un ferie TRAVAILLE est deja traite plus haut (rapport fait foi).
+            adjMetrage += siteMoyenne; adjJours += 1;
+            return;
+          }
           if (effectiveType === "arret") { adjJours += 1; }
           else if (effectiveType === "panne" || effectiveType === "intemperies" || effectiveType === "non_productif") {
             // Cause externe (panne / meteo / journee non productive) -> rattrapage moyenne site.
@@ -1596,7 +1632,8 @@
         // Si la machine fait moins que la moyenne, on prend la valeur reelle.
         // Si pas de machine identifiable, fallback siteMoyenne.
         // Feries totalement ignores (comme pour un employe present).
-        if (dateEmbStr || dateFinStr) {
+        var aBornesEmploi = fenetresEmploi(emp).some(function(f) { return !!(f.debut || f.fin); });
+        if (aBornesEmploi) {
           var feriesSetHE2 = {};
           (affectations || []).forEach(function(a) {
             if ((a.typeJour || "") === "ferie" && a.dateAffectation) feriesSetHE2[a.dateAffectation] = true;
@@ -1635,8 +1672,14 @@
           if (!inEmpWindow(rj.date)) return;
           if (datesComptees[rj.date]) return;
           datesComptees[rj.date] = true;
-          var vRj = getMetrageMachineForDate(rj.sondeuse, rj.date);
-          adjMetrage += (vRj != null) ? vRj : 0;
+          // Jour NON PRODUCTIF (rapport NP / panne / intemperies - peint OU
+          // automatique) : moyenne jour, jamais le 0 m du rapport NP
+          if (externalDaySet[rj.date]) {
+            adjMetrage += siteMoyenne;
+          } else {
+            var vRj = getMetrageMachineForDate(rj.sondeuse, rj.date);
+            adjMetrage += (vRj != null) ? vRj : 0;
+          }
           adjJours += 1;
           nbTravailViaRapport += 1;
         });
@@ -17755,9 +17798,15 @@
       //    cases ne sont pas peignables (il n'est pas encore/plus sous contrat).
       function horsContratPe(emp, dateStr) {
         if (!emp) return null;
-        if (emp.dateEmbauche && dateStr < String(emp.dateEmbauche).substring(0, 10)) return "avant";
-        if (emp.dateFinContrat && dateStr >= String(emp.dateFinContrat).substring(0, 10)) return "apres";
-        return null;
+        // Multi-contrats : un jour couvert par N'IMPORTE QUEL contrat (courant
+        // ou historique de re-embauche) est sous contrat ; "avant" = avant le
+        // tout premier contrat, "apres" = apres la fin ou dans un trou entre
+        // deux CDD (meme rendu grise)
+        if (dansFenetreEmploi(emp, dateStr)) return null;
+        var fenHC = fenetresEmploi(emp);
+        var minDebHC = null;
+        fenHC.forEach(function(f) { if (f.debut && (minDebHC === null || f.debut < minDebHC)) minDebHC = f.debut; });
+        return (minDebHC && dateStr < minDebHC) ? "avant" : "apres";
       }
       function siteToChantierPe(lieu) {
         if (!lieu) return null;
@@ -20507,18 +20556,10 @@
           var empNom = ((emp.prenom || "") + " " + (emp.nom || "")).toUpperCase().trim();
           var empNomRev = ((emp.nom || "") + " " + (emp.prenom || "")).toUpperCase().trim();
 
-          // ── Filtre par date d'embauche : prime calculee UNIQUEMENT a partir du jour d'embauche ──
-          // (et jusqu'a la fin de contrat si applicable)
-          var dateEmbStr = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null;
-          var dateFinStr = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null;
-          function dateEnvelopeEmploye(dateStr) {
-            // Verifie qu'une date est dans la fenetre d'emploi du salarie
-            // Convention : dateEmbauche = jour J1 inclus, dateFinContrat = jour
-            // de debauche = premier jour NON employe (donc strict ">=" en fin).
-            if (dateEmbStr && dateStr < dateEmbStr) return false;
-            if (dateFinStr && dateStr >= dateFinStr) return false;
-            return true;
-          }
+          // ── Fenetre d'emploi : contrat courant + CDD precedents (miroir du
+          // helper module) — un re-embauche garde ses primes sur TOUTES ses
+          // periodes de contrat
+          function dateEnvelopeEmploye(dateStr) { return dansFenetreEmploi(emp, dateStr); }
 
           // Note : la strategie multi-sites avec ratio a ete supprimee.
           // Desormais, chaque site donne sa propre prime. Si un employe a travaille
@@ -20584,7 +20625,7 @@
           var joursAilleurs = 0; // jours rattaches a un AUTRE site (prime proratisee)
           var adjJours = 0;
           // Decompte par type de jour (pour affichage dans le tableau)
-          var joursParType = { travail: 0, intemperies: 0, panne: 0, conge: 0, chomage: 0, maladie: 0, arret: 0, non_productif: 0 };
+          var joursParType = { travail: 0, intemperies: 0, panne: 0, conge: 0, chomage: 0, maladie: 0, arret: 0, non_productif: 0, ferie: 0 };
           // Trace jour-par-jour pour debug : { date, type, machine, metrage, source }
           // Permet de diagnostiquer pourquoi 2 employes qui travaillent pareil ont
           // des primes differentes (name matching foireux, releve manquant, etc.)
@@ -20610,10 +20651,14 @@
             var saisieType = saisieEntry ? getSaisieType(saisieEntry) : "normal";
             var saisieVal = saisieEntry ? (parseFloat(getSaisieVal(saisieEntry)) || 0) : 0;
             var effectiveType = (saisieType === "panne" || saisieType === "intemperies" || saisieType === "non_productif" || saisieType === "arret") ? saisieType : tj;
-            // Les jours feries sont COMPLETEMENT EXCLUS du calcul (comme un weekend) :
-            // ni metres ajoutes, ni jour ajoute au diviseur. Sortie immediate.
+            // REGLE (2026-10-01, Tomy) : ferie chome = MOYENNE JOUR creditee
+            // dans la prime (comme panne/NP). Un ferie travaille est deja
+            // traite plus haut (rapport fait foi).
             if (effectiveType === "ferie") {
-              daysDetail.push({ date: dateStr, type: "ferie", machine: null, metrage: 0, source: "ferie (exclu)" });
+              adjMetrage += siteMoyenne;
+              adjJours += 1;
+              joursParType.ferie += 1;
+              daysDetail.push({ date: dateStr, type: "ferie", machine: null, metrage: siteMoyenne, source: "ferie chome - moyenne site creditee" });
               return;
             }
             // Arret : journee explicitement "rien ne se passe" -> 0m, +1j
@@ -20724,7 +20769,8 @@
           // Sans machine identifiable (jamais bosse sur ce site), fallback siteMoyenne.
           // Les FERIES sont totalement ignores (comme pour un employe present) :
           // detection via la presence d'une affectation typeJour=ferie ce jour-la.
-          if (dateEmbStr || dateFinStr) {
+          var aBornesEmploiEc = fenetresEmploi(emp).some(function(f) { return !!(f.debut || f.fin); });
+          if (aBornesEmploiEc) {
             // Set des dates feriees identifiees dans les affectations de la periode
             var feriesSetHE = {};
             (affectations || []).forEach(function(a) {
@@ -20734,9 +20780,7 @@
             var dEnd = typeof period.end === "string" ? new Date(period.end + "T00:00:00") : new Date(period.end);
             while (dCursor <= dEnd) {
               var dStr = dCursor.getFullYear() + "-" + String(dCursor.getMonth() + 1).padStart(2, "0") + "-" + String(dCursor.getDate()).padStart(2, "0");
-              var horsEmploi = false;
-              if (dateEmbStr && dStr < dateEmbStr) horsEmploi = true;
-              if (dateFinStr && dStr >= dateFinStr) horsEmploi = true;
+              var horsEmploi = !dansFenetreEmploi(emp, dStr);
               if (horsEmploi) {
                 var dow = dCursor.getDay(); // 0=dim, 6=sam
                 if (dow !== 0 && dow !== 6 && !feriesSetHE[dStr]) {
@@ -20784,15 +20828,25 @@
             if (!isDateInPeriod(r.date, period.start, period.end)) return;
             if (!dateEnvelopeEmploye(r.date)) return;
             if (datesDejaComptees[r.date]) return;
-            // Rapport confirme sa presence : on compte comme travail
-            var metrageMachine = getMetrageMachineForDate(r.sondeuse, r.date);
-            var dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
+            // Rapport confirme sa presence : on compte comme travail. Jour NON
+            // PRODUCTIF (rapport NP / panne / intemperies - peint OU
+            // automatique) : moyenne jour, jamais le 0 m du rapport NP.
+            var dayMetrage;
+            var srcVR;
+            if (externalDaySet[r.date]) {
+              dayMetrage = siteMoyenne;
+              srcVR = "rapport equipe machine " + r.sondeuse + " - jour NON PRODUCTIF : moyenne site creditee";
+            } else {
+              var metrageMachine = getMetrageMachineForDate(r.sondeuse, r.date);
+              dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
+              srcVR = "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee";
+            }
             adjMetrage += dayMetrage;
             adjJours += 1;
             nbTravailViaRapport += 1;
             joursParType.travail += 1;
             datesDejaComptees[r.date] = true;
-            daysDetail.push({ date: r.date, type: "travail (via rapport)", machine: r.sondeuse, metrage: dayMetrage, source: "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee" });
+            daysDetail.push({ date: r.date, type: "travail (via rapport)", machine: r.sondeuse, metrage: dayMetrage, source: srcVR });
           });
 
           // ── JOURS ABSENTS : site en activite, employe nulle part ──
@@ -21208,6 +21262,7 @@
                 h("th", { style: thStyle }, "Employe"),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Chantier"),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Jours"),
+                h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }), title: "Moyenne des metrages comptes par jour (metrage total / jours)" }, "Moy. m/j"),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "m/h"),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Obj."),
                 h("th", { style: Object.assign({}, thStyle, { textAlign: "center" }) }, "Coef"),
@@ -21228,6 +21283,7 @@
                   if (jpt.non_productif) nonTravail.push({ k: "Np", n: jpt.non_productif, color: "#fbbf24", title: jpt.non_productif + " jour(s) non productif" });
                   if (jpt.maladie) nonTravail.push({ k: "M", n: jpt.maladie, color: "#f472b6", title: jpt.maladie + " jour(s) maladie" });
                   if (jpt.arret) nonTravail.push({ k: "A", n: jpt.arret, color: "#71717a", title: jpt.arret + " jour(s) arret" });
+                  if (jpt.ferie) nonTravail.push({ k: "F", n: jpt.ferie, color: "#a78bfa", title: jpt.ferie + " jour(s) ferie (+moy site)" });
                   lines.push(h("tr", { key: row.employeId + "-" + idx },
                     idx === 0 ? h("td", { style: Object.assign({}, tdStyle, { fontWeight: 600, verticalAlign: "top" }), rowSpan: row.details.length },
                       h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
@@ -21246,6 +21302,7 @@
                         ) : null
                       )
                     ),
+                    h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#a5b4fc", fontWeight: 600 }) }, det.jours > 0 ? fmtNum(Math.round(det.metrage / det.jours)) : "-"),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", fontWeight: 600, color: det.mhRealise > det.objectif ? "#86efac" : "#fda4af" }) }, (det.mhRealise || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#a1a1aa" }) }, (det.objectif || 0).toFixed(2)),
                     h("td", { style: Object.assign({}, tdStyle, { textAlign: "center", color: "#d4d4d8" }) }, fmtNum(det.coef)),
@@ -21255,7 +21312,7 @@
                 return lines;
               }).reduce(function(acc, cur) { return acc.concat(cur); }, []),
               h("tr", { style: { background: "rgba(34,197,94,0.15)" } },
-                h("td", { colSpan: 6, style: Object.assign({}, tdStyle, { fontWeight: 700, borderTop: "2px solid #22c55e", color: "#fafafa" }) }, "Total " + displaySite),
+                h("td", { colSpan: 7, style: Object.assign({}, tdStyle, { fontWeight: 700, borderTop: "2px solid #22c55e", color: "#fafafa" }) }, "Total " + displaySite),
                 h("td", { style: Object.assign({}, tdStyle, { textAlign: "right", fontWeight: 700, color: "#86efac", borderTop: "2px solid #22c55e" }) }, fmtNum(Math.round(totalPrimeSite)) + " XPF")
               )
             )
