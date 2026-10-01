@@ -1552,6 +1552,14 @@
           if (a.personnelId !== emp.id) return false;
           if (!isDateInPeriodFn(a.dateAffectation, periodStart, periodEnd)) return false;
           if (!inEmpWindow(a.dateAffectation)) return false;
+          // FERIE : appartient au site ou l'employe travaillait juste avant
+          // (le chantier porte par la case peinte est un artefact - vecu
+          // Matthieu 24/09 marque Ouaco apres une semaine SMT/Tontouta)
+          if ((a.typeJour || "") === "ferie") {
+            var sdtF = siteDernierTravail(emp.id, a.dateAffectation);
+            if (sdtF) return sdtF === site;
+            return !!(a.chantierId && siteChIds.indexOf(a.chantierId) >= 0);
+          }
           if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
           if (!a.chantierId) {
             // Dernier jour TRAVAILLE connu (affectations ET rapports) : un
@@ -1795,13 +1803,16 @@
           // arret=+1j) -> ils comptent donc AILLEURS ici aussi, sinon le
           // prorata du site A est gonfle (somme des prorata > 1)
           var alreadyOnSite = false;
-          if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
-          var sdtA = !a.chantierId ? siteDernierTravail(emp.id, a.dateAffectation) : null;
-          if (!a.chantierId && sdtA === site) alreadyOnSite = true;
+          var estFerieA = tj === "ferie";
+          if (!estFerieA && a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
+          var sdtA = (!a.chantierId || estFerieA) ? siteDernierTravail(emp.id, a.dateAffectation) : null;
+          if ((!a.chantierId || estFerieA) && sdtA === site) alreadyOnSite = true;
+          // Ferie sans travail connu avant : repli sur le chantier de la case
+          if (estFerieA && !sdtA && a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
           if (alreadyOnSite) return;
           var otherSite = null;
-          if (a.chantierId) { otherSite = chantierToSite[a.chantierId]; }
-          else { otherSite = sdtA; }
+          if (a.chantierId && !estFerieA) { otherSite = chantierToSite[a.chantierId]; }
+          else { otherSite = sdtA || (a.chantierId ? chantierToSite[a.chantierId] : null); }
           if (!otherSite || otherSite === site) return;
           // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
           joursAilleurs += 1;
@@ -20668,6 +20679,13 @@
             if (!dateEnvelopeEmploye(a.dateAffectation)) return false;
             // chantier du site OU sans chantier (chomage/conge a rattacher au site si l'employe
             // travaillait sur ce site avant)
+            // FERIE : suit le dernier site travaille (le chantier de la case
+            // est un artefact de peinture) - repli chantier si aucun travail
+            if ((a.typeJour || "") === "ferie") {
+              var sdtF = siteDernierTravail(emp.id, a.dateAffectation);
+              if (sdtF) return sdtF === site;
+              return !!(a.chantierId && siteChIds.indexOf(a.chantierId) >= 0);
+            }
             if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) return true;
             if (!a.chantierId) {
               // Dernier jour TRAVAILLE connu (affectations ET rapports) : un
@@ -21069,16 +21087,19 @@
           // prorata du site A est gonfle (somme des prorata > 1)
             // Determiner si l'affectation est sur ce site (auquel cas deja traitee)
             var alreadyOnSite = false;
-            if (a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
-            var sdtAe = !a.chantierId ? siteDernierTravail(emp.id, a.dateAffectation) : null;
-            if (!a.chantierId && sdtAe === site) alreadyOnSite = true;
+            var estFerieAe = tj === "ferie";
+            if (!estFerieAe && a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
+            var sdtAe = (!a.chantierId || estFerieAe) ? siteDernierTravail(emp.id, a.dateAffectation) : null;
+            if ((!a.chantierId || estFerieAe) && sdtAe === site) alreadyOnSite = true;
+            // Ferie sans travail connu avant : repli sur le chantier de la case
+            if (estFerieAe && !sdtAe && a.chantierId && siteChIds.indexOf(a.chantierId) >= 0) alreadyOnSite = true;
             if (alreadyOnSite) return;
             // Determiner si l'affectation est sur un AUTRE site identifiable
             var otherSite = null;
-            if (a.chantierId) {
+            if (a.chantierId && !estFerieAe) {
               otherSite = chantierToSite[a.chantierId];
             } else {
-              otherSite = sdtAe;
+              otherSite = sdtAe || (a.chantierId ? chantierToSite[a.chantierId] : null);
             }
             if (!otherSite || otherSite === site) return; // pas autre site identifiable
             // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
