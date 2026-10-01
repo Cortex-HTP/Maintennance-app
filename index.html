@@ -1523,6 +1523,7 @@
         });
 
         var adjMetrage = 0, adjJours = 0;
+        var joursAilleurs = 0; // jours rattaches a un AUTRE site (prime proratisee)
         var datesComptees = {};
         var nbTravailViaRapport = 0;
         // Sites des rapports de CET employe, par date (rapports envoyes)
@@ -1660,9 +1661,10 @@
               && !datesComptees[dStrAbs] && !empAffDatesAll[dStrAbs]) {
             var credAbs = null;
             if (empRapDatesAll[dStrAbs]) {
-              // Rapport sur un AUTRE site ce jour : rattrapage moyenne, comme les
-              // affectations "ailleurs" (evite la prime explosee sur site secondaire)
-              credAbs = siteMoyenne;
+              // Rapport sur un AUTRE site ce jour : jour AILLEURS. Il ne dilue
+              // plus le m/h du site : la prime est PRORATISEE a la place.
+              joursAilleurs += 1;
+              datesComptees[dStrAbs] = true;
             } else if (externalDaySet[dStrAbs]) {
               credAbs = siteMoyenne;
             } else {
@@ -1707,7 +1709,8 @@
             if (prevsY.length > 0) otherSite = chantierToSite[prevsY[0].chantierId];
           }
           if (!otherSite || otherSite === site) return;
-          adjMetrage += siteMoyenne; adjJours += 1;
+          // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
+          joursAilleurs += 1;
         });
 
         var nbTravailReel = empAffOnSite.filter(function(a) { return (a.typeJour || "travail") === "travail"; }).length;
@@ -1719,7 +1722,13 @@
         var mhRealise = adjMetrage / (adjJours * 9);
         var coef = lookupCoefficient(paliers, site, mhRealise);
         var diff = mhRealise - objectif;
-        var primeFinale = diff > 0 && coef > 0 ? diff * coef : 0;
+        // PRIME PRORATISEE (2026-10-01, cas Matthieu/Ouaco) : le m/h est celui
+        // des jours rattaches au SITE (les jours passes ailleurs ne le diluent
+        // plus), et la prime est multipliee par la part de jours site dans la
+        // periode. Un permanent (0 jour ailleurs) est STRICTEMENT inchange ;
+        // 2 bons jours sur 17 donnent 2/17 de la prime pleine (anti-sprint).
+        var prorataSite = adjJours / (adjJours + joursAilleurs);
+        var primeFinale = diff > 0 && coef > 0 ? diff * coef * prorataSite : 0;
         if (primeFinale > 0) results.push({ employe: emp, totalPrime: primeFinale });
       });
       return results;
@@ -20572,6 +20581,7 @@
           //    - Ferie / conge / chomage : idem (rattrapage)
           //    - Maladie : +0 metrage, +1 jour (tire la moyenne vers le bas)
           var adjMetrage = 0;
+          var joursAilleurs = 0; // jours rattaches a un AUTRE site (prime proratisee)
           var adjJours = 0;
           // Decompte par type de jour (pour affichage dans le tableau)
           var joursParType = { travail: 0, intemperies: 0, panne: 0, conge: 0, chomage: 0, maladie: 0, arret: 0, non_productif: 0 };
@@ -20807,9 +20817,11 @@
                 && !datesDejaComptees[dStrAbs] && !empAffDatesAll[dStrAbs]) {
               var credAbs = null; var srcAbs = null; var machNomAbs = null;
               if (empRapDatesAll[dStrAbs]) {
-                // Rapport sur un AUTRE site ce jour : rattrapage moyenne, comme les
-                // affectations "ailleurs" (evite la prime explosee sur site secondaire)
-                credAbs = siteMoyenne; srcAbs = "jour sur un autre site (rapport) - rattrapage moyenne";
+                // Rapport sur un AUTRE site ce jour : jour AILLEURS (ne dilue
+                // plus le m/h du site, la prime est proratisee)
+                joursAilleurs += 1;
+                datesDejaComptees[dStrAbs] = true;
+                daysDetail.push({ date: dStrAbs, type: "ailleurs", machine: null, metrage: 0, source: "jour sur un autre site (rapport) - exclu du m/h, prime proratisee" });
               } else if (externalDaySet[dStrAbs]) {
                 credAbs = siteMoyenne; srcAbs = "absent un jour panne/cause externe - moyenne complete";
               } else {
@@ -20904,10 +20916,9 @@
               if (prevsY.length > 0) otherSite = chantierToSite[prevsY[0].chantierId];
             }
             if (!otherSite || otherSite === site) return; // pas autre site identifiable
-            // Rattrapage : +moyenne_jour_site, +1 jour
-            adjMetrage += siteMoyenne;
-            adjJours += 1;
-            daysDetail.push({ date: a.dateAffectation, type: "ailleurs-" + tj, machine: null, metrage: siteMoyenne, source: "jour sur autre site (" + otherSite + ") - rattrapage moyenne site" });
+            // Jour AILLEURS : ne dilue plus le m/h du site (prime proratisee)
+            joursAilleurs += 1;
+            daysDetail.push({ date: a.dateAffectation, type: "ailleurs-" + tj, machine: null, metrage: 0, source: "jour sur autre site (" + otherSite + ") - exclu du m/h, prime proratisee" });
           });
 
           // Verifier que l'employe a au moins 1 JOUR TRAVAIL REEL sur ce site
@@ -20923,7 +20934,11 @@
           var mhRealise = adjMetrage / (adjJours * 9);
           var coef = lookupCoefficient(paliers, site, mhRealise);
           var diff = mhRealise - objectif;
-          var primeFinale = diff > 0 && coef > 0 ? diff * coef : 0;
+          // PRIME PRORATISEE : miroir exact de calcPrimesForSiteHelper (voir
+          // le commentaire la-bas). Permanent = inchange, passager = part des
+          // jours site.
+          var prorataSite = adjJours / (adjJours + joursAilleurs);
+          var primeFinale = diff > 0 && coef > 0 ? diff * coef * prorataSite : 0;
           // Diagnostic supplementaire : combien d'affectations existent au TOTAL
           // pour cet employe dans la periode (toutes sites confondus), et combien
           // orphelines (nom matche mais personnelId different).
@@ -20952,6 +20967,8 @@
               objectif: objectif,
               coef: coef,
               prime: primeFinale,
+              joursAilleurs: joursAilleurs,
+              prorataSite: prorataSite,
               metrage: adjMetrage,
               daysDetail: daysDetail.slice().sort(function(a, b) { return a.date > b.date ? 1 : -1; }),
               affTotalPeriode: affTotalPeriode,
