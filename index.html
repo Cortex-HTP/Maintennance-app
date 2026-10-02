@@ -9650,6 +9650,16 @@
       var simAffs = _simAffs[0]; var setSimAffs = _simAffs[1];
       var _ajoutForm = useState(null);
       var ajoutForm = _ajoutForm[0]; var setAjoutForm = _ajoutForm[1];
+      // ── PERSISTANCE de la simulation (2026-10-02) : l'etat est sauvegarde
+      // PAR ANNEE dans parametres (categorie optimisation_sim) et recharge a
+      // l'ouverture - plus de travail perdu en quittant l'ecran. La base reste
+      // intouchee cote planning REEL : seule la simulation est memorisee.
+      var simAnneeRef = useRef(null);
+      var simChargeRef = useRef(false);
+      var simSaveTimerRef = useRef(null);
+      var simDernierJsonRef = useRef("");
+      var _simSauvee = useState("");
+      var simSauvee = _simSauvee[0]; var setSimSauvee = _simSauvee[1];
       var ctx = useAppData();
       var declarations = ctx.dbDeclarations;
       var setDeclarations = ctx.setDbDeclarations;
@@ -9661,6 +9671,65 @@
       var plansData = ctx.plans;
       var interventionsData = ctx.interventions;
       var relevesData = ctx.releves;
+      // Chargement de la simulation sauvegardee pour l'annee de l'onglet
+      var anneeOptSim = currentMonth.getFullYear() + 1;
+      useEffect(function() {
+        if (simAnneeRef.current === anneeOptSim && simChargeRef.current) return;
+        simChargeRef.current = false;
+        var rowSim = (ctx.parametres || []).find(function(pr) { return pr.categorie === "optimisation_sim"; });
+        var dataSim = {};
+        if (rowSim && rowSim.valeur) { try { dataSim = JSON.parse(rowSim.valeur) || {}; } catch (eS) {} }
+        var entSim = dataSim[String(anneeOptSim)] || null;
+        setSimDec(entSim && entSim.dec ? entSim.dec : {});
+        setSimSwap(entSim && entSim.swap ? entSim.swap : {});
+        setSimAjouts(entSim && Array.isArray(entSim.ajouts) ? entSim.ajouts : []);
+        setSimAffs(entSim && Array.isArray(entSim.affs) ? entSim.affs : []);
+        if (entSim && entSim.tol) setTolSemOpt(entSim.tol);
+        simDernierJsonRef.current = JSON.stringify(entSim || null);
+        setSimSauvee(entSim ? "ok" : "");
+        simAnneeRef.current = anneeOptSim;
+        setTimeout(function() { simChargeRef.current = true; }, 0);
+      }, [anneeOptSim, (ctx.parametres || []).length]);
+      // Sauvegarde AUTO (debounce) a chaque modification de la simulation
+      useEffect(function() {
+        if (!simChargeRef.current) return;
+        // Rien n'a change depuis le dernier chargement/sauvegarde : pas d'ecriture
+        var videPre = Object.keys(simDec).length === 0 && Object.keys(simSwap).length === 0 && simAjouts.length === 0 && simAffs.length === 0;
+        var entPre = videPre ? null : { dec: simDec, swap: simSwap, ajouts: simAjouts, affs: simAffs, tol: tolSemOpt };
+        var jsonPre = JSON.stringify(entPre);
+        var memeEtat = false;
+        try {
+          var aP = JSON.parse(simDernierJsonRef.current || "null"), bP = entPre;
+          memeEtat = JSON.stringify(aP && { dec: aP.dec, swap: aP.swap, ajouts: aP.ajouts, affs: aP.affs, tol: aP.tol }) === jsonPre;
+        } catch (eCmp) {}
+        if (memeEtat) return;
+        if (simSaveTimerRef.current) clearTimeout(simSaveTimerRef.current);
+        setSimSauvee("encours");
+        simSaveTimerRef.current = setTimeout(function() {
+          var rowSim2 = (ctx.parametres || []).find(function(pr) { return pr.categorie === "optimisation_sim"; });
+          var dataSim2 = {};
+          if (rowSim2 && rowSim2.valeur) { try { dataSim2 = JSON.parse(rowSim2.valeur) || {}; } catch (eS2) {} }
+          var videSim = Object.keys(simDec).length === 0 && Object.keys(simSwap).length === 0 && simAjouts.length === 0 && simAffs.length === 0;
+          if (videSim) delete dataSim2[String(anneeOptSim)];
+          else dataSim2[String(anneeOptSim)] = { dec: simDec, swap: simSwap, ajouts: simAjouts, affs: simAffs, tol: tolSemOpt, maj: new Date().toISOString() };
+          var jsonSim = JSON.stringify(dataSim2);
+          if (rowSim2) {
+            supabase.from("parametres").update({ valeur: jsonSim }).eq("id", rowSim2.id).then(function(resS) {
+              if (resS.error) { setSimSauvee("err"); console.warn("[optim-sim]", resS.error.message); }
+              else { rowSim2.valeur = jsonSim; simDernierJsonRef.current = JSON.stringify(dataSim2[String(anneeOptSim)] || null); setSimSauvee("ok"); }
+            });
+          } else {
+            supabase.from("parametres").insert({ categorie: "optimisation_sim", valeur: jsonSim, ordre: 0 }).select().then(function(resS) {
+              if (resS.error) { setSimSauvee("err"); console.warn("[optim-sim]", resS.error.message); }
+              else {
+                if (ctx.setParametres && resS.data && resS.data[0]) ctx.setParametres((ctx.parametres || []).concat([resS.data[0]]));
+                setSimSauvee("ok");
+              }
+            });
+          }
+        }, 1200);
+        return function() { if (simSaveTimerRef.current) clearTimeout(simSaveTimerRef.current); };
+      }, [simDec, simSwap, simAjouts, simAffs, tolSemOpt]);
 
       // ── Filtre pour onglet Maintenances ──
       var _mc = useState("engin");
@@ -11251,6 +11320,9 @@
             h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10 } },
               "Une ligne par machine, une barre par affectation (Planning engins). POUR DONNER UNE MACHINE A UN CHANTIER : glisse sa barre depuis le Gantt du haut jusqu'a la ligne machine voulue - une affectation [SIM] se cree a ses dates (clic droit pour la retirer). Glisser une barre HORIZONTALEMENT decale le chantier entier ; VERTICALEMENT sur une autre ligne = changer de machine (echange si la cible est prise ; meme famille uniquement). Deux barres de la meme machine qui se chevauchent = liseret rouge."),
             simMsg ? h("div", { style: { fontSize: 11.5, color: "#fde68a", fontWeight: 600, marginBottom: 10 } }, simMsg) : null,
+            simSauvee ? h("div", { style: { fontSize: 11, fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 6, color: simSauvee === "err" ? "#fda4af" : simSauvee === "encours" ? "#a1a1aa" : "#86efac" } },
+              h(Icon, { name: simSauvee === "err" ? "alert-triangle" : "check-circle", size: 12, color: simSauvee === "err" ? "#fda4af" : simSauvee === "encours" ? "#a1a1aa" : "#86efac" }),
+              simSauvee === "err" ? "Sauvegarde impossible - reessaie (ta simulation reste a l'ecran)" : simSauvee === "encours" ? "Sauvegarde..." : "Simulation sauvegardee - tu la retrouveras en revenant sur cet onglet") : null,
             h("div", { style: { position: "relative", height: 16, marginLeft: 190, marginBottom: 4 } }, moisHeaderOpt),
             affsSim.length === 0
               ? h("div", { style: { padding: "16px 8px", textAlign: "center", color: "#71717a", fontSize: 12.5, fontStyle: "italic" } }, "Aucune affectation machine sur " + yearOpt + " : glisse des engins sur les chantiers dans l'onglet Planning engins, elles apparaitront ici.")
