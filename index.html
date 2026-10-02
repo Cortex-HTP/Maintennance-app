@@ -23483,13 +23483,15 @@
       if (period === "mois") {
         var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-        // Calcul base jours ouvres (lun-sam, dim exclu) - aligne avec Avancement
-        // qui projette sur la productivite des jours ouvres (pas calendaires)
+        // Jours ouvres = LUN-JEU (semaine de 4 jours Wallis), comme toutes les
+        // boucles du previsionnel annuel ci-dessus. L'ancien lun-sam comptait
+        // ~27 jours au lieu de ~18 et gonflait la projection de ~50%.
         var workdaysElapsed = 0;
         var workdaysTotal = 0;
         var iter = new Date(monthStart);
         while (iter <= monthEnd) {
-          var isWorkday = iter.getDay() !== 0; // dim exclu
+          var dowM = iter.getDay();
+          var isWorkday = dowM >= 1 && dowM <= 4;
           if (isWorkday) {
             workdaysTotal++;
             // Borne = periodEnd (et non "now") : la journee en cours non close
@@ -23502,6 +23504,36 @@
         workdaysElapsed = Math.max(1, workdaysElapsed);
         projRatioMois = workdaysTotal / workdaysElapsed;
         caProjPeriode = caPeriode * projRatioMois;
+        // ── STABILISATION du debut de mois ──
+        // Sur 1-4 jours ecoules, l'extrapolation multiplie une poignee de
+        // journees par ~18 : une seule bonne journee le 1er affichait 59 MF
+        // (vecu 2026-10-02). Tant que moins de 5 jours ouvres sont ecoules,
+        // on pondere avec le RYTHME DES 28 DERNIERS JOURS (base large).
+        if (workdaysElapsed < 5) {
+          var depuis28 = new Date(periodEnd.getTime() - 28 * 86400000);
+          var ca28 = 0;
+          (rapports || []).forEach(function(r28) {
+            if (!r28 || !r28.date_rapport) return;
+            var d28 = new Date(String(r28.date_rapport).substring(0, 10) + "T00:00:00");
+            if (isNaN(d28.getTime()) || d28 < depuis28 || d28 > periodEnd) return;
+            var m28 = parseFloat(r28.total_metres) || 0;
+            var p28 = lookupPrixMetre(r28);
+            if (m28 > 0 && p28 > 0) ca28 += m28 * p28;
+          });
+          var ouvres28 = 0;
+          var it28 = new Date(depuis28);
+          while (it28 <= periodEnd) {
+            var dow28 = it28.getDay();
+            if (dow28 >= 1 && dow28 <= 4) ouvres28++;
+            it28.setDate(it28.getDate() + 1);
+          }
+          var rythme28 = ouvres28 > 0 ? ca28 / ouvres28 : 0;
+          if (rythme28 > 0) {
+            var projStable = rythme28 * workdaysTotal;
+            var poidsExtrap = workdaysElapsed / 5; // jour 1 : 20% extrapolation, 80% rythme 28 j
+            caProjPeriode = caProjPeriode * poidsExtrap + projStable * (1 - poidsExtrap);
+          }
+        }
         periodLabelShort = "mois en cours";
       } else if (period === "moisdernier") periodLabelShort = "mois dernier";
       else if (period === "3mois") periodLabelShort = "3 mois";
