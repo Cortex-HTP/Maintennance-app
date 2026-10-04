@@ -27875,6 +27875,9 @@
       // Choix du rapport a corriger quand PLUSIEURS machines ont un rapport le
       // jour vise par une correction client (la correction ne porte que la date)
       var _corPick = useState(null); var corPick = _corPick[0]; var setCorPick = _corPick[1];
+      // Detail deplie d'une correction client ("Voir la modification") :
+      // cle = id validation + index de la correction, une seule ouverte a la fois
+      var _corDetail = useState(null); var corDetail = _corDetail[0]; var setCorDetail = _corDetail[1];
       var _sendingValId = useState(null); var sendingValId = _sendingValId[0]; var setSendingValId = _sendingValId[1];
       var _destChantier = useState([]); var destChantier = _destChantier[0]; var setDestChantier = _destChantier[1];
       // Dans le recap mensuel : "synthese" (par employe x sondeuse) ou "detail_jour" (1 ligne par date/employe)
@@ -30725,6 +30728,70 @@
         var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
         return { lignes: lignes, totaux: totaux, signataires: signataires, signatairesSansEmail: Object.keys(sigSansMail) };
       };
+      // ── Detail d'une correction client ("Voir la modification") ──
+      // La banniere seule ("Attente 4,5 -> 1,5") ne dit pas d'ou sort le chiffre
+      // (vecu : confusion avec le total DEPLACEMENT du mois). Ce detail montre la
+      // ligne du releve ENVOYEE au client ce jour-la + la decomposition de la
+      // colonne corrigee depuis les rapports ACTUELS, activite par activite.
+      var buildCorDetail = function(chantier, v, cor) {
+        var dateC = String(cor.date || "").substring(0, 10);
+        var siteUpC = String(chantier.site || "").toUpperCase().trim();
+        var titreUpC = String(chantier.titre || "").toUpperCase().trim();
+        var facturablesC = {};
+        (ctx.parametres || []).forEach(function(pr) {
+          if (pr.categorie === "rf_activites_facturables") facturablesC[String(pr.valeur).toUpperCase()] = true;
+        });
+        var dureeHC = function(a) {
+          try {
+            var pd = String(a.debut || "").split(":"), pf = String(a.fin || "").split(":");
+            if (pd.length < 2 || pf.length < 2) return 0;
+            var mn = ((parseInt(pf[0]) || 0) * 60 + (parseInt(pf[1]) || 0)) - ((parseInt(pd[0]) || 0) * 60 + (parseInt(pd[1]) || 0));
+            if (mn < 0) mn += 1440;
+            return Math.max(0, mn) / 60;
+          } catch (e) { return 0; }
+        };
+        // Ligne du releve TELLE QU'ENVOYEE (snapshot fige a l'envoi)
+        var snapLigne = null;
+        if (v && v.snapshot && Array.isArray(v.snapshot.lignes)) {
+          snapLigne = v.snapshot.lignes.find(function(l) { return String(l.date || "").substring(0, 10) === dateC; }) || null;
+        }
+        // Rapports ACTUELS du jour sur ce chantier (meme matching que l'apercu :
+        // chantier_id d'abord, sinon lieu = site ou titre)
+        var rapsJour = (raps || []).filter(function(r) {
+          if (String(r.date_rapport || "").substring(0, 10) !== dateC) return false;
+          if (r.chantier_id != null) return String(r.chantier_id) === String(chantier.id);
+          var lu = String(r.lieu || "").toUpperCase().trim();
+          return !!lu && (lu === siteUpC || lu === titreUpC);
+        });
+        var actsFact = [];
+        var totActs = 0, totHeures = 0, totMetrage = 0;
+        rapsJour.forEach(function(r) {
+          totHeures += (parseFloat(r.total_heures) || 0) / 60;
+          var nonFactC = 0;
+          (Array.isArray(r.sondages) ? r.sondages : []).forEach(function(s) {
+            if (!sondageEstNonFacturable(s)) return;
+            var deS = parseFloat(s.metresDe != null ? s.metresDe : (s.de != null ? s.de : 0)) || 0;
+            var aS = parseFloat(s.metresA != null ? s.metresA : (s.a != null ? s.a : 0)) || 0;
+            nonFactC += Math.max(0, aS - deS);
+          });
+          totMetrage += Math.max(0, (parseFloat(r.total_metres) || 0) - nonFactC);
+          (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+            var libC = String((a && a.libelle) || "").toUpperCase().trim();
+            var factC = (a && a.facturable === true) || (!(a && a.facturable === false) && !!facturablesC[libC]);
+            if (!factC) return;
+            var hC = dureeHC(a);
+            if (hC <= 0) return;
+            totActs += hC;
+            actsFact.push({ libelle: libC, debut: a.debut || "", fin: a.fin || "", heures: hC, machine: String(r.sondeuse_code || "").toUpperCase() });
+          });
+        });
+        return {
+          snapLigne: snapLigne, rapsJour: rapsJour, actsFact: actsFact,
+          totActs: Math.round(totActs * 100) / 100,
+          totHeures: Math.round(totHeures * 100) / 100,
+          totMetrage: Math.round(totMetrage * 10) / 10
+        };
+      };
       // ── Detail FACTURATION par jour pour l'apercu Validation client ──
       // Memes colonnes et memes calculs que l'export "Releve detaille par jour"
       // du Recap mensuel : 1 ligne par jour x machine, metrage facturable
@@ -31139,24 +31206,92 @@
               statut === "refuse" && v && Array.isArray(v.corrections) && v.corrections.length ? h("div", { style: { marginTop: 6 } },
                 v.corrections.map(function(cor, ci) {
                   var estPasse = cor.champ === "passe";
-                  var lblCh = cor.champ === "metrage" ? "Metrage" : cor.champ === "heures" ? "Heures" : estPasse ? "Ajout de passe" : "Attente";
+                  var estM = cor.champ === "metrage";
+                  var estH = cor.champ === "heures";
+                  var lblCh = estM ? "Metrage" : estH ? "Heures" : estPasse ? "Ajout de passe" : "Attente";
+                  var corKey = String(v.id) + "|" + ci;
+                  var ouvert = corDetail === corKey;
+                  // Valeurs avant/apres : affichees en h+minutes (ou m) plutot
+                  // qu'en decimales brutes, pour savoir de quoi on parle
+                  var avantN = cor.avant != null ? parseFloat(String(cor.avant).replace(",", ".")) : NaN;
+                  var apresN = parseFloat(String(cor.apres).replace(",", "."));
+                  var fmtValCor = function(x) { return estM || estPasse ? ((Math.round(x * 10) / 10).toLocaleString("fr-FR") + " m") : fmtHeuresMin(x); };
                   // Ligne CLIQUABLE : ouvre le rapport du jour en Edition complete
                   // (les modifs demandees y restent affichees pendant la correction)
-                  return h("div", { key: ci,
+                  var ligneCor = h("div", {
                     onClick: function() { ouvrirRapportPourCorrection(v, cor); },
                     title: "Ouvrir le rapport de cette journee en Edition complete pour appliquer la demande" + (estPasse ? " (bouton + Ajouter une passe sous le forage concerne)" : ""),
                     onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(245,158,11,0.14)"; },
                     onMouseLeave: function(ev) { ev.currentTarget.style.background = "rgba(245,158,11,0.06)"; },
-                    style: { borderLeft: "3px solid #d97706", background: "rgba(245,158,11,0.06)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", cursor: "pointer", transition: "background 0.15s" } },
-                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#fbbf24", whiteSpace: "nowrap" } }, (estPasse ? "Ajout" : "Correction") + " — " + lblCh + " — " + fmtD(cor.date)),
+                    style: { borderLeft: "3px solid #d97706", background: "rgba(245,158,11,0.06)", padding: "6px 12px", margin: ouvert ? "3px 0 0" : "3px 0", borderRadius: ouvert ? "0 6px 0 0" : "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", cursor: "pointer", transition: "background 0.15s" } },
+                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#fbbf24", whiteSpace: "nowrap" } }, (estPasse ? "Ajout" : "Correction") + " — " + lblCh + " du " + fmtD(cor.date)),
                     h("span", null,
-                      cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, String(cor.avant)) : null,
-                      h("span", { style: { color: "#4ade80", fontWeight: 800 } }, estPasse ? ("+" + String(cor.apres) + " m") : String(cor.apres))),
+                      cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, isNaN(avantN) ? String(cor.avant) : fmtValCor(avantN)) : null,
+                      h("span", { style: { color: "#4ade80", fontWeight: 800 } }, estPasse ? ("+" + String(cor.apres) + " m") : (isNaN(apresN) ? String(cor.apres) : fmtValCor(apresN)))),
                     h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, "« " + String(cor.commentaire || "") + " »"),
                     h("span", { style: { fontSize: 10.5, color: "#71717a" } }, v.validataire_nom || "Client"),
-                    h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#a5b4fc", whiteSpace: "nowrap" } },
-                      h(Icon, { name: "edit-3", size: 11, color: "#a5b4fc" }), "Corriger le rapport")
+                    h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 12, whiteSpace: "nowrap" } },
+                      h("span", {
+                        onClick: function(ev) { ev.stopPropagation(); setCorDetail(ouvert ? null : corKey); },
+                        title: "Afficher la ligne du releve concernee et la decomposition du chiffre corrige",
+                        style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#fde68a" } },
+                        h(Icon, { name: ouvert ? "chevron-up" : "eye", size: 11, color: "#fde68a" }), ouvert ? "Masquer" : "Voir la modification"),
+                      h("span", { style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#a5b4fc" } },
+                        h(Icon, { name: "edit-3", size: 11, color: "#a5b4fc" }), "Corriger le rapport"))
                   );
+                  // Panneau deplie : d'ou vient le chiffre corrige, exactement
+                  var panneau = null;
+                  if (ouvert) {
+                    var det = buildCorDetail(c, v, cor);
+                    var sl = det.snapLigne;
+                    var valActuelle = estM ? det.totMetrage : estH ? det.totHeures : det.totActs;
+                    var deltaTxt = (isNaN(avantN) || isNaN(apresN)) ? "" : " (" + (apresN >= avantN ? "+ " : "- ") + fmtValCor(Math.abs(apresN - avantN)) + ")";
+                    var colExplique = estM
+                      ? "La colonne Metrage du releve = metres FACTURABLES de cette journee (sondages marques non facturables exclus), toutes machines du chantier confondues."
+                      : estH
+                        ? "La colonne Heures du releve = heures machine TOTALES de cette journee, toutes machines du chantier confondues."
+                        : estPasse
+                          ? "Le client demande d'AJOUTER une passe (des metres oublies) sur un forage de cette journee."
+                          : "La colonne Attente du releve additionne TOUTES les activites facturables de cette journee (attentes, demobilisation, deplacement, mobilisation, reunion securite...), toutes machines du chantier confondues. C'est la valeur d'UN SEUL JOUR, pas un total de periode.";
+                    var lblPan = { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 3 };
+                    panneau = h("div", { style: { margin: "0 0 3px", padding: "10px 14px", borderRadius: "0 0 8px 0", background: "rgba(245,158,11,0.03)", borderLeft: "3px solid #d97706", border: "1px solid rgba(245,158,11,0.25)", borderTop: "1px dashed rgba(245,158,11,0.25)", fontSize: 12, color: "#d4d4d8", display: "flex", flexDirection: "column", gap: 9 } },
+                      h("div", null,
+                        h("div", { style: lblPan }, "Ligne du releve concernee - " + fmtD(cor.date) + " (telle qu'envoyee au client)"),
+                        sl ? h("div", null,
+                          h("span", { style: { fontWeight: 700 } }, sl.machines || "-"),
+                          h("span", { style: { color: "#a1a1aa" } }, "  -  " + (sl.metrage || 0).toLocaleString("fr-FR") + " m  -  " + fmtHeuresMin(sl.heures || 0) + " machine  -  "),
+                          h("span", { style: { fontWeight: 800, color: lblCh === "Attente" ? "#fbbf24" : "#d4d4d8" } }, fmtHeuresMin(sl.attente || 0) + " facturables"))
+                          : h("div", { style: { color: "#a1a1aa" } }, "Ligne absente du releve envoye (jour sans rapport a l'envoi).")),
+                      h("div", { style: { fontSize: 11.5, color: "#a1a1aa", fontStyle: "italic" } }, colExplique),
+                      !estPasse && !estM && !estH && det.actsFact.length > 0 ? h("div", null,
+                        h("div", { style: lblPan }, "Decomposition de la colonne (rapports actuels)"),
+                        det.actsFact.map(function(af, ai) {
+                          return h("div", { key: ai, style: { display: "flex", gap: 10, padding: "1px 0", flexWrap: "wrap" } },
+                            h("span", { style: { fontWeight: 700, minWidth: 160 } }, af.libelle),
+                            h("span", { style: { color: "#a1a1aa" } }, (af.machine ? af.machine + "  -  " : "") + af.debut + " a " + af.fin),
+                            h("span", { style: { marginLeft: "auto", fontWeight: 700 } }, fmtHeuresMin(af.heures)));
+                        }),
+                        h("div", { style: { display: "flex", gap: 10, padding: "4px 0 0", borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4 } },
+                          h("span", { style: { fontWeight: 800 } }, "Total de la colonne aujourd'hui"),
+                          h("span", { style: { marginLeft: "auto", fontWeight: 800, color: "#fde68a" } }, fmtHeuresMin(det.totActs)))) : null,
+                      (estM || estH) ? h("div", null,
+                        h("div", { style: lblPan }, "Valeur actuelle (rapports actuels)"),
+                        h("div", null, fmtValCor(valActuelle) + " sur " + det.rapsJour.length + " rapport" + (det.rapsJour.length > 1 ? "s" : ""))) : null,
+                      !estPasse && !isNaN(avantN) && Math.abs(valActuelle - avantN) > 0.011 ? h("div", { style: { fontSize: 11.5, fontWeight: 700, color: "#fbbf24" } },
+                        "Attention : les rapports ont change depuis l'envoi - la meme colonne vaut aujourd'hui " + fmtValCor(valActuelle) + " (envoye : " + fmtValCor(avantN) + ").") : null,
+                      h("div", null,
+                        h("div", { style: lblPan }, "Proposition de " + (v.validataire_nom || "client")),
+                        h("div", null,
+                          estPasse
+                            ? h("span", { style: { fontWeight: 800, color: "#4ade80" } }, "+ " + String(cor.apres) + " m")
+                            : h("span", null,
+                                cor.avant != null ? h("span", { style: { textDecoration: "line-through", color: "#f87171", marginRight: 6 } }, isNaN(avantN) ? String(cor.avant) : fmtValCor(avantN)) : null,
+                                h("span", { style: { fontWeight: 800, color: "#4ade80" } }, isNaN(apresN) ? String(cor.apres) : fmtValCor(apresN)),
+                                h("span", { style: { color: "#a1a1aa" } }, deltaTxt)),
+                          cor.commentaire ? h("span", { style: { fontStyle: "italic", color: "#a1a1aa", marginLeft: 10 } }, "« " + String(cor.commentaire) + " »") : null)),
+                      h("div", { style: { fontSize: 11, color: "#71717a" } }, "Rien n'est applique automatiquement : clique la ligne orange (Corriger le rapport) pour ouvrir le rapport de cette journee et appliquer - ou non - la demande."));
+                  }
+                  return h("div", { key: ci }, ligneCor, panneau);
                 })
               ) : null,
               // Imputation transmise par le client (chantiers actives) : BC,
