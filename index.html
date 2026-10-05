@@ -16636,7 +16636,13 @@
                           // Si plus aucune machine planifiee a partir de cette date,
                           // on rebascule sur le rythme actuel pour ne pas bloquer.
                           if (planned == null || planned <= 0) { nbMach = moyMachinesRecent; useFallback = true; }
-                          else nbMach = planned;
+                          // PLAFOND machines REELLEMENT actives (meme regle que le
+                          // previsionnel CA, commit 881ec8c) : 2 sondeuses posees au
+                          // planning mais UNE qui fore = projection a 1 machine
+                          // (vecu Tiebaghi : fin estimee 16/11 au lieu de mi-dec).
+                          // Auto-adaptatif : si les 2 forent vraiment, la moyenne
+                          // historique monte et le plafond suit.
+                          else nbMach = Math.min(planned, Math.max(1, Math.round(moyMachinesRecent)));
                         }
                         if (nbMach > 0) {
                           metresProjetes += vitesseParMachine * nbMach * coefDispoFutur;
@@ -35088,7 +35094,10 @@
               if (!seen[k]) { seen[k] = 1; c++; }
             }
           }
-          return c > 0 ? c : moyMachinesRecent;
+          // PLAFOND machines REELLEMENT actives (meme regle que le previsionnel
+          // CA, commit 881ec8c) : le planning sert d'affectation, il ne doit pas
+          // multiplier la projection quand une seule machine fore a la fois.
+          return c > 0 ? Math.min(c, Math.max(1, Math.round(moyMachinesRecent))) : moyMachinesRecent;
         }
         var metresProjetes = 0, jProj = 0;
         var dateFinEst = new Date(today.getTime()); var sP2 = 0;
