@@ -7307,6 +7307,10 @@
     // facturation-envoyer-validation via la service key.
     var DOC_TYPES = [
       { key: "rapport_forage",       label: "Rapports forage",      short: "Rapports",      icon: "file-text" },
+      // Releve mensuel de validation client (2026-10-06) : SEPARE des rapports
+      // de forage individuels — on peut choisir qui signe les rapports
+      // journaliers et qui recoit/valide le releve mensuel, independamment.
+      { key: "releve_mensuel",       label: "Releves mensuels (validation client)", short: "Rel. mensuel", icon: "file-check" },
       { key: "releve_heure",         label: "Releves d'heures",     short: "Releves",       icon: "clock" },
       { key: "bon_commande",         label: "Bons de commande",     short: "Commandes",     icon: "shopping-cart" },
       { key: "demande_conge",        label: "Demandes de conges",   short: "Conges",        icon: "calendar-days" },
@@ -7481,15 +7485,16 @@
                     h("select", { style: inputSm, value: g.role || "to", onChange: function(e) {
                       var newRole = e.target.value;
                       updateGroup(g, { role: newRole });
-                      // Si on passe en signataire, decoche les types autres que rapport_forage
+                      // Si on passe en signataire, decoche les types sans signature
+                      // client (seuls le rapport de forage et le releve mensuel en ont une)
                       if (newRole === "signataire") {
                         Object.keys(g.typeIds).forEach(function(k) {
-                          if (k !== "rapport_forage") {
+                          if (k !== "rapport_forage" && k !== "releve_mensuel") {
                             toggleType(Object.assign({}, g, { role: newRole }), k, false);
                           }
                         });
                       }
-                    }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapport forage uniquement)" },
+                    }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapports forage et releves mensuels)" },
                       h("option", { value: "to" }, "TO"),
                       h("option", { value: "cc" }, "CC"),
                       h("option", { value: "signataire" }, "Signataire")
@@ -7515,14 +7520,15 @@
                   h("td", { style: Object.assign({}, tdStyle, { textAlign: "center" }) },
                     h("input", { type: "checkbox", checked: !!g.actif, onChange: function(e) { updateGroup(g, { actif: e.target.checked }); }, style: { accentColor: "#22c55e", width: 16, height: 16, cursor: "pointer" } })
                   ),
-                  // 5 checkboxes pour les types_doc
-                  // Si role = signataire, seul rapport_forage est activable (les autres types n'ont pas de signature client)
+                  // Checkboxes pour les types_doc
+                  // Si role = signataire, seuls rapport_forage et releve_mensuel sont
+                  // activables (seuls types avec signature client)
                   DOC_TYPES.map(function(t) {
                     var coche = !!g.typeIds[t.key];
                     var isSignataire = g.role === "signataire";
-                    var disabled = isSignataire && t.key !== "rapport_forage";
+                    var disabled = isSignataire && t.key !== "rapport_forage" && t.key !== "releve_mensuel";
                     var tooltip = disabled
-                      ? "Le role 'Signataire' ne s'applique qu'au rapport de forage (seul type avec signature client)"
+                      ? "Le role 'Signataire' ne s'applique qu'aux rapports de forage et aux releves mensuels (types avec signature client)"
                       : t.label;
                     return h("td", { key: t.key, style: Object.assign({}, tdStyle, { textAlign: "center" }) },
                       h("input", {
@@ -28226,8 +28232,9 @@
           fetchAllRows(function() { return supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,imputation,bon_commande,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }).order("id"); }),
           // Destinataires clients configures PAR CHANTIER (Administration >
           // Destinataires emails) : source prioritaire pour la validation client.
-          // Le scope "global" est volontairement exclu (adresses internes Wallis).
-          supabase.from("destinataires_emails").select("email,role,scope_id").eq("type_doc", "rapport_forage").eq("actif", true).eq("scope_type", "chantier")
+          // Les DEUX types sont charges : releve_mensuel (dedie, prioritaire)
+          // et rapport_forage (retrocompat). Scope "global" exclu (adresses internes).
+          supabase.from("destinataires_emails").select("email,role,scope_id,type_doc").in("type_doc", ["releve_mensuel", "rapport_forage"]).eq("actif", true).eq("scope_type", "chantier")
         ]).then(function(results) {
           if (cancelled) return;
           if (results[0].error) console.warn("[soumissions] releves:", results[0].error.message);
@@ -31323,25 +31330,33 @@
               // CHOISIE dans l'app — plus aucun repli automatique (signataires de
               // la periode / historique). Miroir exact du serveur (_recap-validation).
               var sigs = (snapDest && snapDest.signataires) || [];
-              // Signataire(s) CONFIGURES pour ce chantier (Administration >
-              // Destinataires emails, role "Signataire", actif) : reglage MAITRE.
-              var sigCfg = (destChantier || [])
-                .filter(function(d) { return String(d.scope_id) === String(c.id) && d.role === "signataire" && d.email; })
-                .map(function(d) { return String(d.email).trim().toLowerCase(); })
-                .filter(function(e, i, a) { return a.indexOf(e) === i; });
-              // Destinataires TO configures pour CE chantier (meme ecran). Scope
-              // global exclu : adresses internes Wallis, jamais le client.
-              var destsCfg = (destChantier || [])
-                .filter(function(d) { return String(d.scope_id) === String(c.id) && d.role !== "cc" && d.email; })
-                .map(function(d) { return String(d.email).trim().toLowerCase(); })
-                .filter(function(e, i, a) { return a.indexOf(e) === i; });
-              if (sigCfg.length) { destAffiche = sigCfg.slice(0, 3).join(", ") + " (signataire configure)"; destOk = true; }
-              else if (destsCfg.length) { destAffiche = destsCfg.slice(0, 3).join(", ") + " (destinataires chantier)"; destOk = true; }
+              // Destinataires configures pour CE chantier (Administration >
+              // Destinataires emails). Le type "Releves mensuels" (dedie) PRIME
+              // sur "Rapports forage" (retrocompat), et le role Signataire prime
+              // sur les TO. Miroir exact du serveur (_recap-validation).
+              var confDest = function(typeDoc, sigSeul) {
+                return (destChantier || [])
+                  .filter(function(d) {
+                    if (String(d.scope_id) !== String(c.id) || !d.email) return false;
+                    if ((d.type_doc || "rapport_forage") !== typeDoc) return false;
+                    return sigSeul ? d.role === "signataire" : d.role !== "cc";
+                  })
+                  .map(function(d) { return String(d.email).trim().toLowerCase(); })
+                  .filter(function(e, i, a) { return a.indexOf(e) === i; });
+              };
+              var rmSig = confDest("releve_mensuel", true);
+              var rmTo = confDest("releve_mensuel", false);
+              var rfSig = confDest("rapport_forage", true);
+              var rfTo = confDest("rapport_forage", false);
+              if (rmSig.length) { destAffiche = rmSig.slice(0, 3).join(", ") + " (releve mensuel - signataire)"; destOk = true; }
+              else if (rmTo.length) { destAffiche = rmTo.slice(0, 3).join(", ") + " (releve mensuel)"; destOk = true; }
+              else if (rfSig.length) { destAffiche = rfSig.slice(0, 3).join(", ") + " (signataire configure)"; destOk = true; }
+              else if (rfTo.length) { destAffiche = rfTo.slice(0, 3).join(", ") + " (destinataires chantier)"; destOk = true; }
               else if (c.emailContact && String(c.emailContact).trim()) { destAffiche = c.emailContact + " (email fiche chantier)"; destOk = true; }
               else {
                 destAffiche = "destinataire a configurer";
                 destOk = false;
-                destAide = "Aucun destinataire choisi pour ce chantier : l'envoi est bloque. Va dans Administration > Destinataires emails, ajoute l'email du client en portee Chantier avec le role Signataire (ou renseigne l'email contact de la fiche chantier)."
+                destAide = "Aucun destinataire choisi pour ce chantier : l'envoi est bloque. Va dans Administration > Destinataires emails, ajoute l'email du client en portee Chantier avec le role Signataire et le type Releves mensuels (ou renseigne l'email contact de la fiche chantier)."
                   + (sigs.length ? " Suggestion - signataire des rapports de la periode : " + sigs.map(function(s) { return s.email; }).join(", ") + "." : "");
               }
             }
