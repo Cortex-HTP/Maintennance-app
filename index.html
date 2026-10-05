@@ -25851,9 +25851,14 @@
             // (Personnel x1.4), frais generaux structure (FEC), plancher de
             // decaissements (rythme bancaire reel), CA activites (moyenne YTD),
             // emprunts (echeancier mois par mois, fins de prets respectees).
-            if (estVueN1) {
-              var horizonN1 = new Date(anneeCible, 11, 31, 23, 59, 59).getTime();
-              var debJanN1 = new Date(anneeCible, 0, 1).getTime();
+            // Serie de l'ANNEE N conservee telle quelle : le bloc n+1 remplace
+            // trMois quand la vue 2027 est affichee, et le Recap banque a
+            // besoin des DEUX annees a la fois.
+            var trMoisN = trMois;
+            var computeTresoN1 = function() {
+              var anCibleF = now2.getFullYear() + 1;
+              var horizonN1 = new Date(anCibleF, 11, 31, 23, 59, 59).getTime();
+              var debJanN1 = new Date(anCibleF, 0, 1).getTime();
               var caChN1 = new Array(12).fill(0);
               var metChN1 = new Array(12).fill(0);
               (dbChantiers || []).forEach(function(c) {
@@ -25907,7 +25912,7 @@
                     if (dayM > 0) {
                       if (totP + dayM > restantC) dayM = restantC - totP;
                       totP += dayM;
-                      if (curS.getFullYear() === anneeCible) { caChN1[curS.getMonth()] += dayM * prixC; metChN1[curS.getMonth()] += dayM; }
+                      if (curS.getFullYear() === anCibleF) { caChN1[curS.getMonth()] += dayM * prixC; metChN1[curS.getMonth()] += dayM; }
                     }
                   }
                   curS.setDate(curS.getDate() + 1); safeC2++;
@@ -25971,15 +25976,15 @@
               // n+1 encaisse decembre N), decaissements = salaires + fixes + emprunts
               // du mois + DEPENSES VARIABLES indexees sur le metrage projete (cout/m
               // mesure N). Sans cout/m mesurable : plancher rythme reel ajuste.
-              var soldeDebutN1 = trMois[11].solde;
+              var soldeDebutN1 = trMoisN[11].solde;
               var trN1 = [];
               var soldeC3 = soldeDebutN1;
               for (var mN = 0; mN < 12; mN++) {
-                var kMonthN = anneeCible + "-" + String(mN + 1).padStart(2, "0");
+                var kMonthN = anCibleF + "-" + String(mN + 1).padStart(2, "0");
                 var caChMi3 = mN === 0 ? (caTravailChParMois[11] || 0) : (caChN1[mN - 1] || 0);
                 var caAcMi3 = mN === 0 ? (caTravailAcParMois[11] || 0) : caActivitesMens;
                 var encN = caChMi3 + caAcMi3;
-                var empMoisN = empruntsPourMoisN1(anneeCible, mN);
+                var empMoisN = empruntsPourMoisN1(anCibleF, mN);
                 var factMiN = factFrsFutures[kMonthN] || 0;
                 // MEME DECALAGE 30 J QUE LES ENCAISSEMENTS : le mois M encaisse ET
                 // paie les travaux du mois M-1 (clients ET fournisseurs a 30 jours).
@@ -26009,7 +26014,7 @@
                 var netN = encN - decN;
                 soldeC3 += netN;
                 trN1.push({
-                  d: new Date(anneeCible, mN, 1), encaiss: encN, decaiss: decN, net: netN,
+                  d: new Date(anCibleF, mN, 1), encaiss: encN, decaiss: decN, net: netN,
                   caChantiers: caChMi3, factFrs: factMiN, source: "projete", estPasse: false, estCourant: false,
                   solde: soldeC3,
                   detail: {
@@ -26022,9 +26027,13 @@
                   }
                 });
               }
+              return { trN1: trN1, soldeDebutN1: soldeDebutN1, caChN1: caChN1, caActivitesMensN1: caActivitesMens };
+            };
+            if (estVueN1) {
+              var resN1 = computeTresoN1();
               // La vue n+1 remplace les series affichees (l'annee N reste la base du chainage)
-              trMois = trN1;
-              soldeInit = soldeDebutN1;
+              trMois = resN1.trN1;
+              soldeInit = resN1.soldeDebutN1;
               soldeFinTr = trMois[11].solde;
               minSoldeTr = Math.min.apply(null, trMois.map(function(x) { return x.solde; }));
               minIdxTr = trMois.findIndex(function(x) { return x.solde === minSoldeTr; });
@@ -26040,6 +26049,192 @@
               if (abs >= 1000) return sign + Math.round(abs / 1000) + " k";
               return sign + Math.round(abs);
             };
+            // ── RECAP BANQUE (2026-10-05) : document imprimable 3 pages A4 au
+            // theme de l'app (maquette demo_recap_banque.html validee) —
+            // synthese + courbe de tresorerie 24 mois + carnet de chantiers.
+            // Ouvre un onglet avec bouton Imprimer / PDF ; aucune ecriture.
+            var genererRecapBanque = function() {
+              var anN = now2.getFullYear();
+              var rN1 = computeTresoN1();
+              var serie = trMoisN.map(function(x) { return x.solde; }).concat(rN1.trN1.map(function(x) { return x.solde; }));
+              var caMois = [];
+              for (var gm = 0; gm < 12; gm++) caMois.push((caTravailChParMois[gm] || 0) + (caTravailAcParMois[gm] || 0));
+              for (var gm2 = 0; gm2 < 12; gm2++) caMois.push((rN1.caChN1[gm2] || 0) + (rN1.caActivitesMensN1 || 0));
+              var mf = function(v) {
+                var s = v < 0 ? "-" : "";
+                return s + (Math.abs(v) / 1000000).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " MF";
+              };
+              var iNow = now2.getMonth();
+              var soldeActuel = trMoisN[iNow].solde;
+              var caN = caMois.slice(0, 12).reduce(function(s, v) { return s + v; }, 0);
+              var caN1 = caMois.slice(12).reduce(function(s, v) { return s + v; }, 0);
+              var finN = trMoisN[11].solde, finN1 = rN1.trN1[11].solde, miN1 = rN1.trN1[5].solde;
+              // Chantiers dont la periode touche N ou N+1 (statut Annule exclu)
+              var debFen = new Date(anN, 0, 1).getTime(), finFen = new Date(anN + 1, 11, 31).getTime();
+              var chs = (dbChantiers || []).filter(function(c) {
+                if (c.statut === "Annule") return false;
+                var d1 = c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
+                var d2 = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
+                if (d1 == null) return false;
+                return d2 >= debFen && d1 <= finFen;
+              }).sort(function(a, b) { return String(a.dateDebut || "").localeCompare(String(b.dateDebut || "")); });
+              var nbN = 0, nbN1 = 0;
+              chs.forEach(function(c) {
+                var d1 = new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime();
+                var d2 = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
+                if (d1 <= new Date(anN, 11, 31).getTime() && d2 >= debFen) nbN++;
+                if (d2 >= new Date(anN + 1, 0, 1).getTime() && d1 <= finFen) nbN1++;
+              });
+              var famC = function(c) {
+                var t = String((c.titre || "") + " " + (c.site || "")).toLowerCase();
+                if (t.indexOf("carott") >= 0 || t.indexOf("kopeto") >= 0) return { cls: "b-ros", lbl: "carotte" };
+                if (t.indexOf("heliport") >= 0 || t.indexOf("h\u00e9liport") >= 0) return { cls: "b-cya", lbl: "heliporte" };
+                return { cls: "b-ind", lbl: "aircore" };
+              };
+              var mmaa = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[1] + "/" + s[0].substring(2) : "?"; };
+              var esc = function(x) { return String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+              var dateDoc = now2.toLocaleDateString("fr-FR");
+              // ── SVG CA mensuel (24 barres) ──
+              var maxCa = Math.max.apply(null, caMois.concat([1]));
+              var barsCa = "";
+              for (var bi = 0; bi < 24; bi++) {
+                var hB = Math.max(1, Math.round((caMois[bi] / maxCa) * 100));
+                barsCa += '<rect rx="3" x="' + (46 + bi * 28.6) + '" y="' + (158 - hB) + '" width="19" height="' + hB + '" fill="url(#bar2' + (bi < 12 ? "6" : "7") + ')"/>';
+              }
+              var moisL = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+              var axeCa = "";
+              for (var bx = 0; bx < 24; bx++) axeCa += '<text x="' + (55.5 + bx * 28.6) + '" y="172" font-size="8" fill="#71717a" text-anchor="middle">' + moisL[bx % 12] + '</text>';
+              // ── SVG courbe treso (24 points) ──
+              var minS = Math.min.apply(null, serie.concat([0]));
+              var maxS = Math.max.apply(null, serie);
+              var rangeS = Math.max(1, (maxS - minS) * 1.12);
+              var xS = function(i) { return 50 + i * (680 / 23); };
+              var yS = function(v) { return 40 + (1 - (v - minS) / rangeS) * 208; };
+              var ptsReel = "", ptsPrev = "";
+              for (var pi = 0; pi <= iNow; pi++) ptsReel += (pi ? " L " : "M ") + xS(pi) + "," + yS(serie[pi]);
+              for (var pj = iNow; pj < 24; pj++) ptsPrev += (pj > iNow ? " L " : "M " + xS(iNow) + "," + yS(serie[iNow]) + " L ") + xS(pj) + "," + yS(serie[pj]);
+              var aireReel = ptsReel + " L " + xS(iNow) + "," + yS(Math.max(0, minS)) + " L " + xS(0) + "," + yS(Math.max(0, minS)) + " Z";
+              var yZ = yS(0);
+              var axeTr = "";
+              for (var tx = 0; tx < 24; tx += 2) axeTr += '<text x="' + xS(tx) + '" y="266" font-size="8" fill="#71717a" text-anchor="middle">' + moisL[tx % 12] + '</text>';
+              var xAuj = xS(iNow);
+              // ── Gantt + tableau chantiers ──
+              var gantt = "", tbl = "", totCa = 0, nbAffiches = 0;
+              chs.forEach(function(c) {
+                if (nbAffiches >= 14) return; // garde : tient sur la page
+                nbAffiches++;
+                var d1 = new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime();
+                var d2t = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
+                var lPct = Math.max(0, Math.min(100, (d1 - debFen) / (finFen - debFen) * 100));
+                var rPct = Math.max(0, Math.min(100, (d2t - debFen) / (finFen - debFen) * 100));
+                var fam = famC(c);
+                var estPrev = d1 >= new Date(anN + 1, 0, 1).getTime() || c.statut === "A venir";
+                var metrage = parseFloat(c.metrage) || 0;
+                var prixM = parseFloat(c.prixMetre) || 0;
+                var realise = Math.round(computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies));
+                var caPrev = metrage * prixM;
+                totCa += caPrev;
+                gantt += '<div class="gl"><div class="gn">' + esc(c.titre) + '<small>' + esc(c.client || "-") + ' - ' + fam.lbl + '</small></div>' +
+                  '<div class="gz"><div class="gmi"></div><div class="gb ' + fam.cls + (estPrev ? " prev" : "") + '" style="left:' + lPct.toFixed(1) + '%;width:' + Math.max(1.5, rPct - lPct).toFixed(1) + '%;"></div></div></div>';
+                tbl += '<tr><td><b>' + esc(c.client || "-") + '</b></td><td>' + esc(c.titre) + (estPrev ? ' <span class="pill pa">PREV</span>' : "") + '</td>' +
+                  '<td>' + mmaa(c.dateDebut) + ' - ' + mmaa(c.dateFin) + '</td>' +
+                  '<td class="r">' + (metrage ? metrage.toLocaleString("fr-FR") + " m" : "-") + '</td>' +
+                  '<td class="r">' + (realise ? realise.toLocaleString("fr-FR") + " m" : "-") + '</td>' +
+                  '<td class="r"><b>' + (caPrev ? mf(caPrev) : "-") + '</b></td></tr>';
+              });
+              var H = [];
+              H.push('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Recap banque Wallis Label ' + anN + '-' + (anN + 1) + '</title>');
+              H.push('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"><style>');
+              H.push(':root{--bg:#1a1d2e;--surface:rgba(36,40,60,0.85);--border:rgba(255,255,255,0.08);--text:#fafafa;--text2:#cbd5e1;--muted:#a1a1aa;--dim:#71717a;--vert:#86efac;--ambre:#fde68a;}');
+              H.push('*{margin:0;padding:0;box-sizing:border-box;}html{background:#0e1018;}body{font-family:Inter,system-ui,sans-serif;color:var(--text);font-size:12.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}');
+              H.push('.bar{position:sticky;top:0;z-index:50;background:linear-gradient(135deg,#4338ca,#6d28d9);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;font-size:13px;font-weight:700;}');
+              H.push('.bar button{margin-left:auto;padding:8px 18px;border:none;border-radius:9px;background:#fff;color:#4338ca;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer;}');
+              H.push('.page{width:210mm;height:296mm;margin:16px auto;padding:13mm 13mm 11mm;position:relative;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 6px 28px rgba(0,0,0,0.5);background:radial-gradient(ellipse 90% 45% at 50% -12%,rgba(120,119,198,0.30),transparent),radial-gradient(ellipse 55% 40% at 95% 102%,rgba(59,130,246,0.18),transparent),radial-gradient(ellipse 45% 35% at -5% 65%,rgba(236,72,153,0.12),transparent),var(--bg);}');
+              H.push('@media print{@page{size:A4 portrait;margin:0;}html,body{background:var(--bg);}.bar{display:none;}.page{margin:0;box-shadow:none;page-break-after:always;}.page:last-child{page-break-after:auto;}}');
+              H.push('.ent{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}.lb{display:flex;align-items:center;gap:11px;}');
+              H.push('.lc{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#818cf8,#c084fc);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:19px;color:#fff;box-shadow:0 4px 18px rgba(129,140,248,0.45);}');
+              H.push('.sc{font-size:16.5px;font-weight:800;}.sc small{display:block;font-size:10px;color:var(--muted);font-weight:600;margin-top:1px;}');
+              H.push('.ed{text-align:right;}.ed .num{display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.8px;color:#e0e7ff;background:rgba(99,102,241,0.18);border:1px solid rgba(129,140,248,0.45);border-radius:999px;padding:4px 13px;}.ed .dte{font-size:10px;color:var(--dim);margin-top:5px;font-weight:600;}');
+              H.push('.hero{margin:4px 0 18px;}.hero h1{font-size:31px;font-weight:900;letter-spacing:-0.03em;line-height:1.08;}.hero .grad{background:linear-gradient(90deg,#818cf8,#c084fc);-webkit-background-clip:text;background-clip:text;color:transparent;}.hero .sous{font-size:12.5px;color:var(--text2);margin-top:7px;}');
+              H.push('.sect{display:flex;align-items:center;gap:9px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.1px;color:#a5b4fc;margin:0 0 11px;}.sect::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,rgba(129,140,248,0.45),transparent);}');
+              H.push('.carte{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:15px 17px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);}');
+              H.push('.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}.kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 15px;position:relative;overflow:hidden;}.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#818cf8,#c084fc);}');
+              H.push('.kpi .l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);margin-bottom:6px;}.kpi .v{font-size:19.5px;font-weight:800;letter-spacing:-0.02em;}.kpi .s{font-size:9.5px;color:var(--dim);margin-top:3px;font-weight:600;}');
+              H.push('.note{background:linear-gradient(135deg,rgba(99,102,241,0.13),rgba(99,102,241,0.04));border:1px solid rgba(129,140,248,0.35);border-radius:13px;padding:11px 15px;font-size:11px;color:var(--text2);line-height:1.6;}.note b{color:#e0e7ff;}');
+              H.push('table{width:100%;border-collapse:collapse;font-size:11px;}th{text-align:left;font-size:8.5px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);border-bottom:1px solid rgba(129,140,248,0.4);padding:6px 8px;font-weight:800;}td{padding:6.5px 8px;border-bottom:1px solid rgba(255,255,255,0.05);color:var(--text2);}td b{color:var(--text);}td.r,th.r{text-align:right;}tr.tot td{border-top:1.5px solid rgba(129,140,248,0.5);border-bottom:none;font-weight:800;color:var(--text);padding-top:9px;}');
+              H.push('.pill{display:inline-block;padding:2.5px 10px;border-radius:999px;font-size:9px;font-weight:800;}.pa{background:rgba(245,158,11,0.13);border:1px solid rgba(245,158,11,0.4);color:var(--ambre);}');
+              H.push('.leg{display:flex;gap:16px;flex-wrap:wrap;font-size:9.5px;color:var(--muted);font-weight:600;margin-top:9px;}.leg span{display:inline-flex;align-items:center;gap:6px;}.ti{width:20px;height:4px;border-radius:2px;display:inline-block;}');
+              H.push('.ge{display:flex;margin:0 0 7px 128px;}.ge div{flex:1;text-align:center;font-size:9px;font-weight:800;letter-spacing:1px;color:var(--muted);border-bottom:1px solid rgba(255,255,255,0.10);padding-bottom:4px;}.ge div:first-child{color:#c7d2fe;border-color:rgba(129,140,248,0.5);}');
+              H.push('.gl{display:flex;align-items:center;gap:10px;margin-bottom:7px;}.gn{width:118px;font-size:10px;font-weight:700;flex-shrink:0;text-align:right;color:var(--text2);line-height:1.25;}.gn small{display:block;font-size:8px;color:var(--dim);font-weight:600;}');
+              H.push('.gz{flex:1;height:17px;position:relative;background:rgba(0,0,0,0.28);border-radius:5px;border:1px solid rgba(255,255,255,0.04);}.gmi{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:rgba(255,255,255,0.14);}.gb{position:absolute;top:2.5px;bottom:2.5px;border-radius:4px;}');
+              H.push('.b-ind{background:linear-gradient(135deg,#6366f1,#818cf8);}.b-cya{background:linear-gradient(135deg,#0891b2,#22d3ee);}.b-ros{background:linear-gradient(135deg,#db2777,#f472b6);}.gb.prev{opacity:0.52;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,0.35) 0 4px,transparent 4px 9px);}');
+              H.push('.pied{margin-top:auto;padding-top:11px;border-top:1px solid rgba(255,255,255,0.08);font-size:8.5px;color:var(--dim);display:flex;justify-content:space-between;font-weight:600;}');
+              H.push('</style></head><body>');
+              H.push('<div class="bar">Recap banque - verifie les chiffres puis imprime (destination : Enregistrer en PDF).<button onclick="window.print()">Imprimer / PDF</button></div>');
+              // ═ PAGE 1 ═
+              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Forage minier - Nouvelle-Caledonie</small></div></div><div class="ed"><span class="num">DOSSIER BANCAIRE</span><div class="dte">Edite le ' + dateDoc + '</div></div></div>');
+              H.push('<div class="hero"><h1>Recapitulatif financier<br><span class="grad">Tresorerie &amp; chantiers ' + anN + ' - ' + (anN + 1) + '</span></h1><div class="sous">Situation de tresorerie, projection a fin ' + (anN + 1) + ' et carnet de chantiers de la societe.</div></div>');
+              H.push('<div class="sect">Synthese</div><div class="kpis">');
+              H.push('<div class="kpi"><div class="l">Solde de tresorerie actuel</div><div class="v">' + mf(soldeActuel) + '</div><div class="s">SG + BCI, projete fin de mois</div></div>');
+              H.push('<div class="kpi"><div class="l">Encaissements ' + anN + '</div><div class="v">' + mf(caN) + '</div><div class="s">realise + projete fin d\u0027annee</div></div>');
+              H.push('<div class="kpi"><div class="l">Encaissements ' + (anN + 1) + ' projetes</div><div class="v">' + mf(caN1) + '</div><div class="s">carnet de chantiers</div></div>');
+              H.push('<div class="kpi"><div class="l">Solde projete fin ' + anN + '</div><div class="v" style="color:' + (finN >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN) + '</div><div class="s">previsionnel chaine</div></div>');
+              H.push('<div class="kpi"><div class="l">Solde projete fin ' + (anN + 1) + '</div><div class="v" style="color:' + (finN1 >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN1) + '</div><div class="s">hypotheses donnees ' + anN + '</div></div>');
+              H.push('<div class="kpi"><div class="l">Chantiers</div><div class="v">' + nbN + ' <span style="color:var(--dim);font-size:14px;">/ ' + anN + '</span>&nbsp; ' + nbN1 + ' <span style="color:var(--dim);font-size:14px;">/ ' + (anN + 1) + '</span></div><div class="s">voir carnet page 3</div></div>');
+              H.push('</div>');
+              H.push('<div class="sect">Encaissements mensuels - MF XPF</div><div class="carte" style="padding:17px 17px 11px;"><svg viewBox="0 0 740 196" style="width:100%;">');
+              H.push('<defs><linearGradient id="bar26" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#6366f1"/></linearGradient><linearGradient id="bar27" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8" stop-opacity="0.55"/><stop offset="100%" stop-color="#6366f1" stop-opacity="0.35"/></linearGradient></defs>');
+              H.push('<line x1="40" y1="158" x2="732" y2="158" stroke="rgba(255,255,255,0.22)" stroke-width="1.2"/>');
+              H.push('<text x="34" y="62" font-size="9" fill="#71717a" text-anchor="end">' + mf(maxCa) + '</text><line x1="40" y1="58" x2="732" y2="58" stroke="rgba(255,255,255,0.07)"/>');
+              H.push(barsCa + axeCa);
+              H.push('<text x="200" y="190" font-size="9.5" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="540" y="190" font-size="9.5" font-weight="800" fill="#71717a" text-anchor="middle">' + (anN + 1) + ' - PREVISIONNEL</text></svg>');
+              H.push('<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#6366f1,#818cf8);"></span>Realise / projete ' + anN + '</span><span><span class="ti" style="background:rgba(129,140,248,0.4);"></span>Previsionnel ' + (anN + 1) + ' (cadence des chantiers)</span></div></div>');
+              H.push('<div class="note" style="margin-top:16px;"><b>Ce que contient ce dossier.</b> Page 2 : courbe de tresorerie mensuelle - realise ' + anN + ' (comptes SG + BCI, ecritures comptables, virements internes neutralises) prolonge du previsionnel jusqu\u0027a fin ' + (anN + 1) + ', solde chaine. Page 3 : carnet de chantiers (clients, periodes, metrages, encaissements previsionnels).</div>');
+              H.push('<div class="pied"><span>WALLIS LABEL - Noumea, Nouvelle-Caledonie</span><span>PAGE 1 / 3</span></div></div>');
+              // ═ PAGE 2 ═
+              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Recapitulatif financier ' + anN + '-' + (anN + 1) + '</small></div></div><div class="ed"><span class="num">TRESORERIE</span><div class="dte">Solde mensuel consolide SG + BCI</div></div></div>');
+              H.push('<div class="sect">Courbe de tresorerie - janvier ' + anN + ' a decembre ' + (anN + 1) + ' - MF XPF</div><div class="carte" style="padding:18px 16px 10px;"><svg viewBox="0 0 740 300" style="width:100%;">');
+              H.push('<defs><linearGradient id="aire" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8" stop-opacity="0.34"/><stop offset="100%" stop-color="#818cf8" stop-opacity="0.02"/></linearGradient></defs>');
+              H.push('<line x1="46" y1="' + yZ.toFixed(1) + '" x2="732" y2="' + yZ.toFixed(1) + '" stroke="rgba(255,255,255,0.22)" stroke-width="1.2"/><text x="40" y="' + (yZ + 4).toFixed(1) + '" font-size="9" fill="#71717a" text-anchor="end">0</text>');
+              H.push('<line x1="' + xAuj.toFixed(1) + '" y1="42" x2="' + xAuj.toFixed(1) + '" y2="250" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4 4" opacity="0.8"/>');
+              H.push('<rect x="' + (xAuj - 35).toFixed(1) + '" y="26" width="70" height="15" rx="7.5" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.45)"/><text x="' + xAuj.toFixed(1) + '" y="37" font-size="8.5" font-weight="800" fill="#fde68a" text-anchor="middle">AUJOURD\u0027HUI</text>');
+              H.push('<path d="' + aireReel + '" fill="url(#aire)"/>');
+              H.push('<path d="' + ptsReel + '" fill="none" stroke="#818cf8" stroke-width="7" stroke-linejoin="round" opacity="0.18"/>');
+              H.push('<path d="' + ptsReel + '" fill="none" stroke="#818cf8" stroke-width="2.6" stroke-linejoin="round"/>');
+              H.push('<path d="' + ptsPrev + '" fill="none" stroke="#c084fc" stroke-width="2.3" stroke-dasharray="7 5" stroke-linejoin="round"/>');
+              H.push('<circle cx="' + xS(11).toFixed(1) + '" cy="' + yS(finN).toFixed(1) + '" r="4" fill="#1a1d2e" stroke="#818cf8" stroke-width="2.4"/>');
+              H.push('<text x="' + xS(11).toFixed(1) + '" y="' + (yS(finN) + 18).toFixed(1) + '" font-size="9" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + mf(finN) + ' fin ' + anN + '</text>');
+              H.push('<circle cx="' + xS(23).toFixed(1) + '" cy="' + yS(finN1).toFixed(1) + '" r="4" fill="#1a1d2e" stroke="#4ade80" stroke-width="2.4"/>');
+              H.push('<text x="' + xS(23).toFixed(1) + '" y="' + (yS(finN1) - 10).toFixed(1) + '" font-size="9" font-weight="800" fill="#86efac" text-anchor="end">' + mf(finN1) + ' fin ' + (anN + 1) + '</text>');
+              H.push(axeTr);
+              H.push('<text x="195" y="284" font-size="10" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="560" y="284" font-size="10" font-weight="800" fill="#71717a" text-anchor="middle">' + (anN + 1) + ' - PREVISIONNEL</text></svg>');
+              H.push('<div class="leg"><span><span class="ti" style="background:#818cf8;"></span>Solde realise (ecritures comptables SG + BCI)</span><span><span class="ti" style="background:repeating-linear-gradient(90deg,#c084fc 0 7px,transparent 7px 12px);"></span>Solde previsionnel (encaissements chantiers - decaissements)</span></div></div>');
+              H.push('<div class="sect" style="margin-top:17px;">Points de passage</div><div class="carte" style="padding:8px 15px 13px;"><table>');
+              H.push('<tr><th>Echeance</th><th class="r">Solde projete</th><th style="padding-left:22px;">Commentaire</th></tr>');
+              H.push('<tr><td><b>31/12/' + anN + '</b></td><td class="r"><b style="color:' + (finN >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN) + '</b></td><td style="padding-left:22px;">Fin d\u0027exercice - previsionnel sur le rythme des chantiers en cours</td></tr>');
+              H.push('<tr><td>30/06/' + (anN + 1) + '</td><td class="r">' + mf(miN1) + '</td><td style="padding-left:22px;">Mi-exercice - carnet ' + (anN + 1) + ' engage (voir page 3)</td></tr>');
+              H.push('<tr><td><b>31/12/' + (anN + 1) + '</b></td><td class="r"><b style="color:' + (finN1 >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN1) + '</b></td><td style="padding-left:22px;">Fin de projection - hypotheses identiques a ' + anN + '</td></tr></table></div>');
+              H.push('<div class="note" style="margin-top:15px;"><b>Methode.</b> Realise : soldes mensuels des comptes bancaires (SG 512130, BCI 512160), virements internes neutralises. Previsionnel : encaissements = metrage previsionnel x prix contractuel au metre par chantier (cadence objectif, jours ouvres lundi-jeudi, aleas historiques lisses) ; decaissements = charges constatees au fichier des ecritures comptables. Le solde ' + (anN + 1) + ' est chaine sur le solde projete de fin ' + anN + '.</div>');
+              H.push('<div class="pied"><span>WALLIS LABEL - Recapitulatif financier - donnees au ' + dateDoc + '</span><span>PAGE 2 / 3</span></div></div>');
+              // ═ PAGE 3 ═
+              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Recapitulatif financier ' + anN + '-' + (anN + 1) + '</small></div></div><div class="ed"><span class="num">CARNET DE CHANTIERS</span><div class="dte">Campagnes ' + anN + ' et previsionnel ' + (anN + 1) + '</div></div></div>');
+              H.push('<div class="sect">Calendrier ' + anN + ' - ' + (anN + 1) + '</div><div class="carte" style="padding:15px 17px 12px;">');
+              H.push('<div class="ge"><div>' + anN + '</div><div>' + (anN + 1) + ' - PREVISIONNEL</div></div>');
+              H.push(gantt);
+              H.push('<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#6366f1,#818cf8);"></span>Aircore</span><span><span class="ti" style="background:linear-gradient(135deg,#0891b2,#22d3ee);"></span>Heliporte</span><span><span class="ti" style="background:linear-gradient(135deg,#db2777,#f472b6);"></span>Carotte</span><span><span class="ti" style="background:rgba(129,140,248,0.4);"></span>Previsionnel (hachure)</span></div></div>');
+              H.push('<div class="sect" style="margin-top:17px;">Detail par chantier</div><div class="carte" style="padding:8px 15px 13px;"><table>');
+              H.push('<tr><th>Client</th><th>Chantier</th><th>Periode</th><th class="r">Metrage objectif</th><th class="r">Realise</th><th class="r">CA previsionnel</th></tr>');
+              H.push(tbl);
+              H.push('<tr class="tot"><td colspan="5">TOTAL CARNET ' + anN + ' - ' + (anN + 1) + '</td><td class="r" style="color:#c7d2fe;">' + mf(totCa) + '</td></tr></table></div>');
+              H.push('<div class="note" style="margin-top:15px;"><b>Moyens de production.</b> Flotte de 10 sondeuses (aircore terrestre, heliporte, carotte) et equipes dediees par site. Le CA previsionnel par chantier = metrage objectif x prix contractuel au metre.</div>');
+              H.push('<div class="pied"><span>WALLIS LABEL - Recapitulatif financier - donnees au ' + dateDoc + '</span><span>PAGE 3 / 3</span></div></div>');
+              H.push('</body></html>');
+              var wR = window.open("", "_blank");
+              if (!wR) { alert("Autorise les popups pour generer le recap banque."); return; }
+              wR.document.write(H.join(""));
+              wR.document.close();
+            };
+
             // ── Chart style courbe carburant : polyline + aire dégradée + moyenne pointillée ──
             var Wt = 1100, Ht = 240;
             var padT = { t: 22, r: 24, b: 32, l: 60 };
@@ -26081,6 +26276,11 @@
                   estVueN1 ? h("span", { style: { fontSize: 10, background: "rgba(56,189,248,0.15)", color: "#7dd3fc", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Chaine sur fin " + now2.getFullYear())
                   : (soldeSource === "manuel" ? h("span", { style: { fontSize: 10, background: "rgba(129,140,248,0.20)", color: "#c7d2fe", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Ancre solde manuel") : (soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres"))),
                   h("button", {
+                    onClick: function() { genererRecapBanque(); },
+                    title: "Document bancaire imprimable : synthese, courbe de tresorerie " + now2.getFullYear() + "-" + (now2.getFullYear() + 1) + " et carnet de chantiers",
+                    style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", border: "none", color: "#ffffff", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
+                  }, "Recap banque (PDF)"),
+                  h("button", {
                     onClick: async function() {
                       var cur = soldeManuel != null ? String(soldeManuel) : "";
                       var input = window.prompt("Solde bancaire ACTUEL en XPF (ex: -65000000 pour -65 MF).\nCe chiffre ancre la courbe pour compenser une compta en retard.\nLaisser vide pour retourner en mode automatique.", cur);
@@ -26097,7 +26297,7 @@
                       if (isNaN(v)) { alert("Nombre invalide"); return; }
                       try { await saveSoldeManuel(v); } catch (e) { alert("Erreur : " + e.message); }
                     },
-                    style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", color: "#c7d2fe", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
+                    style: { fontSize: 10, padding: "3px 10px", background: "rgba(129,140,248,0.15)", border: "1px solid rgba(129,140,248,0.35)", color: "#c7d2fe", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
                   }, soldeManuel != null ? "Ajuster solde" : "Ancrer solde reel"),
                   h("button", {
                     onClick: async function() {
