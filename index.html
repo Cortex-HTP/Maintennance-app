@@ -28246,7 +28246,7 @@
           // Validations client du releve mensuel (onglet Validation client des rapports).
           // Colonnes light : signature_png (lourde) et token (sensible) exclus du
           // fetch en boucle ; la signature est chargee a la demande dans l'Apercu.
-          fetchAllRows(function() { return supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,imputation,bon_commande,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }).order("id"); }),
+          fetchAllRows(function() { return supabase.from("validations_recap_mensuel").select("id,chantier_id,periode_debut,periode_fin,libelle,destinataire_email,statut,snapshot,sent_at,relance_at,validated_at,validataire_nom,validataire_email,commentaire_refus,corrections,arbitrages,imputation,bon_commande,facture_envoyee_at,created_at").order("periode_debut", { ascending: false }).order("id"); }),
           // Destinataires clients configures PAR CHANTIER (Administration >
           // Destinataires emails) : source prioritaire pour la validation client.
           // Les DEUX types sont charges : releve_mensuel (dedie, prioritaire)
@@ -30957,6 +30957,44 @@
         var signataires = Object.keys(sigMap).map(function(e) { return { email: e, nom: sigMap[e] }; });
         return { lignes: lignes, totaux: totaux, signataires: signataires, signatairesSansEmail: Object.keys(sigSansMail) };
       };
+      // ── ARBITRAGES (miroir de appliquerArbitrages serveur) : la carte montre
+      // les chiffres ARBITRES avant meme le renvoi. NB : le preview n'a pas de
+      // ventilations par ligne -> seuls ligne.attente/metrage/heures et les
+      // totaux sont ajustes (le serveur fait le prorata des ventilations).
+      var appliquerArbitragesVal = function(snap, arbitrages) {
+        var arr = Array.isArray(arbitrages) ? arbitrages : [];
+        if (!arr.length || !snap || !Array.isArray(snap.lignes)) return snap;
+        var r2 = function(v) { return Math.round(v * 100) / 100; };
+        var r1 = function(v) { return Math.round(v * 10) / 10; };
+        var applique = 0;
+        arr.forEach(function(a) {
+          var d = String((a && a.date) || "").substring(0, 10);
+          var champ = String((a && a.champ) || "");
+          var val = parseFloat(a && a.valeur);
+          if (!d || isNaN(val) || val < 0) return;
+          var l = snap.lignes.find(function(x) { return String(x.date || "").substring(0, 10) === d; });
+          if (!l) return;
+          if (champ === "attente") l.attente = r2(val);
+          else if (champ === "metrage") l.metrage = r1(val);
+          else if (champ === "heures") l.heures = r2(val);
+          else return;
+          l.arbitre = true;
+          applique++;
+        });
+        if (!applique) return snap;
+        var t = { metrage: 0, heures: 0, attente: 0 };
+        snap.lignes.forEach(function(l) {
+          t.metrage += parseFloat(l.metrage) || 0;
+          t.heures += parseFloat(l.heures) || 0;
+          t.attente += parseFloat(l.attente) || 0;
+        });
+        snap.totaux = snap.totaux || {};
+        snap.totaux.metrage = r1(t.metrage);
+        snap.totaux.heures = r2(t.heures);
+        snap.totaux.attente = r2(t.attente);
+        snap.nbArbitrages = applique;
+        return snap;
+      };
       // ── Detail d'une correction client ("Voir la modification") ──
       // La banniere seule ("Attente 4,5 -> 1,5") ne dit pas d'ou sort le chiffre
       // (vecu : confusion avec le total DEPLACEMENT du mois). Ce detail montre la
@@ -31147,6 +31185,49 @@
             })
             .catch(function(e) { setSendingValId(null); alert("Erreur reseau : " + (e && e.message)); });
         });
+      };
+      // ── ARBITRAGE sur le releve (2026-10-06, demande Tomy) : quand le
+      // rapport source ne peut pas etre modifie, la correction du client est
+      // appliquee DIRECTEMENT sur le releve. Stockee sur la validation
+      // (arbitrages jsonb), elle survit a chaque reconstruction du snapshot ;
+      // effective dans l'email au prochain envoi/renvoi.
+      var posterArbitrage = function(v, payload, okMsg) {
+        return supabase.auth.getSession().then(function(s) {
+          var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
+          if (!tkn) { alert("Session expiree, reconnecte-toi."); return; }
+          return fetch(EMPLOYES_API_BASE + "/api/validation-arbitrage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
+            body: JSON.stringify(Object.assign({ validation_id: v.id }, payload))
+          }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+            .then(function(out) {
+              if (!out.ok || !out.j || !out.j.ok) { alert("Arbitrage impossible : " + ((out.j && out.j.error) || "erreur serveur")); return; }
+              setVals(function(prev) {
+                return (prev || []).map(function(x) { return x.id === v.id ? Object.assign({}, x, { arbitrages: out.j.arbitrages }) : x; });
+              });
+              if (showToast) showToast(okMsg, "success");
+            })
+            .catch(function(e) { alert("Erreur reseau : " + (e && e.message)); });
+        });
+      };
+      var arbitrerCorrection = function(v, cor) {
+        var champA = cor.champ === "metrage" ? "metrage" : cor.champ === "heures" ? "heures" : "attente";
+        if (cor.champ === "passe") { alert("Un ajout de passe s'arbitre via le champ Metrage : saisis le nouveau metrage TOTAL de la journee."); }
+        var defVal = cor.champ === "passe" ? "" : String(cor.apres != null ? cor.apres : "");
+        var saisie = window.prompt(
+          "ARBITRAGE : appliquer la valeur directement sur le RELEVE (le rapport n'est pas modifie).\n\n"
+          + "Jour " + fmtD(cor.date) + " - " + (champA === "metrage" ? "metrage (m)" : champA === "heures" ? "heures machine (h)" : "heures facturables / attente (h)")
+          + "\nDemande client : " + (cor.avant != null ? cor.avant + " -> " : "") + cor.apres + (cor.commentaire ? " (" + cor.commentaire + ")" : "")
+          + "\n\nValeur a inscrire sur le releve (decimale, ex 1.5) :", defVal);
+        if (saisie === null) return;
+        var valN = parseFloat(String(saisie).replace(",", "."));
+        if (isNaN(valN) || valN < 0) { alert("Valeur invalide"); return; }
+        posterArbitrage(v, { action: "set", date: String(cor.date).substring(0, 10), champ: champA, valeur: valN, motif: String(cor.commentaire || "arbitrage") },
+          "Arbitrage enregistre - renvoie le releve pour que le client recoive la version ajustee");
+      };
+      var retirerArbitrage = function(v, a) {
+        if (!confirm("Retirer l'arbitrage du " + fmtD(a.date) + " (" + a.champ + ") ? Le releve repartira des rapports.")) return;
+        posterArbitrage(v, { action: "remove", date: String(a.date).substring(0, 10), champ: a.champ }, "Arbitrage retire");
       };
       // ── Renvoi d'un rapport CORRIGE au client ──
       // Apres modification d'un rapport par l'admin : si la journee fait l'objet
@@ -31343,7 +31424,7 @@
             // puis renvoie -> les chiffres affiches/confirmes = ceux qui partiront.
             var snap = (v && v.snapshot && (statut === "envoye" || statut === "valide" || statut === "facture"))
               ? v.snapshot
-              : computeSnapshotPreview(c, per.debut, per.fin);
+              : appliquerArbitragesVal(computeSnapshotPreview(c, per.debut, per.fin), v && v.arbitrages);
             var tot = (snap && snap.totaux) || { metrage: 0, heures: 0, attente: 0 };
             var nbJours = (snap && snap.lignes ? snap.lignes.length : 0);
             // Destinataires : SIGNATAIRES des rapports de la periode ;
@@ -31354,7 +31435,7 @@
             // Le destinataire fige en base n'est montre que pour valide/facture
             // (sinon, apres changement du signataire sur les rapports, l'ecran
             // et le confirm de relance montraient l'ANCIEN email).
-            var snapDest = (statut === "envoye") ? computeSnapshotPreview(c, per.debut, per.fin) : snap;
+            var snapDest = (statut === "envoye") ? appliquerArbitragesVal(computeSnapshotPreview(c, per.debut, per.fin), v && v.arbitrages) : snap;
             var destAffiche, destOk, destAide;
             if ((statut === "valide" || statut === "facture") && v && v.destinataire_email) { destAffiche = v.destinataire_email; destOk = true; }
             else {
@@ -31457,6 +31538,11 @@
                         title: "Afficher la ligne du releve concernee et la decomposition du chiffre corrige",
                         style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#fde68a" } },
                         h(Icon, { name: ouvert ? "chevron-up" : "eye", size: 11, color: "#fde68a" }), ouvert ? "Masquer" : "Voir la modification"),
+                      h("span", {
+                        onClick: function(ev) { ev.stopPropagation(); arbitrerCorrection(v, cor); },
+                        title: "Appliquer la valeur DIRECTEMENT sur le releve, sans modifier le rapport (quand le rapport ne peut pas etre corrige). Effectif au prochain envoi du releve.",
+                        style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#c4b5fd" } },
+                        h(Icon, { name: "scale", size: 11, color: "#c4b5fd" }), "Arbitrer sur le releve"),
                       h("span", { style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#a5b4fc" } },
                         h(Icon, { name: "edit-3", size: 11, color: "#a5b4fc" }), "Corriger le rapport"))
                   );
@@ -31513,6 +31599,25 @@
                       h("div", { style: { fontSize: 11, color: "#71717a" } }, "Rien n'est applique automatiquement : clique la ligne orange (Corriger le rapport) pour ouvrir le rapport de cette journee et appliquer - ou non - la demande."));
                   }
                   return h("div", { key: ci }, ligneCor, panneau);
+                })
+              ) : null,
+              // ── Arbitrages ACTIFS : valeurs inscrites directement sur le
+              // releve (le rapport source n'est pas modifie). Appliques a
+              // chaque reconstruction ; retirables tant que non facture.
+              v && Array.isArray(v.arbitrages) && v.arbitrages.length ? h("div", { style: { marginTop: 6 } },
+                v.arbitrages.map(function(a, ai) {
+                  var valAff = a.champ === "metrage" ? ((parseFloat(a.valeur) || 0).toLocaleString("fr-FR") + " m") : fmtHeuresMin(a.valeur);
+                  var modifiable = statut === "brouillon" || statut === "envoye" || statut === "refuse";
+                  return h("div", { key: "arb-" + ai, style: { borderLeft: "3px solid #8b5cf6", background: "rgba(139,92,246,0.08)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" } },
+                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#c4b5fd", whiteSpace: "nowrap" } }, "Arbitrage - " + (a.champ === "metrage" ? "Metrage" : a.champ === "heures" ? "Heures" : "Attente") + " du " + fmtD(a.date)),
+                    h("span", { style: { fontWeight: 800, color: "#ddd6fe" } }, valAff),
+                    a.motif ? h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, "\u00ab " + a.motif + " \u00bb") : null,
+                    h("span", { style: { fontSize: 10.5, color: "#71717a" } }, "inscrit sur le releve - le rapport n'est pas modifie"),
+                    modifiable ? h("span", {
+                      onClick: function() { retirerArbitrage(v, a); },
+                      style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#fda4af", cursor: "pointer", whiteSpace: "nowrap" } },
+                      h(Icon, { name: "x", size: 11, color: "#fda4af" }), "Retirer") : null
+                  );
                 })
               ) : null,
               // Imputation transmise par le client (chantiers actives) : BC,
