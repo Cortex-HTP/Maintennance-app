@@ -7485,16 +7485,19 @@
                     h("select", { style: inputSm, value: g.role || "to", onChange: function(e) {
                       var newRole = e.target.value;
                       updateGroup(g, { role: newRole });
-                      // Si on passe en signataire, decoche les types sans signature
-                      // client (seuls le rapport de forage et le releve mensuel en ont une)
+                      // Si on passe en signataire, decoche les documents INTERNES
+                      // (releves d'heures, commandes, conges, interventions). Les
+                      // documents CLIENT restent cochables : rapports et releves
+                      // mensuels (signature) + factures (meme destinataire, l'edge
+                      // traite un signataire comme un TO pour la facture).
                       if (newRole === "signataire") {
                         Object.keys(g.typeIds).forEach(function(k) {
-                          if (k !== "rapport_forage" && k !== "releve_mensuel") {
+                          if (k !== "rapport_forage" && k !== "releve_mensuel" && k !== "facture") {
                             toggleType(Object.assign({}, g, { role: newRole }), k, false);
                           }
                         });
                       }
-                    }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapports forage et releves mensuels)" },
+                    }, title: "TO = recoit / CC = copie / Signataire = recoit + signe (rapports, releves mensuels) et peut aussi recevoir les factures" },
                       h("option", { value: "to" }, "TO"),
                       h("option", { value: "cc" }, "CC"),
                       h("option", { value: "signataire" }, "Signataire")
@@ -7521,14 +7524,14 @@
                     h("input", { type: "checkbox", checked: !!g.actif, onChange: function(e) { updateGroup(g, { actif: e.target.checked }); }, style: { accentColor: "#22c55e", width: 16, height: 16, cursor: "pointer" } })
                   ),
                   // Checkboxes pour les types_doc
-                  // Si role = signataire, seuls rapport_forage et releve_mensuel sont
-                  // activables (seuls types avec signature client)
+                  // Role signataire : seuls les documents CLIENT sont activables
+                  // (rapports + releves mensuels = signature ; factures = reception)
                   DOC_TYPES.map(function(t) {
                     var coche = !!g.typeIds[t.key];
                     var isSignataire = g.role === "signataire";
-                    var disabled = isSignataire && t.key !== "rapport_forage" && t.key !== "releve_mensuel";
+                    var disabled = isSignataire && t.key !== "rapport_forage" && t.key !== "releve_mensuel" && t.key !== "facture";
                     var tooltip = disabled
-                      ? "Le role 'Signataire' ne s'applique qu'aux rapports de forage et aux releves mensuels (types avec signature client)"
+                      ? "Le role 'Signataire' est reserve aux documents client : rapports de forage, releves mensuels et factures. Pour ce type de document, utilise une ligne TO ou CC."
                       : t.label;
                     return h("td", { key: t.key, style: Object.assign({}, tdStyle, { textAlign: "center" }) },
                       h("input", {
