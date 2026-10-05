@@ -21844,10 +21844,11 @@
         { key: "primes", label: "Primes", icon: "trophy" },
         { key: "financement", label: "Financement", icon: "wallet" },
         { key: "emprunts", label: "Emprunts", icon: "landmark" },
-        // Passerelle Cortex-Facturation : contrairement aux autres pages, elle
-        // n'est JAMAIS accordee d'office aux admins — seul le compte coche ici
-        // voit le lien dans la sidebar (demande Tomy 2026-09-22).
+        // Passerelles Cortex (Facturation, Stock) : contrairement aux autres pages,
+        // elles ne sont JAMAIS accordees d'office aux admins — seul le compte coche
+        // ici voit le lien dans la sidebar (demande Tomy 2026-09-22, etendu au Stock).
         { key: "facturation-ext", label: "Facturation (Cortex)", icon: "receipt" },
+        { key: "stock-ext", label: "Stock (Cortex)", icon: "boxes" },
         { key: "personnel", label: "Personnel", icon: "user-round" },
         { key: "stats-mecaniciens", label: "Mecaniciens", icon: "wrench" },
         { key: "coffre-rh", label: "Coffre-fort RH", icon: "folder-lock" },
@@ -22077,17 +22078,18 @@
         if (!editing) return;
         var pages = ALL_PAGES.filter(function(p) {
           if (editing.role !== "Administrateur" && p.adminOnly) return false;
-          // La passerelle Facturation ne se donne JAMAIS en bloc : uniquement
-          // par coche individuelle sur le compte choisi (demande Tomy).
-          if (p.key === "facturation-ext") return false;
+          // Les passerelles Cortex (Facturation, Stock) ne se donnent JAMAIS en
+          // bloc : uniquement par coche individuelle sur le compte choisi.
+          if (p.key === "facturation-ext" || p.key === "stock-ext") return false;
           return true;
         }).map(function(p) { return p.key; });
         // Inclure aussi toutes les sous-pages de soumissions - SAUF l'envoi
         // validation client (emails aux clients avec chiffres de facturation :
         // jamais accorde en masse, uniquement par coche deliberee)
         var all = pages.concat(subKeys.filter(function(k) { return k !== "envoi-validation-client"; }));
-        // "Tout cocher" preserve l'etat actuel de la passerelle Facturation
+        // "Tout cocher" preserve l'etat actuel des passerelles Cortex
         if ((editing.pagesAutorisees || []).indexOf("facturation-ext") >= 0) all.push("facturation-ext");
+        if ((editing.pagesAutorisees || []).indexOf("stock-ext") >= 0) all.push("stock-ext");
         // ... et de l'envoi validation client
         if ((editing.pagesAutorisees || []).indexOf("envoi-validation-client") >= 0) all.push("envoi-validation-client");
         setEditing(Object.assign({}, editing, { pagesAutorisees: all }));
@@ -36115,7 +36117,7 @@
       );
     }
 
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, facturationAllowed, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, facturationAllowed, stockAllowed, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
@@ -36126,6 +36128,7 @@
           { key: "plans", label: "Plans", lucide: "clipboard-list" },
           { key: "interventions", label: "Interventions", lucide: "wrench" },
           { key: "pieces", label: "Pieces detachees", lucide: "package" },
+          { key: "stock-ext", label: "Stock", lucide: "boxes", external: "https://cosmo-gestion-rose.vercel.app" },
           { key: "achats-previsionnels", label: "Achats previsionnels", lucide: "shopping-cart" },
           { key: "carburant", label: "Carburant", lucide: "fuel" },
         ]},
@@ -36179,7 +36182,7 @@
         h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
           sections.map((section) => h("div", { key: section.name },
             h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
-            section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
+            section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.key === "stock-ext") return stockAllowed === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
               return h("button", { key: p.key, onClick: () => handleItemClick(p),
                 style: {
@@ -36216,7 +36219,8 @@
                 p.key === "facturation-ext" && facturationPending > 0 ? h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4 } },
                   h("span", { style: { background: "linear-gradient(135deg, #6366f1, #4f46e5)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(99, 102, 241, 0.4)" }, title: facturationPending + " releve(s) valide(s) par le client en attente de facturation" }, facturationPending),
                   h(Icon, { name: "external-link", size: 10, color: "#71717a" })
-                ) : p.key === "facturation-ext" ? h("span", { style: { marginLeft: "auto" } }, h(Icon, { name: "external-link", size: 10, color: "#71717a" })) : null
+                ) : p.key === "facturation-ext" ? h("span", { style: { marginLeft: "auto" } }, h(Icon, { name: "external-link", size: 10, color: "#71717a" })) : null,
+                p.key === "stock-ext" ? h("span", { style: { marginLeft: "auto" } }, h(Icon, { name: "external-link", size: 10, color: "#71717a" })) : null
               );
             })))),
         h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
@@ -39012,6 +39016,8 @@
       // Seul le compte explicitement coche "facturation-ext" (Administration >
       // Utilisateurs) voit le lien — demande Tomy 2026-09-22.
       var facturationAllowed = !!(currentAppUser && (currentAppUser.pagesAutorisees || []).indexOf("facturation-ext") >= 0);
+      // Passerelle Stock (Cortex) : meme doctrine que la Facturation.
+      var stockAllowed = !!(currentAppUser && (currentAppUser.pagesAutorisees || []).indexOf("stock-ext") >= 0);
 
       // Update derniere_connexion on login
       useEffect(function() {
@@ -39366,7 +39372,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, stockAllowed: stockAllowed, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
