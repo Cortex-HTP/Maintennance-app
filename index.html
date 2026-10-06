@@ -34250,7 +34250,7 @@
         var now0 = new Date(); now0.setHours(0, 0, 0, 0);
         var fenDeb = new Date(now0.getTime() - 182 * 86400000);
         var fenDebIso = fenDeb.getFullYear() + "-" + String(fenDeb.getMonth() + 1).padStart(2, "0") + "-" + String(fenDeb.getDate()).padStart(2, "0");
-        var metresFen = 0, nbRapFen = 0;
+        var metresFen = 0, nbRapFen = 0, metresRens = 0, nbRapRens = 0;
         var metresParMachine = {};
         var agg = {};
         (ctx.dbRapportsForage || []).forEach(function(r) {
@@ -34261,6 +34261,7 @@
           metresFen += m;
           nbRapFen++;
           metresParMachine[mach] = (metresParMachine[mach] || 0) + m;
+          if (Array.isArray(r.consommables_perdus) && r.consommables_perdus.length > 0) { metresRens += m; nbRapRens++; }
           (Array.isArray(r.consommables_perdus) ? r.consommables_perdus : []).forEach(function(it) {
             var lib = normLib(it && (it.designation || it.label || it.nom));
             if (!lib || lib === "EAU") return; // l'eau n'est pas un stock a commander
@@ -34310,7 +34311,9 @@
             var dn = normLib(pieces[iP].Designation || pieces[iP].Reference);
             if (dn && (dn === a.lib || dn.indexOf(a.lib) >= 0 || a.lib.indexOf(dn) >= 0)) { piece = pieces[iP]; break; }
           }
-          var taux = metresFen > 0 ? (a.qty / metresFen * 1000) : 0;
+          // Taux sur les metres des SEULS rapports renseignes : diviser par tous les
+          // metres diluerait le taux avec les rapports sans saisie de consommables
+          var taux = metresRens > 0 ? (a.qty / metresRens * 1000) : 0;
           var besoin = taux * mPrev / 1000;
           var besoinMarge = besoin * (1 + margeConso / 100);
           var stock = piece ? (parseFloat(piece.Stock) || 0) : null;
@@ -34326,7 +34329,7 @@
           totalCmd += l.aCmd * l.prixU;
           if (l.couvSem != null && l.couvSem < delaiConso) nbRupt++;
         });
-        return { lignes: lignes, metresFen: Math.round(metresFen), nbRapFen: nbRapFen, mPrev: mPrev, mSem: mSem, totalCmd: totalCmd, nbRupt: nbRupt, parChantier: parChantier };
+        return { lignes: lignes, metresFen: Math.round(metresFen), nbRapFen: nbRapFen, metresRens: Math.round(metresRens), nbRapRens: nbRapRens, mPrev: mPrev, mSem: mSem, totalCmd: totalCmd, nbRupt: nbRupt, parChantier: parChantier };
       })();
 
       function vueTabBtn(key, label, icon, count) {
@@ -34395,7 +34398,7 @@
               h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 6 } }, "Delai fournisseur : ", h("span", { style: { color: "#c7d2fe" } }, delaiConso + " sem")),
               h("input", { type: "range", min: 2, max: 12, step: 1, value: delaiConso, onChange: function(e) { setDelaiConso(parseInt(e.target.value)); }, style: { width: 170, accentColor: "#818cf8" } })),
             h("div", { style: { fontSize: 11.5, color: "#71717a", maxWidth: 420 } },
-              "Usure mesuree sur ", h("b", { style: { color: "#cbd5e1" } }, consoForage.nbRapFen + " rapports / " + consoForage.metresFen.toLocaleString("fr-FR") + " m"), " (6 mois glissants). Metrage prevu = cadences objectif des chantiers En cours et A venir (coupures respectees) sur l'horizon choisi en haut de page. Decoche un chantier ci-dessous pour le sortir de la prevision.")
+              "Usure mesuree sur ", h("b", { style: { color: "#cbd5e1" } }, consoForage.nbRapRens + " rapports renseignes / " + consoForage.metresRens.toLocaleString("fr-FR") + " m"), " (6 mois glissants ; " + (consoForage.nbRapFen - consoForage.nbRapRens) + " rapports sans saisie exclus du taux). Metrage prevu = cadences objectif des chantiers En cours et A venir (coupures respectees) sur l'horizon choisi en haut de page. Decoche un chantier ci-dessous pour le sortir de la prevision.")
           ),
           h("div", { style: Object.assign({}, sectionStyle, { padding: "12px 16px", marginBottom: 14 }) },
             h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 9 } },
