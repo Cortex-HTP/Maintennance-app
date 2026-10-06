@@ -2373,11 +2373,33 @@
       var eq = opts.eq || null;
       if (typeof XLSX === "undefined") { alert("Librairie Excel non chargee, reessaie dans un instant."); return; }
       var pieces = allPieces || [];
+      var triTravaux = function(a, b) { return String(a.Equipement || "").localeCompare(String(b.Equipement || "")) || String(a.Date_Intervention || "").localeCompare(String(b.Date_Intervention || "")); };
+      var surEq = function(i) { return !eq || String(i.EquipementId || "") === String(eq.Id) || String(i.Equipement || "") === String(eq.Title || eq.Code || ""); };
       var travaux = (allInterventions || []).filter(function(i) {
         if (computeIntervStatus(i) === "Termine") return false;
-        if (eq) return String(i.EquipementId || "") === String(eq.Id) || String(i.Equipement || "") === String(eq.Title || eq.Code || "");
-        return true;
-      }).slice().sort(function(a, b) { return String(a.Equipement || "").localeCompare(String(b.Equipement || "")) || String(a.Date_Intervention || "").localeCompare(String(b.Date_Intervention || "")); });
+        return surEq(i);
+      }).slice();
+      // RELIQUATS (2026-10-07) : un travail peut etre Termine (toutes les
+      // etapes du PLAN faites, ou statut manuel) alors que des etapes de
+      // gamme restent NON cochees (ajouts du mecano, constats) - elles
+      // disparaissaient de l'export. Chaque intervention terminee avec des
+      // etapes non faites ressort en ligne RELIQUAT : seules les etapes
+      // restantes, leurs pieces comptees dans les consommables a acheter.
+      (allInterventions || []).forEach(function(i) {
+        if (computeIntervStatus(i) !== "Termine" || !surEq(i)) return;
+        var restantes = (Array.isArray(i.Gamme) ? i.Gamme : []).filter(function(g) { return g && g.label && !g.done; });
+        if (!restantes.length) return;
+        travaux.push({
+          Equipement: i.Equipement || "",
+          Title: (i.Title || "Intervention") + " - RELIQUAT",
+          Type: i.Type || "",
+          Statut_Intervention: "Etapes non faites (travail termine" + (i.Date_Intervention ? " le " + i.Date_Intervention : "") + ")",
+          Date_Intervention: i.Date_Intervention || "",
+          Gamme: restantes,
+          Plan: i.Plan || ""
+        });
+      });
+      travaux.sort(triTravaux);
       // Detail de la ligne : la gamme en clair (1 ligne / etape), sinon le commentaire libre.
       function detailTravaux(i) {
         var g = Array.isArray(i.Gamme) ? i.Gamme.filter(function(s) { return s && s.label; }) : [];
