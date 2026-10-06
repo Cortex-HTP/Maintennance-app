@@ -10998,6 +10998,148 @@
           p.deb = p.debOrig + p.decalSem * 7;
           p.fin = p.finOrig + p.decalSem * 7;
         });
+        // ── APPLIQUER LA SIMULATION AU PLANNING REEL (2026-10-07) ──
+        // Transforme l'etat simule en ecritures reelles : chantiers decales
+        // (dates + periodes + leurs bandes machines), machines echangees,
+        // affectations posees, chantiers hypothetiques crees en "A venir".
+        // Decalages pris CLAMPES depuis propsOpt = ce que l'ecran affiche.
+        function appliquerSimulation() {
+          var addJIso = function(iso, n) {
+            var d0 = parseDate(String(iso || "").substring(0, 10));
+            if (!d0 || isNaN(d0.getTime())) return iso;
+            d0.setDate(d0.getDate() + n);
+            return d0.getFullYear() + "-" + String(d0.getMonth() + 1).padStart(2, "0") + "-" + String(d0.getDate()).padStart(2, "0");
+          };
+          var fmtJ = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[2] + "/" + s[1] : "?"; };
+          var decParCh = {};
+          propsOpt.forEach(function(pA) { decParCh[String(pA.ch.id)] = Math.round((pA.decalSem || 0) * 7); });
+          var cesReelles = ctx.dbChantierEquipements || [];
+          var ceById = {};
+          cesReelles.forEach(function(x) { ceById[String(x.id)] = x; });
+          var chByIdA = {};
+          (ctx.dbChantiers || []).forEach(function(c) { chByIdA[String(c.id)] = c; });
+          var eqTitreA = function(id) { var e = eqParIdOpt[String(id)]; return e ? (e.Title || e.Immatriculation || id) : id; };
+
+          // 1. Collecte de ce qui sera ecrit
+          var decals = [];
+          Object.keys(decParCh).forEach(function(k) {
+            var dj = decParCh[k] || 0;
+            if (!dj || String(k).indexOf("sim-") === 0) return;
+            var c = chByIdA[k];
+            if (c && c.dateDebut && c.dateFin) decals.push({ c: c, decJ: dj });
+          });
+          var swaps = [];
+          Object.keys(simSwap).forEach(function(k) {
+            if (String(k).indexOf("sa-") === 0) return; // bande simulee : geree a l'insert
+            var ce = ceById[String(k)];
+            if (ce && String(simSwap[k]) !== String(ce.equipementId)) swaps.push({ ce: ce, eqId: simSwap[k] });
+          });
+          var affsReelles = simAffs.filter(function(sa) { return String(sa.chId).indexOf("sim-") !== 0; });
+          var lignesCf = [];
+          decals.forEach(function(d) {
+            lignesCf.push("- Decaler " + d.c.titre + " de " + (d.decJ > 0 ? "+" : "") + (d.decJ / 7) + " sem (nouvelles dates " + fmtJ(addJIso(d.c.dateDebut, d.decJ)) + " -> " + fmtJ(addJIso(d.c.dateFin, d.decJ)) + ", bandes machines suivies)");
+          });
+          swaps.forEach(function(s) {
+            var cS = chByIdA[String(s.ce.chantierId)];
+            lignesCf.push("- " + (cS ? cS.titre : "?") + " : machine " + eqTitreA(s.ce.equipementId) + " -> " + eqTitreA(s.eqId));
+          });
+          affsReelles.forEach(function(sa) {
+            var dj = decParCh[String(sa.chId)] || 0;
+            var cS2 = chByIdA[String(sa.chId)];
+            lignesCf.push("- + " + eqTitreA(simSwap[sa.id] != null ? simSwap[sa.id] : sa.eqId) + " sur " + (cS2 ? cS2.titre : "?") + " du " + fmtJ(addJIso(sa.dateDebut, dj)) + " au " + fmtJ(addJIso(sa.dateFin, dj)));
+          });
+          simAjouts.forEach(function(aj) {
+            var dj = decParCh[String(aj.ch.id)] || 0;
+            var nbA = simAffs.filter(function(sa) { return String(sa.chId) === String(aj.ch.id); }).length;
+            lignesCf.push("- CREER le chantier " + aj.ch.titre + " (A venir, " + fmtJ(addJIso(aj.ch.dateDebut, dj)) + " -> " + fmtJ(addJIso(aj.ch.dateFin, dj)) + (nbA ? ", " + nbA + " bande(s) machine" : "") + ") - complete ensuite sa fiche (metrage, prix, client)");
+          });
+          if (!lignesCf.length) { alert("Aucune modification simulee a appliquer."); return; }
+          if (!confirm("APPLIQUER LA SIMULATION AU PLANNING REEL " + anneeOptSim + " ?\n\n" + lignesCf.join("\n")
+            + "\n\nCes ecritures modifient le Calendrier et le Planning engins REELS. La simulation sera remise a zero ensuite.")) return;
+
+          (async function() {
+            var ok = 0, erreurs = [];
+            var cesVues = {}; // bandes deja reecrites (decalage), pour ne pas re-swapper
+            // a. Chantiers decales : dates + periodes + TOUTES leurs bandes
+            for (var iD = 0; iD < decals.length; iD++) {
+              var d = decals[iD];
+              try {
+                var patchCh = { date_debut: addJIso(d.c.dateDebut, d.decJ), date_fin: addJIso(d.c.dateFin, d.decJ) };
+                if (Array.isArray(d.c.periodes) && d.c.periodes.length) {
+                  patchCh.periodes = d.c.periodes.map(function(pe) {
+                    return Object.assign({}, pe, { debut: addJIso(pe.debut, d.decJ), fin: addJIso(pe.fin, d.decJ) });
+                  });
+                }
+                var rCh = await supabase.from("chantiers").update(patchCh).eq("id", d.c.id).select().single();
+                if (rCh.error) throw new Error(rCh.error.message);
+                if (ctx.setDbChantiers) ctx.setDbChantiers(function(prev) { return (prev || []).map(function(x) { return x.id === d.c.id ? chantierFromDb(rCh.data) : x; }); });
+                ok++;
+                var bandes = cesReelles.filter(function(x) { return String(x.chantierId) === String(d.c.id); });
+                for (var iB = 0; iB < bandes.length; iB++) {
+                  var ceB = bandes[iB];
+                  cesVues[String(ceB.id)] = 1;
+                  var nCe = Object.assign({}, ceB, { dateDebut: addJIso(ceB.dateDebut, d.decJ), dateFin: addJIso(ceB.dateFin, d.decJ) });
+                  if (simSwap[ceB.id] != null && String(simSwap[ceB.id]) !== String(ceB.equipementId)) nCe.equipementId = simSwap[ceB.id];
+                  try { await ctx.updateChantierEquipement(ceB.id, nCe); ok++; }
+                  catch (eB) { erreurs.push("bande " + d.c.titre + " : " + (eB && eB.message || eB)); }
+                }
+              } catch (eD) { erreurs.push("decalage " + d.c.titre + " : " + (eD && eD.message || eD)); }
+            }
+            // b. Echanges de machines sur chantiers NON decales
+            for (var iS = 0; iS < swaps.length; iS++) {
+              var s = swaps[iS];
+              if (cesVues[String(s.ce.id)]) continue;
+              try { await ctx.updateChantierEquipement(s.ce.id, Object.assign({}, s.ce, { equipementId: s.eqId })); ok++; }
+              catch (eS) { erreurs.push("echange machine : " + (eS && eS.message || eS)); }
+            }
+            // c. Affectations simulees sur chantiers reels
+            for (var iA = 0; iA < affsReelles.length; iA++) {
+              var sa = affsReelles[iA];
+              var djA = decParCh[String(sa.chId)] || 0;
+              try {
+                await ctx.addChantierEquipement({ chantierId: sa.chId, equipementId: simSwap[sa.id] != null ? simSwap[sa.id] : sa.eqId, dateDebut: addJIso(sa.dateDebut, djA), dateFin: addJIso(sa.dateFin, djA) });
+                ok++;
+              } catch (eA) { erreurs.push("affectation : " + (eA && eA.message || eA)); }
+            }
+            // d. Chantiers hypothetiques -> chantiers reels "A venir" + bandes
+            for (var iJ = 0; iJ < simAjouts.length; iJ++) {
+              var aj = simAjouts[iJ];
+              var djJ = decParCh[String(aj.ch.id)] || 0;
+              try {
+                // Convention lieu=site : site = TITRE en MAJUSCULES (fiche a completer)
+                var rNew = await supabase.from("chantiers").insert({
+                  titre: String(aj.ch.titre || "").trim(),
+                  client: null,
+                  site: String(aj.ch.titre || "").trim().toUpperCase(),
+                  date_debut: addJIso(aj.ch.dateDebut, djJ),
+                  date_fin: addJIso(aj.ch.dateFin, djJ),
+                  statut: "A venir",
+                  metrage: 0
+                }).select().single();
+                if (rNew.error) throw new Error(rNew.error.message);
+                if (ctx.setDbChantiers) ctx.setDbChantiers(function(prev) { return (prev || []).concat(chantierFromDb(rNew.data)); });
+                ok++;
+                var affsAj = simAffs.filter(function(sa2) { return String(sa2.chId) === String(aj.ch.id); });
+                for (var iK = 0; iK < affsAj.length; iK++) {
+                  var sa2 = affsAj[iK];
+                  try {
+                    await ctx.addChantierEquipement({ chantierId: rNew.data.id, equipementId: simSwap[sa2.id] != null ? simSwap[sa2.id] : sa2.eqId, dateDebut: addJIso(sa2.dateDebut, djJ), dateFin: addJIso(sa2.dateFin, djJ) });
+                    ok++;
+                  } catch (eK) { erreurs.push("bande " + aj.ch.titre + " : " + (eK && eK.message || eK)); }
+                }
+              } catch (eJ) { erreurs.push("creation " + aj.ch.titre + " : " + (eJ && eJ.message || eJ)); }
+            }
+            if (erreurs.length) {
+              setSimMsg("Application PARTIELLE : " + ok + " ecriture(s) OK, " + erreurs.length + " echec(s). La simulation est CONSERVEE pour reessayer. Détail : " + erreurs.join(" | "));
+              alert("Application partielle (" + erreurs.length + " echec(s)) :\n\n" + erreurs.join("\n") + "\n\nLa simulation est conservee - corrige puis reessaie.");
+              return;
+            }
+            // Tout est passe : la simulation devient le planning reel -> remise a zero
+            setSimDec({}); setSimSwap({}); setSimAffs([]); setSimAjouts([]);
+            setSimMsg("Simulation APPLIQUEE au planning reel (" + ok + " ecriture(s)). Le Calendrier et le Planning engins " + anneeOptSim + " sont a jour.");
+            if (ctx.showToast) ctx.showToast("Simulation appliquee au planning reel (" + ok + " ecritures)", "success");
+          })();
+        }
         function lancerIA() {
           propsOpt.forEach(function(p) { p.decalSem = 0; });
           optimiserPool("standard", capStandard);
@@ -11274,6 +11416,11 @@
                 h("b", { style: { color: "#a5b4fc", minWidth: 46 } }, tolSemOpt + " sem."),
                 h("button", { onClick: ouvrirAjoutSim, title: "Ajouter un chantier HYPOTHETIQUE a la simulation (rien en base)", style: { padding: "7px 14px", border: "1px solid rgba(34,197,94,0.45)", borderRadius: 8, background: "rgba(34,197,94,0.12)", color: "#86efac", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "+ Ajouter un chantier"),
                 h("button", { onClick: lancerIA, style: { padding: "7px 14px", border: "none", borderRadius: 8, background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Caler automatiquement (IA)"),
+                (Object.keys(simDec).length || Object.keys(simSwap).length || simAjouts.length || simAffs.length) ? h("button", {
+                  onClick: appliquerSimulation,
+                  title: "Ecrit la simulation dans le planning REEL : chantiers decales (dates + bandes machines), machines echangees, affectations posees, chantiers simules crees en A venir. Confirmation detaillee avant toute ecriture.",
+                  style: { padding: "7px 14px", border: "none", borderRadius: 8, background: "linear-gradient(135deg, #059669 0%, #10b981 100%)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 700 }
+                }, "Appliquer au planning reel") : null,
                 h("button", { onClick: reinitialiserSim, style: { padding: "7px 14px", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 8, background: "rgba(255,255,255,0.06)", color: "#e4e4e7", cursor: "pointer", fontSize: 12, fontWeight: 700 } }, "Reinitialiser")
               )
             ),
