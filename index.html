@@ -34012,7 +34012,11 @@
       // Filtres
       var _horizon = useState("90"); var horizon = _horizon[0]; var setHorizon = _horizon[1];
       var _equipFilter = useState("all"); var equipFilter = _equipFilter[0]; var setEquipFilter = _equipFilter[1];
-      var _vue = useState("par-piece"); var vue = _vue[0]; var setVue = _vue[1]; // "par-piece" | "par-machine"
+      var _vue = useState("par-piece"); var vue = _vue[0]; var setVue = _vue[1]; // "par-piece" | "par-machine" | "conso-forage"
+      // ── Consommables forage (usure au metrage) ──
+      var _margeConso = useState(20); var margeConso = _margeConso[0]; var setMargeConso = _margeConso[1];
+      var _delaiConso = useState(6); var delaiConso = _delaiConso[0]; var setDelaiConso = _delaiConso[1];
+      var _consoOuverte = useState(null); var consoOuverte = _consoOuverte[0]; var setConsoOuverte = _consoOuverte[1];
 
       var today = new Date();
       var horizonDate = new Date(today.getTime() + parseInt(horizon, 10) * 86400000);
@@ -34232,6 +34236,92 @@
       }());
 
       // Onglets de vue
+      // ═══ CONSOMMABLES FORAGE (2026-10-07) : taux d'usure mesure sur les
+      // rapports sondeurs (consommables_perdus / metrage, 6 mois glissants,
+      // par machine) x metrage previsionnel du planning (cadence objectif)
+      // -> besoin sur l'horizon, couverture du stock, quantites a commander.
+      var consoForage = (function() {
+        var normLib = function(s) {
+          var t = String(s || "").toUpperCase();
+          try { t = t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (eN) {}
+          return t.replace(/[^A-Z0-9]+/g, " ").trim();
+        };
+        var now0 = new Date(); now0.setHours(0, 0, 0, 0);
+        var fenDeb = new Date(now0.getTime() - 182 * 86400000);
+        var fenDebIso = fenDeb.getFullYear() + "-" + String(fenDeb.getMonth() + 1).padStart(2, "0") + "-" + String(fenDeb.getDate()).padStart(2, "0");
+        var metresFen = 0, nbRapFen = 0;
+        var metresParMachine = {};
+        var agg = {};
+        (ctx.dbRapportsForage || []).forEach(function(r) {
+          var d = String(r.date_rapport || "").substring(0, 10);
+          if (!d || d < fenDebIso) return;
+          var m = parseFloat(r.total_metres) || 0;
+          var mach = String(r.sondeuse_code || "?").toUpperCase();
+          metresFen += m;
+          nbRapFen++;
+          metresParMachine[mach] = (metresParMachine[mach] || 0) + m;
+          (Array.isArray(r.consommables_perdus) ? r.consommables_perdus : []).forEach(function(it) {
+            var lib = normLib(it && (it.designation || it.label || it.nom));
+            if (!lib || lib === "EAU") return; // l'eau n'est pas un stock a commander
+            var q = parseFloat(it && (it.quantite != null ? it.quantite : it.qte));
+            if (isNaN(q) || q <= 0) q = 1;
+            if (!agg[lib]) agg[lib] = { lib: lib, qty: 0, parMachine: {} };
+            agg[lib].qty += q;
+            agg[lib].parMachine[mach] = (agg[lib].parMachine[mach] || 0) + q;
+          });
+        });
+        // Metrage PREVISIONNEL sur l'horizon : cadence objectif de chaque
+        // chantier actif x ses jours ouvres Lun-Jeu dans l'horizon
+        var finH = new Date(now0.getTime() + parseInt(horizon, 10) * 86400000);
+        var mPrev = 0;
+        (ctx.dbChantiers || []).forEach(function(c) {
+          if (!c || c.statut === "Termine" || c.statut === "Annule") return;
+          var cad = computeCadenceObjectifChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
+          if (!(cad > 0)) return; // la fonction renvoie un NOMBRE (m/jour ouvre), pas un objet
+          var d1 = c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00") : null;
+          var d2 = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00") : null;
+          if (!d1 || !d2 || isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
+          var deb = d1 > now0 ? d1 : now0;
+          var finC = d2 < finH ? d2 : finH;
+          var cur = new Date(deb.getTime()); var sfty = 0;
+          while (cur <= finC && sfty < 400) {
+            var dw = cur.getDay();
+            if (dw >= 1 && dw <= 4) mPrev += cad;
+            cur.setDate(cur.getDate() + 1);
+            sfty++;
+          }
+        });
+        mPrev = Math.round(mPrev);
+        var nbSemH = Math.max(1, parseInt(horizon, 10) / 7);
+        var mSem = mPrev / nbSemH;
+        var lignes = Object.keys(agg).map(function(k) {
+          var a = agg[k];
+          // Rattachement au catalogue Pieces par designation normalisee
+          // (egalite ou inclusion dans un sens ou l'autre)
+          var piece = null;
+          for (var iP = 0; iP < pieces.length; iP++) {
+            var dn = normLib(pieces[iP].Designation || pieces[iP].Reference);
+            if (dn && (dn === a.lib || dn.indexOf(a.lib) >= 0 || a.lib.indexOf(dn) >= 0)) { piece = pieces[iP]; break; }
+          }
+          var taux = metresFen > 0 ? (a.qty / metresFen * 1000) : 0;
+          var besoin = taux * mPrev / 1000;
+          var besoinMarge = besoin * (1 + margeConso / 100);
+          var stock = piece ? (parseFloat(piece.Stock) || 0) : null;
+          var prixU = piece ? (parseFloat(piece.PrixUnitaire) || 0) : 0;
+          var aCmd = Math.max(0, Math.ceil(besoinMarge - (stock != null ? stock : 0)));
+          var couvM = (stock != null && taux > 0) ? (stock / taux * 1000) : null;
+          var couvSem = (couvM != null && mSem > 0) ? (couvM / mSem) : null;
+          return { lib: a.lib, qty: a.qty, parMachine: a.parMachine, taux: taux, besoin: besoin, besoinMarge: besoinMarge, piece: piece, stock: stock, prixU: prixU, aCmd: aCmd, couvM: couvM, couvSem: couvSem };
+        }).filter(function(l) { return l.qty >= 2 || l.besoin >= 1; })
+          .sort(function(a, b) { return b.qty - a.qty; });
+        var totalCmd = 0, nbRupt = 0;
+        lignes.forEach(function(l) {
+          totalCmd += l.aCmd * l.prixU;
+          if (l.couvSem != null && l.couvSem < delaiConso) nbRupt++;
+        });
+        return { lignes: lignes, metresFen: Math.round(metresFen), nbRapFen: nbRapFen, mPrev: mPrev, mSem: mSem, totalCmd: totalCmd, nbRupt: nbRupt };
+      })();
+
       function vueTabBtn(key, label, icon, count) {
         var active = vue === key;
         return h("button", { onClick: function() { setVue(key); },
@@ -34284,9 +34374,85 @@
         // Onglets de vue (Par piece / Par machine)
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" } },
           vueTabBtn("par-piece", "Par piece", "package", besoins.length),
-          vueTabBtn("par-machine", "Par machine", "truck", besoinsParMachine.length)
+          vueTabBtn("par-machine", "Par machine", "truck", besoinsParMachine.length),
+          vueTabBtn("conso-forage", "Consommables forage", "layers", consoForage.lignes.length)
         ),
 
+        // ─ VUE CONSOMMABLES FORAGE (usure au metrage) ─
+        vue === "conso-forage" ? h("div", null,
+          h("div", { style: Object.assign({}, sectionStyle, { padding: "14px 18px", marginBottom: 14, display: "flex", gap: 26, flexWrap: "wrap", alignItems: "center" }) },
+            h("div", null,
+              h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 6 } }, "Marge de securite : ", h("span", { style: { color: "#c7d2fe" } }, margeConso + " %")),
+              h("input", { type: "range", min: 0, max: 50, step: 5, value: margeConso, onChange: function(e) { setMargeConso(parseInt(e.target.value)); }, style: { width: 170, accentColor: "#818cf8" } })),
+            h("div", null,
+              h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 6 } }, "Delai fournisseur : ", h("span", { style: { color: "#c7d2fe" } }, delaiConso + " sem")),
+              h("input", { type: "range", min: 2, max: 12, step: 1, value: delaiConso, onChange: function(e) { setDelaiConso(parseInt(e.target.value)); }, style: { width: 170, accentColor: "#818cf8" } })),
+            h("div", { style: { fontSize: 11.5, color: "#71717a", maxWidth: 420 } },
+              "Usure mesuree sur ", h("b", { style: { color: "#cbd5e1" } }, consoForage.nbRapFen + " rapports / " + consoForage.metresFen.toLocaleString("fr-FR") + " m"), " (6 mois glissants). Metrage prevu = cadences objectif des chantiers actifs sur l'horizon choisi en haut de page.")
+          ),
+          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 } },
+            h("div", { style: Object.assign({}, sectionStyle, { flex: 1, minWidth: 190, padding: "13px 15px" }) },
+              h("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "#a1a1aa", marginBottom: 5 } }, "Metrage prevu sur l'horizon"),
+              h("div", { style: { fontSize: 20, fontWeight: 800 } }, consoForage.mPrev.toLocaleString("fr-FR") + " m")),
+            h("div", { style: Object.assign({}, sectionStyle, { flex: 1, minWidth: 190, padding: "13px 15px" }) },
+              h("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "#a1a1aa", marginBottom: 5 } }, "Total a commander"),
+              h("div", { style: { fontSize: 20, fontWeight: 800, color: "#fde68a" } }, Math.round(consoForage.totalCmd).toLocaleString("fr-FR") + " F")),
+            h("div", { style: Object.assign({}, sectionStyle, { flex: 1, minWidth: 190, padding: "13px 15px" }) },
+              h("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "#a1a1aa", marginBottom: 5 } }, "Rupture avant livraison"),
+              h("div", { style: { fontSize: 20, fontWeight: 800, color: consoForage.nbRupt > 0 ? "#fda4af" : "#86efac" } }, consoForage.nbRupt + " ref."))
+          ),
+          consoForage.lignes.length === 0 ?
+            h("div", { style: Object.assign({}, sectionStyle, { padding: 60, textAlign: "center", color: "#71717a" }) },
+              h(Icon, { name: "layers", size: 48, color: "rgba(255,255,255,0.18)" }),
+              h("div", { style: { marginTop: 12, fontSize: 14, fontWeight: 600 } }, "Aucun consommable mesure"),
+              h("div", { style: { marginTop: 4, fontSize: 12 } }, "Les sondeurs n'ont pas saisi de consommables perdus sur les 6 derniers mois.")) :
+          h("div", { style: Object.assign({}, sectionStyle, { padding: 0, overflow: "hidden" }) },
+            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+              h("thead", null, h("tr", null,
+                ["Consommable", "Taux /1000 m", "Besoin horizon", "Stock", "Couverture", "A commander", "Statut", "Cout estime"].map(function(t, ti) {
+                  return h("th", { key: ti, style: { textAlign: ti === 0 || ti === 6 ? "left" : "right", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.7, color: "#a1a1aa", borderBottom: "1px solid rgba(129,140,248,0.4)", padding: "9px 10px", fontWeight: 800 } }, t);
+                }))),
+              h("tbody", null, consoForage.lignes.map(function(l, li) {
+                var statut, coul, fond;
+                if (l.stock == null) { statut = "A rapprocher au catalogue"; coul = "#a1a1aa"; fond = "rgba(255,255,255,0.06)"; }
+                else if (l.couvSem != null && l.couvSem < delaiConso) { statut = "URGENT - rupture avant livraison"; coul = "#fda4af"; fond = "rgba(244,63,94,0.14)"; }
+                else if (l.aCmd > 0) { statut = "A commander"; coul = "#fde68a"; fond = "rgba(245,158,11,0.12)"; }
+                else { statut = "Stock OK"; coul = "#86efac"; fond = "rgba(34,197,94,0.12)"; }
+                var cellR = { padding: "9px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", textAlign: "right", color: "#cbd5e1" };
+                var lignesTr = [h("tr", { key: "c" + li, onClick: function() { setConsoOuverte(consoOuverte === li ? null : li); }, style: { cursor: "pointer" },
+                    onMouseEnter: function(ev) { ev.currentTarget.style.background = "rgba(99,102,241,0.07)"; },
+                    onMouseLeave: function(ev) { ev.currentTarget.style.background = "transparent"; } },
+                  h("td", { style: { padding: "9px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", fontWeight: 700, color: "#fafafa" } }, l.lib, l.piece ? h("span", { style: { fontSize: 10, color: "#71717a", marginLeft: 8 } }, "(" + (l.piece.Reference || l.piece.Designation) + ")") : null),
+                  h("td", { style: cellR }, l.taux.toFixed(2)),
+                  h("td", { style: cellR }, h("b", { style: { color: "#fafafa" } }, String(Math.ceil(l.besoin))), h("span", { style: { color: "#71717a" } }, " (+" + margeConso + "% = " + Math.ceil(l.besoinMarge) + ")")),
+                  h("td", { style: cellR }, l.stock != null ? l.stock : "-"),
+                  h("td", { style: cellR }, l.couvM != null ? Math.round(l.couvM).toLocaleString("fr-FR") + " m" + (l.couvSem != null ? " (" + l.couvSem.toFixed(1) + " sem)" : "") : "-"),
+                  h("td", { style: Object.assign({}, cellR, { fontWeight: 800, color: l.aCmd > 0 ? "#fde68a" : "#86efac" }) }, String(l.aCmd)),
+                  h("td", { style: { padding: "9px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" } },
+                    h("span", { style: { display: "inline-block", padding: "3px 10px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: fond, color: coul, whiteSpace: "nowrap" } }, statut)),
+                  h("td", { style: cellR }, l.aCmd > 0 && l.prixU > 0 ? Math.round(l.aCmd * l.prixU).toLocaleString("fr-FR") + " F" : "-")
+                )];
+                if (consoOuverte === li) {
+                  var machs = Object.keys(l.parMachine).sort();
+                  var maxQ = 1;
+                  machs.forEach(function(mc) { if (l.parMachine[mc] > maxQ) maxQ = l.parMachine[mc]; });
+                  lignesTr.push(h("tr", { key: "d" + li }, h("td", { colSpan: 8, style: { background: "rgba(0,0,0,0.25)", padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.05)" } },
+                    h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a5b4fc", marginBottom: 7 } }, "Consommation par machine (6 derniers mois)"),
+                    machs.map(function(mc, mi2) {
+                      return h("div", { key: mi2, style: { display: "flex", alignItems: "center", gap: 8, margin: "3px 0", fontSize: 12 } },
+                        h("span", { style: { width: 42, fontWeight: 800, color: "#c7d2fe" } }, mc),
+                        h("span", { style: { display: "inline-block", height: 9, borderRadius: 3, background: "linear-gradient(135deg,#6366f1,#818cf8)", width: Math.max(6, Math.round(l.parMachine[mc] / maxQ * 160)) } }),
+                        h("span", { style: { color: "#a1a1aa" } }, l.parMachine[mc] + " piece" + (l.parMachine[mc] > 1 ? "s" : "")));
+                    }),
+                    h("div", { style: { marginTop: 8, color: "#71717a", fontSize: 11.5 } },
+                      "Calcul : " + l.taux.toFixed(2) + " /1000 m x " + consoForage.mPrev.toLocaleString("fr-FR") + " m prevus = " + Math.ceil(l.besoin) + " pieces, +" + margeConso + "% marge" + (l.stock != null ? ", - " + l.stock + " en stock" : "") + " -> " + l.aCmd + " a commander." + (l.stock == null ? " Aucune fiche piece rattachee : cree la piece au catalogue (ou renomme-la comme le libelle sondeur) pour suivre le stock." : ""))
+                  )));
+                }
+                return lignesTr;
+              }))
+            )
+          )
+        ) :
         // ─ VUE PAR MACHINE ─
         vue === "par-machine" ? (
           besoinsParMachine.length === 0 ?
