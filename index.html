@@ -34017,6 +34017,7 @@
       var _margeConso = useState(20); var margeConso = _margeConso[0]; var setMargeConso = _margeConso[1];
       var _delaiConso = useState(6); var delaiConso = _delaiConso[0]; var setDelaiConso = _delaiConso[1];
       var _consoOuverte = useState(null); var consoOuverte = _consoOuverte[0]; var setConsoOuverte = _consoOuverte[1];
+      var _chExcluConso = useState({}); var chExcluConso = _chExcluConso[0]; var setChExcluConso = _chExcluConso[1];
 
       var today = new Date();
       var horizonDate = new Date(today.getTime() + parseInt(horizon, 10) * 86400000);
@@ -34271,9 +34272,10 @@
           });
         });
         // Metrage PREVISIONNEL sur l'horizon : cadence objectif de chaque
-        // chantier actif x ses jours ouvres Lun-Jeu dans l'horizon
+        // chantier (En cours ET A venir) x ses jours ouvres Lun-Jeu dans
+        // l'horizon, en respectant les coupures (chantier.periodes).
         var finH = new Date(now0.getTime() + parseInt(horizon, 10) * 86400000);
-        var mPrev = 0;
+        var parChantier = [];
         (ctx.dbChantiers || []).forEach(function(c) {
           if (!c || c.statut === "Termine" || c.statut === "Annule") return;
           var cad = computeCadenceObjectifChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
@@ -34283,15 +34285,20 @@
           if (!d1 || !d2 || isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
           var deb = d1 > now0 ? d1 : now0;
           var finC = d2 < finH ? d2 : finH;
+          var mCh = 0;
           var cur = new Date(deb.getTime()); var sfty = 0;
           while (cur <= finC && sfty < 400) {
             var dw = cur.getDay();
-            if (dw >= 1 && dw <= 4) mPrev += cad;
+            if (dw >= 1 && dw <= 4 && chantierEnPeriode(c, cur.getTime())) mCh += cad;
             cur.setDate(cur.getDate() + 1);
             sfty++;
           }
+          if (!(mCh > 0)) return;
+          parChantier.push({ id: c.id, titre: c.titre || c.site || ("Chantier " + c.id), statut: c.statut, m: Math.round(mCh) });
         });
-        mPrev = Math.round(mPrev);
+        parChantier.sort(function(a, b) { return b.m - a.m; });
+        var mPrev = 0;
+        parChantier.forEach(function(pc) { if (!chExcluConso[pc.id]) mPrev += pc.m; });
         var nbSemH = Math.max(1, parseInt(horizon, 10) / 7);
         var mSem = mPrev / nbSemH;
         var lignes = Object.keys(agg).map(function(k) {
@@ -34319,7 +34326,7 @@
           totalCmd += l.aCmd * l.prixU;
           if (l.couvSem != null && l.couvSem < delaiConso) nbRupt++;
         });
-        return { lignes: lignes, metresFen: Math.round(metresFen), nbRapFen: nbRapFen, mPrev: mPrev, mSem: mSem, totalCmd: totalCmd, nbRupt: nbRupt };
+        return { lignes: lignes, metresFen: Math.round(metresFen), nbRapFen: nbRapFen, mPrev: mPrev, mSem: mSem, totalCmd: totalCmd, nbRupt: nbRupt, parChantier: parChantier };
       })();
 
       function vueTabBtn(key, label, icon, count) {
@@ -34388,7 +34395,35 @@
               h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 6 } }, "Delai fournisseur : ", h("span", { style: { color: "#c7d2fe" } }, delaiConso + " sem")),
               h("input", { type: "range", min: 2, max: 12, step: 1, value: delaiConso, onChange: function(e) { setDelaiConso(parseInt(e.target.value)); }, style: { width: 170, accentColor: "#818cf8" } })),
             h("div", { style: { fontSize: 11.5, color: "#71717a", maxWidth: 420 } },
-              "Usure mesuree sur ", h("b", { style: { color: "#cbd5e1" } }, consoForage.nbRapFen + " rapports / " + consoForage.metresFen.toLocaleString("fr-FR") + " m"), " (6 mois glissants). Metrage prevu = cadences objectif des chantiers actifs sur l'horizon choisi en haut de page.")
+              "Usure mesuree sur ", h("b", { style: { color: "#cbd5e1" } }, consoForage.nbRapFen + " rapports / " + consoForage.metresFen.toLocaleString("fr-FR") + " m"), " (6 mois glissants). Metrage prevu = cadences objectif des chantiers En cours et A venir (coupures respectees) sur l'horizon choisi en haut de page. Decoche un chantier ci-dessous pour le sortir de la prevision.")
+          ),
+          h("div", { style: Object.assign({}, sectionStyle, { padding: "12px 16px", marginBottom: 14 }) },
+            h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", marginBottom: 9 } },
+              "Chantiers dans la prevision (" + consoForage.parChantier.filter(function(pc) { return !chExcluConso[pc.id]; }).length + "/" + consoForage.parChantier.length + ")"),
+            consoForage.parChantier.length === 0 ?
+              h("div", { style: { fontSize: 12, color: "#71717a" } }, "Aucun chantier En cours ou A venir avec un metrage restant et une date de fin sur l'horizon.") :
+              h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                consoForage.parChantier.map(function(pc) {
+                  var exclu = !!chExcluConso[pc.id];
+                  return h("button", { key: pc.id,
+                    onClick: function() {
+                      var nx = Object.assign({}, chExcluConso);
+                      if (exclu) delete nx[pc.id]; else nx[pc.id] = true;
+                      setChExcluConso(nx);
+                    },
+                    title: exclu ? "Cliquer pour reintegrer ce chantier dans la prevision" : "Cliquer pour exclure ce chantier de la prevision",
+                    style: { display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                      background: exclu ? "rgba(255,255,255,0.03)" : "rgba(129,140,248,0.14)",
+                      color: exclu ? "#52525b" : "#c7d2fe",
+                      border: "1px solid " + (exclu ? "rgba(255,255,255,0.07)" : "rgba(129,140,248,0.45)"),
+                      textDecoration: exclu ? "line-through" : "none" } },
+                    h(Icon, { name: exclu ? "circle" : "check-circle", size: 12, color: exclu ? "#52525b" : "#a5b4fc" }),
+                    pc.titre,
+                    h("span", { style: { fontSize: 10.5, fontWeight: 800, color: exclu ? "#3f3f46" : "#818cf8" } }, pc.m.toLocaleString("fr-FR") + " m"),
+                    pc.statut === "A venir" ? h("span", { style: { fontSize: 9, fontWeight: 800, padding: "1px 6px", borderRadius: 999, background: "rgba(148,163,184,0.18)", color: "#94a3b8" } }, "A VENIR") : null
+                  );
+                })
+              )
           ),
           h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 } },
             h("div", { style: Object.assign({}, sectionStyle, { flex: 1, minWidth: 190, padding: "13px 15px" }) },
