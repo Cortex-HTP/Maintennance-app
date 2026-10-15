@@ -38326,7 +38326,7 @@
             fetchAllRows(function() { return supabase.from("interventions").select("*").order("date_intervention", { ascending: false }).order("id"); }),
             fetchAllRows(function() { return supabase.from("releves_horametre").select("*").order("date_releve", { ascending: false }).order("id"); }),
             fetchAllRows(function() { return supabase.from("pieces_equipements").select("*").order("id"); }),
-            supabase.from("parametres").select("*").order("ordre"),
+            fetchAllRows(function() { return supabase.from("parametres").select("*").order("ordre").order("id"); }),
             supabase.from("chantiers").select("*").order("titre"),
             fetchAllRows(function() { return supabase.from("saisies_metrage").select("*").order("id"); }),
             supabase.from("declarations").select("*").order("date_debut_periode"),
@@ -38684,7 +38684,7 @@
           },
           charges_fixes: function() { supabase.from("charges_fixes").select("*").order("categorie").order("libelle").then(res => { if (res.data) setDbChargesFixes(res.data); }); },
           emprunts: function() { supabase.from("emprunts").select("*").then(res => { if (res.data) setDbEmprunts(res.data); }); },
-          parametres: function() { supabase.from("parametres").select("*").then(res => { if (res.data) setParametres(res.data); }); },
+          parametres: function() { fetchAllRows(function() { return supabase.from("parametres").select("*").order("ordre").order("id"); }).then(res => { if (res.data && !res.error) setParametres(res.data); }); },
           interventions: function() {
             fetchAllRows(function() { return supabase.from("interventions").select("*").order("date_intervention", { ascending: false }).order("id"); }).then(res => {
               if (res.data && !res.error) setInterventions(res.data.map(r => interventionFromDb({ ...r, _equipement_code: eqCodeByIdRef.current[r.equipement_id] })));
@@ -39471,13 +39471,25 @@
       }, [session, isAdmin]);
 
       // ─── Systeme de validation ──────────────────────────────────────
-      const PENDING_KEY = "pending_validations";
+      const PENDING_KEY = "pending_validations";   // ANCIEN format : liste agregee (une seule ligne JSON)
+      const PENDING_ITEM_KEY = "pending_item";       // NOUVEAU format : une ligne parametres PAR soumission
       const VALIDATION_LOG_KEY = "validation_log";
 
       function loadPending() {
+        var out = [];
+        // Ancien format (liste agregee) : lu tant qu'il reste des soumissions
+        // anterieures a la migration dedans
         var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
-        if (row && row.valeur) { try { return JSON.parse(row.valeur); } catch(e) {} }
-        return [];
+        if (row && row.valeur) { try { (JSON.parse(row.valeur) || []).forEach(function(it) { out.push(it); }); } catch(e) {} }
+        // Nouveau format : une ligne par soumission. Un ajout est un INSERT :
+        // deux sessions ne peuvent plus s'ecraser mutuellement la file (perte
+        // vecue : interventions D16/D26/D30 de Jeremy disparues, 2026-10).
+        parametres.forEach(function(p) {
+          if (p.categorie !== PENDING_ITEM_KEY || !p.valeur) return;
+          try { var it = JSON.parse(p.valeur); it._rowId = p.id; out.push(it); } catch(e) {}
+        });
+        out.sort(function(a, b) { return String(a.submittedAt || "").localeCompare(String(b.submittedAt || "")); });
+        return out;
       }
       function loadValidationLog() {
         var row = parametres.find(function(p) { return p.categorie === VALIDATION_LOG_KEY; });
@@ -39491,14 +39503,47 @@
       // Sync pending from parametres
       useEffect(function() { setPendingValidationsRaw(loadPending()); setValidationLogRaw(loadValidationLog()); }, [parametres]);
 
-      function savePendingToDb(newList) {
+      function saveLegacyPending(fullList) {
+        // Reecrit la ligne agregee ANCIEN format avec les seuls items legacy
+        // restants (les items nouveau format vivent dans leurs propres lignes)
         var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
-        var jsonVal = JSON.stringify(newList);
-        if (row) {
-          supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) { if (!res.error) row.valeur = jsonVal; });
+        if (!row) return;
+        var jsonVal = JSON.stringify(fullList.filter(function(x) { return !x._rowId; }));
+        supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) { if (!res.error) row.valeur = jsonVal; });
+      }
+      function removePendingStored(item, newList) {
+        if (item && item._rowId) {
+          supabase.from("parametres").delete().eq("id", item._rowId).then(function(res) {
+            if (!res.error) {
+              var ix = parametres.findIndex(function(p) { return p.id === item._rowId; });
+              if (ix >= 0) parametres.splice(ix, 1);
+            }
+          });
         } else {
-          supabase.from("parametres").insert({ categorie: PENDING_KEY, valeur: jsonVal, ordre: 0 }).select().single().then(function(res) { if (!res.error) parametres.push(res.data); });
+          saveLegacyPending(newList);
         }
+      }
+      function legacyAppendPending(item) {
+        // Repli si l'INSERT d'une ligne est refuse (ex. RLS) : on RELIT la liste
+        // agregee en base (pas la copie locale, qui peut etre perimee) avant d'y
+        // ajouter la soumission, pour reduire la fenetre d'ecrasement.
+        supabase.from("parametres").select("id,valeur").eq("categorie", PENDING_KEY).then(function(res) {
+          var row = res.data && res.data[0];
+          var list = [];
+          if (row && row.valeur) { try { list = JSON.parse(row.valeur) || []; } catch(e) {} }
+          list = list.concat(item);
+          var jsonVal = JSON.stringify(list);
+          var p2 = row
+            ? supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id)
+            : supabase.from("parametres").insert({ categorie: PENDING_KEY, valeur: jsonVal, ordre: 0 });
+          p2.then(function(r2) {
+            if (r2.error) { showToast("Soumission NON enregistree : " + r2.error.message, "error"); return; }
+            var rowLocal = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
+            if (rowLocal) rowLocal.valeur = jsonVal;
+            setPendingValidationsRaw(function(prev) { return prev.concat(item); });
+            showToast("Soumission envoyee pour validation", "info");
+          });
+        });
       }
       function saveLogToDb(newLog) {
         var row = parametres.find(function(p) { return p.categorie === VALIDATION_LOG_KEY; });
@@ -39512,10 +39557,12 @@
 
       function addPendingItem(action, entity, data, originalData) {
         var item = { id: Date.now(), action: action, entity: entity, data: data, originalData: originalData || null, submittedBy: userEmail, submittedAt: new Date().toISOString(), status: "pending" };
-        var newList = pendingValidations.concat(item);
-        setPendingValidationsRaw(newList);
-        savePendingToDb(newList);
-        showToast("Soumission envoyee pour validation", "info");
+        supabase.from("parametres").insert({ categorie: PENDING_ITEM_KEY, valeur: JSON.stringify(item), ordre: 0 }).select().single().then(function(res) {
+          if (res.error || !res.data) { legacyAppendPending(item); return; }
+          parametres.push(res.data);
+          setPendingValidationsRaw(function(prev) { return prev.concat(Object.assign({}, item, { _rowId: res.data.id })); });
+          showToast("Soumission envoyee pour validation", "info");
+        });
       }
 
       function approvePending(pid) {
@@ -39538,7 +39585,7 @@
         if (promise) promise.then(function() {
           var newList = pendingValidations.filter(function(x) { return x.id !== pid; });
           setPendingValidationsRaw(newList);
-          savePendingToDb(newList);
+          removePendingStored(item, newList);
           var newLog = [{ id: Date.now(), action: item.action, entity: item.entity, summary: item.data.Title || item.data.Reference || "", submittedBy: item.submittedBy, decidedAt: new Date().toISOString(), decision: "approved" }].concat(validationLog);
           setValidationLogRaw(newLog);
           saveLogToDb(newLog);
@@ -39551,7 +39598,7 @@
         if (!item) return;
         var newList = pendingValidations.filter(function(x) { return x.id !== pid; });
         setPendingValidationsRaw(newList);
-        savePendingToDb(newList);
+        removePendingStored(item, newList);
         var newLog = [{ id: Date.now(), action: item.action, entity: item.entity, summary: item.data.Title || item.data.Reference || "", submittedBy: item.submittedBy, decidedAt: new Date().toISOString(), decision: "rejected", reason: reason || "" }].concat(validationLog);
         setValidationLogRaw(newLog);
         saveLogToDb(newLog);
@@ -39559,16 +39606,29 @@
       }
 
       function updatePendingItem(pid, newData) {
-        var newList = pendingValidations.map(function(x) { return x.id === pid ? Object.assign({}, x, { data: newData }) : x; });
+        var item = pendingValidations.find(function(x) { return x.id === pid; });
+        if (!item) return;
+        var updated = Object.assign({}, item, { data: newData });
+        var newList = pendingValidations.map(function(x) { return x.id === pid ? updated : x; });
         setPendingValidationsRaw(newList);
-        savePendingToDb(newList);
+        if (item._rowId) {
+          var stored = Object.assign({}, updated); delete stored._rowId;
+          var jsonVal = JSON.stringify(stored);
+          supabase.from("parametres").update({ valeur: jsonVal }).eq("id", item._rowId).then(function(res) {
+            if (!res.error) { var rowP = parametres.find(function(p) { return p.id === item._rowId; }); if (rowP) rowP.valeur = jsonVal; }
+          });
+        } else {
+          saveLegacyPending(newList);
+        }
         showToast("Soumission mise a jour");
       }
 
       function deletePendingItem(pid) {
+        var item = pendingValidations.find(function(x) { return x.id === pid; });
+        if (!item) return;
         var newList = pendingValidations.filter(function(x) { return x.id !== pid; });
         setPendingValidationsRaw(newList);
-        savePendingToDb(newList);
+        removePendingStored(item, newList);
         showToast("Soumission supprimee");
       }
 
