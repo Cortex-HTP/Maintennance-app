@@ -39078,7 +39078,16 @@
       // CRUD : Interventions
       const addIntervention = async (item) => {
         const payload = interventionToDb(item, eqIdByCode);
-        const { data, error } = await supabase.from("interventions").insert(payload).select().single();
+        let { data, error } = await supabase.from("interventions").insert(payload).select().single();
+        if (error && payload.demande_id != null && String(error.message || "").indexOf("interventions_demande") >= 0) {
+          // La demande d'origine a ete supprimee entre l'affichage et le clic
+          // (FK ON DELETE SET NULL cote base, mais l'UI avait encore l'id) :
+          // on cree quand meme l'intervention, sans lien vers la demande disparue.
+          payload.demande_id = null;
+          const retryIns = await supabase.from("interventions").insert(payload).select().single();
+          data = retryIns.data; error = retryIns.error;
+          if (!error) showToast("La demande d'origine n'existe plus : intervention creee sans lien avec la demande", "error");
+        }
         if (error) { showToast(error.message, "error"); throw error; }
         // Enregistre le createur (best-effort : n'echoue pas si la colonne cree_par n'existe pas encore)
         var _creePar = session && session.user ? session.user.email : "";
@@ -39093,7 +39102,15 @@
       };
       const updateIntervention = async (item) => {
         const payload = interventionToDb(item, eqIdByCode);
-        const { data, error } = await supabase.from("interventions").update(payload).eq("id", item.Id).select().single();
+        let { data, error } = await supabase.from("interventions").update(payload).eq("id", item.Id).select().single();
+        if (error && payload.demande_id != null && String(error.message || "").indexOf("interventions_demande") >= 0) {
+          // La demande liee a cette intervention a ete supprimee : la base a mis
+          // demande_id a null (ON DELETE SET NULL) mais l'UI repoussait l'ancien id.
+          payload.demande_id = null;
+          const retryUpd = await supabase.from("interventions").update(payload).eq("id", item.Id).select().single();
+          data = retryUpd.data; error = retryUpd.error;
+          if (!error) showToast("La demande d'origine de cette intervention n'existe plus : lien demande retire", "error");
+        }
         if (error) { showToast(error.message, "error"); throw error; }
         const eqCodeById = {}; equipements.forEach((e) => { eqCodeById[e.Id] = e.Title; });
         setInterventions((p) => p.map((x) => (x.Id === item.Id ? interventionFromDb({ ...data, _equipement_code: eqCodeById[data.equipement_id] }) : x)));
