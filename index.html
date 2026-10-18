@@ -39477,17 +39477,30 @@
 
       function loadPending() {
         var out = [];
-        // Ancien format (liste agregee) : lu tant qu'il reste des soumissions
-        // anterieures a la migration dedans
-        var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
-        if (row && row.valeur) { try { (JSON.parse(row.valeur) || []).forEach(function(it) { out.push(it); }); } catch(e) {} }
-        // Nouveau format : une ligne par soumission. Un ajout est un INSERT :
-        // deux sessions ne peuvent plus s'ecraser mutuellement la file (perte
-        // vecue : interventions D16/D26/D30 de Jeremy disparues, 2026-10).
+        var vus = {};
+        // Nouveau format d'abord : une ligne par soumission. Un ajout est un
+        // INSERT : deux sessions ne peuvent plus s'ecraser mutuellement la file
+        // (perte vecue : interventions D16/D03 de Jeremy disparues, 2026-10).
         parametres.forEach(function(p) {
           if (p.categorie !== PENDING_ITEM_KEY || !p.valeur) return;
-          try { var it = JSON.parse(p.valeur); it._rowId = p.id; out.push(it); } catch(e) {}
+          try {
+            var it = JSON.parse(p.valeur); it._rowId = p.id;
+            var k = String(it.id);
+            if (vus[k]) return; // doublon (migration concurrente) : on n'affiche qu'un
+            vus[k] = 1; out.push(it);
+          } catch(e) {}
         });
+        // Ancien format (liste agregee) : lu tant que la migration n'a pas tourne
+        var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
+        if (row && row.valeur) {
+          try {
+            (JSON.parse(row.valeur) || []).forEach(function(it) {
+              var k = String(it.id);
+              if (vus[k]) return;
+              vus[k] = 1; out.push(it);
+            });
+          } catch(e) {}
+        }
         out.sort(function(a, b) { return String(a.submittedAt || "").localeCompare(String(b.submittedAt || "")); });
         return out;
       }
@@ -39503,13 +39516,52 @@
       // Sync pending from parametres
       useEffect(function() { setPendingValidationsRaw(loadPending()); setValidationLogRaw(loadValidationLog()); }, [parametres]);
 
-      function saveLegacyPending(fullList) {
-        // Reecrit la ligne agregee ANCIEN format avec les seuls items legacy
-        // restants (les items nouveau format vivent dans leurs propres lignes)
+      // ── Migration : bascule les soumissions de l'ANCIEN format (liste agregee,
+      // ecrasable par une page concurrente) vers une ligne par soumission, puis
+      // vide l'agregat. Relit la base juste avant pour ne pas migrer une copie
+      // perimee ; les doublons eventuels (2 pages qui migrent) sont dedupliques
+      // par loadPending via item.id.
+      var _migPendingFaite = React.useRef(false);
+      useEffect(function() {
+        if (_migPendingFaite.current) return;
         var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
-        if (!row) return;
-        var jsonVal = JSON.stringify(fullList.filter(function(x) { return !x._rowId; }));
-        supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(res) { if (!res.error) row.valeur = jsonVal; });
+        if (!row || !row.valeur) return;
+        var apercu = [];
+        try { apercu = JSON.parse(row.valeur) || []; } catch(e) {}
+        if (apercu.length === 0) return;
+        _migPendingFaite.current = true;
+        supabase.from("parametres").select("id,valeur").eq("id", row.id).then(function(res) {
+          var frais = res.data && res.data[0];
+          var items = [];
+          if (frais && frais.valeur) { try { items = JSON.parse(frais.valeur) || []; } catch(e) {} }
+          if (items.length === 0) return;
+          var inserts = items.map(function(it) { return { categorie: PENDING_ITEM_KEY, valeur: JSON.stringify(it), ordre: 0 }; });
+          supabase.from("parametres").insert(inserts).select().then(function(rIns) {
+            if (rIns.error || !rIns.data || rIns.data.length !== inserts.length) return; // on laisse l'agregat intact
+            rIns.data.forEach(function(d) { parametres.push(d); });
+            supabase.from("parametres").update({ valeur: "[]" }).eq("id", row.id).then(function(rUp) {
+              if (!rUp.error) { row.valeur = "[]"; setPendingValidationsRaw(loadPending()); }
+            });
+          });
+        });
+      }, [parametres]);
+
+      function mutateLegacyPending(fnListe) {
+        // Toute operation sur l'ancien format RELIT la liste en base et n'y
+        // applique qu'une transformation ciblee : plus jamais d'ecriture d'une
+        // copie locale entiere (cause de la perte des soumissions D16/D03).
+        supabase.from("parametres").select("id,valeur").eq("categorie", PENDING_KEY).then(function(res) {
+          var row = res.data && res.data[0];
+          if (!row) return;
+          var list = [];
+          if (row.valeur) { try { list = JSON.parse(row.valeur) || []; } catch(e) {} }
+          var jsonVal = JSON.stringify(fnListe(list));
+          supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).then(function(r2) {
+            if (r2.error) return;
+            var rowLocal = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
+            if (rowLocal) rowLocal.valeur = jsonVal;
+          });
+        });
       }
       function removePendingStored(item, newList) {
         if (item && item._rowId) {
@@ -39519,8 +39571,8 @@
               if (ix >= 0) parametres.splice(ix, 1);
             }
           });
-        } else {
-          saveLegacyPending(newList);
+        } else if (item) {
+          mutateLegacyPending(function(list) { return list.filter(function(x) { return x.id !== item.id; }); });
         }
       }
       function legacyAppendPending(item) {
@@ -39618,7 +39670,7 @@
             if (!res.error) { var rowP = parametres.find(function(p) { return p.id === item._rowId; }); if (rowP) rowP.valeur = jsonVal; }
           });
         } else {
-          saveLegacyPending(newList);
+          mutateLegacyPending(function(list) { return list.map(function(x) { return x.id === item.id ? updated : x; }); });
         }
         showToast("Soumission mise a jour");
       }
