@@ -31183,6 +31183,16 @@
           if (champ === "attente") l.attente = r2(val);
           else if (champ === "metrage") l.metrage = r1(val);
           else if (champ === "heures") l.heures = r2(val);
+          else if (champ === "activite") {
+            // Arbitrage d'UN libelle (ex. DEPLACEMENT) : miroir du serveur
+            var lib0 = String((a && a.libelle) || "").trim();
+            if (!lib0) return;
+            var atts = Object.assign({}, l.attentes || {});
+            var libK = atts[lib0] != null ? lib0 : (Object.keys(atts).find(function(k2) { return k2.toUpperCase() === lib0.toUpperCase(); }) || lib0);
+            if (val > 0) atts[libK] = r2(val); else delete atts[libK];
+            l.attentes = atts;
+            l.attente = r2(Object.keys(atts).reduce(function(s2, k2) { return s2 + (parseFloat(atts[k2]) || 0); }, 0));
+          }
           else return;
           l.arbitre = true;
           applique++;
@@ -31425,23 +31435,26 @@
       var arbitrerCorrection = function(v, cor) {
         // Un AJOUT DE PASSE = des METRES (audit C2 : il partait sur le champ
         // attente -> des metres factures comme des heures).
-        var champA = cor.champ === "passe" || cor.champ === "metrage" ? "metrage" : cor.champ === "heures" ? "heures" : "attente";
+        var champA = cor.champ === "passe" || cor.champ === "metrage" ? "metrage" : cor.champ === "heures" ? "heures" : cor.champ === "activite" ? "activite" : "attente";
         if (cor.champ === "passe") { alert("Un ajout de passe s'arbitre via le champ Metrage : saisis le nouveau metrage TOTAL de la journee."); }
         var defVal = cor.champ === "passe" ? "" : String(cor.apres != null ? cor.apres : "");
         var saisie = window.prompt(
           "ARBITRAGE : appliquer la valeur directement sur le RELEVE (le rapport n'est pas modifie).\n\n"
-          + "Jour " + fmtDArb(cor.date) + " - " + (champA === "metrage" ? "metrage (m)" : champA === "heures" ? "heures machine (h)" : "heures facturables / attente (h)")
+          + "Jour " + fmtDArb(cor.date) + " - " + (champA === "metrage" ? "metrage (m)" : champA === "heures" ? "heures machine (h)" : champA === "activite" ? ("heures " + (cor.libelle || "activite") + " (h)") : "heures facturables / attente (h)")
           + "\nDemande client : " + (cor.avant != null ? cor.avant + " -> " : "") + cor.apres + (cor.commentaire ? " (" + cor.commentaire + ")" : "")
           + "\n\nValeur a inscrire sur le releve (decimale, ex 1.5) :", defVal);
         if (saisie === null) return;
         var valN = parseFloat(String(saisie).replace(",", "."));
         if (isNaN(valN) || valN < 0) { alert("Valeur invalide"); return; }
-        posterArbitrage(v, { action: "set", date: String(cor.date).substring(0, 10), champ: champA, valeur: valN, motif: String(cor.commentaire || "arbitrage") },
-          "Arbitrage enregistre - renvoie le releve pour que le client recoive la version ajustee");
+        var pArb = { action: "set", date: String(cor.date).substring(0, 10), champ: champA, valeur: valN, motif: String(cor.commentaire || "arbitrage") };
+        if (champA === "activite") pArb.libelle = String(cor.libelle || "");
+        posterArbitrage(v, pArb, "Arbitrage enregistre - renvoie le releve pour que le client recoive la version ajustee");
       };
       var retirerArbitrage = function(v, a) {
-        if (!confirm("Retirer l'arbitrage du " + fmtDArb(a.date) + " (" + a.champ + ") ? Le releve repartira des rapports.")) return;
-        posterArbitrage(v, { action: "remove", date: String(a.date).substring(0, 10), champ: a.champ }, "Arbitrage retire");
+        if (!confirm("Retirer l'arbitrage du " + fmtDArb(a.date) + " (" + (a.champ === "activite" ? (a.libelle || "activite") : a.champ) + ") ? Le releve repartira des rapports.")) return;
+        var pRem = { action: "remove", date: String(a.date).substring(0, 10), champ: a.champ };
+        if (a.champ === "activite") pRem.libelle = String(a.libelle || "");
+        posterArbitrage(v, pRem, "Arbitrage retire");
       };
       // ── Renvoi d'un rapport CORRIGE au client ──
       // Apres modification d'un rapport par l'admin : si la journee fait l'objet
@@ -31733,7 +31746,8 @@
                   var estPasse = cor.champ === "passe";
                   var estM = cor.champ === "metrage";
                   var estH = cor.champ === "heures";
-                  var lblCh = estM ? "Metrage" : estH ? "Heures" : estPasse ? "Ajout de passe" : "Attente";
+                  var estAct = cor.champ === "activite";
+                  var lblCh = estM ? "Metrage" : estH ? "Heures" : estPasse ? "Ajout de passe" : estAct ? (cor.libelle || "Activite") : "Attente";
                   var corKey = String(v.id) + "|" + ci;
                   var ouvert = corDetail === corKey;
                   // Valeurs avant/apres : affichees en h+minutes (ou m) plutot
@@ -31832,7 +31846,7 @@
                   var valAff = a.champ === "metrage" ? ((parseFloat(a.valeur) || 0).toLocaleString("fr-FR") + " m") : fmtHeuresMin(a.valeur);
                   var modifiable = statut === "brouillon" || statut === "envoye" || statut === "refuse";
                   return h("div", { key: "arb-" + ai, style: { borderLeft: "3px solid #8b5cf6", background: "rgba(139,92,246,0.08)", padding: "6px 12px", margin: "3px 0", borderRadius: "0 6px 6px 0", fontSize: 12, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" } },
-                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#c4b5fd", whiteSpace: "nowrap" } }, "Arbitrage - " + (a.champ === "metrage" ? "Metrage" : a.champ === "heures" ? "Heures" : "Attente") + " du " + fmtD(a.date)),
+                    h("span", { style: { fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#c4b5fd", whiteSpace: "nowrap" } }, "Arbitrage - " + (a.champ === "metrage" ? "Metrage" : a.champ === "heures" ? "Heures" : a.champ === "activite" ? (a.libelle || "Activite") : "Attente") + " du " + fmtD(a.date)),
                     h("span", { style: { fontWeight: 800, color: "#ddd6fe" } }, valAff),
                     a.motif ? h("span", { style: { fontStyle: "italic", color: "#a1a1aa" } }, "\u00ab " + a.motif + " \u00bb") : null,
                     h("span", { style: { fontSize: 10.5, color: "#71717a" } }, "inscrit sur le releve - le rapport n'est pas modifie"),
