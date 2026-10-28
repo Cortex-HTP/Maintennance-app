@@ -35158,6 +35158,56 @@
           KpiTile({ icon: "pen-tool", accent: "#06b6d4", label: "Signatures en attente", value: pendingSignatures, hint: "documents en cours de signature" })
         ) : null,
 
+        // ── Recap "Reste a signer" : QUI doit signer QUOI, en un coup d'oeil.
+        // RH : groupe par employe, clic = ouvre son coffre. Employe : ses docs.
+        (function() {
+          var pendingDocs = (docs || []).filter(function(d) { return d.status === "pending_signature"; });
+          if (loading || pendingDocs.length === 0) return null;
+          var parEmp = {};
+          pendingDocs.forEach(function(d) {
+            var k = String(d.personnel_code || "?");
+            if (!parEmp[k]) parEmp[k] = [];
+            parEmp[k].push(d);
+          });
+          var fmtDepot = function(iso) {
+            var s2 = String(iso || "").substring(0, 10).split("-");
+            return s2.length === 3 ? s2[2] + "/" + s2[1] + "/" + s2[0] : "";
+          };
+          return h("div", { style: Object.assign({}, sectionStyle, { padding: "14px 16px", marginBottom: 16, borderColor: "rgba(6,182,212,0.35)", background: "linear-gradient(135deg, rgba(6,182,212,0.10), rgba(36,40,60,0.85))" }) },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+              h(Icon, { name: "pen-tool", size: 15, color: "#67e8f9" }),
+              h("span", { style: { fontSize: 13, fontWeight: 800, color: "#67e8f9" } },
+                isRH ? ("Reste a signer : " + pendingDocs.length + " document" + (pendingDocs.length > 1 ? "s" : "") + " chez " + Object.keys(parEmp).length + " employe" + (Object.keys(parEmp).length > 1 ? "s" : ""))
+                     : ("Tu as " + pendingDocs.length + " document" + (pendingDocs.length > 1 ? "s" : "") + " a signer"))
+            ),
+            Object.keys(parEmp).sort().map(function(code) {
+              var p = personnelList.find(function(x) { return x.code === code; });
+              var nomE = p ? ((p.prenom || "") + " " + (p.nom || "")).trim() : code;
+              var actifE = p ? (isActiveEmploye(p, nowRH) || isFuturEmploye(p, nowRH)) : true;
+              var initE = p ? (((p.prenom || "?")[0] + (p.nom || "?")[0]).toUpperCase()) : "?";
+              return h("div", { key: "sig-" + code,
+                onClick: isRH ? function() { setSelectedCode(code); setViewEx(!actifE); setSearch(""); } : null,
+                title: isRH ? "Ouvrir le coffre de " + nomE : null,
+                onMouseEnter: isRH ? function(ev) { ev.currentTarget.style.background = "rgba(6,182,212,0.10)"; } : null,
+                onMouseLeave: isRH ? function(ev) { ev.currentTarget.style.background = "transparent"; } : null,
+                style: { display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 10px", borderRadius: 8, cursor: isRH ? "pointer" : "default", transition: "background 0.15s" } },
+                isRH ? h("div", { style: { width: 30, height: 30, borderRadius: "50%", background: "linear-gradient(135deg, #06b6d4, #0891b2)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: "white", flexShrink: 0 } }, initE) : null,
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  isRH ? h("div", { style: { fontSize: 12.5, fontWeight: 700, color: "#fafafa" } }, nomE, !actifE ? h("span", { style: { marginLeft: 6, fontSize: 9.5, fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "rgba(244,63,94,0.15)", color: "#fda4af" } }, "ancien") : null) : null,
+                  h("div", { style: { fontSize: 11.5, color: "#cbd5e1", lineHeight: 1.6 } },
+                    parEmp[code].map(function(d, iD) {
+                      return h("span", { key: iD },
+                        iD > 0 ? " · " : null,
+                        h("b", { style: { color: "#a5f3fc" } }, getRhDocTypeInfo(d.type_document).label),
+                        " (" + (d.nom_fichier || "?") + (d.uploaded_at ? ", depose le " + fmtDepot(d.uploaded_at) : "") + ")");
+                    }))
+                ),
+                isRH ? h(Icon, { name: "chevron-right", size: 14, color: "#67e8f9" }) : null
+              );
+            })
+          );
+        })(),
+
         loading ? h("div", { style: { padding: 60, textAlign: "center", color: "#a1a1aa" } }, "Chargement des documents...") :
         h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: isRH ? "320px 1fr" : "1fr", gap: 16 } },
           // Sidebar employes (RH seulement)
