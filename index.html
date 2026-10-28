@@ -27233,6 +27233,40 @@
       );
     }
 
+    // Resynchronise l'ID de chaque membre d'equipe depuis son NOM. Dans
+    // l'editeur admin, renommer un membre changeait le libelle mais PAS
+    // l'identite : les heures/primes partaient chez l'ancien (vecu 2026-10 :
+    // POUYA renomme en RICHARD GOA les 21-22/10 -> planning credite a POUYA).
+    // Nom connu au personnel -> id = code de la fiche ; nom inconnu alors que
+    // l'id pointe une fiche d'un AUTRE nom -> id retire (membre libre).
+    function syncEquipeIdsDepuisNoms(equipe, personnelMap) {
+      var normN = function(s) { return String(s || "").trim().toUpperCase().replace(/\s+/g, " "); };
+      var codeParNom = {};
+      Object.keys(personnelMap || {}).forEach(function(k) {
+        var p = personnelMap[k];
+        if (!p || p._legacy || !p.code) return;
+        var nc = normN((p.prenom || "") + " " + (p.nom || ""));
+        if (nc) codeParNom[nc] = p.code;
+        var ni = normN((p.nom || "") + " " + (p.prenom || ""));
+        if (ni) codeParNom[ni] = p.code;
+      });
+      return (Array.isArray(equipe) ? equipe : []).map(function(mb) {
+        if (!mb || !mb.nom) return mb;
+        var nmU = normN(mb.nom);
+        var out = Object.assign({}, mb);
+        var code = codeParNom[nmU];
+        if (code) { out.id = code; return out; }
+        if (out.id) {
+          var fiche = (personnelMap || {})[String(strToBigintMA(out.id))];
+          if (fiche) {
+            var fnom = normN((fiche.prenom || "") + " " + (fiche.nom || ""));
+            var fnomInv = normN((fiche.nom || "") + " " + (fiche.prenom || ""));
+            if (fnom && nmU !== fnom && nmU !== fnomInv) delete out.id;
+          }
+        }
+        return out;
+      });
+    }
     function RapportEditView({ rapport, personnelMap, dbChantiers, equipements, pieces, piecesEquipements, onClose, onSaved, showToast, correctionsClient, correctionsValidataire }) {
       // Types dynamiques : lus depuis parametres (categories rf_types_sondage / rf_types_activite)
       var _parametres = useAppData().parametres || [];
@@ -27372,7 +27406,7 @@
           quart: form.quart || null,
           remarques: form.remarques || null,
           controles_ok: !!form.controles_ok,
-          equipe: form.equipe || [],
+          equipe: syncEquipeIdsDepuisNoms(form.equipe || [], personnelMap),
           // _diffClient = annotation d'affichage uniquement, jamais persistee
           sondages: (form.sondages || []).map(function(sd) { var c2 = Object.assign({}, sd); delete c2._diffClient; return c2; }),
           activites: form.activites || [],
