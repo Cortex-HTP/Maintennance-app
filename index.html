@@ -27240,28 +27240,52 @@
     // Nom connu au personnel -> id = code de la fiche ; nom inconnu alors que
     // l'id pointe une fiche d'un AUTRE nom -> id retire (membre libre).
     function syncEquipeIdsDepuisNoms(equipe, personnelMap) {
-      var normN = function(s) { return String(s || "").trim().toUpperCase().replace(/\s+/g, " "); };
+      // Hash LOCAL (strToBigintMA vit dans un autre composant : son absence
+      // ici plantait l'enregistrement du rapport - audit 2026-10-30 C1)
+      var hashCode = function(s) {
+        if (typeof s === "number") return s;
+        if (/^\d+$/.test(String(s))) return parseInt(s, 10);
+        var hh = 0; var str = String(s);
+        for (var i = 0; i < str.length; i++) hh = (hh * 31 + str.charCodeAt(i)) & 0x7fffffff;
+        return hh || 1;
+      };
+      var normN = function(s) {
+        var t = String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
+        try { t = t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (eN) {}
+        return t;
+      };
+      var ficheDe = function(id) { return (personnelMap || {})[String(hashCode(id))] || (personnelMap || {})[String(id)]; };
+      var nomsDeFiche = function(p) {
+        return [normN((p.prenom || "") + " " + (p.nom || "")), normN((p.nom || "") + " " + (p.prenom || ""))];
+      };
+      // Formes INVERSEES d'abord, formes directes ensuite : en cas de collision
+      // (homonymes croises), la forme directe gagne
       var codeParNom = {};
-      Object.keys(personnelMap || {}).forEach(function(k) {
-        var p = personnelMap[k];
-        if (!p || p._legacy || !p.code) return;
-        var nc = normN((p.prenom || "") + " " + (p.nom || ""));
-        if (nc) codeParNom[nc] = p.code;
-        var ni = normN((p.nom || "") + " " + (p.prenom || ""));
-        if (ni) codeParNom[ni] = p.code;
+      var passes = [1, 0];
+      passes.forEach(function(direct) {
+        Object.keys(personnelMap || {}).forEach(function(k) {
+          var p = personnelMap[k];
+          if (!p || p._legacy || !p.code) return;
+          var nmP = direct ? normN((p.prenom || "") + " " + (p.nom || "")) : normN((p.nom || "") + " " + (p.prenom || ""));
+          if (nmP) codeParNom[nmP] = p.code;
+        });
       });
       return (Array.isArray(equipe) ? equipe : []).map(function(mb) {
         if (!mb || !mb.nom) return mb;
         var nmU = normN(mb.nom);
         var out = Object.assign({}, mb);
+        // L'id actuel colle deja au nom ? on ne touche a rien (homonymes :
+        // pas de bascule arbitraire vers une autre fiche du meme nom)
+        if (out.id) {
+          var ficheCour = ficheDe(out.id);
+          if (ficheCour && nomsDeFiche(ficheCour).indexOf(nmU) >= 0) return out;
+        }
         var code = codeParNom[nmU];
         if (code) { out.id = code; return out; }
         if (out.id) {
-          var fiche = (personnelMap || {})[String(strToBigintMA(out.id))];
-          if (fiche) {
-            var fnom = normN((fiche.prenom || "") + " " + (fiche.nom || ""));
-            var fnomInv = normN((fiche.nom || "") + " " + (fiche.prenom || ""));
-            if (fnom && nmU !== fnom && nmU !== fnomInv) delete out.id;
+          var fiche = ficheDe(out.id);
+          if (fiche && !fiche._legacy) {
+            if (nomsDeFiche(fiche).indexOf(nmU) < 0) delete out.id; // fausse identite
           }
         }
         return out;
@@ -36775,6 +36799,15 @@
       var filRef = React.useRef(null);
       var msgsRef = React.useRef([]); msgsRef.current = msgs;
       var canalRef = React.useRef(null); canalRef.current = canal;
+      var openRef = React.useRef(false); openRef.current = open;
+      var vueRef = React.useRef("liste"); vueRef.current = vue;
+      var bootRef = React.useRef(0);
+      var fusionnerMsgs = function(prev, nouveaux) {
+        var vus = {};
+        prev.forEach(function(m) { vus[m.id] = 1; });
+        var ajouts = (nouveaux || []).filter(function(m) { return !vus[m.id]; });
+        return ajouts.length ? prev.concat(ajouts) : prev;
+      };
 
       var lastReads = function() {
         try { return JSON.parse(localStorage.getItem("wl_admin_chat_lastread") || "{}") || {}; } catch (e) { return {}; }
@@ -36820,18 +36853,22 @@
         var chB;
         try {
           chB = supabase.channel("emp-live", { config: { broadcast: { self: false } } })
-            .on("broadcast", { event: "msg" }, function(p) {
-              var c2 = p && p.payload ? p.payload.canal : null;
-              if (c2 && c2 === canalRef.current) {
+            .on("broadcast", { event: "msg" }, function() {
+              // Signal anonyme : on ne marque LU que si le fil est reellement
+              // sous les yeux de l'admin (panneau ouvert + vue fil)
+              if (openRef.current && vueRef.current === "fil" && canalRef.current) {
+                var c2 = canalRef.current;
                 var der = msgsRef.current.length ? msgsRef.current[msgsRef.current.length - 1].id : 0;
                 api("GET", "action=messages&canal=" + encodeURIComponent(c2) + (der ? "&depuis=" + der : "")).then(function(d) {
+                  if (c2 !== canalRef.current) return;
                   if ((d.messages || []).length) {
-                    setMsgs(function(prev) { return prev.concat(d.messages); });
+                    setMsgs(function(prev) { return fusionnerMsgs(prev, d.messages); });
                     setLastRead(c2, d.messages[d.messages.length - 1].id);
                   }
                 }).catch(function() {});
               } else {
-                rafraichirBoot();
+                var nowB = Date.now();
+                if (nowB - bootRef.current > 5000) { bootRef.current = nowB; rafraichirBoot(); }
               }
             })
             .subscribe();
@@ -36843,10 +36880,12 @@
         if (!open || vue !== "fil" || !canal) return;
         var t = setInterval(function() {
           var der = msgsRef.current.length ? msgsRef.current[msgsRef.current.length - 1].id : 0;
-          api("GET", "action=messages&canal=" + encodeURIComponent(canalRef.current) + (der ? "&depuis=" + der : "")).then(function(d) {
+          var cPoll = canalRef.current;
+          api("GET", "action=messages&canal=" + encodeURIComponent(cPoll) + (der ? "&depuis=" + der : "")).then(function(d) {
+            if (cPoll !== canalRef.current || !openRef.current || vueRef.current !== "fil") return;
             if ((d.messages || []).length) {
-              setMsgs(function(prev) { return prev.concat(d.messages); });
-              setLastRead(canalRef.current, d.messages[d.messages.length - 1].id);
+              setMsgs(function(prev) { return fusionnerMsgs(prev, d.messages); });
+              setLastRead(cPoll, d.messages[d.messages.length - 1].id);
             }
           }).catch(function() {});
         }, 15000);
@@ -36873,18 +36912,29 @@
         }
         setCanal(c); setVue("fil"); setMsgs([]);
         api("GET", "action=messages&canal=" + encodeURIComponent(c)).then(function(d) {
+          if (c !== canalRef.current) return; // conversation changee entre-temps
           setMsgs(d.messages || []);
           if ((d.messages || []).length) setLastRead(c, d.messages[d.messages.length - 1].id);
-        }).catch(function(e) { setErrC(String(e.message || e)); });
+        }).catch(function(e) { if (c === canalRef.current) setErrC(String(e.message || e)); });
       };
       var envoyer = function() {
         var txt = String(texte || "").trim();
         if (!txt && !photo) return;
-        api("POST", null, { action: "envoyer", canal: canal, texte: txt, photo_base64: photo }).then(function(d) {
-          if (d.canal && d.canal !== canal) { setCanal(d.canal); }
-          if (d.message) { setMsgs(function(prev) { return prev.concat([d.message]); }); setLastRead(d.canal || canal, d.message.id); }
+        var cEnvoi = canal;
+        api("POST", null, { action: "envoyer", canal: cEnvoi, texte: txt, photo_base64: photo }).then(function(d) {
+          if (d.canal && String(cEnvoi).indexOf("avec:") === 0 && canalRef.current === cEnvoi) { setCanal(d.canal); }
+          if (d.message && (canalRef.current === cEnvoi || canalRef.current === d.canal)) {
+            setMsgs(function(prev) { return fusionnerMsgs(prev, [d.message]); });
+            setLastRead(d.canal || cEnvoi, d.message.id);
+          }
           setTexte(""); setPhoto(null);
         }).catch(function(e) { alert("Envoi impossible : " + (e.message || e)); });
+      };
+      var chargerPhoto = function(id) {
+        api("GET", "action=photo&id=" + encodeURIComponent(id)).then(function(d) {
+          if (!d.photo_base64 || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(d.photo_base64)) return;
+          setMsgs(function(prev) { return prev.map(function(x) { return x.id === id ? Object.assign({}, x, { photo_base64: d.photo_base64 }) : x; }); });
+        }).catch(function(e) { alert("Photo indisponible : " + (e.message || e)); });
       };
       var supprimer = function(m) {
         if (!confirm("Supprimer ce message de " + (m.auteur_nom || "?") + " ? Il restera visible comme \u00ab supprime \u00bb.")) return;
@@ -36967,10 +37017,11 @@
                   h("div", { style: { fontSize: 9.5, color: "#a1a1aa", padding: "0 4px", textAlign: moi ? "right" : "left" } }, (m.auteur_nom || "") + " \u00b7 " + hh),
                   m.supprime
                     ? h("div", { style: { background: "rgba(255,255,255,0.03)", border: "1px dashed rgba(255,255,255,0.15)", padding: "6px 10px", borderRadius: 11, fontSize: 11.5, fontStyle: "italic", color: "#71717a" } }, "Message supprime")
-                    : h("div", { style: { background: moi ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: moi ? "none" : "1px solid rgba(255,255,255,0.07)", padding: "7px 11px", borderRadius: moi ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: moi ? "#fff" : "#e8e8ed", wordBreak: "break-word" } },
+                    : h("div", { style: { background: moi ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: moi ? "none" : "1px solid rgba(255,255,255,0.07)", padding: "7px 11px", borderRadius: moi ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: moi ? "#fff" : "#e8e8ed", wordBreak: "break-word", whiteSpace: "pre-wrap" } },
                         m.texte || "",
-                        m.photo_base64 ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) : null),
-                  !m.supprime && ctx.isAdmin ? h("div", { onClick: function() { supprimer(m); }, style: { fontSize: 9.5, color: "#fda4af", cursor: "pointer", padding: "2px 4px", textAlign: moi ? "right" : "left" } }, "Supprimer") : null
+                        m.photo_base64 ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) :
+                        m.photo ? h("button", { onClick: function() { chargerPhoto(m.id); }, style: { display: "block", marginTop: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.2)", color: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "Afficher la photo") : null),
+                  !m.supprime && boot && boot.moi && boot.moi.estAdmin ? h("div", { onClick: function() { supprimer(m); }, style: { fontSize: 9.5, color: "#fda4af", cursor: "pointer", padding: "2px 4px", textAlign: moi ? "right" : "left" } }, "Supprimer") : null
                 )
               );
             })
@@ -39845,15 +39896,19 @@
         // Nouveau format d'abord : une ligne par soumission. Un ajout est un
         // INSERT : deux sessions ne peuvent plus s'ecraser mutuellement la file
         // (perte vecue : interventions D16/D03 de Jeremy disparues, 2026-10).
+        var rowsParItem = {};
         parametres.forEach(function(p) {
           if (p.categorie !== PENDING_ITEM_KEY || !p.valeur) return;
           try {
             var it = JSON.parse(p.valeur); it._rowId = p.id;
             var k = String(it.id);
+            if (!rowsParItem[k]) rowsParItem[k] = [];
+            rowsParItem[k].push(p.id);
             if (vus[k]) return; // doublon (migration concurrente) : on n'affiche qu'un
             vus[k] = 1; out.push(it);
           } catch(e) {}
         });
+        out.forEach(function(it) { if (it._rowId) it._rowIds = rowsParItem[String(it.id)] || [it._rowId]; });
         // Ancien format (liste agregee) : lu tant que la migration n'a pas tourne
         var row = parametres.find(function(p) { return p.categorie === PENDING_KEY; });
         if (row && row.valeur) {
@@ -39903,7 +39958,10 @@
           supabase.from("parametres").insert(inserts).select().then(function(rIns) {
             if (rIns.error || !rIns.data || rIns.data.length !== inserts.length) return; // on laisse l'agregat intact
             rIns.data.forEach(function(d) { parametres.push(d); });
-            supabase.from("parametres").update({ valeur: "[]" }).eq("id", row.id).then(function(rUp) {
+            // Verrou optimiste : on ne vide l'agregat QUE s'il n'a pas bouge
+            // depuis la lecture (sinon on ecraserait une soumission arrivee
+            // entre-temps - meme famille que la perte D16/D03)
+            supabase.from("parametres").update({ valeur: "[]" }).eq("id", row.id).eq("valeur", frais.valeur).then(function(rUp) {
               if (!rUp.error) { row.valeur = "[]"; setPendingValidationsRaw(loadPending()); }
             });
           });
@@ -39928,16 +39986,19 @@
         });
       }
       function removePendingStored(item, newList) {
-        if (item && item._rowId) {
-          supabase.from("parametres").delete().eq("id", item._rowId).then(function(res) {
-            if (!res.error) {
-              var ix = parametres.findIndex(function(p) { return p.id === item._rowId; });
-              if (ix >= 0) parametres.splice(ix, 1);
+        if (!item) return;
+        var rowIds = item._rowIds || (item._rowId ? [item._rowId] : []);
+        if (rowIds.length) {
+          supabase.from("parametres").delete().in("id", rowIds).then(function(res) {
+            if (res.error) { showToast("Suppression de la soumission non enregistree : " + res.error.message, "error"); return; }
+            for (var ri = parametres.length - 1; ri >= 0; ri--) {
+              if (rowIds.indexOf(parametres[ri].id) >= 0) parametres.splice(ri, 1);
             }
           });
-        } else if (item) {
-          mutateLegacyPending(function(list) { return list.filter(function(x) { return x.id !== item.id; }); });
         }
+        // La meme soumission peut aussi trainer dans l'ancien format (vieille
+        // page qui reecrit sa copie) : on l'y retire PAR ID, par relecture base
+        mutateLegacyPending(function(list) { return list.filter(function(x) { return x.id !== item.id; }); });
       }
       function legacyAppendPending(item) {
         // Repli si l'INSERT d'une ligne est refuse (ex. RLS) : on RELIT la liste
@@ -39981,9 +40042,12 @@
         });
       }
 
+      var _approbationsEnCours = {};
       function approvePending(pid) {
+        if (_approbationsEnCours[pid]) return; // double clic = double creation
         var item = pendingValidations.find(function(x) { return x.id === pid; });
         if (!item) return;
+        _approbationsEnCours[pid] = true;
         var promise;
         if (item.entity === "equipement") {
           if (item.action === "add") promise = addEquipement(item.data);
@@ -40001,15 +40065,16 @@
           if (item.action === "add") promise = addPiece(item.data);
           else if (item.action === "update") promise = updatePiece(item.data);
         }
-        if (promise) promise.then(function() {
-          var newList = pendingValidations.filter(function(x) { return x.id !== pid; });
-          setPendingValidationsRaw(newList);
-          removePendingStored(item, newList);
+        if (!promise) { delete _approbationsEnCours[pid]; return; }
+        promise.then(function() {
+          delete _approbationsEnCours[pid];
+          setPendingValidationsRaw(function(prev) { return prev.filter(function(x) { return x.id !== pid; }); });
+          removePendingStored(item, null);
           var newLog = [{ id: Date.now(), action: item.action, entity: item.entity, summary: item.data.Title || item.data.Reference || "", submittedBy: item.submittedBy, submittedAt: item.submittedAt || null, decidedAt: new Date().toISOString(), decision: "approved" }].concat(validationLog);
           setValidationLogRaw(newLog);
           saveLogToDb(newLog);
           showToast("Modification approuvee");
-        }).catch(function() {});
+        }).catch(function() { delete _approbationsEnCours[pid]; });
       }
 
       function rejectPending(pid, reason) {
