@@ -36796,7 +36796,9 @@
       var _photo = useState(null); var photo = _photo[0]; var setPhoto = _photo[1];
       var _err = useState(""); var errC = _err[0]; var setErrC = _err[1];
       var _badge = useState(0); var badge = _badge[0]; var setBadge = _badge[1];
+      var _pends = useState([]); var pends = _pends[0]; var setPends = _pends[1];
       var filRef = React.useRef(null);
+      var envoiRef = React.useRef(false);
       var msgsRef = React.useRef([]); msgsRef.current = msgs;
       var canalRef = React.useRef(null); canalRef.current = canal;
       var openRef = React.useRef(false); openRef.current = open;
@@ -36893,7 +36895,7 @@
       }, [open, vue, canal]);
       useEffect(function() {
         if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
-      }, [msgs, vue]);
+      }, [msgs, pends, vue]);
 
       var nomCanal = function(c) {
         if (c === "general") return "# General";
@@ -36910,7 +36912,7 @@
         if (String(c).indexOf("avec:") === 0) {
           c = "dm:" + [(boot && boot.moi ? boot.moi.code : ""), String(c).substring(5)].sort().join("|");
         }
-        setCanal(c); setVue("fil"); setMsgs([]);
+        setCanal(c); setVue("fil"); setMsgs([]); setPends([]);
         api("GET", "action=messages&canal=" + encodeURIComponent(c)).then(function(d) {
           if (c !== canalRef.current) return; // conversation changee entre-temps
           setMsgs(d.messages || []);
@@ -36920,15 +36922,31 @@
       var envoyer = function() {
         var txt = String(texte || "").trim();
         if (!txt && !photo) return;
+        if (envoiRef.current) return; // envoi en cours : un double-appui ne renvoie rien
+        envoiRef.current = true;
         var cEnvoi = canal;
-        api("POST", null, { action: "envoyer", canal: cEnvoi, texte: txt, photo_base64: photo }).then(function(d) {
+        var photoEnvoi = photo;
+        // Affichage OPTIMISTE : le message apparait tout de suite ("envoi..."),
+        // la saisie se vide sans attendre la reponse du serveur
+        var tmp = { _cle: "tmp-" + Date.now(), auteur_nom: boot && boot.moi ? boot.moi.nom : "Moi", texte: txt, photo_base64: photoEnvoi };
+        setPends(function(prev) { return prev.concat([tmp]); });
+        setTexte(""); setPhoto(null);
+        api("POST", null, { action: "envoyer", canal: cEnvoi, texte: txt, photo_base64: photoEnvoi }).then(function(d) {
+          envoiRef.current = false;
+          setPends(function(prev) { return prev.filter(function(p) { return p !== tmp; }); });
           if (d.canal && String(cEnvoi).indexOf("avec:") === 0 && canalRef.current === cEnvoi) { setCanal(d.canal); }
           if (d.message && (canalRef.current === cEnvoi || canalRef.current === d.canal)) {
             setMsgs(function(prev) { return fusionnerMsgs(prev, [d.message]); });
             setLastRead(d.canal || cEnvoi, d.message.id);
           }
-          setTexte(""); setPhoto(null);
-        }).catch(function(e) { alert("Envoi impossible : " + (e.message || e)); });
+        }).catch(function(e) {
+          // Echec : le message revient dans la saisie, rien n'est perdu
+          envoiRef.current = false;
+          setPends(function(prev) { return prev.filter(function(p) { return p !== tmp; }); });
+          setTexte(function(prev) { return prev ? prev : txt; });
+          if (photoEnvoi) setPhoto(photoEnvoi);
+          alert("Envoi impossible : " + (e.message || e));
+        });
       };
       var chargerPhoto = function(id) {
         api("GET", "action=photo&id=" + encodeURIComponent(id)).then(function(d) {
@@ -36949,12 +36967,20 @@
         var img = new Image();
         var url = URL.createObjectURL(f);
         img.onload = function() {
-          var maxW = 1280;
-          var ratio = Math.min(1, maxW / img.width);
-          var cv = document.createElement("canvas");
-          cv.width = Math.round(img.width * ratio); cv.height = Math.round(img.height * ratio);
-          cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
-          setPhoto(cv.toDataURL("image/jpeg", 0.72));
+          // Compression par PALIERS : la meilleure qualite qui passe sous le
+          // plafond serveur (~250 Ko) - une photo haut de gamme passe toujours
+          var paliers = [[1600, 0.8], [1280, 0.72], [1120, 0.62], [960, 0.55], [800, 0.5], [640, 0.42]];
+          var data = null;
+          for (var i = 0; i < paliers.length; i++) {
+            var ratio = Math.min(1, paliers[i][0] / img.width);
+            var cv = document.createElement("canvas");
+            cv.width = Math.max(1, Math.round(img.width * ratio));
+            cv.height = Math.max(1, Math.round(img.height * ratio));
+            cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+            data = cv.toDataURL("image/jpeg", paliers[i][1]);
+            if (data.length <= 340000) break;
+          }
+          setPhoto(data);
           URL.revokeObjectURL(url);
         };
         img.src = url;
@@ -37006,7 +37032,17 @@
       } else {
         corpsPanneau = h(React.Fragment, null,
           h("div", { ref: filRef, style: { flex: 1, overflowY: "auto", padding: "10px 12px", display: "flex", flexDirection: "column" } },
-            msgs.length === 0 ? h("div", { style: { padding: 20, textAlign: "center", color: "#71717a", fontSize: 12 } }, "Aucun message - lance la conversation !") :
+            // Messages en cours d'envoi (optimistes) : affiches a la suite, grises
+            pends.map(function(p) {
+              return h("div", { key: p._cle, style: { display: "flex", gap: 7, maxWidth: "88%", marginTop: 7, alignSelf: "flex-end", flexDirection: "row-reverse", opacity: 0.6, order: 2 } },
+                h("div", { style: { flex: "0 0 auto", width: 24, height: 24, borderRadius: "50%", marginTop: 13, background: "linear-gradient(135deg,#06b6d4,#0891b2)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 9, color: "#fff" } }, String(p.auteur_nom || "?").split(/\s+/).map(function(w) { return w[0] || ""; }).join("").substring(0, 2).toUpperCase()),
+                h("div", null,
+                  h("div", { style: { fontSize: 9.5, color: "#a1a1aa", padding: "0 4px", textAlign: "right" } }, "envoi…"),
+                  h("div", { style: { background: "linear-gradient(135deg,#4f46e5,#6366f1)", padding: "7px 11px", borderRadius: "12px 3px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: "#fff", wordBreak: "break-word", whiteSpace: "pre-wrap" } },
+                    p.texte || "",
+                    p.photo_base64 ? h("img", { src: p.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) : null)));
+            }),
+            msgs.length === 0 && pends.length === 0 ? h("div", { style: { padding: 20, textAlign: "center", color: "#71717a", fontSize: 12 } }, "Aucun message - lance la conversation !") :
             msgs.map(function(m) {
               var moi = m.auteur_code === moiCode;
               var dt = new Date(m.created_at);
