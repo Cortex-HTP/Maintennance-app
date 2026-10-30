@@ -36815,7 +36815,30 @@
         var t = setInterval(rafraichirBoot, 60000);
         return function() { clearInterval(t); };
       }, []);
-      // Poll du fil ouvert
+      // Signal broadcast : nouveau message quelque part -> re-fetch cible
+      useEffect(function() {
+        var chB;
+        try {
+          chB = supabase.channel("emp-live", { config: { broadcast: { self: false } } })
+            .on("broadcast", { event: "msg" }, function(p) {
+              var c2 = p && p.payload ? p.payload.canal : null;
+              if (c2 && c2 === canalRef.current) {
+                var der = msgsRef.current.length ? msgsRef.current[msgsRef.current.length - 1].id : 0;
+                api("GET", "action=messages&canal=" + encodeURIComponent(c2) + (der ? "&depuis=" + der : "")).then(function(d) {
+                  if ((d.messages || []).length) {
+                    setMsgs(function(prev) { return prev.concat(d.messages); });
+                    setLastRead(c2, d.messages[d.messages.length - 1].id);
+                  }
+                }).catch(function() {});
+              } else {
+                rafraichirBoot();
+              }
+            })
+            .subscribe();
+        } catch (e) { chB = null; }
+        return function() { if (chB) { try { supabase.removeChannel(chB); } catch (e2) {} } };
+      }, []);
+      // Poll du fil ouvert (filet de securite, le broadcast fait l'instantane)
       useEffect(function() {
         if (!open || vue !== "fil" || !canal) return;
         var t = setInterval(function() {
@@ -36826,7 +36849,7 @@
               setLastRead(canalRef.current, d.messages[d.messages.length - 1].id);
             }
           }).catch(function() {});
-        }, 5000);
+        }, 15000);
         return function() { clearInterval(t); };
       }, [open, vue, canal]);
       useEffect(function() {
