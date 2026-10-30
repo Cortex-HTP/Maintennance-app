@@ -36757,6 +36757,229 @@
     // Modal de recherche unifie : equipements, personnel, chantiers, pieces,
     // soumissions (rapports / releves / conges / commandes / interventions).
     // Ouverture : Ctrl+K ou Cmd+K depuis n'importe quelle page.
+    // ═══ CHAT EQUIPE (bulle type Messenger, panneau flottant) ═══
+    // Tout passe par l'endpoint /api/chat de l'app Employes (Bearer JWT) :
+    // l'Administrateur voit TOUTES les conversations (y compris les privees
+    // entre employes) et peut supprimer n'importe quel message.
+    function ChatBulleAdmin() {
+      var ctx = useAppData();
+      var _open = useState(false); var open = _open[0]; var setOpen = _open[1];
+      var _vue = useState("liste"); var vue = _vue[0]; var setVue = _vue[1];
+      var _canal = useState(null); var canal = _canal[0]; var setCanal = _canal[1];
+      var _boot = useState(null); var boot = _boot[0]; var setBoot = _boot[1];
+      var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
+      var _texte = useState(""); var texte = _texte[0]; var setTexte = _texte[1];
+      var _photo = useState(null); var photo = _photo[0]; var setPhoto = _photo[1];
+      var _err = useState(""); var errC = _err[0]; var setErrC = _err[1];
+      var _badge = useState(0); var badge = _badge[0]; var setBadge = _badge[1];
+      var filRef = React.useRef(null);
+      var msgsRef = React.useRef([]); msgsRef.current = msgs;
+      var canalRef = React.useRef(null); canalRef.current = canal;
+
+      var lastReads = function() {
+        try { return JSON.parse(localStorage.getItem("wl_admin_chat_lastread") || "{}") || {}; } catch (e) { return {}; }
+      };
+      var setLastRead = function(c, id) {
+        try {
+          var m = lastReads(); m[c] = Math.max(m[c] || 0, id || 0);
+          localStorage.setItem("wl_admin_chat_lastread", JSON.stringify(m));
+        } catch (e) {}
+      };
+      var api = function(method, params, body) {
+        return supabase.auth.getSession().then(function(s) {
+          var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
+          if (!tkn) throw new Error("Session expiree");
+          return fetch(EMPLOYES_API_BASE + "/api/chat" + (params ? ("?" + params) : ""), {
+            method: method,
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
+            body: body ? JSON.stringify(body) : undefined
+          });
+        }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+          .then(function(out) {
+            if (!out.ok || !out.j || !out.j.ok) throw new Error((out.j && out.j.error) || "erreur serveur");
+            return out.j;
+          });
+      };
+      var rafraichirBoot = function() {
+        api("GET", "action=bootstrap").then(function(d) {
+          setBoot(d);
+          var lus = lastReads();
+          var n = 0;
+          (d.canaux || []).forEach(function(c) { if ((c.maxId || 0) > (lus[c.canal] || 0)) n++; });
+          setBadge(n);
+          setErrC("");
+        }).catch(function(e) { setErrC(String(e.message || e)); });
+      };
+      useEffect(function() {
+        rafraichirBoot();
+        var t = setInterval(rafraichirBoot, 60000);
+        return function() { clearInterval(t); };
+      }, []);
+      // Poll du fil ouvert
+      useEffect(function() {
+        if (!open || vue !== "fil" || !canal) return;
+        var t = setInterval(function() {
+          var der = msgsRef.current.length ? msgsRef.current[msgsRef.current.length - 1].id : 0;
+          api("GET", "action=messages&canal=" + encodeURIComponent(canalRef.current) + (der ? "&depuis=" + der : "")).then(function(d) {
+            if ((d.messages || []).length) {
+              setMsgs(function(prev) { return prev.concat(d.messages); });
+              setLastRead(canalRef.current, d.messages[d.messages.length - 1].id);
+            }
+          }).catch(function() {});
+        }, 5000);
+        return function() { clearInterval(t); };
+      }, [open, vue, canal]);
+      useEffect(function() {
+        if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
+      }, [msgs, vue]);
+
+      var nomCanal = function(c) {
+        if (c === "general") return "# General";
+        var parts = String(c).substring(3).split("|");
+        var ann = (boot && boot.annuaire) || [];
+        var noms = parts.map(function(code) {
+          if (boot && boot.moi && code === boot.moi.code) return "Moi";
+          var f = ann.find(function(a) { return a.code === code; });
+          return f ? f.nom : code;
+        });
+        return noms.join(" & ");
+      };
+      var ouvrirConv = function(c) {
+        if (String(c).indexOf("avec:") === 0) {
+          c = "dm:" + [(boot && boot.moi ? boot.moi.code : ""), String(c).substring(5)].sort().join("|");
+        }
+        setCanal(c); setVue("fil"); setMsgs([]);
+        api("GET", "action=messages&canal=" + encodeURIComponent(c)).then(function(d) {
+          setMsgs(d.messages || []);
+          if ((d.messages || []).length) setLastRead(c, d.messages[d.messages.length - 1].id);
+        }).catch(function(e) { setErrC(String(e.message || e)); });
+      };
+      var envoyer = function() {
+        var txt = String(texte || "").trim();
+        if (!txt && !photo) return;
+        api("POST", null, { action: "envoyer", canal: canal, texte: txt, photo_base64: photo }).then(function(d) {
+          if (d.canal && d.canal !== canal) { setCanal(d.canal); }
+          if (d.message) { setMsgs(function(prev) { return prev.concat([d.message]); }); setLastRead(d.canal || canal, d.message.id); }
+          setTexte(""); setPhoto(null);
+        }).catch(function(e) { alert("Envoi impossible : " + (e.message || e)); });
+      };
+      var supprimer = function(m) {
+        if (!confirm("Supprimer ce message de " + (m.auteur_nom || "?") + " ? Il restera visible comme \u00ab supprime \u00bb.")) return;
+        api("POST", null, { action: "supprimer", id: m.id }).then(function() {
+          setMsgs(function(prev) { return prev.map(function(x) { return x.id === m.id ? { id: x.id, canal: x.canal, auteur_code: x.auteur_code, auteur_nom: x.auteur_nom, auteur_role: x.auteur_role, created_at: x.created_at, supprime: true } : x; }); });
+        }).catch(function(e) { alert("Suppression impossible : " + (e.message || e)); });
+      };
+      var choisirPhoto = function(ev) {
+        var f = ev.target.files && ev.target.files[0];
+        ev.target.value = "";
+        if (!f) return;
+        var img = new Image();
+        var url = URL.createObjectURL(f);
+        img.onload = function() {
+          var maxW = 1280;
+          var ratio = Math.min(1, maxW / img.width);
+          var cv = document.createElement("canvas");
+          cv.width = Math.round(img.width * ratio); cv.height = Math.round(img.height * ratio);
+          cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+          setPhoto(cv.toDataURL("image/jpeg", 0.72));
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      };
+
+      var bulle = h("button", {
+        onClick: function() { setOpen(!open); if (!open) { setVue("liste"); rafraichirBoot(); } },
+        title: "Chat equipe",
+        style: { position: "fixed", bottom: "calc(178px + env(safe-area-inset-bottom))", right: "calc(16px + env(safe-area-inset-right))", zIndex: 90, width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg, #06b6d4, #6366f1)", border: "1px solid rgba(6,182,212,0.5)", color: "#fff", cursor: "pointer", boxShadow: "0 8px 24px rgba(6,182,212,0.4)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }
+      },
+        h(Icon, { name: "message-circle", size: 20, color: "#fff" }),
+        badge > 0 ? h("span", { style: { position: "absolute", top: -4, right: -4, minWidth: 19, height: 19, padding: "0 5px", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", borderRadius: 999, fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #1a1d2e" } }, badge) : null
+      );
+      if (!open) return bulle;
+
+      var lus = lastReads();
+      var convs = ((boot && boot.canaux) || []).slice();
+      if (!convs.some(function(c) { return c.canal === "general"; })) convs.unshift({ canal: "general", maxId: 0 });
+      convs.sort(function(a, b) { return (b.maxId || 0) - (a.maxId || 0); });
+      var moiCode = boot && boot.moi ? boot.moi.code : "";
+      var ann = ((boot && boot.annuaire) || []).filter(function(a) { return a.code !== moiCode; });
+
+      var corpsPanneau;
+      if (vue === "liste") {
+        corpsPanneau = h("div", { style: { flex: 1, overflowY: "auto", padding: 10 } },
+          errC ? h("div", { style: { padding: 10, fontSize: 12, color: "#fda4af" } }, errC) : null,
+          convs.map(function(c) {
+            var nonLu = (c.maxId || 0) > (lus[c.canal] || 0);
+            return h("div", { key: c.canal, onClick: function() { ouvrirConv(c.canal); },
+              style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 10, cursor: "pointer", border: "1px solid rgba(255,255,255,0.06)", background: "rgba(30,33,50,0.5)", marginBottom: 6 } },
+              h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: c.canal === "general" ? "linear-gradient(135deg,#06b6d4,#0891b2)" : "linear-gradient(135deg,#6366f1,#8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: "#fff", flexShrink: 0 } }, c.canal === "general" ? "#" : "DM"),
+              h("div", { style: { flex: 1, minWidth: 0 } },
+                h("div", { style: { fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, nomCanal(c.canal)),
+                h("div", { style: { fontSize: 10.5, color: "#a1a1aa" } }, c.canal === "general" ? "Toute la boite" : "Conversation privee")),
+              nonLu ? h("span", { style: { width: 10, height: 10, borderRadius: "50%", background: "#f43f5e", flexShrink: 0 } }) : null
+            );
+          }),
+          h("div", { style: { fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#a1a1aa", margin: "12px 4px 6px" } }, "Nouvelle conversation"),
+          ann.map(function(a) {
+            return h("div", { key: a.code, onClick: function() { ouvrirConv("avec:" + a.code); },
+              style: { display: "flex", alignItems: "center", gap: 10, padding: "7px 10px", borderRadius: 10, cursor: "pointer", marginBottom: 4 } },
+              h("div", { style: { width: 26, height: 26, borderRadius: "50%", background: "linear-gradient(135deg,#64748b,#475569)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 10, color: "#fff", flexShrink: 0 } }, String(a.nom || "?").split(/\s+/).map(function(w) { return w[0] || ""; }).join("").substring(0, 2).toUpperCase()),
+              h("div", null,
+                h("div", { style: { fontSize: 12, fontWeight: 600 } }, a.nom),
+                h("div", { style: { fontSize: 10, color: "#71717a" } }, a.role || ""))
+            );
+          })
+        );
+      } else {
+        corpsPanneau = h(React.Fragment, null,
+          h("div", { ref: filRef, style: { flex: 1, overflowY: "auto", padding: "10px 12px", display: "flex", flexDirection: "column" } },
+            msgs.length === 0 ? h("div", { style: { padding: 20, textAlign: "center", color: "#71717a", fontSize: 12 } }, "Aucun message - lance la conversation !") :
+            msgs.map(function(m) {
+              var moi = m.auteur_code === moiCode;
+              var dt = new Date(m.created_at);
+              var hh = String(dt.getHours()).padStart(2, "0") + ":" + String(dt.getMinutes()).padStart(2, "0");
+              return h("div", { key: m.id, style: { display: "flex", gap: 7, maxWidth: "88%", marginTop: 7, alignSelf: moi ? "flex-end" : "flex-start", flexDirection: moi ? "row-reverse" : "row" } },
+                h("div", { style: { flex: "0 0 auto", width: 24, height: 24, borderRadius: "50%", marginTop: 13, background: m.auteur_role === "admin" ? "linear-gradient(135deg,#06b6d4,#0891b2)" : "linear-gradient(135deg,#f59e0b,#d97706)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 9, color: "#fff" } }, String(m.auteur_nom || "?").split(/\s+/).map(function(w) { return w[0] || ""; }).join("").substring(0, 2).toUpperCase()),
+                h("div", null,
+                  h("div", { style: { fontSize: 9.5, color: "#a1a1aa", padding: "0 4px", textAlign: moi ? "right" : "left" } }, (m.auteur_nom || "") + " \u00b7 " + hh),
+                  m.supprime
+                    ? h("div", { style: { background: "rgba(255,255,255,0.03)", border: "1px dashed rgba(255,255,255,0.15)", padding: "6px 10px", borderRadius: 11, fontSize: 11.5, fontStyle: "italic", color: "#71717a" } }, "Message supprime")
+                    : h("div", { style: { background: moi ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: moi ? "none" : "1px solid rgba(255,255,255,0.07)", padding: "7px 11px", borderRadius: moi ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: moi ? "#fff" : "#e8e8ed", wordBreak: "break-word" } },
+                        m.texte || "",
+                        m.photo_base64 ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) : null),
+                  !m.supprime && ctx.isAdmin ? h("div", { onClick: function() { supprimer(m); }, style: { fontSize: 9.5, color: "#fda4af", cursor: "pointer", padding: "2px 4px", textAlign: moi ? "right" : "left" } }, "Supprimer") : null
+                )
+              );
+            })
+          ),
+          photo ? h("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 11, color: "#cbd5e1" } },
+            h("img", { src: photo, style: { height: 36, borderRadius: 6 } }), "Photo prete",
+            h("span", { onClick: function() { setPhoto(null); }, style: { color: "#fda4af", fontWeight: 800, cursor: "pointer" } }, "Retirer")) : null,
+          h("div", { style: { display: "flex", gap: 6, padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", alignItems: "flex-end" } },
+            h("label", { style: { width: 38, height: 38, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.06)", color: "#cbd5e1", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
+              h(Icon, { name: "camera", size: 16, color: "#cbd5e1" }),
+              h("input", { type: "file", accept: "image/*", style: { display: "none" }, onChange: choisirPhoto })),
+            h("textarea", { value: texte, onChange: function(e) { setTexte(e.target.value); },
+              onKeyDown: function(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); envoyer(); } },
+              placeholder: "Message...", style: { flex: 1, resize: "none", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", fontFamily: "inherit", fontSize: 12.5, padding: "10px 12px", height: 38, outline: "none" } }),
+            h("button", { onClick: envoyer, style: { width: 38, height: 38, borderRadius: 10, border: "none", background: "linear-gradient(135deg,#6366f1,#818cf8)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } },
+              h(Icon, { name: "send", size: 15, color: "#fff" })))
+        );
+      }
+
+      return h("div", null,
+        bulle,
+        h("div", { style: { position: "fixed", bottom: "calc(232px + env(safe-area-inset-bottom))", right: "calc(16px + env(safe-area-inset-right))", zIndex: 95, width: 380, maxWidth: "calc(100vw - 24px)", height: 520, maxHeight: "calc(100vh - 260px)", minHeight: 320, background: "#141726", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, boxShadow: "0 30px 90px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "rgba(20,22,35,0.9)" } },
+            vue === "fil" ? h("span", { onClick: function() { setVue("liste"); rafraichirBoot(); }, style: { cursor: "pointer", display: "inline-flex" } }, h(Icon, { name: "arrow-left", size: 16, color: "#cbd5e1" })) : null,
+            h("div", { style: { flex: 1 } },
+              h("div", { style: { fontSize: 13, fontWeight: 800 } }, vue === "fil" ? nomCanal(canal) : "Chat equipe"),
+              h("div", { style: { fontSize: 10, color: "#a1a1aa" } }, vue === "fil" ? (canal === "general" ? "Toute la boite" : "Conversation privee - visible par l'Administrateur") : "General + conversations privees")),
+            h("span", { onClick: function() { setOpen(false); }, style: { cursor: "pointer", display: "inline-flex" } }, h(Icon, { name: "x", size: 16, color: "#cbd5e1" }))),
+          corpsPanneau
+        )
+      );
+    }
     function RechercheGlobale({ onNavigate }) {
       var ctx = useAppData();
       var _open = useState(false); var open = _open[0]; var setOpen = _open[1];
@@ -40022,6 +40245,7 @@
         h(WeatherBackground, { meteo: globalMeteoToday }),
         // Recherche globale Ctrl+K (modal + bouton flottant)
         h(RechercheGlobale, { onNavigate: navigate }),
+        h(ChatBulleAdmin, null),
         // FAB envoi rapide facture vers compta (bouton flottant + modal)
         h(QuickEnvoiFactureFab, null),
         // FAB support : signaler un bug / faire une demande (visible pour tout user connecte)
