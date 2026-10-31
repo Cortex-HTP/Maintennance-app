@@ -36792,7 +36792,10 @@
       var _canal = useState(null); var canal = _canal[0]; var setCanal = _canal[1];
       var _boot = useState(function() {
         // Premier rendu instantane : dernier bootstrap connu (cache local)
-        try { return JSON.parse(localStorage.getItem("wl_admin_chat_cache_boot") || "null"); } catch (e) { return null; }
+        try {
+          var b = JSON.parse(localStorage.getItem("wl_admin_chat_cache_boot") || "null");
+          return (b && typeof b === "object" && !Array.isArray(b)) ? b : null;
+        } catch (e) { return null; }
       }); var boot = _boot[0]; var setBoot = _boot[1];
       var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
       var _texte = useState(""); var texte = _texte[0]; var setTexte = _texte[1];
@@ -36809,7 +36812,10 @@
       var bootRef = React.useRef(0);
       var bootTimerRef = React.useRef(null);
       var lireCacheFil = function(c) {
-        try { return JSON.parse(localStorage.getItem("wl_admin_chat_cache_fil_" + c) || "null"); } catch (e) { return null; }
+        try {
+          var l = JSON.parse(localStorage.getItem("wl_admin_chat_cache_fil_" + c) || "null");
+          return Array.isArray(l) ? l : null;
+        } catch (e) { return null; }
       };
       var fusionnerMsgs = function(prev, nouveaux) {
         var vus = {};
@@ -37099,7 +37105,8 @@
                     ? h("div", { style: { background: "rgba(255,255,255,0.03)", border: "1px dashed rgba(255,255,255,0.15)", padding: "6px 10px", borderRadius: 11, fontSize: 11.5, fontStyle: "italic", color: "#71717a" } }, "Message supprime")
                     : h("div", { style: { background: moi ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: moi ? "none" : "1px solid rgba(255,255,255,0.07)", padding: "7px 11px", borderRadius: moi ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: moi ? "#fff" : "#e8e8ed", wordBreak: "break-word", whiteSpace: "pre-wrap" } },
                         m.texte || "",
-                        m.photo_base64 ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) :
+                        // Garde : la photo peut venir du cache local (forgeable) -> data URI image stricte uniquement
+                        m.photo_base64 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(m.photo_base64) ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) :
                         m.photo ? h("button", { onClick: function() { chargerPhoto(m.id); }, style: { display: "block", marginTop: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.2)", color: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "Afficher la photo") : null),
                   !m.supprime && boot && boot.moi && boot.moi.estAdmin ? h("div", { onClick: function() { supprimer(m); }, style: { fontSize: 9.5, color: "#fda4af", cursor: "pointer", padding: "2px 4px", textAlign: moi ? "right" : "left" } }, "Supprimer") : null
                 )
@@ -38768,6 +38775,23 @@
         supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
         const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
           if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+          // Cache chat : purge des que l'UTILISATEUR change (deconnexion 18h,
+          // expiration, recovery, autre compte) - couvre aussi une reecriture
+          // par une requete en vol apres le logout, purgee au login suivant.
+          try {
+            var uidChat = sess && sess.user ? sess.user.id : null;
+            var prevUidChat = localStorage.getItem("wl_admin_chat_user") || null;
+            if (uidChat !== prevUidChat) {
+              var aSupprChat = [];
+              for (var iC = 0; iC < localStorage.length; iC++) {
+                var kC = localStorage.key(iC);
+                if (kC && kC.indexOf("wl_admin_chat_cache_") === 0) aSupprChat.push(kC);
+              }
+              aSupprChat.forEach(function(k2) { localStorage.removeItem(k2); });
+              if (uidChat) localStorage.setItem("wl_admin_chat_user", uidChat);
+              else localStorage.removeItem("wl_admin_chat_user");
+            }
+          } catch (eChat) {}
           // Ne re-render l'app QUE si l'utilisateur change (login/logout), PAS a chaque refresh
           // de token / retour d'onglet : sinon tous les effets [session] (realtime, fetch) se
           // relancent -> "rechargement" permanent. Les appels API lisent un token frais via
