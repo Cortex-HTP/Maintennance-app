@@ -36790,7 +36790,10 @@
       var _open = useState(false); var open = _open[0]; var setOpen = _open[1];
       var _vue = useState("liste"); var vue = _vue[0]; var setVue = _vue[1];
       var _canal = useState(null); var canal = _canal[0]; var setCanal = _canal[1];
-      var _boot = useState(null); var boot = _boot[0]; var setBoot = _boot[1];
+      var _boot = useState(function() {
+        // Premier rendu instantane : dernier bootstrap connu (cache local)
+        try { return JSON.parse(localStorage.getItem("wl_admin_chat_cache_boot") || "null"); } catch (e) { return null; }
+      }); var boot = _boot[0]; var setBoot = _boot[1];
       var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
       var _texte = useState(""); var texte = _texte[0]; var setTexte = _texte[1];
       var _photo = useState(null); var photo = _photo[0]; var setPhoto = _photo[1];
@@ -36804,6 +36807,10 @@
       var openRef = React.useRef(false); openRef.current = open;
       var vueRef = React.useRef("liste"); vueRef.current = vue;
       var bootRef = React.useRef(0);
+      var bootTimerRef = React.useRef(null);
+      var lireCacheFil = function(c) {
+        try { return JSON.parse(localStorage.getItem("wl_admin_chat_cache_fil_" + c) || "null"); } catch (e) { return null; }
+      };
       var fusionnerMsgs = function(prev, nouveaux) {
         var vus = {};
         prev.forEach(function(m) { vus[m.id] = 1; });
@@ -36838,6 +36845,7 @@
       var rafraichirBoot = function() {
         api("GET", "action=bootstrap").then(function(d) {
           setBoot(d);
+          try { localStorage.setItem("wl_admin_chat_cache_boot", JSON.stringify(d)); } catch (eC) {}
           var lus = lastReads();
           var n = 0;
           (d.canaux || []).forEach(function(c) { if ((c.maxId || 0) > (lus[c.canal] || 0)) n++; });
@@ -36856,6 +36864,23 @@
         try {
           chB = supabase.channel("emp-live", { config: { broadcast: { self: false } } })
             .on("broadcast", { event: "msg" }, function() {
+              // Rafraichit la liste/badges avec throttle 5 s TRAILING : un
+              // signal pendant la fenetre est DIFFERE, pas jete (sinon un 2e
+              // message rapproche n'apparaissait qu'a l'intervalle de 60 s)
+              var planifierBoot = function() {
+                var nowB = Date.now();
+                var reste = 5000 - (nowB - bootRef.current);
+                if (reste <= 0) {
+                  bootRef.current = nowB;
+                  rafraichirBoot();
+                } else if (!bootTimerRef.current) {
+                  bootTimerRef.current = setTimeout(function() {
+                    bootTimerRef.current = null;
+                    bootRef.current = Date.now();
+                    rafraichirBoot();
+                  }, reste);
+                }
+              };
               // Signal anonyme : on ne marque LU que si le fil est reellement
               // sous les yeux de l'admin (panneau ouvert + vue fil)
               if (openRef.current && vueRef.current === "fil" && canalRef.current) {
@@ -36868,14 +36893,17 @@
                     setLastRead(c2, d.messages[d.messages.length - 1].id);
                   }
                 }).catch(function() {});
+                planifierBoot(); // les badges des AUTRES conversations bougent aussi
               } else {
-                var nowB = Date.now();
-                if (nowB - bootRef.current > 5000) { bootRef.current = nowB; rafraichirBoot(); }
+                planifierBoot();
               }
             })
             .subscribe();
         } catch (e) { chB = null; }
-        return function() { if (chB) { try { supabase.removeChannel(chB); } catch (e2) {} } };
+        return function() {
+          if (chB) { try { supabase.removeChannel(chB); } catch (e2) {} }
+          if (bootTimerRef.current) { clearTimeout(bootTimerRef.current); bootTimerRef.current = null; }
+        };
       }, []);
       // Poll du fil ouvert (filet de securite, le broadcast fait l'instantane)
       useEffect(function() {
@@ -36896,6 +36924,18 @@
       useEffect(function() {
         if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
       }, [msgs, pends, vue]);
+      // Cache local du fil : 30 derniers messages, photos exclues (legeres).
+      // Couvre tous les chemins (ouverture, poll, broadcast, envoi).
+      useEffect(function() {
+        if (!canal || !msgs.length) return;
+        var legers = msgs.slice(-30).map(function(m) {
+          if (!m.photo_base64) return m;
+          var copie = {};
+          Object.keys(m).forEach(function(k) { if (k !== "photo_base64") copie[k] = m[k]; });
+          return copie;
+        });
+        try { localStorage.setItem("wl_admin_chat_cache_fil_" + canal, JSON.stringify(legers)); } catch (e) {}
+      }, [msgs, canal]);
 
       var nomCanal = function(c) {
         if (c === "general") return "# General";
@@ -36912,7 +36952,11 @@
         if (String(c).indexOf("avec:") === 0) {
           c = "dm:" + [(boot && boot.moi ? boot.moi.code : ""), String(c).substring(5)].sort().join("|");
         }
-        setCanal(c); setVue("fil"); setMsgs([]); setPends([]);
+        setCanal(c); setVue("fil"); setPends([]);
+        // Derniers messages connus affiches tout de suite (cache local) ;
+        // le fetch complet qui suit reste la verite et remplace tout
+        var enCache = lireCacheFil(c);
+        setMsgs(enCache && enCache.length ? enCache : []);
         api("GET", "action=messages&canal=" + encodeURIComponent(c)).then(function(d) {
           if (c !== canalRef.current) return; // conversation changee entre-temps
           setMsgs(d.messages || []);
@@ -39732,7 +39776,20 @@
         showToast("Liaison supprimee");
       };
 
-      const logout = async () => { await supabase.auth.signOut(); setSession(null); };
+      const logout = async () => {
+        // Purge le cache local du chat : un autre compte sur ce navigateur
+        // ne doit pas voir les conversations du precedent
+        try {
+          const aSuppr = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.indexOf("wl_admin_chat_cache_") === 0) aSuppr.push(k);
+          }
+          aSuppr.forEach((k) => localStorage.removeItem(k));
+        } catch (e) {}
+        await supabase.auth.signOut();
+        setSession(null);
+      };
 
       const userEmail = session && session.user ? session.user.email : "";
 
