@@ -1921,6 +1921,34 @@
         if (!resp) resp = rows.slice().sort(function(a, b) { return (a.id || 0) - (b.id || 0); })[0];
         respByGroup[k] = resp ? resp.personnel_id : null;
       });
+      // Heures supplementaires : agregation par SEMAINE CIVILE (lundi-dimanche) sur TOUTES les
+      // lignes recues (pas seulement la fenetre), une semaine etant rattachee au mois de paie
+      // qui contient son DIMANCHE. Regle legale NC (Lp. 221-4, 39 h/semaine) : de la 40e a la
+      // 47e heure +25 %, au-dela +50 %. Base = heures effectives pointees (pause comprise, la
+      // pause etant du temps paye chez Wallis - rubrique "heures de repas").
+      var semainesParPid = {};
+      (relevesHeures || []).forEach(function(r) {
+        if (r.personnel_id == null || estAbsenceReleve(r)) return;
+        var ds = String(r.date_releve || "").substring(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return;
+        var d = new Date(ds + "T00:00:00");
+        var lundi = new Date(d.getTime());
+        lundi.setDate(lundi.getDate() - ((lundi.getDay() + 6) % 7));
+        var dimanche = new Date(lundi.getTime());
+        dimanche.setDate(dimanche.getDate() + 6);
+        var dimISO = localISODate(dimanche);
+        if (dimISO < debutISO || dimISO > finISO) return; // semaine rattachee a un autre mois de paie
+        var cle = String(r.personnel_id) + "|" + localISODate(lundi);
+        semainesParPid[cle] = (semainesParPid[cle] || 0) + (parseInt(r.total_minutes) || 0) / 60;
+      });
+      var hsParPid = {};
+      Object.keys(semainesParPid).forEach(function(cle) {
+        var pid = cle.split("|")[0];
+        var hSem = semainesParPid[cle];
+        if (!hsParPid[pid]) hsParPid[pid] = { h25: 0, h50: 0 };
+        hsParPid[pid].h25 += Math.min(8, Math.max(0, hSem - 39));
+        hsParPid[pid].h50 += Math.max(0, hSem - 47);
+      });
       var agg = {};
       periodRels.forEach(function(r) {
         if (r.personnel_id == null) return;
@@ -1950,11 +1978,22 @@
           else if (t === "ferie" || t === "jour ferie") a.ferieReleve += 1;
         }
       });
+      // Heures sup rattachees a l'agregat (un salarie peut avoir des HS sans ligne dans la
+      // fenetre stricte : semaine a cheval - on cree alors son entree)
+      Object.keys(hsParPid).forEach(function(pid) {
+        if (!agg[pid]) agg[pid] = { nbPostes: 0, routeChauffeur: 0, routePassager: 0, pause: 0, paniers: 0,
+          eloignement: 0, posteSondeur: 0, posteAide: 0, heuresEffectives: 0, heuresHorsPause: 0,
+          cpReleve: 0, maladieReleve: 0, ferieReleve: 0 };
+        agg[pid].hs25 = Math.round(hsParPid[pid].h25 * 100) / 100;
+        agg[pid].hs50 = Math.round(hsParPid[pid].h50 * 100) / 100;
+      });
       // Arrondis a 2 decimales (heures decimales)
       Object.keys(agg).forEach(function(pid) {
         ["routeChauffeur", "routePassager", "pause", "heuresEffectives", "heuresHorsPause"].forEach(function(f) {
           agg[pid][f] = Math.round(agg[pid][f] * 100) / 100;
         });
+        if (agg[pid].hs25 === undefined) agg[pid].hs25 = 0;
+        if (agg[pid].hs50 === undefined) agg[pid].hs50 = 0;
       });
       return agg;
     }
@@ -2036,6 +2075,50 @@
         // releves_heures.personnel_id = hashCodePersonnel(code fiche) (meme convention que les
         // demandes de conge / l'app Employes), PAS l'id numerique de la fiche admin.
         var tsEmp = ts[hashCodePersonnel(emp.code || ("u" + emp.id))] || ts[emp.id] || null;
+        // MALADIE EN JOURS CALENDAIRES : la paie retient 1/30e par jour CALENDAIRE de l'arret
+        // (certificat medical), pas par jour ouvre du planning. Source = demandes de conge
+        // maladie approuvees (date_debut -> date_reprise EXCLUE), bornees a la fenetre de paie.
+        var hashEmp = hashCodePersonnel(emp.code || ("u" + emp.id));
+        var malCal = 0, aDemandeMaladie = false;
+        (deps.demandesConge || []).forEach(function(dc) {
+          if (!dc || dc.statut !== "approuvee") return;
+          if (dc.demandeur_id !== emp.id && dc.demandeur_id !== hashEmp) return;
+          if (String(dc.type_conge || "").toLowerCase().indexOf("maladie") < 0) return;
+          var dDeb = String(dc.date_debut || "").substring(0, 10);
+          var dRep = String(dc.date_reprise || "").substring(0, 10); // jour de RETOUR (non retenu)
+          if (!dDeb) return;
+          aDemandeMaladie = true;
+          var cur = new Date((dDeb < debutISO ? debutISO : dDeb) + "T00:00:00");
+          var garde2 = 0;
+          while (garde2 < 45) {
+            var dsM = localISODate(cur);
+            if (dsM > finISO) break;
+            if (dRep && dsM >= dRep) break;
+            if (dansFenetreEmploi(emp, dsM)) malCal += 1;
+            cur.setDate(cur.getDate() + 1);
+            garde2++;
+          }
+        });
+        // JOURS PAYES AUTO (entree/sortie en cours de mois) : jours ouvres lundi-vendredi de la
+        // fenetre de paie couverts par la fenetre d'emploi. null = mois plein (26e habituel).
+        var joursPayesAuto = null;
+        if (aBornes) {
+          var ouvresEmploi = 0, ouvresTotal = 0;
+          var curJP = new Date(debutISO + "T00:00:00");
+          var gardeJP = 0;
+          while (gardeJP < 45) {
+            var dsJP = localISODate(curJP);
+            if (dsJP > finISO) break;
+            var dowJP = curJP.getDay();
+            if (dowJP !== 0 && dowJP !== 6) {
+              ouvresTotal += 1;
+              if (dansFenetreEmploi(emp, dsJP)) ouvresEmploi += 1;
+            }
+            curJP.setDate(curJP.getDate() + 1);
+            gardeJP++;
+          }
+          if (ouvresEmploi < ouvresTotal) joursPayesAuto = ouvresEmploi;
+        }
         employes.push({
           nom: String(emp.nom || "").trim(), prenom: String(emp.prenom || "").trim(),
           code: emp.code || "",
@@ -2047,11 +2130,16 @@
           joursFerie: compte.ferie, joursChomage: compte.chomage, joursArret: compte.arret,
           joursAutresAbsences: 0,
           primeMetrage: Math.round(primesParId[emp.id] || 0),
+          // Maladie en jours CALENDAIRES depuis les demandes approuvees ; null = aucune demande
+          // (si joursMaladie planning > 0 sans demande, la conversion reste a faire a la main)
+          joursMaladieCalendaires: aDemandeMaladie ? malCal : null,
+          joursPayes: joursPayesAuto,
           // Variables du releve d'heures numerique (null = aucun releve sur la fenetre)
           releve: tsEmp ? {
             nbPostes: tsEmp.nbPostes, routeChauffeur: tsEmp.routeChauffeur, routePassager: tsEmp.routePassager,
             heuresRepas: tsEmp.pause, paniers: tsEmp.paniers, eloignement: tsEmp.eloignement,
             posteSondeur: tsEmp.posteSondeur, posteAide: tsEmp.posteAide,
+            hs25: tsEmp.hs25, hs50: tsEmp.hs50,
             heuresEffectives: tsEmp.heuresEffectives, heuresHorsPause: tsEmp.heuresHorsPause,
             cpReleve: tsEmp.cpReleve, maladieReleve: tsEmp.maladieReleve, ferieReleve: tsEmp.ferieReleve
           } : null
