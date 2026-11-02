@@ -31681,9 +31681,10 @@
             ),
             h("span", { style: { fontSize: 11.5, color: "#71717a" } }, "Periode calculee par chantier selon son jour de cloture (fiche chantier, defaut 25 ; mode En une fois = une seule carte couvrant tout le chantier, au mois de sa date de fin) - destinataire : UNIQUEMENT les adresses configurees (Administration > Destinataires emails, type Releves mensuels ou Rapports forage)")
           ),
-          // Lignes chantiers
-          chList.length === 0 ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucun chantier actif.") :
-          chList.map(function(c) {
+          // Lignes chantiers : les cartes a null (rien a facturer sur le mois)
+          // sont filtrees pour afficher un message clair plutot qu'un vide.
+          (function() {
+          var cartesVal = chList.map(function(c) {
             // Periode PROPRE a ce chantier (jour de cloture de la fiche, defaut 25).
             // jourCloture = 0 : FACTURATION EN FIN DE CHANTIER (pas de releve
             // mensuel) - UNE carte couvrant toute la periode de la fiche,
@@ -31723,6 +31724,12 @@
               : appliquerArbitragesVal(computeSnapshotPreview(c, per.debut, per.fin), v && v.arbitrages);
             var tot = (snap && snap.totaux) || { metrage: 0, heures: 0, attente: 0 };
             var nbJours = (snap && snap.lignes ? snap.lignes.length : 0);
+            // Uniquement les chantiers A FACTURER sur ce mois : AUCUN rapport
+            // sur la periode ET aucune validation en base (le serveur n'en cree
+            // jamais pour une periode vide) -> pas de carte. Vecu : Kouaoua,
+            // demarre en novembre, apparaissait sur octobre. Une validation
+            // existante (brouillon/envoye/valide/facture) garde sa carte.
+            if (!v && nbJours === 0) return null;
             // Destinataires : SIGNATAIRES des rapports de la periode ;
             // email contact de la fiche chantier en secours seulement.
             // Le serveur (upsertAndSend) RECALCULE les signataires depuis les
@@ -32042,7 +32049,12 @@
                 destOk && nbJours === 0 && statut === "brouillon" && !enCours ? h("span", { style: { fontSize: 11.5, color: "#71717a", alignSelf: "center" } }, "Aucun rapport sur la periode") : null
               )
             );
-          }),
+          }).filter(function(x) { return x != null; });
+          return cartesVal.length === 0
+            ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } },
+                chList.length === 0 ? "Aucun chantier actif." : "Rien a facturer sur ce mois : aucun chantier n'a de rapport sur sa periode.")
+            : cartesVal;
+          })(),
           // Modal apercu du detail par jour : memes colonnes que l'export
           // "Releve detaille par jour" du Recap mensuel (detail facturation)
           apercuVal ? (function() {
