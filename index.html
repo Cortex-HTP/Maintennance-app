@@ -21546,6 +21546,87 @@
         setSelectedMonth(new Date(d.getFullYear(), d.getMonth() + delta, 1));
       }
 
+      // ── Export Cortex-Paies : fichier a importer dans l'app de paie ──
+      // Pour chaque employe actif sur la fenetre 26->25 du mois selectionne :
+      // salaire de la fiche (controle d'ecart cote Paies), jours du planning
+      // (conges, maladie, feries, chomage, autres absences) et prime de
+      // metrage calculee (recapByEmployee, tous sites). Le fichier est
+      // ensuite importe dans Cortex-Paies via "Importer mois Wallis".
+      function exporterCortexPaies() {
+        var perMois = sy + "-" + (curM < 10 ? "0" : "") + curM;
+        var debutISO = localISODate(currentPeriod.start);
+        var finISO = localISODate(currentPeriod.end);
+        // Conges approuves : les demandes sont la source de verite (certains conges
+        // approuves ne sont PAS reportes dans affectations) - index pid -> date -> {statut, type}
+        var cgIdx = buildCongesParEmploye(demandesConge || [], personnelAll || []);
+        var employes = [];
+        (personnelAll || []).forEach(function(emp) {
+          // Inclusion multi-contrats : l'employe est exporte si l'une de ses fenetres
+          // d'emploi (contratsHistorique inclus) chevauche la fenetre de paie
+          var fens = fenetresEmploi(emp);
+          var aBornes = fens.some(function(f) { return !!(f.debut || f.fin); });
+          var chevauche = fens.some(function(f) { return (!f.debut || f.debut <= finISO) && (!f.fin || f.fin > debutISO); });
+          if (aBornes && !chevauche) return;
+          var compte = { conge: 0, maladie: 0, ferie: 0, chomage: 0, arret: 0, travail: 0 };
+          var affParDate = {};
+          (affectations || []).forEach(function(a) {
+            if (a.personnelId !== emp.id) return;
+            var dj = a.dateAffectation ? String(a.dateAffectation).substring(0, 10) : "";
+            if (!dj || dj < debutISO || dj > finISO) return;
+            if (!dansFenetreEmploi(emp, dj)) return;
+            if (affParDate[dj]) return; // une seule affectation par jour (upsert en base)
+            affParDate[dj] = true;
+            var tj = a.typeJour || "travail";
+            if (tj === "conge") compte.conge += 1;
+            else if (tj === "maladie") compte.maladie += 1;
+            else if (tj === "ferie") compte.ferie += 1;
+            else if (tj === "chomage") compte.chomage += 1;
+            else if (tj === "arret") compte.arret += 1; // "rien ne se passe" : signale, PAS une absence du salarie
+            else compte.travail += 1; // travail, panne, intemperies, non_productif : jours payes normalement
+          });
+          // Conges/maladies approuves SANS affectation posee (jour par jour sur la fenetre)
+          var cgEmp = cgIdx[emp.id];
+          if (cgEmp) {
+            var dCur = new Date(debutISO + "T00:00:00");
+            var dFin = new Date(finISO + "T00:00:00");
+            var garde = 0;
+            while (dCur.getTime() <= dFin.getTime() && garde < 45) {
+              var ds = localISODate(dCur);
+              if (!affParDate[ds] && dansFenetreEmploi(emp, ds)) {
+                var info = cgEmp[ds];
+                if (info && info.statut === "approuvee") {
+                  if (congeBadgeType(info) === "maladie") compte.maladie += 1;
+                  else compte.conge += 1;
+                }
+              }
+              dCur.setDate(dCur.getDate() + 1);
+              garde++;
+            }
+          }
+          var rec = recapByEmployee[emp.id];
+          employes.push({
+            nom: String(emp.nom || "").trim(), prenom: String(emp.prenom || "").trim(),
+            code: emp.code || "",
+            salaireFiche: parseFloat(String(emp.salaire == null ? "" : emp.salaire).replace(/\s/g, "")) || 0,
+            typeContrat: emp.typeContrat || "CDI",
+            dateEmbauche: emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null,
+            dateFinContrat: emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null,
+            joursTravail: compte.travail, joursConge: compte.conge, joursMaladie: compte.maladie,
+            joursFerie: compte.ferie, joursChomage: compte.chomage, joursArret: compte.arret,
+            joursAutresAbsences: 0,
+            primeMetrage: rec ? Math.round(rec.totalPrime || 0) : 0
+          });
+        });
+        var data = { source: "wallis-label-admin", version: 1, periode: perMois,
+          fenetre: { debut: debutISO, fin: finISO }, genere: new Date().toISOString(), employes: employes };
+        var blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+        var aEl = document.createElement("a");
+        aEl.href = URL.createObjectURL(blob);
+        aEl.download = "wallis-paies-" + perMois + ".json";
+        document.body.appendChild(aEl); aEl.click(); document.body.removeChild(aEl);
+        setTimeout(function() { URL.revokeObjectURL(aEl.href); }, 2000);
+      }
+
       return h("div", null,
         h(PageHeader, {
           title: h(IconText, { icon: "trophy", size: 20 }, "Primes de Metrage"),
@@ -21556,7 +21637,10 @@
           h("div", { style: { fontSize: 15, fontWeight: 700, minWidth: 160, textAlign: "center", color: "#e5e7eb" } }, selectedMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
           h("button", { onClick: function() { changeMonth(1); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-right", size: 14, color: "white" })),
           selectedMonth.getMonth() !== now.getMonth() || selectedMonth.getFullYear() !== now.getFullYear() ?
-            h("button", { onClick: function() { setSelectedMonth(new Date()); }, style: { background: "rgba(129,140,248,0.10)", color: "#a78bfa", border: "1px solid rgba(129,140,248,0.4)", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "Mois actuel") : null
+            h("button", { onClick: function() { setSelectedMonth(new Date()); }, style: { background: "rgba(129,140,248,0.10)", color: "#a78bfa", border: "1px solid rgba(129,140,248,0.4)", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "Mois actuel") : null,
+          h("div", { style: { flex: 1 } }),
+          h("button", { onClick: exporterCortexPaies, title: "Genere le fichier du mois (jours du planning + primes de metrage) a importer dans Cortex-Paies via \"Importer mois Wallis\"", style: { background: "rgba(5,150,105,0.12)", color: "#34d399", border: "1px solid rgba(5,150,105,0.45)", padding: "8px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 } },
+            h(Icon, { name: "download", size: 14, color: "#34d399" }), "Export Cortex-Paies")
         ),
         // TabBar : Primes (vue actuelle) ou Metrage sondeurs (matrice jour par jour)
         h("div", { style: { display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.08)", overflowX: "auto" } },
