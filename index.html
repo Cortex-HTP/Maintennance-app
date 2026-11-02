@@ -8771,6 +8771,9 @@
       //    coffre RH et primes restent lies a la meme personne. ──
       var _reembauche = useState(null); // { emp, date, typeContrat, dateFinPrevue }
       var reembauche = _reembauche[0], setReembauche = _reembauche[1];
+      // Detail des contrats (clic sur le badge "CDD total" de la liste)
+      var _contratsDetail = useState(null);
+      var contratsDetail = _contratsDetail[0], setContratsDetail = _contratsDetail[1];
       function openReembauche(emp) {
         // Date locale (PAS toISOString : avant 11h a Noumea ce serait "hier")
         var t = new Date();
@@ -8916,6 +8919,37 @@
         if (months < 0) { years--; months += 12; }
         if (years > 0) return years + " an" + (years > 1 ? "s" : "") + (months > 0 ? " " + months + " mois" : "");
         return months + " mois";
+      }
+
+      // ── Duree TOTALE embauchee en CDD (contrats precedents + contrat en
+      //    cours), pour surveiller le cumul des CDD successifs d'un salarie.
+      //    Duree INCLUSIVE (du 01/02 au 28/02 = 28 j) ; un CDD en cours sans
+      //    date de fin compte jusqu'a aujourd'hui. ──
+      function contratsEmploye(emp) {
+        var list = [];
+        (Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : []).forEach(function(ct) {
+          if (!ct || !ct.dateEmbauche) return;
+          list.push({ type: ct.typeContrat || "CDI", debut: String(ct.dateEmbauche).substring(0, 10), fin: ct.dateFinContrat ? String(ct.dateFinContrat).substring(0, 10) : "", motifFin: ct.motifFin || "", courant: false });
+        });
+        if (emp.dateEmbauche) list.push({ type: emp.typeContrat || "CDI", debut: String(emp.dateEmbauche).substring(0, 10), fin: emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "", motifFin: emp.motifFin || "", courant: true });
+        return list;
+      }
+      function joursContrat(c) {
+        if (!c.debut) return 0;
+        var tJC = new Date();
+        var todayJC = tJC.getFullYear() + "-" + String(tJC.getMonth() + 1).padStart(2, "0") + "-" + String(tJC.getDate()).padStart(2, "0");
+        var finEff = c.fin || todayJC;
+        if (finEff < c.debut) return 0;
+        return Math.round((new Date(finEff + "T00:00:00") - new Date(c.debut + "T00:00:00")) / 86400000) + 1;
+      }
+      function totalJoursCDD(emp) {
+        return contratsEmploye(emp).reduce(function(s, c) { return s + (c.type === "CDD" ? joursContrat(c) : 0); }, 0);
+      }
+      function fmtDureeJours(jours) {
+        if (jours <= 0) return "0 j";
+        if (jours < 61) return jours + " j";
+        var mois = Math.round(jours / 30.44 * 10) / 10;
+        return String(mois).replace(".", ",") + " mois";
       }
 
       // Fiche employe detail (modal) - 2 onglets : Infos et Activite
@@ -9350,7 +9384,18 @@
                       )
                     ),
                     h("td", { style: { padding: "10px 12px" } }, emp.lieuContrat || "-"),
-                    h("td", { style: { padding: "10px 12px", fontSize: 12 } }, getAnciennete(emp.dateEmbauche)),
+                    h("td", { style: { padding: "10px 12px", fontSize: 12 } },
+                      h("div", null, getAnciennete(emp.dateEmbauche)),
+                      (function() {
+                        var jCDD = totalJoursCDD(emp);
+                        if (jCDD <= 0) return null;
+                        return h("div", {
+                          onClick: function(e) { e.stopPropagation(); setContratsDetail(emp); },
+                          title: "Duree totale embauchee en CDD, tous contrats confondus. Cliquer pour le detail des contrats.",
+                          style: { marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.40)", color: "#fde68a", cursor: "pointer", whiteSpace: "nowrap" } },
+                          "CDD total : " + fmtDureeJours(jCDD));
+                      })()
+                    ),
                     h("td", { style: { padding: "10px 12px", fontWeight: 600, color: actif ? "#059669" : "#71717a" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
                     h("td", { style: { padding: "10px 12px" } },
                       actif
@@ -9408,6 +9453,40 @@
               h(Button, { onClick: confirmReembauche }, h(IconText, { icon: "user-check", size: 14 }, "Reembaucher")))
           )
         ),
+        // Modal detail des contrats : toutes les dates, durees et le cumul CDD
+        contratsDetail ? (function() {
+          var listCt = contratsEmploye(contratsDetail);
+          var jCDDTot = totalJoursCDD(contratsDetail);
+          var prolongsD = Array.isArray(contratsDetail.prolongations) ? contratsDetail.prolongations : [];
+          return h(Modal, { title: "Contrats - " + contratsDetail.prenom + " " + contratsDetail.nom, onClose: function() { setContratsDetail(null); }, size: 580 },
+            h("div", null,
+              h("div", { style: { padding: "10px 14px", borderRadius: 10, background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.35)", marginBottom: 14, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" } },
+                h("span", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, color: "#fde68a" } }, "Duree totale embauchee en CDD"),
+                h("span", { style: { fontSize: 17, fontWeight: 800, color: "#fde68a" } }, fmtDureeJours(jCDDTot)),
+                h("span", { style: { fontSize: 11.5, color: "#a1a1aa" } }, "(" + jCDDTot + " jours, tous contrats CDD confondus)")
+              ),
+              h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, listCt.length + " contrat" + (listCt.length > 1 ? "s" : "") + " (du plus recent au plus ancien)"),
+              listCt.slice().reverse().map(function(c, i) {
+                var estCDD = c.type === "CDD";
+                return h("div", { key: i, style: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", padding: "8px 12px", borderLeft: "3px solid " + (c.courant ? "#22c55e" : "#64748b"), background: c.courant ? "rgba(34,197,94,0.06)" : "rgba(255,255,255,0.03)", borderRadius: "0 8px 8px 0", marginBottom: 6, fontSize: 12.5 } },
+                  h("span", { style: { fontSize: 10.5, fontWeight: 800, padding: "1px 8px", borderRadius: 999, background: estCDD ? "rgba(251,191,36,0.15)" : "rgba(34,197,94,0.12)", color: estCDD ? "#fde68a" : "#86efac", border: "1px solid " + (estCDD ? "rgba(251,191,36,0.40)" : "rgba(34,197,94,0.35)") } }, c.type),
+                  h("span", { style: { fontWeight: 700, color: "#e5e7eb" } }, "du " + formatDate(c.debut) + (c.fin ? " au " + formatDate(c.fin) : " (sans date de fin)")),
+                  h("span", { style: { color: "#a1a1aa" } }, fmtDureeJours(joursContrat(c)) + (c.fin ? "" : " a ce jour")),
+                  c.courant ? h("span", { style: { fontSize: 10, fontWeight: 800, color: "#86efac", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 999, padding: "1px 7px" } }, "EN COURS") : null,
+                  c.motifFin ? h("span", { style: { fontStyle: "italic", color: "#94a3b8", fontSize: 11.5 } }, c.motifFin) : null
+                );
+              }),
+              prolongsD.length > 0 ? h("div", { style: { marginTop: 12 } },
+                h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } }, "Prolongations du contrat en cours"),
+                prolongsD.slice().reverse().map(function(pr, pi) {
+                  return h("div", { key: pi, style: { fontSize: 12, color: "#cbd5e1", padding: "3px 12px" } },
+                    formatDate(pr.ancienneFin) + " -> " + formatDate(pr.nouvelleFin) + (pr.note ? " - « " + pr.note + " »" : "") + " (le " + formatDate(pr.date) + ")");
+                })
+              ) : null,
+              h("div", { style: { marginTop: 14, fontSize: 10.5, color: "#71717a", fontStyle: "italic" } }, "Rappel NC : un CDD ne peut etre renouvele que 2 fois au maximum. Un CDD en cours sans date de fin compte jusqu'a aujourd'hui dans le total.")
+            )
+          );
+        })() : null,
         viewFiche && renderFiche(viewFiche),
         ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
