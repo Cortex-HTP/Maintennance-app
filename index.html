@@ -10315,7 +10315,20 @@
                       return x.id === info.itemId ? Object.assign({}, x, { dateDebut: info.origDebut, dateFin: info.origFin }) : x;
                     }));
                   }
-                  alert("Chevauchement detecte avec une autre affectation de cet engin. Modification annulee.");
+                  // Nommer le conflit (2026-11-03) : l'alerte generique etait
+                  // incomprehensible quand l'affectation en face etait sur un
+                  // chantier hors ecran (vecu : "ya pas de chevauchement pourtant").
+                  var conflitsCE = ceListFin.filter(function(x) {
+                    if (x.id === aFin.id || String(x.equipementId) !== String(aFin.equipementId)) return false;
+                    if (!x.dateDebut || !x.dateFin) return false;
+                    return newStartFin.getTime() <= parseDate(x.dateFin).getTime() && newEndFin.getTime() >= parseDate(x.dateDebut).getTime();
+                  }).map(function(x) {
+                    var chX = (stateRef.current.chantiers || []).find(function(c2) { return c2.id === x.chantierId; });
+                    return "- " + (chX ? chX.titre + (chX.statut === "Termine" ? " (chantier TERMINE)" : "") : "chantier inconnu") + " : du " + formatDateFr(x.dateDebut) + " au " + formatDateFr(x.dateFin);
+                  });
+                  alert("Chevauchement : cet engin est deja affecte sur la periode visee.\n"
+                    + (conflitsCE.length ? conflitsCE.join("\n") : "(affectation non identifiee)")
+                    + "\n\nModification annulee - ajuste d'abord l'autre affectation (ou passe par le crayon pour des dates precises).");
                 } else {
                   // Clip applique : MAJ local + persistance
                   var finalA = Object.assign({}, aFin, clipped);
@@ -12254,8 +12267,12 @@
           var addCE = ctx.addChantierEquipement;
           var deleteCE = ctx.deleteChantierEquipement;
 
+          // TOUS les chantiers qui touchent l'annee affichee, TERMINES COMPRIS
+          // (2026-11-03) : un chantier passe en Termine disparaissait du planning
+          // alors que ses affectations engin existent toujours et comptent dans
+          // l'anti-chevauchement -> refus de drag sans conflit VISIBLE a l'ecran.
           var activeChantiers = chantiers.filter(function(ch) {
-            if (ch.statut === "Termine") return false;
+            if (!ch.dateDebut || !ch.dateFin) return false;
             var debut = parseDate(ch.dateDebut);
             var fin = parseDate(ch.dateFin);
             return debut <= yearEnd && fin >= yearStart;
@@ -12292,13 +12309,18 @@
             if (!editCE) return;
             if (!editCE.equipementId || !editCE.chantierId || !editCE.dateDebut || !editCE.dateFin) { alert("Engin, chantier et dates obligatoires."); return; }
             if (editCE.dateFin < editCE.dateDebut) { alert("La date de fin est avant la date de debut."); return; }
-            var busyE = getBusyIntervalsForEngine(ceList, editCE.equipementId, editCE.id);
             var sE = parseDate(editCE.dateDebut).getTime();
             var eE = parseDate(editCE.dateFin).getTime();
-            var conflit = null;
-            busyE.forEach(function(b) { if (!conflit && sE <= b.end.getTime() && eE >= b.start.getTime()) conflit = b; });
-            if (conflit) {
-              alert("Chevauchement : cet engin est deja affecte du " + formatDateFr(formatDateISO(conflit.start)) + " au " + formatDateFr(formatDateISO(conflit.end)) + ".\nAjuste d'abord l'autre affectation (ou change les dates).");
+            // Conflit cherche sur les LIGNES d'affectation (pas les intervalles
+            // anonymes) pour pouvoir NOMMER le chantier en face, meme hors ecran.
+            var conflitCE = ceList.find(function(x) {
+              if (x.id === editCE.id || String(x.equipementId) !== String(editCE.equipementId)) return false;
+              if (!x.dateDebut || !x.dateFin) return false;
+              return sE <= parseDate(x.dateFin).getTime() && eE >= parseDate(x.dateDebut).getTime();
+            });
+            if (conflitCE) {
+              var chCf = chantiers.find(function(c2) { return c2.id === conflitCE.chantierId; });
+              alert("Chevauchement : cet engin est deja affecte " + (chCf ? "au chantier " + chCf.titre + (chCf.statut === "Termine" ? " (TERMINE)" : "") : "ailleurs") + " du " + formatDateFr(conflitCE.dateDebut) + " au " + formatDateFr(conflitCE.dateFin) + ".\nAjuste d'abord l'autre affectation (ou change les dates).");
               return;
             }
             if (editCE.id != null) {
@@ -12385,7 +12407,7 @@
               // Swimlanes
               h("div", { style: { maxHeight: 600, overflowY: "auto" } },
                 activeChantiers.length === 0
-                  ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun chantier actif (en cours ou a venir) pour " + year)
+                  ? h("div", { style: { padding: 40, textAlign: "center", color: "#71717a", fontSize: 14 } }, "Aucun chantier sur " + year)
                   : (function() {
                       // Groupage des swimlanes par site
                       var grpSwl = {}; var ordSwl = [];
