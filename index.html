@@ -1871,6 +1871,289 @@
       return total;
     }
 
+    // ═══════════════ PAQUET PAIE CORTEX-PAIES (publication automatique) ═══════════════
+    // L'app admin publie dans parametres (categorie "paies_export_YYYY-MM") le paquet complet
+    // du mois de paie : jours du planning + conges approuves + primes de metrage + variables du
+    // RELEVE D'HEURES numerique (table releves_heures : route chauffeur/passager, pause = heures
+    // de repas, paniers, eloignement, postes sondeur). Cortex-Paies le lit directement dans la
+    // base (connexion Supabase) : plus aucun fichier a transferer. Le bouton "Export Cortex-Paies"
+    // de l'ecran Primes telecharge le MEME paquet (secours hors ligne).
+    var PAIES_EXPORT_PREFIX = "paies_export_";
+    // Fenetre de paie 26 -> 25 (strictement identique a getPeriodBounds de l'ecran Primes)
+    function paiesBounds(year, monthIdx) {
+      var startDate = (monthIdx === 0) ? new Date(year - 1, 11, 26) : new Date(year, monthIdx - 1, 26);
+      return { start: startDate, end: new Date(year, monthIdx, 25) };
+    }
+    function paiesHhmmToMin(s) {
+      if (s == null || s === "") return 0;
+      if (typeof s === "number") return s;
+      var p = String(s).split(":");
+      if (p.length < 2) return parseFloat(s) * 60 || 0;
+      return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+    }
+    // Agregation des releves d'heures par personnel_id sur [debutISO, finISO].
+    // Reprend les regles du recap Timesheet de l'ecran Releves d'heures : jours d'absence
+    // (estAbsenceReleve) exclus des postes/heures ; responsable du groupe (date+sondeuse)
+    // = personnel_id du rapport de forage (source autoritative), fallback fonction "Sondeur".
+    function aggregerRelevesPourPaies(relevesHeures, rapportsForage, debutISO, finISO) {
+      var periodRels = (relevesHeures || []).filter(function(r) {
+        var d = String(r.date_releve || "").substring(0, 10);
+        return d >= debutISO && d <= finISO;
+      });
+      var rapByGroup = {};
+      (rapportsForage || []).forEach(function(r) {
+        if (!r.date_rapport || !r.sondeuse_code || r.personnel_id == null) return;
+        var k = String(r.date_rapport).substring(0, 10) + "|" + String(r.sondeuse_code).toUpperCase().trim();
+        if (!rapByGroup[k] || (r.created_at && r.created_at > (rapByGroup[k].created_at || ""))) rapByGroup[k] = r;
+      });
+      var groups = {};
+      periodRels.forEach(function(r) {
+        var k = String(r.date_releve || "").substring(0, 10) + "|" + String(r.sondeuse_code || "").toUpperCase().trim();
+        if (!groups[k]) groups[k] = [];
+        groups[k].push(r);
+      });
+      var respByGroup = {};
+      Object.keys(groups).forEach(function(k) {
+        var rap = rapByGroup[k];
+        if (rap && rap.personnel_id != null) { respByGroup[k] = rap.personnel_id; return; }
+        var rows = groups[k];
+        var resp = rows.find(function(r) { var f = String(r.fonction || "").toLowerCase(); return f.indexOf("sondeur") >= 0 && f.indexOf("aide") < 0; });
+        if (!resp) resp = rows.slice().sort(function(a, b) { return (a.id || 0) - (b.id || 0); })[0];
+        respByGroup[k] = resp ? resp.personnel_id : null;
+      });
+      var agg = {};
+      periodRels.forEach(function(r) {
+        if (r.personnel_id == null) return;
+        var pid = r.personnel_id;
+        if (!agg[pid]) agg[pid] = { nbPostes: 0, routeChauffeur: 0, routePassager: 0, pause: 0, paniers: 0,
+          eloignement: 0, posteSondeur: 0, posteAide: 0, heuresEffectives: 0, heuresHorsPause: 0,
+          cpReleve: 0, maladieReleve: 0, ferieReleve: 0 };
+        var a = agg[pid];
+        if (!estAbsenceReleve(r)) {
+          var totMin = parseInt(r.total_minutes) || 0;
+          var pauseMin = paiesHhmmToMin(r.pause_dejeuner);
+          a.nbPostes += 1;
+          a.routeChauffeur += paiesHhmmToMin(r.route_chauffeur) / 60;
+          a.routePassager += paiesHhmmToMin(r.route_passager) / 60;
+          a.pause += pauseMin / 60;
+          a.heuresEffectives += totMin / 60;
+          a.heuresHorsPause += Math.max(0, (totMin - pauseMin) / 60);
+          a.paniers += parseInt(r.prime_panier) || 0;
+          var k2 = String(r.date_releve || "").substring(0, 10) + "|" + String(r.sondeuse_code || "").toUpperCase().trim();
+          if (respByGroup[k2] != null && respByGroup[k2] === r.personnel_id) a.posteSondeur += 1; else a.posteAide += 1;
+          if (r.eloignement === true || String(r.eloignement || "").toLowerCase() === "oui") a.eloignement += 1;
+        } else {
+          // Jours d'absence du releve : simple controle croise cote paie (CP / maladie / ferie)
+          var t = String(r.absence_type || "").toLowerCase().trim();
+          if (t === "conge" || t === "cp" || t === "conge paye" || t === "conge_paye" || t === "cp_v" || t === "cpv" || t === "cp v" || t === "conge vendu") a.cpReleve += 1;
+          else if (t === "maladie") a.maladieReleve += 1;
+          else if (t === "ferie" || t === "jour ferie") a.ferieReleve += 1;
+        }
+      });
+      // Arrondis a 2 decimales (heures decimales)
+      Object.keys(agg).forEach(function(pid) {
+        ["routeChauffeur", "routePassager", "pause", "heuresEffectives", "heuresHorsPause"].forEach(function(f) {
+          agg[pid][f] = Math.round(agg[pid][f] * 100) / 100;
+        });
+      });
+      return agg;
+    }
+    // Construit le paquet paie d'un mois (moisIdx 0-base). deps :
+    // { personnel (sans mecaniciens), affectations, demandesConge, chantiers, paliers,
+    //   saisies, relevesJourn (unifies), rapportsForage, relevesHeures }
+    function construirePaquetPaies(annee, moisIdx, deps) {
+      var bounds = paiesBounds(annee, moisIdx);
+      var debutISO = localISODate(bounds.start);
+      var finISO = localISODate(bounds.end);
+      var perMois = annee + "-" + (moisIdx + 1 < 10 ? "0" : "") + (moisIdx + 1);
+      var personnel = deps.personnel || [];
+      var affectations = deps.affectations || [];
+      // Primes de metrage tous sites (meme moteur que Statistiques : calcPrimesForSiteHelper)
+      var chantiersBySite = {};
+      (deps.chantiers || []).filter(function(c) { return c.statut === "En cours" || c.statut === "Termine"; }).forEach(function(ch) {
+        if (!ch.site) return;
+        if (!chantiersBySite[ch.site]) chantiersBySite[ch.site] = [];
+        chantiersBySite[ch.site].push(ch);
+      });
+      var chantierToSite = {};
+      (deps.chantiers || []).forEach(function(c) { if (c && c.id != null) chantierToSite[c.id] = c.site || ""; });
+      var depsPrimes = { chantiers: deps.chantiers || [], chantiersBySite: chantiersBySite, chantierToSite: chantierToSite,
+        paliers: deps.paliers || [], affectations: affectations, saisies: deps.saisies || {},
+        personnel: personnel, releves: deps.relevesJourn || [], rapportsForage: deps.rapportsForage || [] };
+      var primesParId = {};
+      getAvailableSites(deps.paliers || []).forEach(function(site) {
+        calcPrimesForSiteHelper(site, bounds.start, bounds.end, depsPrimes).forEach(function(row) {
+          var pid = row.employe && row.employe.id;
+          if (pid == null) return;
+          primesParId[pid] = (primesParId[pid] || 0) + (row.totalPrime || 0);
+        });
+      });
+      // Variables du releve d'heures numerique
+      var ts = aggregerRelevesPourPaies(deps.relevesHeures || [], deps.rapportsForage || [], debutISO, finISO);
+      // Conges approuves : source de verite = demandes (certains ne sont pas reportes en affectations)
+      var cgIdx = buildCongesParEmploye(deps.demandesConge || [], personnel);
+      var employes = [];
+      personnel.forEach(function(emp) {
+        var fens = fenetresEmploi(emp);
+        var aBornes = fens.some(function(f) { return !!(f.debut || f.fin); });
+        var chevauche = fens.some(function(f) { return (!f.debut || f.debut <= finISO) && (!f.fin || f.fin > debutISO); });
+        if (aBornes && !chevauche) return;
+        var compte = { conge: 0, maladie: 0, ferie: 0, chomage: 0, arret: 0, travail: 0 };
+        var affParDate = {};
+        affectations.forEach(function(a) {
+          if (a.personnelId !== emp.id) return;
+          var dj = a.dateAffectation ? String(a.dateAffectation).substring(0, 10) : "";
+          if (!dj || dj < debutISO || dj > finISO) return;
+          if (!dansFenetreEmploi(emp, dj)) return;
+          if (affParDate[dj]) return;
+          affParDate[dj] = true;
+          var tj = a.typeJour || "travail";
+          if (tj === "conge") compte.conge += 1;
+          else if (tj === "maladie") compte.maladie += 1;
+          else if (tj === "ferie") compte.ferie += 1;
+          else if (tj === "chomage") compte.chomage += 1;
+          else if (tj === "arret") compte.arret += 1;
+          else compte.travail += 1;
+        });
+        var cgEmp = cgIdx[emp.id];
+        if (cgEmp) {
+          var dCur = new Date(debutISO + "T00:00:00");
+          var dFin = new Date(finISO + "T00:00:00");
+          var garde = 0;
+          while (dCur.getTime() <= dFin.getTime() && garde < 45) {
+            var ds = localISODate(dCur);
+            if (!affParDate[ds] && dansFenetreEmploi(emp, ds)) {
+              var info = cgEmp[ds];
+              if (info && info.statut === "approuvee") {
+                if (congeBadgeType(info) === "maladie") compte.maladie += 1;
+                else compte.conge += 1;
+              }
+            }
+            dCur.setDate(dCur.getDate() + 1);
+            garde++;
+          }
+        }
+        // releves_heures.personnel_id = hashCodePersonnel(code fiche) (meme convention que les
+        // demandes de conge / l'app Employes), PAS l'id numerique de la fiche admin.
+        var tsEmp = ts[hashCodePersonnel(emp.code || ("u" + emp.id))] || ts[emp.id] || null;
+        employes.push({
+          nom: String(emp.nom || "").trim(), prenom: String(emp.prenom || "").trim(),
+          code: emp.code || "",
+          salaireFiche: parseFloat(String(emp.salaire == null ? "" : emp.salaire).replace(/\s/g, "")) || 0,
+          typeContrat: emp.typeContrat || "CDI",
+          dateEmbauche: emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : null,
+          dateFinContrat: emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : null,
+          joursTravail: compte.travail, joursConge: compte.conge, joursMaladie: compte.maladie,
+          joursFerie: compte.ferie, joursChomage: compte.chomage, joursArret: compte.arret,
+          joursAutresAbsences: 0,
+          primeMetrage: Math.round(primesParId[emp.id] || 0),
+          // Variables du releve d'heures numerique (null = aucun releve sur la fenetre)
+          releve: tsEmp ? {
+            nbPostes: tsEmp.nbPostes, routeChauffeur: tsEmp.routeChauffeur, routePassager: tsEmp.routePassager,
+            heuresRepas: tsEmp.pause, paniers: tsEmp.paniers, eloignement: tsEmp.eloignement,
+            posteSondeur: tsEmp.posteSondeur, posteAide: tsEmp.posteAide,
+            heuresEffectives: tsEmp.heuresEffectives, heuresHorsPause: tsEmp.heuresHorsPause,
+            cpReleve: tsEmp.cpReleve, maladieReleve: tsEmp.maladieReleve, ferieReleve: tsEmp.ferieReleve
+          } : null
+        });
+      });
+      return { source: "wallis-label-admin", version: 2, periode: perMois,
+        fenetre: { debut: debutISO, fin: finISO }, genere: new Date().toISOString(), employes: employes };
+    }
+    // Publie (upsert) le paquet dans parametres si son contenu a change. "genere" est exclu de la
+    // comparaison (sinon chaque passage ecrirait une ligne identique au timestamp pres).
+    function publierPaquetPaies(parametres, setParametres, paquet) {
+      var cat = PAIES_EXPORT_PREFIX + paquet.periode;
+      var row = (parametres || []).find(function(p) { return p.categorie === cat; });
+      function sansGenere(obj) { var n = {}; Object.keys(obj).forEach(function(k) { if (k !== "genere") n[k] = obj[k]; }); return JSON.stringify(n); }
+      if (row && row.valeur) {
+        try { if (sansGenere(JSON.parse(row.valeur)) === sansGenere(paquet)) return Promise.resolve({ inchange: true }); } catch (e) {}
+      }
+      var jsonVal = JSON.stringify(paquet);
+      if (row) {
+        // .select() : sans lui, un update filtre par RLS (0 ligne touchee) passerait pour un succes
+        return supabase.from("parametres").update({ valeur: jsonVal }).eq("id", row.id).select().then(function(res) {
+          if (res.error) { console.warn("[paies-publish]", res.error.message); return { erreur: res.error.message }; }
+          if (!res.data || !res.data.length) { console.warn("[paies-publish] update refuse (0 ligne)"); return { erreur: "update refuse" }; }
+          row.valeur = jsonVal;
+          if (setParametres) setParametres(function(p) { return (p || []).slice(); });
+          return { publie: true };
+        });
+      }
+      return supabase.from("parametres").insert({ categorie: cat, valeur: jsonVal, ordre: 0 }).select().single().then(function(res) {
+        if (res.error) { console.warn("[paies-publish]", res.error.message); return { erreur: res.error.message }; }
+        if (setParametres) setParametres(function(p) { return (p || []).concat(res.data); });
+        return { publie: true };
+      });
+    }
+    // Composant invisible monte a la racine (admin uniquement) : recalcule et publie le paquet
+    // du mois de paie courant + du precedent quand les donnees changent (debounce 5 s).
+    // Anti-boucle multi-sessions : chaque onglet ne publie que si le paquet qu'IL construit a
+    // change depuis SA derniere publication (ref), jamais parce que la base differe - deux
+    // onglets aux donnees divergentes ne se re-ecrasent donc pas en ping-pong ; et les releves
+    // d'heures + demandes de conge sont re-lus en base A CHAQUE cycle (donnees fraiches, les
+    // onglets convergent vers le meme contenu).
+    function PaiesAutoPublisher(props) {
+      var ctx = useAppData();
+      var dernierPublie = React.useRef({}); // periode -> empreinte (hors "genere") publiee par CET onglet
+      useEffect(function() {
+        if (!ctx.isAdmin) return;
+        if (props && (props.dataLoading || props.loadError)) return; // jamais sur un chargement partiel ou en echec
+        if (!(ctx.parametres || []).length || !(ctx.dbChantiers || []).length) return;
+        var cancelled = false;
+        var timer = setTimeout(function() {
+          var now = new Date();
+          var moisCourant = { annee: now.getFullYear(), moisIdx: now.getMonth() };
+          // Apres le 25, la paie "courante" est celle du mois SUIVANT (fenetre 26 -> 25)
+          if (now.getDate() > 25) {
+            moisCourant = (now.getMonth() === 11) ? { annee: now.getFullYear() + 1, moisIdx: 0 } : { annee: now.getFullYear(), moisIdx: now.getMonth() + 1 };
+          }
+          var moisPrecedent = (moisCourant.moisIdx === 0) ? { annee: moisCourant.annee - 1, moisIdx: 11 } : { annee: moisCourant.annee, moisIdx: moisCourant.moisIdx - 1 };
+          var debutDonnees = localISODate(paiesBounds(moisPrecedent.annee, moisPrecedent.moisIdx).start);
+          Promise.all([
+            fetchAllRows(function() { return supabase.from("releves_heures")
+              .select("id,personnel_id,date_releve,sondeuse_code,fonction,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,statut")
+              .gte("date_releve", debutDonnees).order("id"); }),
+            fetchAllRows(function() { return supabase.from("demandes_conge")
+              .select("id,demandeur_id,type_conge,nombre_jours,date_debut,date_reprise,statut")
+              .in("statut", ["en_attente", "approuvee"]).order("id"); })
+          ]).then(function(res) {
+            if (cancelled) return;
+            if (res[0].error || res[1].error) { console.warn("[paies-publish] lecture releves/conges en echec, publication sautee"); return; }
+            // Releves REFUSES exclus de la paie (un releve refuse par l'admin ne doit pas payer
+            // de route/paniers) ; brouillons/envoyes/valides conserves comme au recap Timesheet.
+            var relevesHeures = (res[0].data || []).filter(function(r) { return String(r.statut || "") !== "refuse"; });
+            var deps = {
+              personnel: loadPersonnelFromParametres(ctx.parametres).filter(function(p) { return !p.roleMecanicien; }),
+              affectations: ctx.dbAffectations || [],
+              demandesConge: res[1].data || [],
+              chantiers: ctx.dbChantiers || [],
+              paliers: ctx.dbPaliers || [],
+              saisies: ctx.dbSaisies || {},
+              relevesJourn: ctx.dbRelevesJourn || [],
+              rapportsForage: ctx.dbRapportsForage || [],
+              relevesHeures: relevesHeures
+            };
+            if (!deps.personnel.length) return; // personnel illisible = chargement incomplet
+            [moisPrecedent, moisCourant].forEach(function(m) {
+              try {
+                var paquet = construirePaquetPaies(m.annee, m.moisIdx, deps);
+                if (!paquet.employes.length) return; // paquet vide = donnees suspectes, on ne publie pas
+                var n = {}; for (var k in paquet) { if (paquet.hasOwnProperty(k) && k !== "genere") n[k] = paquet[k]; }
+                var empreinte = JSON.stringify(n);
+                if (dernierPublie.current[paquet.periode] === empreinte) return; // rien de neuf pour CET onglet
+                publierPaquetPaies(ctx.parametres, ctx.setParametres, paquet).then(function(r) {
+                  if (r && !r.erreur) dernierPublie.current[paquet.periode] = empreinte;
+                });
+              } catch (e) { console.warn("[paies-publish] echec construction paquet:", e); }
+            });
+          });
+        }, 5000);
+        return function() { cancelled = true; clearTimeout(timer); };
+      }, [ctx.isAdmin, props && props.dataLoading, props && props.loadError, ctx.parametres, ctx.dbAffectations, ctx.dbChantiers, ctx.dbPaliers, ctx.dbSaisies, ctx.dbRelevesJourn, ctx.dbRapportsForage]);
+      return null;
+    }
+
     // ─── Resolution du champ "Compatible avec" en codes d'equipements ───
     // Regle : chaque token separe par , ; ou espace est traite comme un PREFIXE
     // (insensible a la casse) qui doit matcher le debut du code de l'equipement.
@@ -21618,6 +21901,30 @@
       var grandTotal = recapList.reduce(function(s, r) { return s + r.totalPrime; }, 0);
       var avgPrime = recapList.length > 0 ? grandTotal / recapList.length : 0;
 
+      // ── Auto-controle : primes PUBLIEES (paquet paie, moteur calcPrimesForSiteHelper) vs
+      // primes de CET ecran (moteur historique valide au franc contre le prestataire).
+      // Une divergence = les deux implementations ont derive -> bandeau d'alerte.
+      var paiesDrift = (function() {
+        try {
+          var perMoisChk = sy + "-" + (curM < 10 ? "0" : "") + curM;
+          var rowChk = (parametres || []).find(function(p) { return p.categorie === PAIES_EXPORT_PREFIX + perMoisChk; });
+          if (!rowChk || !rowChk.valeur) return null;
+          var paq = JSON.parse(rowChk.valeur);
+          var pubParNom = {};
+          (paq.employes || []).forEach(function(e) {
+            pubParNom[String((e.prenom + " " + e.nom)).toUpperCase().replace(/\s+/g, " ").trim()] = e.primeMetrage || 0;
+          });
+          var difs = [];
+          recapList.forEach(function(r) {
+            var k = String(r.employe || "").toUpperCase().replace(/\s+/g, " ").trim();
+            var pub = pubParNom[k];
+            if (pub === undefined) return; // employe hors paquet (parti > fenetre) : pas un drift
+            if (Math.abs(Math.round(r.totalPrime) - pub) >= 2) difs.push(r.employe + " : ecran " + Math.round(r.totalPrime) + " vs publie " + pub);
+          });
+          return difs.length ? difs : null;
+        } catch (e) { return null; }
+      })();
+
       // ── Courbe glissante (commence au mois de deploiement, grandit jusqu'a 12 mois) ──
       var featureStartDate = new Date(2026, 3, 1); // Avril 2026 = mois de deploiement
       var monthsSinceStart = (selectedMonth.getFullYear() - featureStartDate.getFullYear()) * 12 + (selectedMonth.getMonth() - featureStartDate.getMonth());
@@ -21647,14 +21954,23 @@
         setSelectedMonth(new Date(d.getFullYear(), d.getMonth() + delta, 1));
       }
 
-      // ── Export Cortex-Paies : fichier a importer dans l'app de paie ──
-      // Pour chaque employe actif sur la fenetre 26->25 du mois selectionne :
-      // salaire de la fiche (controle d'ecart cote Paies), jours du planning
-      // (conges, maladie, feries, chomage, autres absences) et prime de
-      // metrage calculee (recapByEmployee, tous sites). Le fichier est
-      // ensuite importe dans Cortex-Paies via "Importer mois Wallis".
+      // ── Export Cortex-Paies : fichier de SECOURS (le circuit normal est la publication
+      // automatique en base par PaiesAutoPublisher, lue directement par Cortex-Paies). ──
+      // Si le paquet publie du mois selectionne existe dans parametres, on telecharge
+      // CELUI-LA (fichier strictement identique a ce que lit Cortex-Paies, releve d'heures
+      // inclus). Sinon (mois ancien jamais publie), repli sur l'ancien calcul local.
       function exporterCortexPaies() {
         var perMois = sy + "-" + (curM < 10 ? "0" : "") + curM;
+        var rowPub = (parametres || []).find(function(p) { return p.categorie === PAIES_EXPORT_PREFIX + perMois; });
+        if (rowPub && rowPub.valeur) {
+          var blobP = new Blob([rowPub.valeur], { type: "application/json" });
+          var aP = document.createElement("a");
+          aP.href = URL.createObjectURL(blobP);
+          aP.download = "wallis-paies-" + perMois + ".json";
+          document.body.appendChild(aP); aP.click(); document.body.removeChild(aP);
+          setTimeout(function() { URL.revokeObjectURL(aP.href); }, 2000);
+          return;
+        }
         var debutISO = localISODate(currentPeriod.start);
         var finISO = localISODate(currentPeriod.end);
         // Conges approuves : les demandes sont la source de verite (certains conges
@@ -21733,6 +22049,12 @@
           title: h(IconText, { icon: "trophy", size: 20 }, "Primes de Metrage"),
           subtitle: "Periode " + periodLabel
         }),
+        paiesDrift ? h("div", { style: { display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 16px", marginBottom: 14, background: "rgba(244,63,94,0.12)", border: "1px solid rgba(244,63,94,0.45)", borderRadius: 10, color: "#fda4af", fontSize: 12.5, fontWeight: 600 } },
+          h(Icon, { name: "alert-triangle", size: 16, color: "#fda4af" }),
+          h("div", null,
+            h("div", null, "Controle paie : les primes PUBLIEES pour Cortex-Paies different de celles de cet ecran (les deux moteurs ont derive, a signaler) :"),
+            paiesDrift.slice(0, 6).map(function(d, i) { return h("div", { key: i, style: { fontWeight: 400 } }, "- " + d); }),
+            paiesDrift.length > 6 ? h("div", { style: { fontWeight: 400 } }, "... et " + (paiesDrift.length - 6) + " autre(s)") : null)) : null,
         h("div", { style: { display: "flex", gap: 12, alignItems: "center", marginBottom: 20 } },
           h("button", { onClick: function() { changeMonth(-1); }, style: { background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", color: "white", border: "none", padding: "8px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, h(Icon, { name: "chevron-left", size: 14, color: "white" })),
           h("div", { style: { fontSize: 15, fontWeight: 700, minWidth: 160, textAlign: "center", color: "#e5e7eb" } }, selectedMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })),
@@ -40653,6 +40975,8 @@
         h(WeatherBackground, { meteo: globalMeteoToday }),
         // Recherche globale Ctrl+K (modal + bouton flottant)
         h(RechercheGlobale, { onNavigate: navigate }),
+        // Publication automatique du paquet paie Cortex-Paies (admin uniquement, invisible)
+        h(PaiesAutoPublisher, { dataLoading: dataLoading, loadError: loadError }),
         h(ChatBulleAdmin, null),
         // FAB envoi rapide facture vers compta (bouton flottant + modal)
         h(QuickEnvoiFactureFab, null),
