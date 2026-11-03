@@ -1924,8 +1924,8 @@
       // Heures supplementaires : agregation par SEMAINE CIVILE (lundi-dimanche) sur TOUTES les
       // lignes recues (pas seulement la fenetre), une semaine etant rattachee au mois de paie
       // qui contient son DIMANCHE. Regle legale NC (Lp. 221-4, 39 h/semaine) : de la 40e a la
-      // 47e heure +25 %, au-dela +50 %. Base = heures effectives pointees (pause comprise, la
-      // pause etant du temps paye chez Wallis - rubrique "heures de repas").
+      // 47e heure +25 %, au-dela +50 %. Base = heures effectives HORS PAUSE (la pause est deja
+      // payee a part via la rubrique "heures de repas" : l'inclure paierait sa majoration deux fois).
       var semainesParPid = {};
       (relevesHeures || []).forEach(function(r) {
         if (r.personnel_id == null || estAbsenceReleve(r)) return;
@@ -1939,7 +1939,7 @@
         var dimISO = localISODate(dimanche);
         if (dimISO < debutISO || dimISO > finISO) return; // semaine rattachee a un autre mois de paie
         var cle = String(r.personnel_id) + "|" + localISODate(lundi);
-        semainesParPid[cle] = (semainesParPid[cle] || 0) + (parseInt(r.total_minutes) || 0) / 60;
+        semainesParPid[cle] = (semainesParPid[cle] || 0) + Math.max(0, ((parseInt(r.total_minutes) || 0) - paiesHhmmToMin(r.pause_dejeuner)) / 60);
       });
       var hsParPid = {};
       Object.keys(semainesParPid).forEach(function(cle) {
@@ -2031,6 +2031,14 @@
       var ts = aggregerRelevesPourPaies(deps.relevesHeures || [], deps.rapportsForage || [], debutISO, finISO);
       // Conges approuves : source de verite = demandes (certains ne sont pas reportes en affectations)
       var cgIdx = buildCongesParEmploye(deps.demandesConge || [], personnel);
+      // Dates feriees de la fenetre (affectations typeJour=ferie, communes a l'entreprise) :
+      // exclues des jours payes auto, car les feries sont payes a part (ligne dediee du bulletin)
+      var feriesSetP = {};
+      affectations.forEach(function(a) {
+        if ((a.typeJour || "") !== "ferie" || !a.dateAffectation) return;
+        var df = String(a.dateAffectation).substring(0, 10);
+        if (df >= debutISO && df <= finISO) feriesSetP[df] = true;
+      });
       var employes = [];
       personnel.forEach(function(emp) {
         var fens = fenetresEmploi(emp);
@@ -2079,26 +2087,50 @@
         // (certificat medical), pas par jour ouvre du planning. Source = demandes de conge
         // maladie approuvees (date_debut -> date_reprise EXCLUE), bornees a la fenetre de paie.
         var hashEmp = hashCodePersonnel(emp.code || ("u" + emp.id));
-        var malCal = 0, aDemandeMaladie = false;
+        var malCal = 0, aDemandeMaladie = false, premierArret = true;
+        var datesMal = {}; // dedoublonnage : deux demandes qui se chevauchent ne retiennent pas 2x le meme jour
+        var debutPlusAncien = null;
         (deps.demandesConge || []).forEach(function(dc) {
           if (!dc || dc.statut !== "approuvee") return;
-          if (dc.demandeur_id !== emp.id && dc.demandeur_id !== hashEmp) return;
+          if (String(dc.demandeur_id) !== String(emp.id) && String(dc.demandeur_id) !== String(hashEmp)) return;
           if (String(dc.type_conge || "").toLowerCase().indexOf("maladie") < 0) return;
           var dDeb = String(dc.date_debut || "").substring(0, 10);
           var dRep = String(dc.date_reprise || "").substring(0, 10); // jour de RETOUR (non retenu)
-          if (!dDeb) return;
+          // Sans date de reprise : repli sur nombre_jours (comme buildCongesParEmploye), sinon un
+          // vieil arret ouvert retiendrait ~30 jours TOUS les mois indefiniment.
+          var maxJ = dRep ? 1000 : Math.max(0, Math.round(parseFloat(dc.nombre_jours) || 0));
+          if (!dDeb || (!dRep && maxJ === 0)) return;
+          // La demande chevauche-t-elle la fenetre de paie ? (sinon elle ne concerne pas ce mois :
+          // le drapeau ne doit PAS etre leve, le repli planning doit rester possible)
+          var finArret = dRep || localISODate(new Date(new Date(dDeb + "T00:00:00").getTime() + maxJ * 86400000));
+          if (dDeb > finISO || finArret <= debutISO) return;
           aDemandeMaladie = true;
-          var cur = new Date((dDeb < debutISO ? debutISO : dDeb) + "T00:00:00");
-          var garde2 = 0;
-          while (garde2 < 45) {
+          if (debutPlusAncien === null || dDeb < debutPlusAncien) debutPlusAncien = dDeb;
+          var cur = new Date(dDeb + "T00:00:00");
+          var joursArret = 0, garde2 = 0;
+          while (garde2 < 90) {
             var dsM = localISODate(cur);
             if (dsM > finISO) break;
             if (dRep && dsM >= dRep) break;
-            if (dansFenetreEmploi(emp, dsM)) malCal += 1;
+            if (!dRep && joursArret >= maxJ) break;
+            if (dsM >= debutISO && dansFenetreEmploi(emp, dsM) && !datesMal[dsM]) { datesMal[dsM] = true; malCal += 1; }
+            joursArret++;
             cur.setDate(cur.getDate() + 1);
             garde2++;
           }
         });
+        // Premiere absence de l'ANNEE CIVILE de l'arret ? (maintien 100 % / 90 % du prestataire)
+        // = aucune autre demande maladie approuvee du meme salarie, de la meme annee, commencee avant.
+        if (aDemandeMaladie && debutPlusAncien) {
+          var anneeArret = debutPlusAncien.substring(0, 4);
+          (deps.demandesConge || []).forEach(function(dc) {
+            if (!dc || dc.statut !== "approuvee") return;
+            if (String(dc.demandeur_id) !== String(emp.id) && String(dc.demandeur_id) !== String(hashEmp)) return;
+            if (String(dc.type_conge || "").toLowerCase().indexOf("maladie") < 0) return;
+            var dDeb2 = String(dc.date_debut || "").substring(0, 10);
+            if (dDeb2 && dDeb2.substring(0, 4) === anneeArret && dDeb2 < debutPlusAncien) premierArret = false;
+          });
+        }
         // JOURS PAYES AUTO (entree/sortie en cours de mois) : jours ouvres lundi-vendredi de la
         // fenetre de paie couverts par la fenetre d'emploi. null = mois plein (26e habituel).
         var joursPayesAuto = null;
@@ -2110,7 +2142,7 @@
             var dsJP = localISODate(curJP);
             if (dsJP > finISO) break;
             var dowJP = curJP.getDay();
-            if (dowJP !== 0 && dowJP !== 6) {
+            if (dowJP !== 0 && dowJP !== 6 && !feriesSetP[dsJP]) { // feries exclus : payes a part
               ouvresTotal += 1;
               if (dansFenetreEmploi(emp, dsJP)) ouvresEmploi += 1;
             }
@@ -2133,6 +2165,7 @@
           // Maladie en jours CALENDAIRES depuis les demandes approuvees ; null = aucune demande
           // (si joursMaladie planning > 0 sans demande, la conversion reste a faire a la main)
           joursMaladieCalendaires: aDemandeMaladie ? malCal : null,
+          maladiePremiereAbsence: aDemandeMaladie ? premierArret : null,
           joursPayes: joursPayesAuto,
           // Variables du releve d'heures numerique (null = aucun releve sur la fenetre)
           releve: tsEmp ? {
@@ -2197,7 +2230,12 @@
             moisCourant = (now.getMonth() === 11) ? { annee: now.getFullYear() + 1, moisIdx: 0 } : { annee: now.getFullYear(), moisIdx: now.getMonth() + 1 };
           }
           var moisPrecedent = (moisCourant.moisIdx === 0) ? { annee: moisCourant.annee - 1, moisIdx: 11 } : { annee: moisCourant.annee, moisIdx: moisCourant.moisIdx - 1 };
-          var debutDonnees = localISODate(paiesBounds(moisPrecedent.annee, moisPrecedent.moisIdx).start);
+          // -6 jours : la premiere semaine civile rattachee a la fenetre du mois precedent peut
+          // commencer jusqu'a 6 jours avant le 26 - sans ces jours, ses heures sup seraient
+          // tronquees au moment ou le mois bascule de "courant" a "precedent".
+          var dDeb6 = paiesBounds(moisPrecedent.annee, moisPrecedent.moisIdx).start;
+          dDeb6 = new Date(dDeb6.getTime()); dDeb6.setDate(dDeb6.getDate() - 6);
+          var debutDonnees = localISODate(dDeb6);
           Promise.all([
             fetchAllRows(function() { return supabase.from("releves_heures")
               .select("id,personnel_id,date_releve,sondeuse_code,fonction,total_minutes,route_chauffeur,route_passager,pause_dejeuner,eloignement,absence_type,prime_panier,statut")
