@@ -2119,8 +2119,61 @@
             garde2++;
           }
         });
-        // Premiere absence de l'ANNEE CIVILE de l'arret ? (maintien 100 % / 90 % du prestataire)
-        // = aucune autre demande maladie approuvee du meme salarie, de la meme annee, commencee avant.
+        // MALADIE PEINTE AU PLANNING = APPROUVEE (consigne du gerant, 2026-11-04) : les jours
+        // peints "maladie" forment des ARRETS calendaires. Un arret court du 1er jour peint a la
+        // VEILLE de la reprise (prochaine affectation non-maladie), week-ends et jours non peints
+        // compris (c'est ce qui convertit 4 j ouvres de la semaine de 4 jours en 7 j calendaires).
+        // Sans reprise visible : prolongation plafonnee a 3 jours apres le dernier jour peint.
+        var malPeintsEmp = [], presencesEmp = {};
+        affectations.forEach(function(a) {
+          if (a.personnelId !== emp.id || !a.dateAffectation) return;
+          var dpa = String(a.dateAffectation).substring(0, 10);
+          if ((a.typeJour || "travail") === "maladie") malPeintsEmp.push(dpa);
+          else presencesEmp[dpa] = true;
+        });
+        malPeintsEmp.sort();
+        // Regroupe en runs : jours peints successifs separes d'au plus 3 jours sans presence
+        var runs = [];
+        malPeintsEmp.forEach(function(dp) {
+          var dernier = runs.length ? runs[runs.length - 1] : null;
+          if (dernier) {
+            var ecartJ = Math.round((new Date(dp + "T00:00:00") - new Date(dernier.fin + "T00:00:00")) / 86400000);
+            var presenceEntre = false;
+            for (var e = 1; e < ecartJ; e++) {
+              var dEntre = new Date(dernier.fin + "T00:00:00"); dEntre.setDate(dEntre.getDate() + e);
+              if (presencesEmp[localISODate(dEntre)]) presenceEntre = true;
+            }
+            if (ecartJ >= 1 && ecartJ <= 4 && !presenceEntre) { dernier.fin = dp; return; }
+          }
+          runs.push({ debut: dp, fin: dp });
+        });
+        runs.forEach(function(rn) {
+          // extension jusqu'a la veille de la reprise, plafonnee a 3 jours apres le dernier jour peint
+          var curE = new Date(rn.fin + "T00:00:00");
+          for (var x = 0; x < 3; x++) {
+            curE.setDate(curE.getDate() + 1);
+            var dsE = localISODate(curE);
+            if (presencesEmp[dsE]) break;
+            rn.finEtendue = dsE;
+          }
+          var finArr = rn.finEtendue || rn.fin;
+          if (rn.debut > finISO || finArr < debutISO) return;
+          aDemandeMaladie = true;
+          if (debutPlusAncien === null || rn.debut < debutPlusAncien) debutPlusAncien = rn.debut;
+          var curM2 = new Date(rn.debut + "T00:00:00");
+          var gardeM2 = 0;
+          while (gardeM2 < 45) {
+            var dsM2 = localISODate(curM2);
+            if (dsM2 > finArr || dsM2 > finISO) break;
+            if (dsM2 >= debutISO && dansFenetreEmploi(emp, dsM2) && !datesMal[dsM2]) { datesMal[dsM2] = true; malCal += 1; }
+            curM2.setDate(curM2.getDate() + 1);
+            gardeM2++;
+          }
+        });
+        // Premiere absence de l'ANNEE CIVILE ? (maintien 100 % / 90 % du prestataire) = aucune
+        // autre maladie du meme salarie - demande approuvee OU jours peints - commencee avant
+        // l'arret de ce mois, dans la meme annee civile. Les jours du MEME arret (runs colles a
+        // moins de 4 jours du debut) ne comptent pas comme une absence anterieure.
         if (aDemandeMaladie && debutPlusAncien) {
           var anneeArret = debutPlusAncien.substring(0, 4);
           (deps.demandesConge || []).forEach(function(dc) {
@@ -2129,6 +2182,13 @@
             if (String(dc.type_conge || "").toLowerCase().indexOf("maladie") < 0) return;
             var dDeb2 = String(dc.date_debut || "").substring(0, 10);
             if (dDeb2 && dDeb2.substring(0, 4) === anneeArret && dDeb2 < debutPlusAncien) premierArret = false;
+          });
+          runs.forEach(function(rn) {
+            if (rn.debut.substring(0, 4) !== anneeArret) return;
+            var finAvant = rn.finEtendue || rn.fin;
+            // run termine plus de 3 jours avant le debut de l'arret du mois = absence anterieure
+            var ecartAv = Math.round((new Date(debutPlusAncien + "T00:00:00") - new Date(finAvant + "T00:00:00")) / 86400000);
+            if (rn.debut < debutPlusAncien && ecartAv > 3) premierArret = false;
           });
         }
         // JOURS PAYES AUTO (entree/sortie en cours de mois) : jours ouvres lundi-vendredi de la
