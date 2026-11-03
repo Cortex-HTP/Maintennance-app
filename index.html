@@ -37547,11 +37547,26 @@
       var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
       var _texte = useState(""); var texte = _texte[0]; var setTexte = _texte[1];
       var _photo = useState(null); var photo = _photo[0]; var setPhoto = _photo[1];
+      var _mini = useState(null); var photoMini = _mini[0]; var setPhotoMini = _mini[1];
+      var _zoom = useState(null); var zoom = _zoom[0]; var setZoom = _zoom[1]; // { id, src, enCharge } : photo plein ecran
       var _err = useState(""); var errC = _err[0]; var setErrC = _err[1];
       var _badge = useState(0); var badge = _badge[0]; var setBadge = _badge[1];
       var _pends = useState([]); var pends = _pends[0]; var setPends = _pends[1];
       var filRef = React.useRef(null);
       var envoiRef = React.useRef(false);
+      // Photos HD deja vues (id -> dataURL) : plus jamais re-telechargees ;
+      // et ids dont le chargement auto a deja ete tente (pas de boucle)
+      var photoCacheRef = React.useRef({});
+      var photoAutoRef = React.useRef({});
+      // true seulement quand le fil affiche vient du SERVEUR (pas du cache
+      // local, qui strippe les vignettes en gardant photo=true)
+      var filSyncRef = React.useRef(false);
+      var RE_IMG_CHAT = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+      var poserPhotoCache = function(id, dataUrl) {
+        photoCacheRef.current[id] = dataUrl;
+        var ksC = Object.keys(photoCacheRef.current);
+        if (ksC.length > 40) delete photoCacheRef.current[ksC[0]]; // borne memoire
+      };
       var msgsRef = React.useRef([]); msgsRef.current = msgs;
       var canalRef = React.useRef(null); canalRef.current = canal;
       var openRef = React.useRef(false); openRef.current = open;
@@ -37682,9 +37697,9 @@
       useEffect(function() {
         if (!canal || !msgs.length) return;
         var legers = msgs.slice(-30).map(function(m) {
-          if (!m.photo_base64) return m;
+          if (!m.photo_base64 && !m.photo_mini) return m;
           var copie = {};
-          Object.keys(m).forEach(function(k) { if (k !== "photo_base64") copie[k] = m[k]; });
+          Object.keys(m).forEach(function(k) { if (k !== "photo_base64" && k !== "photo_mini") copie[k] = m[k]; });
           return copie;
         });
         try { localStorage.setItem("wl_admin_chat_cache_fil_" + canal, JSON.stringify(legers)); } catch (e) {}
@@ -37706,12 +37721,14 @@
           c = "dm:" + [(boot && boot.moi ? boot.moi.code : ""), String(c).substring(5)].sort().join("|");
         }
         setCanal(c); setVue("fil"); setPends([]);
+        filSyncRef.current = false;
         // Derniers messages connus affiches tout de suite (cache local) ;
         // le fetch complet qui suit reste la verite et remplace tout
         var enCache = lireCacheFil(c);
         setMsgs(enCache && enCache.length ? enCache : []);
         api("GET", "action=messages&canal=" + encodeURIComponent(c)).then(function(d) {
           if (c !== canalRef.current) return; // conversation changee entre-temps
+          filSyncRef.current = true;
           setMsgs(d.messages || []);
           if ((d.messages || []).length) setLastRead(c, d.messages[d.messages.length - 1].id);
         }).catch(function(e) { if (c === canalRef.current) setErrC(String(e.message || e)); });
@@ -37723,16 +37740,18 @@
         envoiRef.current = true;
         var cEnvoi = canal;
         var photoEnvoi = photo;
+        var miniEnvoi = photoMini;
         // Affichage OPTIMISTE : le message apparait tout de suite ("envoi..."),
         // la saisie se vide sans attendre la reponse du serveur
         var tmp = { _cle: "tmp-" + Date.now(), auteur_nom: boot && boot.moi ? boot.moi.nom : "Moi", texte: txt, photo_base64: photoEnvoi };
         setPends(function(prev) { return prev.concat([tmp]); });
-        setTexte(""); setPhoto(null);
-        api("POST", null, { action: "envoyer", canal: cEnvoi, texte: txt, photo_base64: photoEnvoi }).then(function(d) {
+        setTexte(""); setPhoto(null); setPhotoMini(null);
+        api("POST", null, { action: "envoyer", canal: cEnvoi, texte: txt, photo_base64: photoEnvoi, photo_mini: miniEnvoi }).then(function(d) {
           envoiRef.current = false;
           setPends(function(prev) { return prev.filter(function(p) { return p !== tmp; }); });
           if (d.canal && String(cEnvoi).indexOf("avec:") === 0 && canalRef.current === cEnvoi) { setCanal(d.canal); }
           if (d.message && (canalRef.current === cEnvoi || canalRef.current === d.canal)) {
+            if (photoEnvoi && d.message.id) poserPhotoCache(d.message.id, photoEnvoi); // ma HD reste locale apres les re-fetchs
             setMsgs(function(prev) { return fusionnerMsgs(prev, [d.message]); });
             setLastRead(d.canal || cEnvoi, d.message.id);
           }
@@ -37741,16 +37760,56 @@
           envoiRef.current = false;
           setPends(function(prev) { return prev.filter(function(p) { return p !== tmp; }); });
           setTexte(function(prev) { return prev ? prev : txt; });
-          if (photoEnvoi) setPhoto(photoEnvoi);
+          if (photoEnvoi) { setPhoto(photoEnvoi); setPhotoMini(miniEnvoi); }
           alert("Envoi impossible : " + (e.message || e));
         });
       };
-      var chargerPhoto = function(id) {
-        api("GET", "action=photo&id=" + encodeURIComponent(id)).then(function(d) {
-          if (!d.photo_base64 || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(d.photo_base64)) return;
-          setMsgs(function(prev) { return prev.map(function(x) { return x.id === id ? Object.assign({}, x, { photo_base64: d.photo_base64 }) : x; }); });
-        }).catch(function(e) { alert("Photo indisponible : " + (e.message || e)); });
+      var photoHd = function(m) {
+        if (!m) return null;
+        if (photoCacheRef.current[m.id]) return photoCacheRef.current[m.id];
+        if (m.photo_base64 && RE_IMG_CHAT.test(m.photo_base64)) return m.photo_base64;
+        return null;
       };
+      // Toucher une photo = plein ecran ; la HD se charge si pas deja connue
+      var voirPhoto = function(m) {
+        var hd = photoHd(m);
+        var miniV = (m.photo_mini && RE_IMG_CHAT.test(m.photo_mini)) ? m.photo_mini : null;
+        setZoom({ id: m.id, src: hd || miniV, enCharge: !hd });
+        if (hd) return;
+        api("GET", "action=photo&id=" + encodeURIComponent(m.id)).then(function(d) {
+          if (!d.photo_base64 || !RE_IMG_CHAT.test(d.photo_base64)) {
+            // Reponse sans image exploitable : on ne reste pas sur "Chargement..."
+            setZoom(function(z) { return z && z.id === m.id ? null : z; });
+            return;
+          }
+          poserPhotoCache(m.id, d.photo_base64);
+          setZoom(function(z) { return z && z.id === m.id ? { id: m.id, src: d.photo_base64, enCharge: false } : z; });
+        }).catch(function(e) { setZoom(null); alert("Photo indisponible : " + (e.message || e)); });
+      };
+      // Vieux messages d'avant les vignettes : l'image se charge TOUTE SEULE
+      // pour les 4 plus recents du fil, les plus anciens gardent le bouton
+      useEffect(function() {
+        if (!open || vue !== "fil") return;
+        // JAMAIS sur un fil issu du cache local (vignettes strippees mais
+        // photo=true : les messages recents passeraient pour des vieux)
+        if (!filSyncRef.current) return;
+        var candidats = msgs.filter(function(m) {
+          return m && m.photo && !m.supprime && !m.photo_mini && !photoHd(m) && !photoAutoRef.current[m.id];
+        });
+        // TOUS marques comme vus (les plus anciens gardent leur bouton, ils
+        // ne seront pas repeches 4 par 4 a chaque rendu), seuls les 4 derniers partent
+        candidats.forEach(function(m) { photoAutoRef.current[m.id] = 1; });
+        var lot = candidats.slice(-4);
+        if (!lot.length) return;
+        Promise.all(lot.map(function(m) {
+          return api("GET", "action=photo&id=" + encodeURIComponent(m.id)).then(function(d) {
+            if (d.photo_base64 && RE_IMG_CHAT.test(d.photo_base64)) poserPhotoCache(m.id, d.photo_base64);
+          }).catch(function() { /* le bouton Afficher la photo reste */ });
+        })).then(function() {
+          // UN SEUL re-rendu pour tout le lot (pas 4 sauts de scroll)
+          setMsgs(function(prev) { return prev.slice(); });
+        });
+      }, [msgs, open, vue]);
       var supprimer = function(m) {
         if (!confirm("Supprimer ce message de " + (m.auteur_nom || "?") + " ? Il restera visible comme \u00ab supprime \u00bb.")) return;
         api("POST", null, { action: "supprimer", id: m.id }).then(function() {
@@ -37777,7 +37836,21 @@
             data = cv.toDataURL("image/jpeg", paliers[i][1]);
             if (data.length <= 340000) break;
           }
+          // Vignette (~15 Ko) envoyee avec le message : elle s'affiche
+          // immediatement dans les bulles de tout le monde, sans clic
+          var minis = [[300, 0.6], [260, 0.5], [220, 0.42]];
+          var miniC = null;
+          for (var j = 0; j < minis.length; j++) {
+            var r2 = Math.min(1, minis[j][0] / img.width);
+            var cv2 = document.createElement("canvas");
+            cv2.width = Math.max(1, Math.round(img.width * r2));
+            cv2.height = Math.max(1, Math.round(img.height * r2));
+            cv2.getContext("2d").drawImage(img, 0, 0, cv2.width, cv2.height);
+            miniC = cv2.toDataURL("image/jpeg", minis[j][1]);
+            if (miniC.length <= 25000) break;
+          }
           setPhoto(data);
+          setPhotoMini(miniC && miniC.length <= 25000 ? miniC : null);
           URL.revokeObjectURL(url);
         };
         img.src = url;
@@ -37852,9 +37925,14 @@
                     ? h("div", { style: { background: "rgba(255,255,255,0.03)", border: "1px dashed rgba(255,255,255,0.15)", padding: "6px 10px", borderRadius: 11, fontSize: 11.5, fontStyle: "italic", color: "#71717a" } }, "Message supprime")
                     : h("div", { style: { background: moi ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: moi ? "none" : "1px solid rgba(255,255,255,0.07)", padding: "7px 11px", borderRadius: moi ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.4, color: moi ? "#fff" : "#e8e8ed", wordBreak: "break-word", whiteSpace: "pre-wrap" } },
                         m.texte || "",
-                        // Garde : la photo peut venir du cache local (forgeable) -> data URI image stricte uniquement
-                        m.photo_base64 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(m.photo_base64) ? h("img", { src: m.photo_base64, style: { maxWidth: 200, width: "100%", borderRadius: 8, display: "block", marginTop: 5 } }) :
-                        m.photo ? h("button", { onClick: function() { chargerPhoto(m.id); }, style: { display: "block", marginTop: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.2)", color: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "Afficher la photo") : null),
+                        // Garde : la photo peut venir du cache local (forgeable) -> data URI image stricte uniquement.
+                        // Priorite : HD connue > vignette (instantanee, cliquable) > bouton (vieux messages)
+                        (function() {
+                          var srcB = photoHd(m) || ((m.photo_mini && RE_IMG_CHAT.test(m.photo_mini)) ? m.photo_mini : null);
+                          if (srcB) return h("img", { src: srcB, onClick: function() { voirPhoto(m); }, style: { maxWidth: 220, width: "100%", borderRadius: 8, display: "block", marginTop: 5, cursor: "zoom-in" } });
+                          if (m.photo) return h("button", { onClick: function() { voirPhoto(m); }, style: { display: "block", marginTop: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.2)", color: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "Afficher la photo");
+                          return null;
+                        })()),
                   !m.supprime && boot && boot.moi && boot.moi.estAdmin ? h("div", { onClick: function() { supprimer(m); }, style: { fontSize: 9.5, color: "#fda4af", cursor: "pointer", padding: "2px 4px", textAlign: moi ? "right" : "left" } }, "Supprimer") : null
                 )
               );
@@ -37862,7 +37940,7 @@
           ),
           photo ? h("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 11, color: "#cbd5e1" } },
             h("img", { src: photo, style: { height: 36, borderRadius: 6 } }), "Photo prete",
-            h("span", { onClick: function() { setPhoto(null); }, style: { color: "#fda4af", fontWeight: 800, cursor: "pointer" } }, "Retirer")) : null,
+            h("span", { onClick: function() { setPhoto(null); setPhotoMini(null); }, style: { color: "#fda4af", fontWeight: 800, cursor: "pointer" } }, "Retirer")) : null,
           h("div", { style: { display: "flex", gap: 6, padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", alignItems: "flex-end" } },
             h("label", { style: { width: 38, height: 38, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.06)", color: "#cbd5e1", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
               h(Icon, { name: "camera", size: 16, color: "#cbd5e1" }),
@@ -37879,8 +37957,17 @@
       // en bas avec une hauteur sur 100vh, son en-tete partait se cacher sous
       // la barre d'adresse du navigateur (vh ignore la barre, dvh non)
       var panneauMobile = typeof window !== "undefined" && window.innerWidth < 640;
+      // Photo plein ecran (zoom) : par-dessus tout, toucher = fermer
+      var zoomOverlay = zoom ? h("div", {
+        onClick: function() { setZoom(null); },
+        style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 3000, background: "rgba(0,0,0,0.92)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, cursor: "zoom-out" }
+      },
+        zoom.src ? h("img", { src: zoom.src, style: { maxWidth: "100%", maxHeight: "85vh", borderRadius: 10, objectFit: "contain" } }) : null,
+        zoom.enCharge ? h("div", { style: { color: "#cbd5e1", fontSize: 12, fontWeight: 700 } }, "Chargement de la photo...") : null
+      ) : null;
       return h("div", null,
         bulle,
+        zoomOverlay,
         h("div", { style: panneauMobile
           ? { position: "fixed", top: "calc(8px + env(safe-area-inset-top))", left: 8, right: 8, bottom: "calc(8px + env(safe-area-inset-bottom))", zIndex: 1000, background: "#141726", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, boxShadow: "0 30px 90px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" }
           : { position: "fixed", bottom: "calc(232px + env(safe-area-inset-bottom))", right: "calc(16px + env(safe-area-inset-right))", zIndex: 95, width: 380, maxWidth: "calc(100vw - 24px)", height: 520, maxHeight: "calc(100dvh - 260px)", minHeight: 320, background: "#141726", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, boxShadow: "0 30px 90px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" } },
