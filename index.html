@@ -8824,6 +8824,227 @@
       }
     }
 
+    // ═══ Agent RH : redaction de contrat en discutant avec l'IA ═══════════
+    // Meme cerveau que le projet claude.ai "RH Wallis-Label" : l'agent lit la
+    // fiche (JAMAIS le PIN), discute, et remplit le gabarit PDF VERROUILLE
+    // (api/rh-agent -> api/rh-pdf, pre-signe cote societe). L'envoi au Coffre
+    // RH reste un clic manuel. Apercu en BLOB URL (la CSP interdit data:).
+    function RhContratIA({ emp, onClose }) {
+      var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
+      var _saisie = useState(""); var saisie = _saisie[0]; var setSaisie = _saisie[1];
+      var _enCours = useState(false); var enCours = _enCours[0]; var setEnCours = _enCours[1];
+      var _contrat = useState(null); var contrat = _contrat[0]; var setContrat = _contrat[1];
+      var _pdfUrl = useState(null); var pdfUrl = _pdfUrl[0]; var setPdfUrl = _pdfUrl[1];
+      var _police = useState(""); var police = _police[0]; var setPolice = _police[1];
+      var _genEnCours = useState(false); var genEnCours = _genEnCours[0]; var setGenEnCours = _genEnCours[1];
+      var _errA = useState(""); var errA = _errA[0]; var setErrA = _errA[1];
+      var _depose = useState(""); var depose = _depose[0]; var setDepose = _depose[1]; // '' | 'encours' | 'ok'
+      var filRef = React.useRef(null);
+      var pdfUrlRef = React.useRef(null);
+      // Le Blob lui-meme est garde : la CSP (connect-src) interdit de RELIRE
+      // une URL blob par fetch, le depot au Coffre envoie donc ce Blob direct
+      var pdfBlobRef = React.useRef(null);
+      // Numero de generation : seule la DERNIERE reponse PDF s'affiche
+      var genSeqRef = React.useRef(0);
+      var monteRef = React.useRef(true);
+      useEffect(function() {
+        monteRef.current = true;
+        return function() {
+          monteRef.current = false;
+          if (pdfUrlRef.current) { try { URL.revokeObjectURL(pdfUrlRef.current); } catch (e) {} }
+        };
+      }, []);
+      useEffect(function() {
+        if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
+      }, [msgs, enCours]);
+
+      // La fiche transmise a l'IA : identite et contrat UNIQUEMENT (jamais le
+      // PIN ni l'email de connexion)
+      var fichePourIA = function() {
+        return {
+          code: emp.code || ("u" + emp.id), nom: emp.nom || "", prenom: emp.prenom || "",
+          dateNaissance: emp.dateNaissance || "", role: emp.role || "",
+          typeContrat: emp.typeContrat || "", dateEmbauche: emp.dateEmbauche || "",
+          dateFinContrat: emp.dateFinContrat || "", salaire: emp.salaire || "",
+          contratsHistorique: (Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : []).map(function(c) {
+            return { dateEmbauche: (c && c.dateEmbauche) || "", dateFinContrat: (c && c.dateFinContrat) || "", typeContrat: (c && c.typeContrat) || "" };
+          })
+        };
+      };
+      var jeton = function() {
+        return supabase.auth.getSession().then(function(s) {
+          var t = s && s.data && s.data.session && s.data.session.access_token;
+          if (!t) throw new Error("Session expiree, reconnecte-toi");
+          return t;
+        });
+      };
+      var genererPdf = function(c, tok) {
+        var seq = ++genSeqRef.current;
+        setGenEnCours(true);
+        fetch("/api/rh-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
+          body: JSON.stringify({ type: "cdd", data: c })
+        }).then(function(r) {
+          return r.json().catch(function() { return { error: "HTTP " + r.status }; })
+            .then(function(j) { return { ok: r.ok, j: j }; });
+        }).then(function(out) {
+            if (!monteRef.current || seq !== genSeqRef.current) return; // modal ferme ou generation plus recente
+            setGenEnCours(false);
+            if (!out.ok || !out.j.ok) { setErrA("PDF : " + ((out.j && out.j.error) || "echec")); return; }
+            var bin = atob(out.j.pdf_base64);
+            var octets = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) octets[i] = bin.charCodeAt(i);
+            var blob = new Blob([octets], { type: "application/pdf" });
+            var url = URL.createObjectURL(blob);
+            if (pdfUrlRef.current) { try { URL.revokeObjectURL(pdfUrlRef.current); } catch (e) {} }
+            pdfUrlRef.current = url;
+            pdfBlobRef.current = blob;
+            setPdfUrl(url);
+            setPolice(out.j.police || "");
+            setDepose("");
+          })
+          .catch(function(e) {
+            if (!monteRef.current || seq !== genSeqRef.current) return;
+            setGenEnCours(false); setErrA("PDF : " + (e.message || e));
+          });
+      };
+      var envoyer = function(texteForce) {
+        var txt = String(texteForce || saisie || "").trim();
+        if (!txt || enCours) return;
+        var nouveaux = msgs.concat([{ role: "user", content: txt }]);
+        setMsgs(nouveaux); setSaisie(""); setEnCours(true); setErrA("");
+        jeton().then(function(tok) {
+          return fetch("/api/rh-agent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
+            // le contrat courant repart avec la demande : l'agent ajuste CES
+            // valeurs au lieu de tout reconstruire de memoire
+            body: JSON.stringify({ messages: nouveaux, fiche: fichePourIA(), contrat: contrat })
+          }).then(function(r) {
+            return r.json().catch(function() { return { error: "HTTP " + r.status }; })
+              .then(function(j) { return { ok: r.ok, j: j, tok: tok }; });
+          });
+        }).then(function(out) {
+          if (!monteRef.current) return;
+          setEnCours(false);
+          if (!out.ok || !out.j.ok) { setErrA((out.j && out.j.error) || "echec de l'agent"); return; }
+          setMsgs(nouveaux.concat([{ role: "assistant", content: out.j.reponse || "" }]));
+          if (out.j.contrat) { setContrat(out.j.contrat); genererPdf(out.j.contrat, out.tok); }
+        }).catch(function(e) { if (!monteRef.current) return; setEnCours(false); setErrA(e.message || String(e)); });
+      };
+      var nomFichier = function() {
+        return String((contrat && contrat.nom_fichier) || "contrat.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+      };
+      var deposerCoffre = function() {
+        if (!pdfBlobRef.current || !contrat || depose === "encours" || genEnCours) return;
+        if (!emp.code) {
+          alert("Cette fiche n'a pas de code interne : ouvre Modifier et renseigne le champ Code (ex. p21) avant le depot, sinon le document serait invisible dans le Coffre de l'employe.");
+          return;
+        }
+        if (!confirm("Deposer " + nomFichier() + " au Coffre RH de " + (emp.prenom || "") + " " + (emp.nom || "") + " pour signature sur tablette ?")) return;
+        setDepose("encours");
+        var tok, storagePath;
+        jeton().then(function(t) {
+          tok = t;
+          var ts = new Date().toISOString().replace(/[:.]/g, "-");
+          storagePath = emp.code + "/" + ts + "_" + nomFichier();
+          // envoi du Blob garde en memoire (relire l'URL blob est interdit par la CSP)
+          return fetch("https://employes-psi.vercel.app/api/rh-upload", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + tok, "X-Storage-Path": storagePath, "Content-Type": "application/pdf" },
+            body: pdfBlobRef.current
+          });
+        }).then(function(up) {
+          if (!up.ok) return up.json().catch(function() { return {}; }).then(function(eb) { throw new Error("upload : " + (eb.error || "HTTP " + up.status)); });
+          return supabase.auth.getSession();
+        }).then(function(s) {
+          var email = (s && s.data && s.data.session && s.data.session.user && s.data.session.user.email) || null;
+          return supabase.from("rh_documents").insert({
+            personnel_code: emp.code,
+            personnel_nom: ((emp.prenom || "") + " " + (emp.nom || "")).trim(),
+            type_document: "contrat",
+            nom_fichier: nomFichier(),
+            storage_path: storagePath,
+            // dates ISO fournies par l'agent : emission = signature societe,
+            // expiration = fin du CDD (alimente les alertes du Coffre)
+            date_emission: new Date().toISOString().substring(0, 10),
+            date_expiration: (contrat && /^\d{4}-\d{2}-\d{2}$/.test(String(contrat.fin_iso || ""))) ? contrat.fin_iso : null,
+            status: "pending_signature",
+            needs_signature: true,
+            uploaded_by: email,
+            notes: "Genere par l'agent RH (IA) - pre-signe cote societe"
+          }).select("*").single();
+        }).then(function(ins) {
+          if (ins.error) {
+            supabase.storage.from("rh-documents").remove([storagePath]);
+            throw new Error("insert : " + ins.error.message);
+          }
+          if (monteRef.current) setDepose("ok");
+        }).catch(function(e) {
+          if (monteRef.current) setDepose("");
+          alert("Depot impossible : " + (e.message || e));
+        });
+      };
+
+      var suggestions = [
+        { t: "Nouveau CDD", s: "CDD d'usage BTP (renfort)", m: "Nouveau CDD d'usage pour un renfort : " },
+        { t: "CDD de remplacement", s: "Remplace un salarie absent", m: "CDD de remplacement : " },
+        { t: "Regularisation", s: "Terme depasse, contrat a date reelle", m: "Contrat de regularisation : " }
+      ];
+      var bulleStyle = function(mien) {
+        return { alignSelf: mien ? "flex-end" : "flex-start", maxWidth: "88%", padding: "8px 12px", borderRadius: mien ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", background: mien ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: mien ? "none" : "1px solid rgba(255,255,255,0.07)", color: mien ? "#fff" : "#e8e8ed", marginTop: 8 };
+      };
+      return h(Modal, { title: "Agent RH - contrat de " + ((emp.prenom || "") + " " + (emp.nom || "")).trim(), onClose: onClose, size: 1150 },
+        h("div", { style: { display: "flex", gap: 16, alignItems: "stretch", flexWrap: "wrap" } },
+          // ── Colonne discussion ──
+          h("div", { style: { flex: "1 1 380px", minWidth: 320, display: "flex", flexDirection: "column", height: 560, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, overflow: "hidden" } },
+            h("div", { ref: filRef, style: { flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column" } },
+              msgs.length === 0 ? h("div", null,
+                h("div", { style: { fontSize: 12.5, color: "#a1a1aa", marginBottom: 10 } }, "Discute comme avec le projet RH : decris le contrat, ajuste, l'apercu se met a jour a droite. L'agent lit deja la fiche de l'employe."),
+                suggestions.map(function(sg) {
+                  return h("button", { key: sg.t, onClick: function() { setSaisie(sg.m); }, style: { display: "block", width: "100%", textAlign: "left", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 10, padding: "9px 12px", marginBottom: 7, cursor: "pointer", color: "#e8e8ed", fontFamily: "inherit" } },
+                    h("div", { style: { fontSize: 12.5, fontWeight: 800 } }, sg.t),
+                    h("div", { style: { fontSize: 10.5, color: "#a1a1aa" } }, sg.s));
+                })
+              ) : null,
+              msgs.map(function(m, i) { return h("div", { key: i, style: bulleStyle(m.role === "user") }, m.content); }),
+              enCours ? h("div", { style: Object.assign(bulleStyle(false), { color: "#a1a1aa", fontStyle: "italic" }) }, "L'agent redige...") : null
+            ),
+            errA ? h("div", { style: { padding: "8px 12px", fontSize: 12, color: "#fda4af", background: "rgba(244,63,94,0.10)", borderTop: "1px solid rgba(244,63,94,0.3)" } }, errA) : null,
+            h("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", alignItems: "flex-end" } },
+              h("textarea", { value: saisie, onChange: function(e) { setSaisie(e.target.value); },
+                onKeyDown: function(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); envoyer(); } },
+                placeholder: "Ex : CDD du 10 au 21 novembre, chantier Tiebaghi, au SMG...",
+                style: { flex: 1, resize: "none", height: 52, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", fontFamily: "inherit", fontSize: 12.5, padding: "9px 11px", outline: "none" } }),
+              h(Button, { onClick: function() { envoyer(); }, disabled: enCours }, h(IconText, { icon: "send", size: 14 }, "Envoyer"))
+            )
+          ),
+          // ── Colonne apercu ──
+          h("div", { style: { flex: "1.15 1 420px", minWidth: 340, display: "flex", flexDirection: "column", height: 560 } },
+            pdfUrl ? h(React.Fragment, null,
+              h("iframe", { src: pdfUrl, title: "apercu contrat", style: { flex: 1, width: "100%", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "#fff" } }),
+              genEnCours ? h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 6 } }, "Mise a jour de l'apercu...") : null,
+              police && police !== "carlito" ? h("div", { style: { fontSize: 11, color: "#fde68a", marginTop: 6 } }, "Police provisoire (" + police + ") : la version serveur utilisera Carlito.") : null,
+              contrat && Array.isArray(contrat.a_verifier) && contrat.a_verifier.length ? h("div", { style: { marginTop: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 11.5, color: "#fde68a" } },
+                h("div", { style: { fontWeight: 800, marginBottom: 3 } }, "A verifier avant envoi :"),
+                contrat.a_verifier.map(function(v, i) { return h("div", { key: i }, "- " + v); })
+              ) : null,
+              h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end" } },
+                h("a", { href: pdfUrl, download: nomFichier(), style: { textDecoration: "none" } },
+                  h(Button, { variant: "secondary" }, h(IconText, { icon: "download", size: 14 }, "Telecharger"))),
+                depose === "ok"
+                  ? h("span", { style: { alignSelf: "center", fontSize: 12.5, fontWeight: 800, color: "#86efac" } }, "Depose au Coffre RH - en attente de signature")
+                  : h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours },
+                      h(IconText, { icon: "lock", size: 14 }, depose === "encours" ? "Depot..." : "Deposer au Coffre RH"))
+              )
+            ) : h("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", border: "1px dashed rgba(255,255,255,0.15)", borderRadius: 12, color: "#71717a", fontSize: 12.5, textAlign: "center", padding: 20 } },
+              genEnCours ? "Generation du PDF..." : "L'apercu du contrat apparaitra ici des la premiere proposition de l'agent.\nTout ce qu'il remplit vient de la fiche et de tes consignes ; le texte juridique est verrouille.")
+          )
+        )
+      );
+    }
+
     function PersonnelForm({ onSave, onCancel, editItem, allPersonnel }) {
       var _nom = useState(editItem ? editItem.nom : "");
       var _prenom = useState(editItem ? editItem.prenom : "");
@@ -9095,6 +9316,9 @@
       var toDelete = _toDelete[0], setToDelete = _toDelete[1];
       var _viewFiche = useState(null);
       var viewFiche = _viewFiche[0], setViewFiche = _viewFiche[1];
+      // Agent RH (IA) : fiche de l'employe dont on redige un contrat
+      var _contratIA = useState(null);
+      var contratIA = _contratIA[0], setContratIA = _contratIA[1];
       // Onglet actif dans la fiche : 'infos' (par defaut) ou 'activite'
       var _ficheTab = useState("infos");
       var ficheTab = _ficheTab[0], setFicheTab = _ficheTab[1];
@@ -9520,7 +9744,8 @@
               ) : null
             )
           ),
-          h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 24 } },
+          h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 24, flexWrap: "wrap" } },
+            ctx.isAdmin && !emp.roleMecanicien ? h(Button, { onClick: function() { setViewFiche(null); setContratIA(emp); } }, h(IconText, { icon: "file-text", size: 14 }, "Rediger un contrat (IA)")) : null,
             h(Button, { variant: "secondary", onClick: function() { setViewFiche(null); setEditing(emp); setShowModal(true); } }, h(IconText, { icon: "pencil", size: 14 }, "Modifier")),
             h(Button, { variant: "danger", onClick: function() { setViewFiche(null); setToDelete(emp); } }, h(IconText, { icon: "trash-2", size: 14 }, "Supprimer"))
           )
@@ -10000,6 +10225,7 @@
           );
         })() : null,
         viewFiche && renderFiche(viewFiche),
+        contratIA && h(RhContratIA, { emp: contratIA, onClose: function() { setContratIA(null); } }),
         ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
     }
