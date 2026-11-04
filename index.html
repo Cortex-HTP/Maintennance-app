@@ -37558,8 +37558,9 @@
       // et ids dont le chargement auto a deja ete tente (pas de boucle)
       var photoCacheRef = React.useRef({});
       var photoAutoRef = React.useRef({});
-      // true seulement quand le fil affiche vient du SERVEUR (pas du cache
-      // local, qui strippe les vignettes en gardant photo=true)
+      // true seulement quand le fil affiche vient du SERVEUR (le cache local
+      // peut manquer des vignettes - gardees pour les 10 derniers seulement -
+      // tout en gardant photo=true)
       var filSyncRef = React.useRef(false);
       var RE_IMG_CHAT = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
       var poserPhotoCache = function(id, dataUrl) {
@@ -37578,6 +37579,40 @@
           var l = JSON.parse(localStorage.getItem("wl_admin_chat_cache_fil_" + c) || "null");
           return Array.isArray(l) ? l : null;
         } catch (e) { return null; }
+      };
+      // Serialisation d'un fil pour le cache : l'image HD JAMAIS, la vignette
+      // gardee pour les 10 derniers messages -> l'ouverture montre aussi les
+      // photos recentes sans attendre le serveur
+      var serialiserFil = function(liste) {
+        var tranche = liste.slice(-30);
+        var seuilMini = tranche.length - 10;
+        return tranche.map(function(m, i) {
+          if (!m.photo_base64 && !m.photo_mini) return m;
+          var copie = {};
+          Object.keys(m).forEach(function(k) {
+            if (k === "photo_base64") return;
+            if (k === "photo_mini" && i < seuilMini) return;
+            copie[k] = m[k];
+          });
+          return copie;
+        });
+      };
+      var ecrireCacheFil = function(c, liste) {
+        var avec = serialiserFil(liste);
+        try { localStorage.setItem("wl_admin_chat_cache_fil_" + c, JSON.stringify(avec)); }
+        catch (e) {
+          // Quota plein : on retente SANS vignettes pour que le dernier id
+          // reste juste - sinon le prechargement reboucle sans fin
+          try {
+            var sans = avec.map(function(m) {
+              if (!m.photo_mini) return m;
+              var copie = {};
+              Object.keys(m).forEach(function(k) { if (k !== "photo_mini") copie[k] = m[k]; });
+              return copie;
+            });
+            localStorage.setItem("wl_admin_chat_cache_fil_" + c, JSON.stringify(sans));
+          } catch (e2) {}
+        }
       };
       var fusionnerMsgs = function(prev, nouveaux) {
         var vus = {};
@@ -37610,6 +37645,48 @@
             return out.j;
           });
       };
+      // ─ Prechargement : le cache des fils reste FRAIS en continu (le boot
+      // tourne au signal temps reel, a l'ouverture et toutes les 60 s) ->
+      // ouvrir une conversation affiche les nouveaux messages SANS attente.
+      // Max 3 fils par passage, jamais celui affiche (le flux du fil gere).
+      var prechargeRef = React.useRef({});
+      var dernierIdCache = function(c) {
+        var fil = lireCacheFil(c);
+        if (!fil || !fil.length) return 0;
+        // MAX des ids (pas le dernier element : une fusion desordonnee
+        // ferait reboucler le prechargement a chaque bootstrap)
+        var max = 0;
+        fil.forEach(function(m) {
+          var idM = m ? (parseInt(m.id, 10) || 0) : 0;
+          if (idM > max) max = idM;
+        });
+        return max;
+      };
+      var prechargerFil = function(c, maxIdConnu) {
+        if (prechargeRef.current[c]) return;
+        prechargeRef.current[c] = true;
+        var proprio = "";
+        try { proprio = localStorage.getItem("wl_admin_chat_user") || ""; } catch (eU) {}
+        var dernier = dernierIdCache(c);
+        // Trou de plus de 100 messages : l'incremental renverrait les 100
+        // plus ANCIENS -> on repart des 100 plus recents (fetch complet)
+        if (maxIdConnu && dernier && maxIdConnu - dernier > 100) dernier = 0;
+        api("GET", "action=messages&canal=" + encodeURIComponent(c) + (dernier ? "&depuis=" + dernier : "")).then(function(d) {
+          prechargeRef.current[c] = false;
+          var nouveaux = Array.isArray(d.messages) ? d.messages : [];
+          if (!nouveaux.length) return;
+          if (openRef.current && vueRef.current === "fil" && canalRef.current === c) return; // fil ouvert entre-temps
+          var apres = "";
+          try { apres = localStorage.getItem("wl_admin_chat_user") || ""; } catch (eU2) {}
+          if (apres !== proprio) return; // compte change pendant la requete
+          var base = lireCacheFil(c) || [];
+          var vus = {};
+          base.forEach(function(m) { if (m && m.id) vus[m.id] = 1; });
+          var fusion = base.concat(nouveaux.filter(function(m) { return m && m.id && !vus[m.id]; }));
+          fusion.sort(function(a, b) { return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0); });
+          ecrireCacheFil(c, fusion);
+        }).catch(function() { prechargeRef.current[c] = false; });
+      };
       var rafraichirBoot = function() {
         api("GET", "action=bootstrap").then(function(d) {
           setBoot(d);
@@ -37619,6 +37696,28 @@
           (d.canaux || []).forEach(function(c) { if ((c.maxId || 0) > (lus[c.canal] || 0)) n++; });
           setBadge(n);
           setErrC("");
+          // Menage : au plus 12 fils en cache (les plus actifs) - l'admin
+          // voit TOUS les DM de la boite, sans borne le quota saturerait
+          try {
+            var actifs = {};
+            (d.canaux || []).slice().sort(function(a, b) { return (b.maxId || 0) - (a.maxId || 0); }).slice(0, 12)
+              .forEach(function(c) { actifs["wl_admin_chat_cache_fil_" + c.canal] = 1; });
+            var aSuppr = [];
+            for (var iK = 0; iK < localStorage.length; iK++) {
+              var kK = localStorage.key(iK);
+              if (kK && kK.indexOf("wl_admin_chat_cache_fil_") === 0 && !actifs[kK]) aSuppr.push(kK);
+            }
+            aSuppr.forEach(function(kS) { localStorage.removeItem(kS); });
+          } catch (eM) {}
+          (d.canaux || []).filter(function(c) {
+            if (!c || !c.canal) return false;
+            if (openRef.current && vueRef.current === "fil" && canalRef.current === c.canal) return false;
+            var dernier = dernierIdCache(c.canal);
+            // general toujours ; un DM seulement s'il est deja suivi (cache
+            // present) : pas de fetch complet des dizaines de DM de la boite
+            if (c.canal !== "general" && dernier === 0) return false;
+            return (c.maxId || 0) > dernier;
+          }).slice(0, 3).forEach(function(c) { prechargerFil(c.canal, c.maxId || 0); });
         }).catch(function(e) { setErrC(String(e.message || e)); });
       };
       useEffect(function() {
@@ -37692,17 +37791,11 @@
       useEffect(function() {
         if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
       }, [msgs, pends, vue]);
-      // Cache local du fil : 30 derniers messages, photos exclues (legeres).
-      // Couvre tous les chemins (ouverture, poll, broadcast, envoi).
+      // Cache local du fil : 30 derniers messages, HD exclue, vignettes des
+      // 10 derniers gardees. Couvre ouverture, poll, broadcast, envoi.
       useEffect(function() {
         if (!canal || !msgs.length) return;
-        var legers = msgs.slice(-30).map(function(m) {
-          if (!m.photo_base64 && !m.photo_mini) return m;
-          var copie = {};
-          Object.keys(m).forEach(function(k) { if (k !== "photo_base64" && k !== "photo_mini") copie[k] = m[k]; });
-          return copie;
-        });
-        try { localStorage.setItem("wl_admin_chat_cache_fil_" + canal, JSON.stringify(legers)); } catch (e) {}
+        ecrireCacheFil(canal, msgs);
       }, [msgs, canal]);
 
       var nomCanal = function(c) {
@@ -37790,8 +37883,8 @@
       // pour les 4 plus recents du fil, les plus anciens gardent le bouton
       useEffect(function() {
         if (!open || vue !== "fil") return;
-        // JAMAIS sur un fil issu du cache local (vignettes strippees mais
-        // photo=true : les messages recents passeraient pour des vieux)
+        // JAMAIS sur un fil issu du cache local (des vignettes peuvent
+        // manquer avec photo=true : les recents passeraient pour des vieux)
         if (!filSyncRef.current) return;
         var candidats = msgs.filter(function(m) {
           return m && m.photo && !m.supprime && !m.photo_mini && !photoHd(m) && !photoAutoRef.current[m.id];
