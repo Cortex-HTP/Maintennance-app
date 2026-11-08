@@ -19240,6 +19240,25 @@
         }
         if (brush === "eraser") {
           if (rapportCoverPe[empId + "-" + dateStr]) {
+            // ── Evenement personnel pose A LA MAIN sous un jour couvert par
+            // un rapport ENVOYE (vecu Fabien 02/11 : NP pose par erreur,
+            // la case etait INCORRIGEABLE : gomme refusee, peinture refusee).
+            // Sur un CLIC delibere (jamais au balayage), on propose de
+            // supprimer l'evenement : la case se repeint depuis le rapport.
+            var affSous = affMap[empId + "-" + dateStr];
+            var tjSous = affSous ? (affSous.typeJour || "travail") : "travail";
+            if (affSous && !affSous.fromRapport && tjSous !== "travail" && tjSous !== "ferie") {
+              setPainting(false);
+              if (!window.confirm("Cette case porte un evenement pose a la main (" + tjSous + "), ALORS QU'un rapport de forage ENVOYE prouve que l'employe a travaille ce jour-la.\n\nSupprimer l'evenement ? La case reprendra automatiquement le chantier du rapport.")) return;
+              if (moisPasseVerrouille(dateStr)) return;
+              supabase.from("affectations").delete().eq("personnel_id", empId).eq("date_affectation", dateStr).then(function(res) {
+                if (res.error) { alert("Erreur: " + res.error.message); return; }
+                setAffectations(function(prev) {
+                  return prev.filter(function(a) { return !(a.personnelId === empId && a.dateAffectation === dateStr); });
+                });
+              });
+              return;
+            }
             setAffectation(empId, dateStr, "", "travail"); // purge une eventuelle ligne masque residuelle
             setPainting(false); // l'alerte va avaler le mouseup
             alert("Cette case vient d'un rapport de forage ENVOYE : elle ne se gomme pas depuis le planning.\nSi l'equipe du rapport est fausse, corrige le rapport lui-meme.");
