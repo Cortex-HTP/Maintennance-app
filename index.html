@@ -29065,11 +29065,24 @@
         if (!form.Title || !form.Title.trim()) { alert("Le titre est obligatoire."); return; }
         if (!form.Date_Intervention) { alert("La date est obligatoire."); return; }
         if (!form.Technicien || !form.Technicien.trim()) { alert("Le technicien est obligatoire."); return; }
+        // Coherence statut <-> gamme : on retire les etapes vides, et on
+        // s'assure que "Terminee" avec des etapes non cochees est VOULU
+        // (inversement, tout coche -> proposition de terminer directement)
+        var statutFinal = form.Statut_Intervention || "Planifiee";
+        var gammePropre = (Array.isArray(form.Gamme) ? form.Gamme : []).filter(function(g) { return g && String(g.label || "").trim(); });
+        var restantes = gammePropre.filter(function(g) { return !g.done; }).length;
+        if (statutFinal === "Termine" && restantes > 0) {
+          if (!confirm(restantes + " etape(s) de la gamme ne sont pas cochees.\nCreer quand meme l'intervention TERMINEE (la demande passera en traitee) ?")) return;
+        }
+        if (statutFinal !== "Termine" && gammePropre.length > 0 && restantes === 0) {
+          if (confirm("Toutes les etapes sont cochees : creer directement l'intervention TERMINEE ?\n(Annuler = garder le statut " + statutFinal + ")")) statutFinal = "Termine";
+        }
+        var formFinal = Object.assign({}, form, { Statut_Intervention: statutFinal, Gamme: gammePropre });
         setSaving(true);
         try {
-          await ctx.addIntervention(form);
+          await ctx.addIntervention(formFinal);
           setSaving(false);
-          if (onCreated) onCreated(form);
+          if (onCreated) onCreated(formFinal);
         } catch (e) {
           setSaving(false);
           alert("Erreur creation : " + (e.message || String(e)));
@@ -29123,6 +29136,19 @@
               h("option", { value: "Preventive" }, "Preventive")
             )
           ),
+          // Statut a la creation : la demande se convertit DIRECTEMENT en
+          // intervention En cours / Terminee quand le travail est deja fait
+          // (le statut de la demande suit automatiquement : mapping +
+          // trigger SQL trg_sync_statut_demande)
+          h("div", null,
+            h("label", { style: labelS }, "Statut a la creation"),
+            h("select", { style: inputS, value: form.Statut_Intervention || "Planifiee", onChange: function(e) { upd("Statut_Intervention", e.target.value); } },
+              h("option", { value: "Planifiee" }, "Planifiee"),
+              h("option", { value: "En cours" }, "En cours"),
+              h("option", { value: "Pieces a commander" }, "Attente pieces"),
+              h("option", { value: "Termine" }, "Terminee")
+            )
+          ),
           // Horametre
           h("div", null,
             h("label", { style: labelS }, "Horametre (h)"),
@@ -29155,12 +29181,34 @@
               h("button", { type: "button", disabled: iaLoad, onClick: function() { genGammeIA(false); },
                 style: { padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", cursor: iaLoad ? "wait" : "pointer", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.12)", color: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: 5 } },
                 h(Icon, { name: "sparkles", size: 12, color: "#c4b5fd" }),
-                iaLoad ? "Generation..." : (Array.isArray(form.Gamme) && form.Gamme.length > 0 ? "Regenerer" : "Generer avec l'IA"))
+                iaLoad ? "Generation..." : (Array.isArray(form.Gamme) && form.Gamme.length > 0 ? "Regenerer" : "Generer avec l'IA")),
+              (Array.isArray(form.Gamme) && form.Gamme.length > 0) ? h("button", { type: "button",
+                onClick: function() {
+                  setForm(function(prev) {
+                    var toutFait = (prev.Gamme || []).every(function(g) { return g.done; });
+                    return Object.assign({}, prev, { Gamme: (prev.Gamme || []).map(function(g) { return Object.assign({}, g, { done: !toutFait }); }) });
+                  });
+                },
+                style: { padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px solid rgba(34,197,94,0.4)", background: "rgba(34,197,94,0.10)", color: "#86efac", display: "inline-flex", alignItems: "center", gap: 5 } },
+                h(Icon, { name: "check-check", size: 12, color: "#86efac" }),
+                (form.Gamme || []).every(function(g) { return g.done; }) ? "Tout decocher" : "Tout fait") : null
             ),
             iaLoad ? h("div", { style: { padding: "10px 12px", background: "rgba(167,139,250,0.06)", border: "1px dashed rgba(167,139,250,0.30)", borderRadius: 8, fontSize: 12, color: "#c4b5fd" } }, "L'IA convertit la description de la demande en etapes...") : null,
             (!iaLoad && Array.isArray(form.Gamme) && form.Gamme.length > 0) ? h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: "8px 12px" } },
               form.Gamme.map(function(g, gi) {
                 return h("div", { key: g.id || gi, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: gi < form.Gamme.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                  // Etape FAITE : cochable directement a la planification (le
+                  // travail est souvent deja realise quand la demande arrive)
+                  h("input", { type: "checkbox", checked: !!g.done, title: g.done ? "Etape faite" : "Etape a faire",
+                    onChange: function(e) {
+                      var v = e.target.checked;
+                      setForm(function(prev) {
+                        var arr = (prev.Gamme || []).slice();
+                        arr[gi] = Object.assign({}, arr[gi], { done: v });
+                        return Object.assign({}, prev, { Gamme: arr });
+                      });
+                    },
+                    style: { width: 16, height: 16, accentColor: "#22c55e", cursor: "pointer", flexShrink: 0 } }),
                   h("span", { style: { fontSize: 10.5, fontWeight: 800, color: "#71717a", minWidth: 18 } }, (gi + 1) + "."),
                   h("input", { type: "text", value: g.label || "",
                     onChange: function(e) {
@@ -29171,7 +29219,7 @@
                         return Object.assign({}, prev, { Gamme: arr });
                       });
                     },
-                    style: { flex: 1, padding: "5px 8px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, color: "#e5e7eb", fontSize: 12.5, fontFamily: "inherit" } }),
+                    style: { flex: 1, padding: "5px 8px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, color: g.done ? "#86efac" : "#e5e7eb", textDecoration: g.done ? "line-through" : "none", fontSize: 12.5, fontFamily: "inherit" } }),
                   h("button", { type: "button", title: "Retirer cette etape",
                     onClick: function() {
                       setForm(function(prev) {
@@ -29183,6 +29231,14 @@
               })
             ) : null,
             (!iaLoad && (!Array.isArray(form.Gamme) || form.Gamme.length === 0)) ? h("div", { style: { fontSize: 11.5, color: "#71717a", fontStyle: "italic" } }, "Aucune etape. La gamme est generee automatiquement depuis la description de la demande.") : null,
+            !iaLoad ? h("button", { type: "button",
+              onClick: function() {
+                setForm(function(prev) {
+                  return Object.assign({}, prev, { Gamme: (Array.isArray(prev.Gamme) ? prev.Gamme : []).concat([{ id: "man-" + Date.now(), label: "", done: false, fromPlan: false }]) });
+                });
+              },
+              style: { marginTop: 7, padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px dashed rgba(255,255,255,0.25)", background: "transparent", color: "#a1a1aa", display: "inline-flex", alignItems: "center", gap: 5 } },
+              h(Icon, { name: "plus", size: 12, color: "#a1a1aa" }), "Ajouter une etape") : null,
             iaInfo && iaInfo.erreur ? h("div", { style: { fontSize: 11, color: "#fda4af", marginTop: 5 } }, "IA indisponible (" + iaInfo.erreur + ") - tu peux saisir les etapes a la main ou relancer.") : null,
             iaInfo && !iaInfo.erreur ? h("div", { style: { fontSize: 11, color: iaInfo.source === "ia" ? "#86efac" : "#fde68a", marginTop: 5 } },
               iaInfo.source === "ia"
@@ -33992,7 +34048,9 @@
             updateInterventionStatut(planifInt.demande.id, DEMANDE_STATUT_FROM_INT[newInt.Statut_Intervention] || "planifiee");
             // 2) Ferme la modale
             setPlanifInt(null);
-            if (ctx.showToast) ctx.showToast("Intervention creee et planifiee", "success");
+            if (ctx.showToast) ctx.showToast(
+              newInt.Statut_Intervention === "Termine" ? "Intervention creee TERMINEE - demande traitee"
+                : "Intervention creee (" + (newInt.Statut_Intervention || "Planifiee") + ")", "success");
           }
         }) : null,
         // Modal "Ajouter aux Pieces detachees" depuis une soumission
