@@ -1895,8 +1895,23 @@
     // Reprend les regles du recap Timesheet de l'ecran Releves d'heures : jours d'absence
     // (estAbsenceReleve) exclus des postes/heures ; responsable du groupe (date+sondeuse)
     // = personnel_id du rapport de forage (source autoritative), fallback fonction "Sondeur".
-    function aggregerRelevesPourPaies(relevesHeures, rapportsForage, debutISO, finISO) {
-      var periodRels = (relevesHeures || []).filter(function(r) {
+    function aggregerRelevesPourPaies(relevesHeures, rapportsForage, debutISO, finISO, finsEmploiParPid) {
+      // Compteurs de controle AVANT tout filtre : les releves refuses ne paient rien mais sont
+      // comptes, les releves encore "en attente" PAIENT (comme le recap Timesheet) et doivent
+      // etre signales a la cloture - aujourd'hui rien ne previent le gerant.
+      var controleParPid = {};
+      (relevesHeures || []).forEach(function(r) {
+        if (r.personnel_id == null) return;
+        var d = String(r.date_releve || "").substring(0, 10);
+        if (d < debutISO || d > finISO) return;
+        var c = controleParPid[r.personnel_id];
+        if (!c) c = controleParPid[r.personnel_id] = { enAttente: 0, refuses: 0 };
+        var st = String(r.statut || "");
+        if (st === "refuse") c.refuses += 1;
+        else if (st !== "valide_admin") c.enAttente += 1;
+      });
+      relevesHeures = (relevesHeures || []).filter(function(r) { return String(r.statut || "") !== "refuse"; });
+      var periodRels = relevesHeures.filter(function(r) {
         var d = String(r.date_releve || "").substring(0, 10);
         return d >= debutISO && d <= finISO;
       });
@@ -1937,7 +1952,13 @@
         var dimanche = new Date(lundi.getTime());
         dimanche.setDate(dimanche.getDate() + 6);
         var dimISO = localISODate(dimanche);
-        if (dimISO < debutISO || dimISO > finISO) return; // semaine rattachee a un autre mois de paie
+        // Semaine rattachee au mois de paie qui contient son dimanche - SAUF pour un salarie dont
+        // l'emploi se TERMINE dans cette fenetre : sa derniere semaine, meme finissant apres le 25,
+        // est payee sur ce dernier mois (sinon ses heures sup ne seraient payees nulle part).
+        var finEmploi = finsEmploiParPid ? finsEmploiParPid[String(r.personnel_id)] : null;
+        var rattachee = (dimISO >= debutISO && dimISO <= finISO) ||
+          (finEmploi && dimISO > finISO && localISODate(lundi) <= finEmploi);
+        if (!rattachee) return;
         var cle = String(r.personnel_id) + "|" + localISODate(lundi);
         semainesParPid[cle] = (semainesParPid[cle] || 0) + Math.max(0, ((parseInt(r.total_minutes) || 0) - paiesHhmmToMin(r.pause_dejeuner)) / 60);
       });
@@ -1987,6 +2008,15 @@
         agg[pid].hs25 = Math.round(hsParPid[pid].h25 * 100) / 100;
         agg[pid].hs50 = Math.round(hsParPid[pid].h50 * 100) / 100;
       });
+      // Compteurs de controle rattaches (entree creee au besoin : un salarie dont TOUS les
+      // releves sont refuses doit quand meme remonter a la cloture)
+      Object.keys(controleParPid).forEach(function(pid) {
+        if (!agg[pid]) agg[pid] = { nbPostes: 0, routeChauffeur: 0, routePassager: 0, pause: 0, paniers: 0,
+          eloignement: 0, posteSondeur: 0, posteAide: 0, heuresEffectives: 0, heuresHorsPause: 0,
+          cpReleve: 0, maladieReleve: 0, ferieReleve: 0 };
+        agg[pid].relevesEnAttente = controleParPid[pid].enAttente;
+        agg[pid].relevesRefuses = controleParPid[pid].refuses;
+      });
       // Arrondis a 2 decimales (heures decimales)
       Object.keys(agg).forEach(function(pid) {
         ["routeChauffeur", "routePassager", "pause", "heuresEffectives", "heuresHorsPause"].forEach(function(f) {
@@ -1994,6 +2024,8 @@
         });
         if (agg[pid].hs25 === undefined) agg[pid].hs25 = 0;
         if (agg[pid].hs50 === undefined) agg[pid].hs50 = 0;
+        if (agg[pid].relevesEnAttente === undefined) agg[pid].relevesEnAttente = 0;
+        if (agg[pid].relevesRefuses === undefined) agg[pid].relevesRefuses = 0;
       });
       return agg;
     }
@@ -2027,8 +2059,26 @@
           primesParId[pid] = (primesParId[pid] || 0) + (row.totalPrime || 0);
         });
       });
+      // Fins d'emploi dans la fenetre (pour rattacher la derniere semaine d'heures sup d'un
+      // salarie qui part, meme si son dimanche tombe apres le 25)
+      var finsEmploiParPid = {};
+      personnel.forEach(function(emp) {
+        var fins = fenetresEmploi(emp);
+        fins.forEach(function(f) {
+          if (!f.fin) return;
+          // Renouvellement de contrat : si une autre periode d'emploi couvre f.fin (exclusive,
+          // donc le lendemain du dernier jour), ce n'est pas un depart - sinon la semaine d'HS
+          // serait rattachee deux fois (au mois de la "fin" puis au mois du dimanche)
+          if (dansFenetreEmploi(emp, String(f.fin).substring(0, 10))) return;
+          var dFin = new Date(String(f.fin).substring(0, 10) + "T00:00:00");
+          dFin.setDate(dFin.getDate() - 1); // f.fin est EXCLUSIVE : dernier jour travaille = veille
+          var dernierJour = localISODate(dFin);
+          if (dernierJour >= debutISO && dernierJour <= finISO)
+            finsEmploiParPid[String(hashCodePersonnel(emp.code || ("u" + emp.id)))] = dernierJour;
+        });
+      });
       // Variables du releve d'heures numerique
-      var ts = aggregerRelevesPourPaies(deps.relevesHeures || [], deps.rapportsForage || [], debutISO, finISO);
+      var ts = aggregerRelevesPourPaies(deps.relevesHeures || [], deps.rapportsForage || [], debutISO, finISO, finsEmploiParPid);
       // Conges approuves : source de verite = demandes (certains ne sont pas reportes en affectations)
       var cgIdx = buildCongesParEmploye(deps.demandesConge || [], personnel);
       // Dates feriees de la fenetre (affectations typeJour=ferie, communes a l'entreprise) :
@@ -2083,6 +2133,26 @@
         // releves_heures.personnel_id = hashCodePersonnel(code fiche) (meme convention que les
         // demandes de conge / l'app Employes), PAS l'id numerique de la fiche admin.
         var tsEmp = ts[hashCodePersonnel(emp.code || ("u" + emp.id))] || ts[emp.id] || null;
+        // Demandes d'absence ENCORE EN ATTENTE qui chevauchent la fenetre : elles ne paient rien
+        // tant qu'elles ne sont pas approuvees - la cloture doit les montrer avant validation.
+        var demAttente = 0, demAttenteTypes = [];
+        (deps.demandesConge || []).forEach(function(dc) {
+          if (!dc || dc.statut !== "en_attente") return;
+          if (String(dc.demandeur_id) !== String(emp.id) && String(dc.demandeur_id) !== String(hashCodePersonnel(emp.code || ("u" + emp.id)))) return;
+          var dD = String(dc.date_debut || "").substring(0, 10);
+          var dR = String(dc.date_reprise || "").substring(0, 10);
+          if (!dD || dD > finISO || (dR && dR <= debutISO)) return;
+          // Demande entierement hors periode d'emploi (salarie sorti ou pas encore entre) :
+          // elle ne paiera jamais rien sur ce mois, elle ne doit pas bloquer la cloture.
+          var dDerD = dD; // dernier jour demande (reprise exclue)
+          if (dR) { var dRd = new Date(dR + "T00:00:00"); dRd.setDate(dRd.getDate() - 1); dDerD = localISODate(dRd); }
+          var bD = dD > debutISO ? dD : debutISO;
+          var bF = dDerD < finISO ? dDerD : finISO;
+          if (!dansFenetreEmploi(emp, bD) && !dansFenetreEmploi(emp, bF)) return;
+          demAttente += 1;
+          var tp = String(dc.type_conge || "absence");
+          if (demAttenteTypes.indexOf(tp) < 0) demAttenteTypes.push(tp);
+        });
         // MALADIE EN JOURS CALENDAIRES : la paie retient 1/30e par jour CALENDAIRE de l'arret
         // (certificat medical), pas par jour ouvre du planning. Source = demandes de conge
         // maladie approuvees (date_debut -> date_reprise EXCLUE), bornees a la fenetre de paie.
@@ -2227,6 +2297,8 @@
           joursMaladieCalendaires: aDemandeMaladie ? malCal : null,
           maladiePremiereAbsence: aDemandeMaladie ? premierArret : null,
           joursPayes: joursPayesAuto,
+          demandesEnAttente: demAttente,
+          demandesEnAttenteTypes: demAttenteTypes.join(", "),
           // Variables du releve d'heures numerique (null = aucun releve sur la fenetre)
           releve: tsEmp ? {
             nbPostes: tsEmp.nbPostes, routeChauffeur: tsEmp.routeChauffeur, routePassager: tsEmp.routePassager,
@@ -2234,7 +2306,8 @@
             posteSondeur: tsEmp.posteSondeur, posteAide: tsEmp.posteAide,
             hs25: tsEmp.hs25, hs50: tsEmp.hs50,
             heuresEffectives: tsEmp.heuresEffectives, heuresHorsPause: tsEmp.heuresHorsPause,
-            cpReleve: tsEmp.cpReleve, maladieReleve: tsEmp.maladieReleve, ferieReleve: tsEmp.ferieReleve
+            cpReleve: tsEmp.cpReleve, maladieReleve: tsEmp.maladieReleve, ferieReleve: tsEmp.ferieReleve,
+            relevesEnAttente: tsEmp.relevesEnAttente || 0, relevesRefuses: tsEmp.relevesRefuses || 0
           } : null
         });
       });
@@ -2306,9 +2379,9 @@
           ]).then(function(res) {
             if (cancelled) return;
             if (res[0].error || res[1].error) { console.warn("[paies-publish] lecture releves/conges en echec, publication sautee"); return; }
-            // Releves REFUSES exclus de la paie (un releve refuse par l'admin ne doit pas payer
-            // de route/paniers) ; brouillons/envoyes/valides conserves comme au recap Timesheet.
-            var relevesHeures = (res[0].data || []).filter(function(r) { return String(r.statut || "") !== "refuse"; });
+            // Les releves REFUSES sont exclus de la paie et comptes DANS l'agregateur (compteurs
+            // de controle pour la cloture) : on passe la liste complete, il filtre lui-meme.
+            var relevesHeures = res[0].data || [];
             var deps = {
               personnel: loadPersonnelFromParametres(ctx.parametres).filter(function(p) { return !p.roleMecanicien; }),
               affectations: ctx.dbAffectations || [],
