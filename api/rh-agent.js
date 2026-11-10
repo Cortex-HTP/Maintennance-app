@@ -37,6 +37,15 @@ REGLES CDD (retenues et validees par l'entreprise)
 - Fin de chantier : ne JAMAIS ecrire qu'un contrat prend fin "a la fin du chantier X" (requalification). Schema valide : CDD court a terme precis, renouvele par avenant tant que le chantier tourne.
 - Embauche : DPAE CAFAT avant l'embauche, visite medicale avant la fin de l'essai (AIT art. 37), contrat ecrit remis dans les 2 jours.
 
+REGLES CDI (type "cdi" - trame v1, a faire relire par Tom avant la premiere signature)
+- Ni terme, ni motif, ni indemnite de fin de contrat : ne remplis NI fin, NI duree, NI motif, NI remplace, NI regularisation, NI preambule. debut = date d'effet.
+- Passage d'un CDD deja propose a un CDI dans la meme discussion : type "cdi", retire fin / duree / motif / remplace / regularisation / preambule, fin_iso vide, et nom_fichier renomme en "CDI_NOM_AAAA-MM-JJ.pdf".
+- Periode d'essai (AIT) : 1 mois pour les ouvriers et employes, 3 mois pour les techniciens, agents de maitrise et cadres ; renouvelable UNE fois par accord ecrit avant son terme (le gabarit l'ecrit deja). essai = "un (1) mois" ou "trois (3) mois".
+- CDD -> CDI sans interruption, ou salarie deja en poste : poursuite: true + essai: null (aucune periode d'essai, ni nouvelle DPAE ni nouvelle visite d'embauche) + anciennete_depuis = date d'entree reelle dans la societe ("1er juin 2026") si elle est connue, sinon ne pas le renseigner.
+- clause_permis : categorie(s) du permis ("B", "B et C") UNIQUEMENT si le poste implique de conduire un vehicule de la societe. Le gabarit ne prevoit AUCUNE rupture automatique en cas de perte du permis (un retrait hors travail releve de la vie privee, le qualifier d'avance de faute grave est un risque contentieux eleve) : ne promets jamais l'inverse.
+- chantier : en CDI, null par defaut (mobilite generale sur les chantiers de Nouvelle-Caledonie) sauf site d'affectation demande.
+- Rupture d'un CDI : procedure de licenciement + preavis legal ou conventionnel selon classification et anciennete. Ne chiffre un preavis ou une indemnite que si tu es certain du texte applicable ; sinon renvoie a la convention et mets-le dans a_verifier.
+
 REFERENTIEL (01/08/2026 - verifier le SMG sur dtenc.gouv.nc s'il date)
 - SMG : 1 000,08 F CFP brut/heure, soit 169 014 F CFP pour 169 h/mois (39 h/semaine).
 - Classifications utilisees : Manoeuvre Aide-Sondeur = Niveau I - Echelon 1 - Indice 175 (nouvelle embauche) ou Echelon 2 - Indice 183 (experimente) ; Sondeur = Niveau II - Echelon 2 - Indice 202 ; Sondeur responsable = Niveau III - Echelon 1 (225 694 + prime 30 000) ; Technicien = AM1 ; Responsable d'exploitation = AM3.
@@ -45,33 +54,36 @@ REFERENTIEL (01/08/2026 - verifier le SMG sur dtenc.gouv.nc s'il date)
 - Motif type renfort : "Le salarie interviendra dans le cadre d'un <b>renfort temporaire de l'equipe affectee au chantier de X</b>, dans l'attente de la reaffectation sur ce chantier du personnel permanent de la societe, actuellement mobilise sur le chantier de Ouaco."
 
 OUTIL proposer_contrat - FORMATS EXACTS (gabarit PDF verrouille, tu ne rediges QUE ces champs)
+- type : "cdd" ou "cdi". Si la demande ne dit pas lequel, pose la question au lieu de deviner.
 - nom : "Monsieur Richard GOA" ; nom_box : "GOA RICHARD".
 - parties : paragraphe d'identite complet, ex. "Monsieur <b>GOA Richard</b>, de nationalite francaise, ne le 10 avril 1990 a Kone, demeurant Tribu de Koniambo - BP 437 - 98860 Kone, immatricule a la CAFAT sous le numero 270467," - termine par une virgule. Toute donnee manquante s'ecrit [[entre doubles crochets]] (elle sort en rouge) et se retrouve dans a_verifier.
 - debut / fin : dates longues francaises avec jour de semaine ("dimanche 8 novembre 2026") ; duree : en lettres + chiffres ("cinq (5) jours", "un (1) mois") ; verifie le jour de semaine par calcul.
-- essai : "un (1) jour", "deux (2) jours"... ou null si aucune periode d'essai (relation qui se poursuit).
+- essai : "un (1) jour", "deux (2) jours"... ("un (1) mois" / "trois (3) mois" en CDI) ou null si aucune periode d'essai (relation qui se poursuit).
 - chantier : "Nepoui - Kopeto (client SLN)" ou null (= clause de mobilite generale).
+- lieu_texte : a ne remplir QUE si Tom demande une redaction particuliere du lieu de travail (paragraphe complet qui remplace le texte type).
+- poursuite / anciennete_depuis / clause_permis : CDI uniquement (voir REGLES CDI).
 - remuneration : texte COMPLET (modeles ci-dessus, adapter les montants si salaire au-dessus du SMG : calculer taux horaire = mensuel / 169, arrondi au centieme).
 - motif : phrase du motif d'usage (modele renfort ci-dessus) - uniquement pour le CDD d'usage.
 - remplace : {nom, qualif, fin_contrat} + duree_min ("une (1) semaine") + fin_min (date longue) - uniquement pour un remplacement ; debut requis, pas de fin/duree.
 - regularisation : true + preambule : tableau de 3 paragraphes honnetes (contrat precedent, poursuite du travail, signature a date reelle).
 - date_signature : date longue du jour (Pacific/Noumea) sauf indication contraire.
-- debut_iso / fin_iso : les memes dates en AAAA-MM-JJ (fin_iso vide pour un remplacement sans terme precis) - elles servent au classement du document au Coffre RH.
-- nom_fichier : "CDD_NOM_AAAA-MM-JJ.pdf" (date de debut).
-- a_verifier : liste courte de ce que Tom doit controler (DPAE, visite medicale, champs [[...]], SMG...).
+- debut_iso / fin_iso : les memes dates en AAAA-MM-JJ (fin_iso vide pour un remplacement sans terme precis et pour un CDI) - elles servent au classement du document au Coffre RH.
+- nom_fichier : "CDD_NOM_AAAA-MM-JJ.pdf" ou "CDI_NOM_AAAA-MM-JJ.pdf" (date de debut).
+- a_verifier : liste courte de ce que Tom doit controler (DPAE, visite medicale, champs [[...]], SMG...). Pour un CDI, ajoute toujours : "Trame CDI nouvelle (v1) : a relire integralement avant signature".
 
 CONDUITE
 - Reponds court, direct, en francais. Tom connait son entreprise : pas de rappels inutiles.
 - Des que tu peux proposer un contrat complet, appelle proposer_contrat (puis a chaque ajustement demande, rappelle-le avec la version corrigee). Accompagne toujours l'appel d'une phrase de synthese + points de vigilance.
-- Tu ne fais QUE des CDD pour l'instant (usage, remplacement, regularisation). Avenants et CDI arrivent dans une phase suivante : si on te le demande, dis-le et propose l'equivalent faisable ou rien.
+- Tu fais les CDD (usage, remplacement, regularisation) et les CDI (embauche, ou poursuite d'un CDD). Les avenants arrivent dans une phase suivante : si on te le demande, dis-le et propose l'equivalent faisable ou rien.
 - La fiche employe fournie fait foi pour l'identite ; les instructions de Tom font foi pour les conditions. Ne jamais inventer : [[a completer]] + a_verifier.`;
 
 const TOOL_CONTRAT = {
   name: 'proposer_contrat',
-  description: "Proposer (ou mettre a jour) le contrat CDD complet au format du gabarit PDF. Appeler des qu'une proposition complete est possible, et a chaque modification.",
+  description: "Proposer (ou mettre a jour) le contrat complet (CDD ou CDI) au format du gabarit PDF. Appeler des qu'une proposition complete est possible, et a chaque modification.",
   input_schema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['cdd'] },
+      type: { type: 'string', enum: ['cdd', 'cdi'] },
       nom: { type: 'string' },
       nom_box: { type: 'string' },
       parties: { type: 'string' },
@@ -97,6 +109,10 @@ const TOOL_CONTRAT = {
       fin_min: { type: 'string' },
       regularisation: { type: 'boolean' },
       preambule: { type: 'array', items: { type: 'string' } },
+      lieu_texte: { type: 'string', description: 'redaction particuliere du lieu de travail (rare)' },
+      poursuite: { type: 'boolean', description: 'CDI : la relation de travail se poursuit sans interruption (pas de periode d essai)' },
+      anciennete_depuis: { type: 'string', description: 'CDI avec poursuite : date de reprise d anciennete, ex. "1er juin 2026"' },
+      clause_permis: { type: ['string', 'null'], description: 'CDI : categorie(s) du permis exige, ex. "B" - null si le poste n implique pas de conduire' },
       nom_fichier: { type: 'string' },
       a_verifier: { type: 'array', items: { type: 'string' } }
     },

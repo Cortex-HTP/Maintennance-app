@@ -8951,20 +8951,36 @@
           return t;
         });
       };
+      var estCdi = function(c) {
+        return String((c && c.type) || "").trim().toLowerCase() === "cdi";
+      };
+      // Apercu ET Blob vides ensemble : un PDF perime ne doit jamais rester
+      // deposable sous l'identite (nom, dates) d'un contrat plus recent
+      var viderPdf = function() {
+        if (pdfUrlRef.current) { try { URL.revokeObjectURL(pdfUrlRef.current); } catch (e) {} }
+        pdfUrlRef.current = null;
+        pdfBlobRef.current = null;
+        setPdfUrl(null);
+      };
       var genererPdf = function(c, tok) {
         var seq = ++genSeqRef.current;
         setGenEnCours(true);
         fetch("/api/rh-pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
-          body: JSON.stringify({ type: "cdd", data: c })
+          body: JSON.stringify({ type: estCdi(c) ? "cdi" : "cdd", data: c })
         }).then(function(r) {
           return r.json().catch(function() { return { error: "HTTP " + r.status }; })
             .then(function(j) { return { ok: r.ok, j: j }; });
         }).then(function(out) {
             if (!monteRef.current || seq !== genSeqRef.current) return; // modal ferme ou generation plus recente
             setGenEnCours(false);
-            if (!out.ok || !out.j.ok) { setErrA("PDF : " + ((out.j && out.j.error) || "echec")); return; }
+            if (!out.ok || !out.j.ok) {
+              // le contrat affiche a change mais son PDF n'existe pas : on retire l'ancien
+              viderPdf();
+              setErrA("PDF non genere (" + ((out.j && out.j.error) || "echec") + ") - l'apercu precedent est retire, redemande le contrat.");
+              return;
+            }
             var bin = atob(out.j.pdf_base64);
             var octets = new Uint8Array(bin.length);
             for (var i = 0; i < bin.length; i++) octets[i] = bin.charCodeAt(i);
@@ -8979,7 +8995,9 @@
           })
           .catch(function(e) {
             if (!monteRef.current || seq !== genSeqRef.current) return;
-            setGenEnCours(false); setErrA("PDF : " + (e.message || e));
+            setGenEnCours(false);
+            viderPdf();
+            setErrA("PDF non genere (" + (e.message || e) + ") - l'apercu precedent est retire, redemande le contrat.");
           });
       };
       var envoyer = function(texteForce) {
@@ -9007,7 +9025,13 @@
         }).catch(function(e) { if (!monteRef.current) return; setEnCours(false); setErrA(e.message || String(e)); });
       };
       var nomFichier = function() {
-        return String((contrat && contrat.nom_fichier) || "contrat.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+        var n = String((contrat && contrat.nom_fichier) || "contrat.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+        if (!/\.pdf$/i.test(n)) n = n + ".pdf";
+        // le prefixe suit le type REEL du contrat (un CDD passe en CDI en cours
+        // de discussion ne doit pas garder un nom "CDD_...")
+        if (estCdi(contrat)) n = n.replace(/^CDD_/i, "CDI_");
+        else n = n.replace(/^CDI_/i, "CDD_");
+        return n;
       };
       var deposerCoffre = function() {
         if (!pdfBlobRef.current || !contrat || depose === "encours" || genEnCours) return;
@@ -9039,10 +9063,11 @@
             type_document: "contrat",
             nom_fichier: nomFichier(),
             storage_path: storagePath,
-            // dates ISO fournies par l'agent : emission = signature societe,
-            // expiration = fin du CDD (alimente les alertes du Coffre)
-            date_emission: new Date().toISOString().substring(0, 10),
-            date_expiration: (contrat && /^\d{4}-\d{2}-\d{2}$/.test(String(contrat.fin_iso || ""))) ? contrat.fin_iso : null,
+            // emission = jour du depot (date LOCALE Noumea, jamais toISOString :
+            // avant 11h la date UTC est celle de la veille) ; expiration = fin
+            // du CDD fournie par l'agent (alerte du Coffre), toujours vide en CDI
+            date_emission: localISODate(new Date()),
+            date_expiration: (contrat && !estCdi(contrat) && /^\d{4}-\d{2}-\d{2}$/.test(String(contrat.fin_iso || ""))) ? contrat.fin_iso : null,
             status: "pending_signature",
             needs_signature: true,
             uploaded_by: email,
@@ -9063,7 +9088,8 @@
       var suggestions = [
         { t: "Nouveau CDD", s: "CDD d'usage BTP (renfort)", m: "Nouveau CDD d'usage pour un renfort : " },
         { t: "CDD de remplacement", s: "Remplace un salarie absent", m: "CDD de remplacement : " },
-        { t: "Regularisation", s: "Terme depasse, contrat a date reelle", m: "Contrat de regularisation : " }
+        { t: "Regularisation", s: "Terme depasse, contrat a date reelle", m: "Contrat de regularisation : " },
+        { t: "CDI", s: "Embauche, ou passage d'un CDD en CDI", m: "CDI : " }
       ];
       var bulleStyle = function(mien) {
         return { alignSelf: mien ? "flex-end" : "flex-start", maxWidth: "88%", padding: "8px 12px", borderRadius: mien ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", background: mien ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: mien ? "none" : "1px solid rgba(255,255,255,0.07)", color: mien ? "#fff" : "#e8e8ed", marginTop: 8 };
@@ -36293,10 +36319,33 @@
         var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
         if (!maxExpParEmpType[kET] || String(d.date_expiration) > maxExpParEmpType[kET]) maxExpParEmpType[kET] = String(d.date_expiration);
       });
+      // Un contrat SANS date d'expiration (CDI) emis apres un CDD le remplace
+      // lui aussi : sans cela l'ancien CDD resterait "expire" a vie alors que
+      // le salarie est passe en CDI. Limite au type "contrat" (pour un permis
+      // ou une habilitation, une date oubliee ne doit masquer aucune alerte).
+      var refEmissionDoc = function(d) {
+        if (d.date_emission) return String(d.date_emission).substring(0, 10);
+        if (!d.uploaded_at) return "";
+        var dep = new Date(d.uploaded_at);
+        return isNaN(dep.getTime()) ? "" : localISODate(dep); // jour LOCAL du depot
+      };
+      var dernierContratSansTerme = {};
+      docs.forEach(function(d) {
+        if (d.date_expiration || d.type_document !== "contrat") return;
+        var kE = String(d.personnel_code || "");
+        var r = refEmissionDoc(d);
+        if (r && (!dernierContratSansTerme[kE] || r > dernierContratSansTerme[kE])) dernierContratSansTerme[kE] = r;
+      });
       var estVersionRemplacee = function(d) {
         if (!d.date_expiration) return false;
         var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
-        return String(d.date_expiration) < (maxExpParEmpType[kET] || "");
+        if (String(d.date_expiration) < (maxExpParEmpType[kET] || "")) return true;
+        if (d.type_document === "contrat") {
+          var rSansTerme = dernierContratSansTerme[String(d.personnel_code || "")] || "";
+          var rDoc = refEmissionDoc(d);
+          if (rSansTerme && rDoc && rSansTerme >= rDoc) return true;
+        }
+        return false;
       };
       var expiringSoon = docs.filter(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) > now && new Date(d.date_expiration) <= soon; }).length;
       var expired = docs.filter(function(d) { return d.date_expiration && !estVersionRemplacee(d) && new Date(d.date_expiration) < now; }).length;

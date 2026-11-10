@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ═══ /api/rh-pdf — Genere le PDF d'un contrat RH (reportlab) ═══════════
-# POST { type: "cdd", data: {...champs gen_contrat...} }
+# POST { type: "cdd" | "cdi", data: {...champs gen_contrat...} }
 #   -> { ok, pdf_base64, police, pages }
 #
 # ⚠️ Cet endpoint produit des documents PRE-SIGNES (signature + cachet du
@@ -93,19 +93,37 @@ class handler(BaseHTTPRequestHandler):
             if not _verifier_admin(self.headers.get("Authorization") or ""):
                 return self._repondre(401, {"error": "reserve a l'Administrateur"})
             corps = json.loads(self.rfile.read(taille).decode("utf-8"))
-            if str(corps.get("type") or "cdd") != "cdd":
-                return self._repondre(400, {"error": "type de document non gere (v1 : cdd)"})
+            type_doc = str(corps.get("type") or "cdd").strip().lower()
+            if type_doc not in ("cdd", "cdi"):
+                return self._repondre(400, {"error": "type de document non gere (cdd ou cdi)"})
             data = corps.get("data")
             if not isinstance(data, dict):
                 return self._repondre(400, {"error": "data manquant"})
+            # Le type du gabarit vient de l'enveloppe, jamais d'un champ de data
+            data = dict(data)
+            data["type"] = type_doc
             for champ in ("nom", "nom_box", "parties", "classif", "date_signature", "remuneration"):
                 if not str(data.get(champ) or "").strip():
                     return self._repondre(400, {"error": "champ obligatoire manquant : " + champ})
             # essai : present en texte, OU explicitement null (aucun essai),
             # OU essai_texte - sinon KeyError dans le gabarit
-            if "essai" not in data and not data.get("essai_texte"):
+            poursuite_cdi = type_doc == "cdi" and bool(data.get("poursuite"))
+            if poursuite_cdi:
+                # relation qui se poursuit : jamais de periode d'essai, quoi
+                # qu'ait renvoye l'agent (essai "", "un (1) mois"...)
+                data["essai"] = None
+            if "essai" not in data and not data.get("essai_texte") and not poursuite_cdi:
                 return self._repondre(400, {"error": "champ essai manquant (texte, ou null si aucune periode d'essai)"})
-            if data.get("remplace"):
+            if data.get("essai") is not None and not str(data.get("essai")).strip() and not data.get("essai_texte"):
+                return self._repondre(400, {"error": "champ essai vide (texte, ou null si aucune periode d'essai)"})
+            if type_doc == "cdi":
+                # CDI : ni terme, ni remplacement, ni regularisation de CDD
+                for champ in ("debut", "fonction"):
+                    if not str(data.get(champ) or "").strip():
+                        return self._repondre(400, {"error": "cdi : champ " + champ + " manquant"})
+                for champ in ("remplace", "regularisation", "preambule", "fin", "duree", "duree_min", "fin_min", "motif"):
+                    data.pop(champ, None)
+            elif data.get("remplace"):
                 r = data["remplace"] if isinstance(data["remplace"], dict) else {}
                 for champ in ("nom", "qualif"):
                     if not str(r.get(champ) or "").strip():
