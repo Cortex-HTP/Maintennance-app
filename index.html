@@ -1362,6 +1362,50 @@
       }
       return false;
     }
+    // ── REGLE « un rapport ENVOYE ecrase le NON PRODUCTIF pose a la main » (2026-11-11, Tomy) ──
+    // NP PERSONNEL = pose au pinceau du Planning Employes : la ligne n'a PAS de
+    // chantier (chantier_id null, cf. setAffectation). Si l'employe figure dans
+    // l'equipe d'un rapport ENVOYE ce jour-la, le rapport prouve le travail et
+    // la ligne s'efface, comme une ligne travail/ferie (vecu Fabien 02/11 : NP
+    // peint par erreur, il masquait sa journee reelle au planning et aux primes).
+    // NE CEDENT PAS : le NP de SITE propage depuis Avancement (la ligne porte un
+    // chantier), le rapport lui-meme coche non productif, ni conge / maladie /
+    // chomage / arret.
+    // NE CEDE PAS NON PLUS (audit du 2026-11-11) :
+    // - devant un rapport ORPHELIN (aucun site resolu) : il ne peint pas le
+    //   planning, il ne doit pas non plus retirer la moyenne creditee par le NP ;
+    // - si la grille AVANCEMENT du site du rapport declare elle-meme la journee
+    //   perdue (panne / intemperies / non productif / arret) : la cause externe
+    //   est averee, la moyenne reste creditee comme avant la regle. Sans cette
+    //   exception la prime baissait (metrage reel du rapport) alors que le
+    //   planning continuait d'afficher NP via la saisie Avancement.
+    // DATE D'EFFET = debut de la fenetre de paie en cours a la mise en service :
+    // les mois deja payes ne sont pas recalcules (PaiesAutoPublisher republie
+    // le mois precedent a chaque ouverture de l'app, sans verrou).
+    // UNE SEULE fonction pour les 3 lecteurs (Planning Employes, helper primes,
+    // ecran Primes) : ils ne peuvent pas diverger.
+    var NP_PERSO_CEDE_RAPPORT_DEPUIS = "2026-10-26";
+    // La grille Avancement d'un chantier quelconque du site porte-t-elle une
+    // cause externe ce jour-la ? (saisies = { chantierId: { "AAAA-MM-JJ": entree } })
+    function grilleSiteJourPerdu(saisies, chantiers, siteName, dateStr) {
+      if (!siteName) return false;
+      var perdu = false;
+      (chantiers || []).forEach(function(cG) {
+        if (perdu || !cG || cG.site !== siteName) return;
+        var tG = getSaisieType(((saisies || {})[cG.id] || {})[dateStr]);
+        if (tG === "panne" || tG === "intemperies" || tG === "non_productif" || tG === "arret") perdu = true;
+      });
+      return perdu;
+    }
+    // typeJour / chantierId : la ligne d'affectation de l'employe ce jour-la.
+    // siteRapport : site du rapport ENVOYE ou il figure ce jour-la (vide = orphelin).
+    function npPersoCedeAuRapport(typeJour, chantierId, dateStr, siteRapport, saisies, chantiers) {
+      if (typeJour !== "non_productif" || chantierId) return false;
+      var dNP = String(dateStr || "").substring(0, 10);
+      if (dNP < NP_PERSO_CEDE_RAPPORT_DEPUIS) return false;
+      if (!siteRapport) return false;
+      return !grilleSiteJourPerdu(saisies, chantiers, siteRapport, dNP);
+    }
     // Replique la logique de calcPrimesForSitePeriod (ex-EcranPrimes) pour qu'elle soit
     // reutilisable depuis EcranStatistiques (cout reel inclut les primes).
     // Inputs : site (string), periodStart/End (Date), deps :
@@ -1636,7 +1680,11 @@
           //   jour avec le metrage de la machine (source unique)
           // Les evenements personnels (conge, maladie, panne...) restent
           // prioritaires et sont traites normalement ci-dessous.
-          if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
+          // Depuis le 26/10/2026 le NON PRODUCTIF pose a la main au planning
+          // (ligne sans chantier) s'efface lui aussi : cf. npPersoCedeAuRapport.
+          // Uniquement devant un rapport RATTACHE a un site, et seulement si la
+          // grille Avancement de ce site ne declare pas la journee perdue.
+          if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie" || npPersoCedeAuRapport(tj, a.chantierId, dateStr, rapSiteByDate[dateStr].site, saisies, chantiers))) {
             // Rapport envoye sur un AUTRE site ce jour : le jour part au
             // prorata (avant : il disparaissait totalement - 'raison inconnue')
             if (rapSiteByDate[dateStr].site !== site && !datesComptees[dateStr]) {
@@ -19147,6 +19195,13 @@
       // Jours couverts par un rapport de forage (meme si une affectation explicite
       // existe deja) : sert a la gomme, qui doit poser un "masque" persistant au
       // lieu d'une simple suppression, sinon la case se repeint depuis le rapport.
+      // Le NON PRODUCTIF pose a la main cede-t-il devant le rapport de ce jour ?
+      // Meme test que les primes (npPersoCedeAuRapport), alimente par le site du
+      // chantier du rapport et la grille Avancement.
+      function npPersoCedePe(tjLigne, chantierIdLigne, chIdRapport, dateStr) {
+        var chRapPe = (chantiers || []).find(function(c) { return c.id == chIdRapport; });
+        return npPersoCedeAuRapport(tjLigne, chantierIdLigne, dateStr, chRapPe ? chRapPe.site : "", saisiesPe, chantiers);
+      }
       var rapportCoverPe = {};
       (ctx.dbRapportsForage || []).forEach(function(r) {
         if (!r.date_rapport || !Array.isArray(r.equipe) || r.equipe.length === 0) return;
@@ -19186,9 +19241,17 @@
           //   REALITE - vecu : Mathieu peint Nakety au planning mais
           //   rapporte a la SMT le 15/09)
           // Seuls les evenements personnels poses sciemment restent
-          // prioritaires : conge, maladie, panne, chomage, non productif, arret.
+          // prioritaires : conge, maladie, panne, chomage, arret - et le non
+          // productif de SITE (ligne avec chantier, propagee depuis Avancement).
+          // Depuis le 26/10/2026 (regle Tomy 2026-11-11), le NON PRODUCTIF pose
+          // a la main au pinceau (ligne SANS chantier) cede lui aussi : le
+          // rapport prouve le travail (vecu Fabien 02/11). Meme test que les
+          // primes (npPersoCedeAuRapport) : planning et primes ne divergent pas.
+          // Exception : si la grille Avancement du site declare la journee
+          // perdue (panne / intemperies / non productif / arret), la ligne
+          // reste (NP affiche, moyenne creditee) - comme avant la regle.
           var tjAffPe = existingAff ? (existingAff.typeJour || "travail") : null;
-          if (existingAff && tjAffPe !== "ferie" && tjAffPe !== "travail") return;
+          if (existingAff && tjAffPe !== "ferie" && tjAffPe !== "travail" && !npPersoCedePe(tjAffPe, existingAff.chantierId, chId, d)) return;
           affMap[key] = { chantierId: chId, typeJour: "travail", auto: true, fromRapport: true };
         });
       });
@@ -19346,9 +19409,21 @@
             // supprimer l'evenement : la case se repeint depuis le rapport.
             var affSous = affMap[empId + "-" + dateStr];
             var tjSous = affSous ? (affSous.typeJour || "travail") : "travail";
-            if (affSous && !affSous.fromRapport && tjSous !== "travail" && tjSous !== "ferie") {
+            // Ligne NON PRODUCTIF posee a la main qui a CEDE devant le rapport
+            // (regle du 2026-11-11) : la case est repeinte depuis le rapport,
+            // mais la ligne existe toujours en base et reapparaitrait si le
+            // rapport etait supprime. La gomme doit pouvoir la retirer (sinon
+            // le correctif Fabien ne servait plus a rien depuis le 26/10).
+            var ligneNpCedee = null;
+            if (affSous && affSous.fromRapport) {
+              var ligneBrute = affectations.find(function(a) { return a.personnelId === empId && a.dateAffectation === dateStr; });
+              if (ligneBrute && npPersoCedePe(ligneBrute.typeJour || "travail", ligneBrute.chantierId, rapportCoverPe[empId + "-" + dateStr], dateStr)) ligneNpCedee = ligneBrute;
+            }
+            if (ligneNpCedee || (affSous && !affSous.fromRapport && tjSous !== "travail" && tjSous !== "ferie")) {
               setPainting(false);
-              if (!window.confirm("Cette case porte un evenement pose a la main (" + tjSous + "), ALORS QU'un rapport de forage ENVOYE prouve que l'employe a travaille ce jour-la.\n\nSupprimer l'evenement ? La case reprendra automatiquement le chantier du rapport.")) return;
+              if (!window.confirm(ligneNpCedee
+                ? "Une ligne NON PRODUCTIF posee a la main existe encore sous cette case. Elle est ignoree (le rapport de forage ENVOYE fait foi), mais elle reapparaitrait si le rapport etait supprime.\n\nSupprimer cette ligne ? La case reste sur le chantier du rapport."
+                : "Cette case porte un evenement pose a la main (" + tjSous + "), ALORS QU'un rapport de forage ENVOYE prouve que l'employe a travaille ce jour-la.\n\nSupprimer l'evenement ? La case reprendra automatiquement le chantier du rapport.")) return;
               if (moisPasseVerrouille(dateStr)) return;
               supabase.from("affectations").delete().eq("personnel_id", empId).eq("date_affectation", dateStr).then(function(res) {
                 if (res.error) { alert("Erreur: " + res.error.message); return; }
@@ -19365,6 +19440,18 @@
           }
           setAffectation(empId, dateStr, "", "travail");
         } else if (isPersonnelEvent(brush)) {
+          // ── NON PRODUCTIF au pinceau sous un rapport ENVOYE : refuse ──
+          // Depuis le 26/10/2026 cette ligne s'effacerait devant le rapport
+          // (npPersoCedeAuRapport) : elle serait invisible ici et sans effet
+          // sur les primes. On le dit au lieu de laisser croire que c'est pose.
+          // (Si la grille Avancement declare la journee perdue, la ligne ne
+          // cede pas : elle reste posable, comme avant.)
+          var chRapClic = rapportCoverPe[empId + "-" + dateStr];
+          if (brush === "non_productif" && chRapClic && npPersoCedePe("non_productif", null, chRapClic, dateStr)) {
+            setPainting(false);
+            alert("Un rapport de forage ENVOYE prouve que l'employe a travaille ce jour-la : Non productif ne se pose pas par-dessus depuis le planning.\nSi la journee a ete non productive pour la machine, coche la case \"Journee non productive (0 m)\" dans le rapport : toute son equipe est alors creditee de la moyenne du site.");
+            return;
+          }
           setAffectation(empId, dateStr, null, brush);
         } else if (brush) {
           // ── Peindre un CHANTIER sous un rapport : refuse ──
@@ -19393,8 +19480,12 @@
             if (empHC2 && horsContratPe(empHC2, dateStr)) return;
             // chantier peint sous un rapport : ligne invisible mais comptee
             // par les primes -> on saute (les evenements personnels, eux,
-            // restent posables : ils priment sur le rapport)
+            // restent posables : ils priment sur le rapport - sauf le non
+            // productif depuis le 26/10/2026 : il cederait devant le rapport,
+            // la ligne serait invisible et sans effet -> saute aussi)
             if (!isPersonnelEvent(brush) && rapportCoverPe[empId + "-" + dateStr]) return;
+            var chRapSurvol = rapportCoverPe[empId + "-" + dateStr];
+            if (brush === "non_productif" && chRapSurvol && npPersoCedePe("non_productif", null, chRapSurvol, dateStr)) return;
           }
           if (brush === "eraser") {
             // gomme en balayage : on saute les cases issues d'un rapport
@@ -22025,6 +22116,7 @@
           if (!curRS || (rS.m || 0) > curRS.m || ((rS.m || 0) === curRS.m && String(rS.site) < String(curRS.site))) rapSiteByDate[rS.date] = { site: rS.site, m: rS.m || 0 };
           });
           var ailleursRapSet = {};
+          var npCedeSet = {}; // jours ou un NP pose a la main s'est efface devant un rapport
           empAffOnSite.forEach(function(a) {
             var tj = a.typeJour || "travail";
             var dateStr = a.dateAffectation;
@@ -22033,8 +22125,14 @@
             // autre site -> le jour est compte la-bas (fini le jour double,
             // vecu Mathieu Nakety/SMT 15/09) ; meme site -> la completion via
             // rapports comptera le jour avec le metrage machine. Les
-            // evenements personnels restent prioritaires.
-            if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie")) {
+            // evenements personnels restent prioritaires - sauf, depuis le
+            // 26/10/2026, le NON PRODUCTIF pose a la main au planning (ligne
+            // sans chantier) : cf. npPersoCedeAuRapport (miroir du helper),
+            // seulement devant un rapport RATTACHE a un site dont la grille
+            // Avancement ne declare pas la journee perdue.
+            if (rapSiteByDate[dateStr] && (tj === "travail" || tj === "ferie" || npPersoCedeAuRapport(tj, a.chantierId, dateStr, rapSiteByDate[dateStr].site, saisies, chantiers))) {
+              // (affichage du detail uniquement : dit pourquoi le NP ne compte pas)
+              if (tj === "non_productif") npCedeSet[dateStr] = true;
               // Rapport envoye sur un AUTRE site ce jour : le jour part au
               // prorata (avant : il disparaissait - 'IGNORE raison inconnue')
               if (rapSiteByDate[dateStr].site !== site && !ailleursRapSet[dateStr]) {
@@ -22254,6 +22352,12 @@
               var metrageMachine = getMetrageMachineForDate(r.sondeuse, r.date);
               dayMetrage = (metrageMachine != null) ? metrageMachine : 0;
               srcVR = "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - pas d'affectation planning trouvee";
+            }
+            // NP pose a la main qui a cede : on le dit, sans masquer le cas ou
+            // le rapport est lui-meme non productif (moyenne creditee)
+            if (npCedeSet[r.date]) {
+              if (rapportNpByMachineDate[r.sondeuse] && rapportNpByMachineDate[r.sondeuse][r.date]) srcVR += " (le NON PRODUCTIF pose a la main au planning est ignore : le rapport envoye fait foi)";
+              else srcVR = "rapport equipe machine " + r.sondeuse + " (" + dayMetrage + " m) - le NON PRODUCTIF pose a la main au planning est ignore : le rapport envoye fait foi";
             }
             adjMetrage += dayMetrage;
             adjJours += 1;
