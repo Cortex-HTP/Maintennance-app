@@ -2955,6 +2955,22 @@
     }
     function newGammeId() { return "g" + Date.now() + "_" + Math.floor(Math.random() * 1000); }
 
+    // ─── Recherche : texte compare sans majuscules ni accents ───────────
+    // "Vérifier" est trouve en tapant "verifier" ; la ponctuation est conservee.
+    function rechNorm(s) {
+      var t = String(s == null ? "" : s).toLowerCase();
+      return typeof t.normalize === "function" ? t.normalize("NFD").replace(/[̀-ͯ]/g, "") : t;
+    }
+    // Recherche sur une intervention : titre, commentaire, description du probleme, plan et
+    // contenu de la gamme (libelle des etapes, reference et designation de la piece)
+    function rechTexteGamme(gamme) {
+      return (Array.isArray(gamme) ? gamme : []).map(function(g) {
+        if (!g) return "";
+        var ref = String(g.pieceRef || "").trim(), pl = String(g.pieceLabel || "").trim();
+        return String(g.label || "") + " " + ref + " " + (pl !== ref ? pl : "");
+      }).join(" ");
+    }
+
     // ─── Pieces changees : historique reel et prevision de commande ─────
     // Source : les etapes de gamme COCHEES qui portent une reference, dans les
     // interventions. La gamme vit dans le JSON travaux_effectues : aucune table.
@@ -5832,9 +5848,12 @@
         }
       };
       const filtered = interventions.filter((i) => {
-        const sTl = sT.toLowerCase();
-        const gammeText = (Array.isArray(i.Gamme) ? i.Gamme : []).map(function(g) { return (g && g.label) || ""; }).join(" ").toLowerCase();
-        const mt = !sT || (i.Title || "").toLowerCase().includes(sTl) || (i.Travaux_Effectues || "").toLowerCase().includes(sTl) || gammeText.includes(sTl);
+        // Titre, commentaire, description du probleme, plan et gamme (etapes + reference piece),
+        // sans tenir compte des majuscules ni des accents
+        const mt = !sT || (function() {
+          var t = rechNorm(sT.trim());
+          return [i.Title, i.Travaux_Effectues, i.DescriptionProbleme, i.Plan, rechTexteGamme(i.Gamme)].some(function(x) { return rechNorm(x).indexOf(t) >= 0; });
+        })();
         const mm = !sM || (i.Equipement || "").toLowerCase().includes(sM.toLowerCase());
         const md = !sD || (i.Date_Intervention || "").includes(sD);
         const mecLabel = i.MecanicienCode ? getMecanicienLabel(i.MecanicienCode).toLowerCase() : "";
@@ -6000,7 +6019,7 @@
         ),
         vueInter !== "equipements" ? h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 12 } },
-            h(SearchInput, { placeholder: "Titre...", value: sT, onChange: setST }),
+            h(SearchInput, { placeholder: "Titre, gamme, piece...", value: sT, onChange: setST }),
             h(SearchInput, { placeholder: "Machine...", value: sM, onChange: setSM }),
             h(SearchInput, { placeholder: "Date...", value: sD, onChange: setSD }),
             h(SearchInput, { placeholder: "Technicien / Mecano...", value: sI, onChange: setSI }),
@@ -39375,6 +39394,7 @@
       }, [open]);
 
       // ── Construction des items recherchables ──
+      var totauxRech = {}; // nombre total de resultats par groupe (30 affiches au plus par groupe)
       var items = (function() {
         var out = [];
         var qq = (q || "").trim().toLowerCase();
@@ -39470,18 +39490,31 @@
           });
         }
 
-        // 5) Interventions
+        // 5) Interventions : titre, machine, technicien, type, plan, statut, commentaire,
+        //    description du probleme ET contenu de la gamme (etapes, reference / designation piece)
         if (canAccessPage("interventions")) {
           (ctx.interventions || []).forEach(function(i) {
-            var label = (i.Title || "") + " " + (i.Equipement || "") + " " + (i.Technicien || "") + " " + (i.Type || "");
+            var etapes = [];
+            (Array.isArray(i.Gamme) ? i.Gamme : []).forEach(function(g) {
+              var txt = rechTexteGamme([g]);
+              if (!txt.trim()) return;
+              var lib = String(g.label || "").trim(), ref = String(g.pieceRef || "").trim();
+              etapes.push({ n: rechNorm(txt), lib: (lib || String(g.pieceLabel || "").trim() || ref) + (ref && lib.indexOf(ref) < 0 ? " (ref " + ref + ")" : ""), done: !!g.done });
+            });
+            var base = (i.Title || "") + " " + (i.Equipement || "") + " " + (i.Technicien || "") + " " + (i.Type || "") + " " + (i.Plan || "") + " " + (i.Statut_Intervention || "");
+            var comm = String(i.Travaux_Effectues || "") + " " + String(i.DescriptionProbleme || "");
+            var dt = String(i.Date_Intervention || "");
+            var dtFr = /^\d{4}-\d\d-\d\d/.test(dt) ? dt.slice(8, 10) + "/" + dt.slice(5, 7) + "/" + dt.slice(0, 4) : "";
             out.push({
               group: "Interventions",
               iconKey: "soum",
               title: i.Title || ("Intervention #" + i.Id),
-              sub: (i.Equipement || "") + (i.Type ? " - " + i.Type : "") + (i.Statut_Intervention ? " - " + i.Statut_Intervention : ""),
-              label: label,
+              sub: [i.Equipement, i.Type, i.Statut_Intervention, dtFr].filter(Boolean).join(" - "),
+              label: base + " " + comm + " " + etapes.map(function(e) { return e.n; }).join(" "),
+              baseN: rechNorm(base), comm: comm, etapes: etapes,
               shortcut: "Interventions",
-              action: function() { onNavigate("interventions", i); }
+              // copie : re-cliquer la meme intervention apres fermeture rouvre bien la fiche
+              action: function() { onNavigate("interventions", Object.assign({}, i)); }
             });
           });
         }
@@ -39502,12 +39535,34 @@
           return raccourcis.filter(function(r) { return canAccessPage(r.pageKey); });
         }
         // Tokenise la query sur les espaces : "1000H 36" -> ["1000h", "36"]
-        // Chaque token doit etre present dans le label (AND), independamment de l'ordre.
-        var tokens = qq.split(/\s+/).filter(Boolean);
-        return out.filter(function(it) {
-          var lbl = it.label.toLowerCase();
-          return tokens.every(function(t) { return lbl.indexOf(t) >= 0; });
-        }).slice(0, 50);
+        // Chaque token doit etre present dans le label (AND), independamment de l'ordre,
+        // sans tenir compte des majuscules ni des accents.
+        var tokens = rechNorm(qq).split(/\s+/).filter(Boolean);
+        var res = [];
+        out.forEach(function(it) {
+          var lbl = rechNorm(it.label);
+          if (!tokens.every(function(t) { return lbl.indexOf(t) >= 0; })) return;
+          // Intervention trouvee par sa gamme ou son commentaire : montrer ce qui correspond
+          if (it.etapes) {
+            var hors = tokens.filter(function(t) { return it.baseN.indexOf(t) < 0; });
+            if (hors.length > 0) {
+              var et = null;
+              it.etapes.forEach(function(e) { if (!et && hors.every(function(t) { return e.n.indexOf(t) >= 0; })) et = e; });
+              if (!et) it.etapes.forEach(function(e) { if (!et && hors.some(function(t) { return e.n.indexOf(t) >= 0; })) et = e; });
+              if (et) it.trouve = "Gamme : " + et.lib + (et.done ? " (fait)" : "");
+              else {
+                var p = rechNorm(it.comm).indexOf(hors[0]);
+                if (p >= 0) {
+                  var deb = Math.max(0, p - 30), fin = Math.min(it.comm.length, p + hors[0].length + 50);
+                  it.trouve = "Commentaire : " + (deb > 0 ? "..." : "") + it.comm.slice(deb, fin).replace(/\s+/g, " ").trim() + (fin < it.comm.length ? "..." : "");
+                }
+              }
+            }
+          }
+          totauxRech[it.group] = (totauxRech[it.group] || 0) + 1;
+          if (totauxRech[it.group] <= 30) res.push(it);
+        });
+        return res;
       }());
 
       // Group items par categorie
@@ -39573,7 +39628,7 @@
                 value: q,
                 onChange: function(e) { setQ(e.target.value); },
                 onKeyDown: onKeyDown,
-                placeholder: "Rechercher equipement, employe, chantier, piece, intervention...",
+                placeholder: "Rechercher equipement, employe, chantier, piece, intervention, gamme...",
                 style: { flex: 1, background: "transparent", border: "none", outline: "none", color: "#fafafa", fontSize: 15, fontFamily: "inherit" }
               }),
               h("span", { style: { padding: "3px 8px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, fontSize: 10.5, fontWeight: 700, color: "#a1a1aa", fontFamily: "ui-monospace, monospace", cursor: "pointer" }, onClick: function() { setOpen(false); } }, "Esc")
@@ -39585,7 +39640,7 @@
               ) :
               grouped.map(function(g, gi) {
                 return h("div", { key: g.group, style: { padding: "6px 0" } },
-                  h("div", { style: { padding: "8px 16px 4px", fontSize: 10.5, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.7, fontWeight: 700 } }, g.group + " (" + g.items.length + ")"),
+                  h("div", { style: { padding: "8px 16px 4px", fontSize: 10.5, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.7, fontWeight: 700 } }, g.group + " (" + ((totauxRech[g.group] || 0) > g.items.length ? g.items.length + " sur " + totauxRech[g.group] + " : precisez la recherche" : g.items.length) + ")"),
                   g.items.map(function(it, idx) {
                     var globalIdx = grouped.slice(0, gi).reduce(function(s, gg) { return s + gg.items.length; }, 0) + idx;
                     var isFocused = globalIdx === focused;
@@ -39598,7 +39653,8 @@
                       iconCircle(it.iconKey, (it.title || "").substring(0, 2).toUpperCase()),
                       h("div", { style: { flex: 1, minWidth: 0 } },
                         h("div", { style: { fontSize: 13.5, fontWeight: 600, color: "#fafafa", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.title),
-                        h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.sub)
+                        h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.sub),
+                        it.trouve ? h("div", { style: { fontSize: 11.5, color: "#c4b5fd", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, it.trouve) : null
                       ),
                       h("div", { style: { fontSize: 11, color: "#71717a", padding: "3px 7px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, fontFamily: "ui-monospace, monospace" } }, it.shortcut)
                     );
