@@ -3118,9 +3118,10 @@
     function pcPrevoir(r, H, today) {
       if (!r || r.avg === null) return { nb: 0, retard: false, interrompu: false, next: null };
       if (today - r.dernier > 3 * r.avg) return { nb: 0, retard: false, interrompu: true, next: r.next };
-      var nb = 0, retard = false, d = r.next, fin = today + H, garde = 0;
+      var nb = 0, retard = false, d = r.next, fin = today + H;
       if (d < today) { nb = 1; retard = true; d = today + r.avg; }
-      while (d <= fin && garde < 1000) { nb++; d += r.avg; garde++; }
+      // Compte direct (d, d + avg, d + 2 avg ... <= fin) : pas de plafond de boucle, meme sur 3 ans
+      if (d <= fin) nb += Math.floor((fin - d) / r.avg + 1e-9) + 1;
       return { nb: nb, retard: retard, interrompu: false, next: r.next };
     }
     // Synthese : UNE ligne par reference, toutes machines confondues (une serie par machine).
@@ -3178,17 +3179,32 @@
       });
       return out;
     }
+    // Duree lisible : jours sous 2 mois, mois jusqu'a 18 mois, puis annees a la demi-annee
+    // (pieces changees tous les 2 a 3 ans : "2,5 ans" plutot que "913 j")
+    function pcTxtDuree(j) {
+      var n = Math.max(1, Math.round(j));
+      if (n < 60) return n + " j";
+      if (n < 548) return Math.round(n / 30.44) + " mois";
+      var a = Math.round(n / 365.25 * 2) / 2;
+      return String(a).replace(".", ",") + (a >= 2 ? " ans" : " an");
+    }
+    // Choix de la periode de prevision (valeur en jours)
+    var PC_HORIZONS = [["30", "30 jours"], ["60", "60 jours"], ["90", "90 jours"], ["182", "6 mois"], ["365", "1 an"], ["730", "2 ans"], ["1095", "3 ans"]];
+    function pcTxtHorizon(H) {
+      for (var i = 0; i < PC_HORIZONS.length; i++) { if (PC_HORIZONS[i][0] === String(H)) return PC_HORIZONS[i][1]; }
+      return H + " jours";
+    }
     function pcTxtRythme(j) {
       if (j == null || !isFinite(j)) return "pas encore connu";
-      return "tous les " + Math.max(1, Math.round(j)) + " j";
+      return "tous les " + pcTxtDuree(j);
     }
     function pcTxtEcheance(n, today) {
       if (n == null || !isFinite(n)) return "—";
       var d = Math.round(n), diff = d - Math.round(today);
       var txt = pcDateFr(pcDateDeJour(d));
-      if (diff < 0) return txt + " (en retard de " + (-diff) + " j)";
+      if (diff < 0) return txt + " (en retard de " + pcTxtDuree(-diff) + ")";
       if (diff === 0) return txt + " (aujourd'hui)";
-      return txt + " (dans " + diff + " j)";
+      return txt + " (dans " + pcTxtDuree(diff) + ")";
     }
     // Quantite lisible : virgule decimale, unite "u" implicite (contrairement a fmtGammeQty, 0 reste 0)
     function pcTxtQte(q, unite) {
@@ -36322,13 +36338,13 @@
           // Regle de calcul
           h("div", { style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 14, borderRadius: 10, background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.20)", fontSize: 12, color: "#c7d2fe", lineHeight: 1.5 } },
             h(Icon, { name: "info", size: 14, color: "#a5b4fc", style: { marginTop: 2 } }),
-            h("div", null, "Chaque etape de gamme cochee qui porte une reference compte comme un changement. Des le 2e changement d'une meme reference sur une machine, l'ecart moyen donne le rythme et la date du prochain (deux changements a moins de 7 jours d'ecart ne suffisent pas : il en faut un 3e). A commander = changements prevus sur la periode, moins le stock du catalogue. Une reference qui n'a plus ete changee depuis plus de 3 fois son rythme n'est plus comptee (rythme interrompu).")),
+            h("div", null, "L'historique remonte a la toute premiere intervention, sans limite de duree. Pour une piece changee avant l'app (ex. tous les 2 a 3 ans), creez une intervention terminee a la date du changement avec l'etape cochee et sa reference. Chaque etape de gamme cochee qui porte une reference compte comme un changement. Des le 2e changement d'une meme reference sur une machine, l'ecart moyen donne le rythme et la date du prochain (deux changements a moins de 7 jours d'ecart ne suffisent pas : il en faut un 3e). A commander = changements prevus sur la periode, moins le stock du catalogue. Une reference qui n'a plus ete changee depuis plus de 3 fois son rythme n'est plus comptee (rythme interrompu).")),
           // Tableau principal : references au rythme connu
           pcConnus.length === 0
             ? h("div", { style: Object.assign({}, sectionStyle, { padding: 40, textAlign: "center", color: "#71717a", marginBottom: 16 }) }, "Pas encore de rythme connu : il faut au moins 2 changements de la meme reference sur une machine.")
             : h("div", { style: Object.assign({}, sectionStyle, { overflow: "hidden", marginBottom: 16 }) },
                 h("div", { style: { padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
-                  h(IconText, { icon: "history", size: 15, color: "#a78bfa" }, h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, "A commander d'ici " + pcH + " jours")),
+                  h(IconText, { icon: "history", size: 15, color: "#a78bfa" }, h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, "A commander d'ici " + pcTxtHorizon(pcH))),
                   h("span", { style: { fontSize: 12, color: "#94a3b8" } }, "Une ligne par reference, toutes machines confondues")),
                 h("div", { style: { overflowX: "auto" } },
                   h("table", { style: { width: "100%", minWidth: 1040, borderCollapse: "collapse" } },
@@ -36340,7 +36356,7 @@
                       h("th", { style: pcTh }, "Changee"),
                       h("th", { style: pcTh }, "Rythme"),
                       h("th", { style: pcTh }, "Prochain changement"),
-                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Besoin " + pcH + " j"),
+                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Besoin " + pcTxtHorizon(pcH)),
                       h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Stock"),
                       h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "A commander"),
                       h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Cout estime"))),
@@ -36391,7 +36407,7 @@
         // KPIs (la vue "Pieces changees" a les siens)
         vue === "pieces-changees" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
           KpiTile({ icon: "shopping-cart", accent: "#fbbf24", label: "References a commander", value: pcNbRefsCmd, hint: pcConnus.length + " au rythme connu" }),
-          KpiTile({ icon: "package", accent: "#a78bfa", label: "Unites a commander", value: fmtNum(pcUnitesCmd), hint: "d'ici " + pcH + " jours" }),
+          KpiTile({ icon: "package", accent: "#a78bfa", label: "Unites a commander", value: fmtNum(pcUnitesCmd), hint: "d'ici " + pcTxtHorizon(pcH) }),
           KpiTile({ icon: "wallet", accent: "#34d399", label: "Budget estime", value: pcBudget > 1000000 ? (pcBudget / 1000000).toFixed(1) + " MF" : Math.round(pcBudget / 1000) + " k", hint: "XPF, prix catalogue" }),
           KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Changements en retard", value: pcNbRetard, hint: "echeance depassee" })
         ) :
@@ -36403,12 +36419,10 @@
 
         // Filtres (la vue "Pieces changees" a les siens : periode + machine)
         vue === "pieces-changees" ? h("div", { style: Object.assign({}, sectionStyle, { padding: 14, marginBottom: 16, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }) },
-          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Periode"),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Prevoir sur"),
           h("select", { value: pcHorizon, onChange: function(e) { setPcHorizon(e.target.value); },
             style: { padding: "7px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit" } },
-            h("option", { value: "30" }, "30 jours"),
-            h("option", { value: "60" }, "60 jours"),
-            h("option", { value: "90" }, "90 jours")
+            PC_HORIZONS.map(function(o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
           ),
           h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Machine"),
           h("select", { value: pcEquip, onChange: function(e) { setPcEquip(e.target.value); },
