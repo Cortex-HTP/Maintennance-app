@@ -2955,6 +2955,265 @@
     }
     function newGammeId() { return "g" + Date.now() + "_" + Math.floor(Math.random() * 1000); }
 
+    // ─── Pieces changees : historique reel et prevision de commande ─────
+    // Source : les etapes de gamme COCHEES qui portent une reference, dans les
+    // interventions. La gamme vit dans le JSON travaux_effectues : aucune table.
+    // Fonctions pures (ni React ni base) : testables telles quelles sous node.
+    // Les dates sont manipulees en numero de jour (UTC a partir de AAAA-MM-JJ) :
+    // jamais de toISOString() sur une date locale (Noumea = UTC+11).
+    function pcNorm(s) {
+      return String(s == null ? "" : s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function pcJour(s) {
+      var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s == null ? "" : s));
+      if (!m) return null;
+      var n = Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)) / 864e5;
+      return isFinite(n) ? n : null;
+    }
+    function pcDateDeJour(n) {
+      if (n == null || !isFinite(n)) return "";
+      var d = new Date(Math.round(n) * 864e5);
+      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+    }
+    function pcDateFr(s) {
+      var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s == null ? "" : s));
+      return m ? m[3] + "/" + m[2] + "/" + m[1] : String(s || "");
+    }
+    // Index du catalogue (par Id, par reference, par designation), garde en cache
+    // tant que le tableau des pieces est le meme.
+    var _pcIdxCache = { src: null, idx: null };
+    function pcIndexPieces(pieces) {
+      if (_pcIdxCache.idx && _pcIdxCache.src === pieces) return _pcIdxCache.idx;
+      var idx = { byId: Object.create(null), byRef: Object.create(null), byDes: Object.create(null) };
+      (Array.isArray(pieces) ? pieces : []).forEach(function(p) {
+        if (!p) return;
+        if (p.Id != null && !idx.byId[String(p.Id)]) idx.byId[String(p.Id)] = p;
+        var r = pcNorm(p.Reference); if (r && !idx.byRef[r]) idx.byRef[r] = p;
+        var d = pcNorm(p.Designation); if (d && !idx.byDes[d]) idx.byDes[d] = p;
+      });
+      _pcIdxCache = { src: pieces, idx: idx };
+      return idx;
+    }
+    // Piece du catalogue dont la reference (en priorite) ou la designation correspond au texte
+    function pcTrouverPiece(pieces, texte) {
+      var n = pcNorm(texte);
+      if (!n) return null;
+      var idx = pcIndexPieces(pieces);
+      return idx.byRef[n] || idx.byDes[n] || null;
+    }
+    // Identifie la piece portee par une etape de gamme.
+    // Retourne { key, piece, ref, des } ou null si l'etape ne porte aucune reference.
+    // key = "id:<Id catalogue>" (meme piece = meme ligne, quelle que soit la saisie)
+    //       sinon "txt:<texte normalise>" (reference hors catalogue).
+    function pcPieceDeEtape(step, pieces, piecesEquipements, equipement) {
+      if (!step) return null;
+      var idx = pcIndexPieces(pieces);
+      var p = null, t = "";
+      if (step.pieceType === "auto-categorie") {
+        // Categorie non resolue a la creation : on retente avec les pieces liees a la machine
+        if (!equipement || !step.pieceCategorie) return null;
+        var cat = pcNorm(step.pieceCategorie);
+        var liens = Array.isArray(piecesEquipements) ? piecesEquipements : [];
+        for (var i = 0; i < liens.length && !p; i++) {
+          var l = liens[i];
+          if (!l || String(l.equipement_id) !== String(equipement.Id)) continue;
+          var c = idx.byId[String(l.piece_id)];
+          if (c && pcNorm(c.Categorie) === cat) p = c;
+        }
+        if (!p) return null;
+      } else if (step.pieceType === "piece") {
+        p = step.pieceRef != null ? (idx.byId[String(step.pieceRef)] || null) : null;
+        if (!p) {
+          t = String(step.pieceLabel || step.pieceRef || "").trim();
+          p = pcTrouverPiece(pieces, t);
+        }
+      } else {
+        p = pcTrouverPiece(pieces, step.pieceRef) || pcTrouverPiece(pieces, step.pieceLabel);
+        if (!p) t = String(step.pieceRef || step.pieceLabel || "").trim();
+      }
+      if (p) return { key: "id:" + String(p.Id), piece: p, ref: String(p.Reference || p.Designation || ""), des: p.Reference ? String(p.Designation || "") : "" };
+      var k = pcNorm(t);
+      if (!k) return null;
+      return { key: "txt:" + k, piece: null, ref: t, des: "Hors catalogue" };
+    }
+    // "Pas fait" n'est PAS exclu : c'est le statut d'une intervention encore a faire (les [Auto]
+    // sont creees ainsi) ; une etape cochee dessus est un changement reellement effectue.
+    var PC_STATUTS_EXCLUS = { "Rejetee": 1, "Annulee": 1 };
+    // Deux changements a moins de PC_ECART_MIN_2 jours d'ecart ne font pas un rythme (reprise
+    // de la meme panne) : il en faut un 3e pour prevoir.
+    var PC_ECART_MIN_2 = 7;
+    // Tous les changements de piece : un element par etape cochee portant une reference.
+    function pcChangements(interventions, pieces, piecesEquipements, equipements) {
+      var eqParId = Object.create(null), eqParTitre = Object.create(null);
+      (Array.isArray(equipements) ? equipements : []).forEach(function(e) {
+        if (!e) return;
+        if (e.Id != null) eqParId[String(e.Id)] = e;
+        var t = String(e.Title || "").trim().toUpperCase();
+        if (t && !eqParTitre[t]) eqParTitre[t] = e;
+      });
+      var out = [];
+      (Array.isArray(interventions) ? interventions : []).forEach(function(it) {
+        if (!it || PC_STATUTS_EXCLUS[it.Statut_Intervention]) return;
+        var gamme = Array.isArray(it.Gamme) ? it.Gamme : [];
+        if (gamme.length === 0) return;
+        var brut = String(it.Date_Intervention || it.DateDemande || "");
+        var date = brut.slice(0, 10);
+        // Horodatage (DateDemande ecrite en UTC par l'APP Employes) : jour calendaire LOCAL,
+        // sinon une demande creee avant 11 h a Noumea serait datee de la veille.
+        if (brut.length > 10 && /T\d\d:\d\d/.test(brut)) {
+          var dLoc = new Date(brut);
+          if (!isNaN(dLoc.getTime())) date = dLoc.getFullYear() + "-" + ("0" + (dLoc.getMonth() + 1)).slice(-2) + "-" + ("0" + dLoc.getDate()).slice(-2);
+        }
+        var jour = pcJour(date);
+        if (jour === null) return;
+        var eq = (it.EquipementId != null && eqParId[String(it.EquipementId)]) || eqParTitre[String(it.Equipement || "").trim().toUpperCase()] || null;
+        var eqNom = String((eq && eq.Title) || it.Equipement || "").trim() || "Sans machine";
+        var eqKey = eqNom.toUpperCase();
+        gamme.forEach(function(g) {
+          if (!g || !g.done) return;
+          var pc = pcPieceDeEtape(g, pieces, piecesEquipements, eq);
+          if (!pc) return;
+          var q = parseFloat(g.quantite);
+          var pu = parseFloat(g.prixUnitaire);
+          if (!(pu > 0)) pu = pc.piece ? (parseFloat(pc.piece.PrixUnitaire) || 0) : 0;
+          out.push({ key: pc.key, piece: pc.piece, ref: pc.ref, des: pc.des, unite: String(g.unite || "u"), eqKey: eqKey, eqNom: eqNom, date: date, jour: jour, qte: q > 0 ? q : 1, prix: pu > 0 ? pu : 0, interId: it.Id, interTitre: String(it.Title || it.Plan || "Intervention") });
+        });
+      });
+      return out;
+    }
+    // Serie d'une reference sur une machine : changements fusionnes par date, rythme et prochain.
+    // avg = ecart moyen en jours (null tant qu'il n'y a pas 2 dates), next = dernier + avg.
+    function pcSerie(list) {
+      var parDate = Object.create(null), evts = [];
+      (list || []).forEach(function(c) {
+        var e = parDate[c.date];
+        if (!e) { e = parDate[c.date] = { date: c.date, jour: c.jour, qte: 0, montant: 0, inters: [] }; evts.push(e); }
+        e.qte += c.qte;
+        e.montant += c.qte * c.prix;
+        if (c.interTitre && e.inters.indexOf(c.interTitre) < 0) e.inters.push(c.interTitre);
+      });
+      evts.sort(function(a, b) { return a.jour - b.jour; });
+      var n = evts.length, total = 0, entier = true;
+      evts.forEach(function(e) {
+        e.qte = Math.round(e.qte * 100) / 100;
+        e.montant = Math.round(e.montant);
+        total += e.qte;
+        if (e.qte !== Math.round(e.qte)) entier = false;
+      });
+      total = Math.round(total * 100) / 100;
+      var moy = n > 0 ? total / n : 0;
+      // Quantite habituelle par changement : entiere pour des pieces, 2 decimales pour des L / kg
+      var qteHab = entier ? Math.max(1, Math.round(moy)) : Math.round(moy * 100) / 100;
+      var premier = n > 0 ? evts[0].jour : null, dernier = n > 0 ? evts[n - 1].jour : null;
+      var avg = n >= 2 ? Math.max(1, (dernier - premier) / (n - 1)) : null;
+      // 2 changements trop rapproches : pas de rythme tant qu'il n'y en a pas un 3e
+      var rapproche = n === 2 && (dernier - premier) < PC_ECART_MIN_2;
+      if (rapproche) avg = null;
+      return { evts: evts, n: n, total: total, qteHab: qteHab, premier: premier, dernier: dernier, avg: avg, rapproche: rapproche, next: avg !== null ? Math.round(dernier + avg) : null };
+    }
+    // Nombre de changements a prevoir entre aujourd'hui et aujourd'hui + H jours.
+    // Echeance depassee = 1 changement "en retard", puis les suivants comptes depuis aujourd'hui.
+    // Rythme interrompu : plus aucun changement depuis plus de 3 fois l'ecart moyen -> rien n'est compte
+    // (evite de commander indefiniment une piece changee 2 fois de suite il y a longtemps).
+    function pcPrevoir(r, H, today) {
+      if (!r || r.avg === null) return { nb: 0, retard: false, interrompu: false, next: null };
+      if (today - r.dernier > 3 * r.avg) return { nb: 0, retard: false, interrompu: true, next: r.next };
+      var nb = 0, retard = false, d = r.next, fin = today + H, garde = 0;
+      if (d < today) { nb = 1; retard = true; d = today + r.avg; }
+      while (d <= fin && garde < 1000) { nb++; d += r.avg; garde++; }
+      return { nb: nb, retard: retard, interrompu: false, next: r.next };
+    }
+    // Synthese : UNE ligne par reference, toutes machines confondues (une serie par machine).
+    // besoin = somme des changements prevus x quantite habituelle ; a commander = besoin - stock catalogue.
+    function pcSynthese(changements, H, today) {
+      var parCle = Object.create(null), ordre = [];
+      (changements || []).forEach(function(c) {
+        if (!c || !c.key) return;
+        var g = parCle[c.key];
+        if (!g) { g = parCle[c.key] = { key: c.key, piece: c.piece || null, ref: c.ref, des: c.des, unite: c.unite || "u", parEq: Object.create(null), eqOrdre: [], tous: [] }; ordre.push(g); }
+        if (g.unite === "u" && c.unite && c.unite !== "u") g.unite = c.unite;
+        var k = String(c.eqKey);
+        if (!g.parEq[k]) { g.parEq[k] = { eqKey: k, eqNom: c.eqNom, list: [] }; g.eqOrdre.push(k); }
+        g.parEq[k].list.push(c);
+        g.tous.push(c);
+      });
+      var out = ordre.map(function(g) {
+        var series = g.eqOrdre.map(function(k) {
+          var e = g.parEq[k];
+          var r = pcSerie(e.list);
+          var p = pcPrevoir(r, H, today);
+          return { eqKey: e.eqKey, eqNom: e.eqNom, evts: r.evts, n: r.n, total: r.total, qteHab: r.qteHab, premier: r.premier, dernier: r.dernier, avg: r.avg, next: r.next, nb: p.nb, retard: p.retard, interrompu: p.interrompu, rapproche: r.rapproche };
+        }).sort(function(a, b) { return String(a.eqNom).localeCompare(String(b.eqNom)); });
+        var nbCh = 0, total = 0, besoin = 0, retard = 0, next = null, rate = 0, dernier = null, unInterrompu = false, unRapproche = false;
+        series.forEach(function(s) {
+          nbCh += s.n; total += s.total;
+          if (s.dernier !== null && (dernier === null || s.dernier > dernier)) dernier = s.dernier;
+          if (s.interrompu) unInterrompu = true;
+          if (s.rapproche) unRapproche = true;
+          if (s.avg === null || s.interrompu) return;
+          rate += 1 / s.avg;
+          besoin += s.nb * s.qteHab;
+          if (s.retard) retard++;
+          if (next === null || s.next < next) next = s.next;
+        });
+        besoin = Math.round(besoin * 100) / 100;
+        var connu = rate > 0;
+        var stock = g.piece ? (parseFloat(g.piece.Stock) || 0) : null;
+        var aCmd = Math.ceil(Math.max(0, besoin - (stock === null ? 0 : Math.max(0, stock))) - 1e-9);
+        var prix = g.piece ? (parseFloat(g.piece.PrixUnitaire) || 0) : 0;
+        if (!(prix > 0)) {
+          // Pas de prix au catalogue : prix saisi lors du changement le plus recent
+          var best = null;
+          g.tous.forEach(function(c) { if (c.prix > 0 && (best === null || c.jour >= best.jour)) best = c; });
+          prix = best ? best.prix : 0;
+        }
+        return { key: g.key, piece: g.piece, ref: g.ref, des: g.des, unite: g.unite, total: Math.round(total * 100) / 100, series: series, nbCh: nbCh, besoin: besoin, retard: retard, next: next, connu: connu, rythme: connu ? 1 / rate : null, interrompu: !connu && unInterrompu, rapproche: !connu && !unInterrompu && unRapproche, stock: stock, aCmd: aCmd, prix: prix, cout: Math.round(aCmd * prix), dernier: dernier };
+      });
+      out.sort(function(a, b) {
+        if (a.connu !== b.connu) return a.connu ? -1 : 1;
+        if (a.aCmd !== b.aCmd) return b.aCmd - a.aCmd;
+        var na = a.next === null ? Infinity : a.next, nb = b.next === null ? Infinity : b.next;
+        if (na !== nb) return na - nb;
+        return String(a.ref).localeCompare(String(b.ref));
+      });
+      return out;
+    }
+    function pcTxtRythme(j) {
+      if (j == null || !isFinite(j)) return "pas encore connu";
+      return "tous les " + Math.max(1, Math.round(j)) + " j";
+    }
+    function pcTxtEcheance(n, today) {
+      if (n == null || !isFinite(n)) return "—";
+      var d = Math.round(n), diff = d - Math.round(today);
+      var txt = pcDateFr(pcDateDeJour(d));
+      if (diff < 0) return txt + " (en retard de " + (-diff) + " j)";
+      if (diff === 0) return txt + " (aujourd'hui)";
+      return txt + " (dans " + diff + " j)";
+    }
+    // Quantite lisible : virgule decimale, unite "u" implicite (contrairement a fmtGammeQty, 0 reste 0)
+    function pcTxtQte(q, unite) {
+      var n = parseFloat(q);
+      if (!isFinite(n)) n = 0;
+      var r = Math.round(n * 100) / 100;
+      var s = String(r).replace(".", ",");
+      var u = String(unite || "u");
+      if (u === "u") return s;
+      if (u === "paire" || u === "boite" || u === "lot") return s + " " + u + (r >= 2 ? "s" : "");
+      return s + " " + u;
+    }
+    // Total des sous-lignes d'une gamme : quantite x prix unitaire, et temps saisi (heures)
+    function pcCoutGamme(gamme) {
+      var pieces = 0, temps = 0;
+      (Array.isArray(gamme) ? gamme : []).forEach(function(g) {
+        if (!g) return;
+        var pu = parseFloat(g.prixUnitaire);
+        if (pu > 0) { var q = parseFloat(g.quantite); pieces += (q > 0 ? q : 1) * pu; }
+        var t = parseFloat(g.tempsH);
+        if (t > 0) temps += t;
+      });
+      return { pieces: Math.round(pieces), temps: Math.round(temps * 100) / 100 };
+    }
+
     // Export Excel des travaux a faire (feuille 1) + consommables a acheter (feuille 2).
     // opts.eq (objet equipement) => filtre sur une seule machine (sinon toutes).
     // Colonne "Travaux a faire" = detail de la gamme (1 ligne / etape) ou, si pas de gamme, le commentaire.
@@ -3004,6 +3263,8 @@
       travaux.forEach(function(i) {
         (Array.isArray(i.Gamme) ? i.Gamme : []).forEach(function(g) {
           if (!g) return;
+          // Etape ajoutee a la main et deja cochee : la piece est deja changee, rien a acheter
+          if (g.done && !g.fromPlan) return;
           var hasP = g.pieceType || g.pieceRef || g.pieceLabel || g.pieceCategorie;
           if (!hasP) return;
           var isAuto = g.pieceType === "auto-categorie";
@@ -3202,7 +3463,150 @@
     // Utilise dans InterventionForm.
     // - Items avec fromPlan:true sont en lecture seule (libelle non modifiable, pas de suppression)
     // - Items custom (fromPlan absent ou false) sont editables/suppressibles
+    //
+    // Champ numerique compact des sous-lignes (virgule ou point acceptes).
+    // type="text" + inputMode="decimal" : la molette ne change pas la valeur et la
+    // virgule n'est pas rejetee. Remonte un nombre, ou undefined si le champ est vide.
+    function PcChampNum({ value, onChange, placeholder, title, style }) {
+      var _t = useState(null); var txt = _t[0]; var setTxt = _t[1];
+      var affiche = txt !== null ? txt : (value == null || value === "" || !isFinite(Number(value)) ? "" : String(value).replace(".", ","));
+      return h("input", {
+        type: "text", inputMode: "decimal", autoComplete: "off", value: affiche, placeholder: placeholder, title: title,
+        onChange: function(e) {
+          var v = String(e.target.value).replace(/[^0-9.,]/g, "");
+          setTxt(v);
+          // Le DERNIER separateur est la virgule decimale, les autres des milliers ("1.234,5" = 1234,5)
+          var iDec = Math.max(v.lastIndexOf(","), v.lastIndexOf("."));
+          var n = parseFloat(iDec < 0 ? v : v.slice(0, iDec).replace(/[.,]/g, "") + "." + v.slice(iDec + 1));
+          onChange(isFinite(n) ? n : undefined);
+        },
+        onBlur: function() { setTxt(null); },
+        style: style
+      });
+    }
+
+    // Sous-ligne d'une etape de gamme ajoutee a la main : reference de piece,
+    // quantite, prix unitaire et temps, sur UNE ligne compacte. Tout est stocke sur
+    // l'etape (pieceType / pieceRef / pieceLabel / quantite / prixUnitaire / tempsH),
+    // donc dans le JSON de la gamme : aucune colonne en base.
+    function GammeSousLigne({ item, pieces, onPatch, isMobile, listId }) {
+      var _txt = useState(null); var txt = _txt[0]; var setTxt = _txt[1];
+      // Dernieres valeurs posees automatiquement (prix catalogue, libelle) : elles ne
+      // sont remplacees / retirees que si l'utilisateur ne les a pas modifiees depuis.
+      var auto = useRef({ prix: null, label: null });
+      var idx = pcIndexPieces(pieces);
+      var pieceCat = item.pieceType === "piece" && item.pieceRef != null ? (idx.byId[String(item.pieceRef)] || null) : null;
+      var refTexte = pieceCat ? String(pieceCat.Reference || pieceCat.Designation || "")
+        : (item.pieceType === "piece" ? String(item.pieceLabel || "") : String(item.pieceRef || item.pieceLabel || ""));
+      var aRef = !!(pieceCat || refTexte.trim());
+      var qte = parseFloat(item.quantite) > 0 ? parseFloat(item.quantite) : 1;
+      var prix = parseFloat(item.prixUnitaire) > 0 ? parseFloat(item.prixUnitaire) : 0;
+      // Libelle propose pour une reference (piece du catalogue, sinon texte libre)
+      function libAuto(pc, t) {
+        if (pc) {
+          var d = String(pc.Designation || pc.Reference || "").trim();
+          if (!d) return null;
+          // Designation tout en majuscules : on la laisse telle quelle
+          return "Remplacement " + (d === d.toUpperCase() ? d : d.charAt(0).toLowerCase() + d.slice(1));
+        }
+        return t ? "Remplacement " + t : null;
+      }
+      function saisirRef(v) {
+        setTxt(v);
+        var t = String(v).trim();
+        var a = auto.current;
+        // "Automatique" = pose pendant cette saisie, OU (intervention rouverte) encore
+        // identique a ce que donne la reference actuelle : changer de reference doit alors
+        // remplacer le prix catalogue et le libelle proposes, pas garder ceux de l'ancienne.
+        var prixCatAvant = pieceCat ? parseFloat(pieceCat.PrixUnitaire) : NaN;
+        var prixEstAuto = (a.prix !== null && Number(item.prixUnitaire) === a.prix) || (prixCatAvant > 0 && Number(item.prixUnitaire) === prixCatAvant);
+        var libAvant = aRef ? libAuto(pieceCat, pieceCat ? "" : refTexte.trim()) : null;
+        var labelEstAuto = (a.label !== null && String(item.label || "") === a.label) || (libAvant !== null && String(item.label || "") === libAvant);
+        var p = t ? pcTrouverPiece(pieces, t) : null;
+        var patch = {};
+        if (p) {
+          patch.pieceType = "piece"; patch.pieceRef = String(p.Id); patch.pieceLabel = String(p.Designation || p.Reference || t);
+          var pu = parseFloat(p.PrixUnitaire);
+          if (item.prixUnitaire == null || item.prixUnitaire === "" || prixEstAuto) {
+            if (pu > 0) { patch.prixUnitaire = pu; a.prix = pu; } else { patch.prixUnitaire = undefined; a.prix = null; }
+          }
+          if (!String(item.label || "").trim() || labelEstAuto) {
+            var lib = libAuto(p, "");
+            if (lib) { patch.label = lib; a.label = lib; }
+          }
+        } else {
+          if (t) { patch.pieceType = "autre"; patch.pieceRef = t; patch.pieceLabel = t; }
+          else { patch.pieceType = undefined; patch.pieceRef = undefined; patch.pieceLabel = undefined; }
+          if (prixEstAuto) patch.prixUnitaire = undefined;
+          a.prix = null;
+          // Reference hors catalogue : libelle propose aussi, pour que l'etape ne reste
+          // pas sans libelle (une etape sans libelle est ignoree dans les listes).
+          if (t && (!String(item.label || "").trim() || labelEstAuto)) {
+            var libHc = libAuto(null, t);
+            patch.label = libHc; a.label = libHc;
+          } else {
+            if (labelEstAuto) patch.label = "";
+            a.label = null;
+          }
+        }
+        if (t && !(parseFloat(item.quantite) > 0)) patch.quantite = 1;
+        onPatch(patch);
+      }
+      var boite = { display: "inline-flex", alignItems: "center", gap: 4, height: isMobile ? 32 : 24, padding: isMobile ? "0 5px" : "0 7px", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, background: "rgba(0,0,0,0.22)", minWidth: 0, flexShrink: 0, cursor: "text", boxSizing: "border-box" };
+      var lib = { color: "#64748b", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, flexShrink: 0 };
+      var suff = { color: "#64748b", fontSize: 10, flexShrink: 0 };
+      var champ = { flex: 1, width: "100%", minWidth: 0, minHeight: 0, height: "100%", padding: 0, border: 0, outline: "none", background: "transparent", color: "#e2e8f0", fontFamily: "inherit", fontSize: 11.5 };
+      var champNum = Object.assign({}, champ, { textAlign: "right" });
+      var stock = pieceCat ? (parseFloat(pieceCat.Stock) || 0) : 0;
+      var info = null;
+      if (pieceCat) {
+        info = h("span", { title: (stock > 0 ? "En stock : " + pcTxtQte(stock, "u") : "Rupture de stock") + " - " + (pieceCat.Designation || pieceCat.Reference || ""), style: { flex: "1 1 60px", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 10.5, textAlign: isMobile ? "left" : "right" } },
+          h("span", { style: { color: stock > 0 ? "#86efac" : "#fda4af", fontWeight: 600 } }, stock > 0 ? "stock : " + pcTxtQte(stock, "u") : "rupture"),
+          h("span", { style: { color: "#94a3b8" } }, " - " + (pieceCat.Designation || pieceCat.Reference || "")));
+      } else if (aRef) {
+        info = h("span", { title: "Reference absente du catalogue des pieces : elle est suivie telle que saisie", style: { flex: "1 1 60px", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 10.5, color: "#94a3b8", textAlign: isMobile ? "left" : "right" } }, "hors catalogue");
+      }
+      return h("div", { style: { display: "flex", alignItems: "center", gap: isMobile ? "4px 5px" : 6, flexWrap: isMobile ? "wrap" : "nowrap", padding: isMobile ? "4px 8px 5px 8px" : "4px 10px 5px 12px", borderTop: "1px dashed rgba(99,102,241,0.30)", background: "rgba(99,102,241,0.05)", fontSize: 11 } },
+        isMobile ? null : h(Icon, { name: "corner-down-right", size: 12, color: "#818cf8", style: { flexShrink: 0, opacity: 0.8 } }),
+        // Mobile : les 4 champs tiennent sur une ligne (la police des champs y est
+        // imposee a 16px), le total et l'info passent dessous.
+        h("label", { title: "Reference de la piece (catalogue ou texte libre)", style: Object.assign({}, boite, isMobile ? { flex: "1 1 70px", minWidth: 60 } : { flex: "0 1 176px", minWidth: 110 }) },
+          isMobile ? null : h("span", { style: lib }, "Ref"),
+          h("input", { type: "text", list: listId, autoComplete: "off", placeholder: isMobile ? "Ref piece" : "piece detachee", value: txt !== null ? txt : refTexte,
+            onChange: function(e) { saisirRef(e.target.value); }, onBlur: function() { setTxt(null); }, style: champ })),
+        h("label", { title: "Quantite", style: Object.assign({}, boite, { width: isMobile ? 38 : 58 }) },
+          isMobile ? null : h("span", { style: lib }, "Qte"),
+          h(PcChampNum, { value: item.quantite, placeholder: isMobile ? "Qte" : "", onChange: function(n) { onPatch({ quantite: n }); }, style: champNum })),
+        h("label", { title: "Prix unitaire (XPF)", style: Object.assign({}, boite, { width: isMobile ? 72 : 108 }) },
+          isMobile ? null : h("span", { style: lib }, "Prix"),
+          h(PcChampNum, { value: item.prixUnitaire, placeholder: isMobile ? "Prix" : "", onChange: function(n) { onPatch({ prixUnitaire: n }); }, style: champNum }),
+          h("span", { style: suff }, "F")),
+        h("label", { title: "Temps passe (heures)", style: Object.assign({}, boite, { width: isMobile ? 54 : 84 }) },
+          isMobile ? null : h("span", { style: lib }, "Temps"),
+          h(PcChampNum, { value: item.tempsH, placeholder: isMobile ? "Tps" : "", onChange: function(n) { onPatch({ tempsH: n }); }, style: champNum }),
+          h("span", { style: suff }, "h")),
+        prix > 0 ? h("span", { title: "Total de la ligne", style: { fontWeight: 700, fontSize: 11.5, whiteSpace: "nowrap", color: "#e2e8f0", flexShrink: 0 } }, "= " + fmtNum(qte * prix) + " F") : null,
+        info);
+    }
+
     function GammeChecklist({ items, onChange, allowAddCustom }) {
+      var ctxPieces = useAppData();
+      var pieces = (ctxPieces && ctxPieces.pieces) || [];
+      var bpGamme = useBreakpoint();
+      var listId = useMemo(function() { return "pc-catalogue-" + Math.floor(Math.random() * 1e9); }, []);
+      // Suggestions du champ "Ref" : references du catalogue (une seule liste pour toutes les sous-lignes)
+      var optionsCatalogue = useMemo(function() {
+        var vus = Object.create(null), out = [];
+        pieces.forEach(function(p) {
+          if (!p) return;
+          var v = String(p.Reference || p.Designation || "").trim();
+          var k = pcNorm(v);
+          if (!k || vus[k]) return;
+          vus[k] = true;
+          out.push(h("option", { key: k, value: v, label: p.Reference && p.Designation ? String(p.Designation) : undefined }));
+        });
+        return out;
+      }, [pieces]);
       var list = Array.isArray(items) ? items : [];
       function update(i, patch) {
         var copy = list.slice();
@@ -3229,16 +3633,22 @@
             h("span", null, item.pieceType === "piece" ? "📦" : item.pieceType === "consommable" ? "🛢️" : "📄"),
             fmtGammeQty(item.quantite, item.unite) + " " + (item.pieceLabel || item.pieceRef || "?")
           ) : null;
-          return h("div", { key: item.id || i, style: { display: "flex", gap: 10, alignItems: "center", padding: "6px 10px", background: item.done ? "rgba(16, 185, 129, 0.08)" : "rgba(255,255,255,0.03)", border: "1px solid " + (item.done ? "rgba(16, 185, 129, 0.2)" : "rgba(255,255,255,0.06)"), borderRadius: 8, transition: "all 0.15s", flexWrap: "wrap" } },
-            h("input", { type: "checkbox", checked: !!item.done, onChange: function(e) { update(i, { done: e.target.checked }); }, style: { width: 18, height: 18, accentColor: "#818cf8", cursor: "pointer" } }),
-            fromPlan
-              ? h("span", { style: { flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }, item.label)
-              : h("input", { type: "text", value: item.label || "", onChange: function(e) { update(i, { label: e.target.value }); }, placeholder: "Etape custom", style: { ...inputStyle, flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }),
-            pieceBadge,
-            fromPlan ? h("span", { title: "Etape heritee du plan", style: { fontSize: 10, fontWeight: 600, color: "#a5b4fc", background: "rgba(99,102,241,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(99,102,241,0.25)", whiteSpace: "nowrap" } }, "PLAN") : null,
-            !fromPlan ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 14, color: "#f43f5e" })) : null
+          // Bloc par etape : la ligne (inchangee) + pour une etape ajoutee a la main,
+          // la sous-ligne reference / quantite / prix / temps.
+          return h("div", { key: item.id || i, style: { background: item.done ? "rgba(16, 185, 129, 0.08)" : "rgba(255,255,255,0.03)", border: "1px solid " + (item.done ? "rgba(16, 185, 129, 0.2)" : "rgba(255,255,255,0.06)"), borderRadius: 8, transition: "all 0.15s", overflow: "hidden" } },
+            h("div", { style: { display: "flex", gap: 10, alignItems: "center", padding: "6px 10px", flexWrap: "wrap" } },
+              h("input", { type: "checkbox", checked: !!item.done, onChange: function(e) { update(i, { done: e.target.checked }); }, style: { width: 18, height: 18, accentColor: "#818cf8", cursor: "pointer" } }),
+              fromPlan
+                ? h("span", { style: { flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }, item.label)
+                : h("input", { type: "text", value: item.label || "", onChange: function(e) { update(i, { label: e.target.value }); }, placeholder: "Etape custom", style: { ...inputStyle, flex: 1, fontSize: 13, color: item.done ? "#a1a1aa" : "#fafafa", textDecoration: item.done ? "line-through" : "none" } }),
+              fromPlan ? pieceBadge : null,
+              fromPlan ? h("span", { title: "Etape heritee du plan", style: { fontSize: 10, fontWeight: 600, color: "#a5b4fc", background: "rgba(99,102,241,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(99,102,241,0.25)", whiteSpace: "nowrap" } }, "PLAN") : null,
+              !fromPlan ? h("button", { type: "button", onClick: function() { remove(i); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Retirer" }, h(Icon, { name: "trash-2", size: 14, color: "#f43f5e" })) : null
+            ),
+            !fromPlan ? h(GammeSousLigne, { item: item, pieces: pieces, isMobile: bpGamme.isMobile, listId: listId, onPatch: function(patch) { update(i, patch); } }) : null
           );
         }),
+        list.some(function(it) { return it && !it.fromPlan; }) ? h("datalist", { id: listId }, optionsCatalogue) : null,
         allowAddCustom ? h("button", { type: "button", onClick: add, style: { alignSelf: "flex-start", marginTop: 6, padding: "6px 12px", background: "rgba(99,102,241,0.10)", border: "1px dashed rgba(129,140,248,0.4)", borderRadius: 8, color: "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "plus", size: 12, color: "#a5b4fc" }), "Ajouter une etape") : null
       );
     }
@@ -4025,7 +4435,16 @@
           if (!r.ok && !etapes) throw new Error(data.error || ("HTTP " + r.status));
           if (!etapes || etapes.length === 0) throw new Error("Aucune etape generee");
           var steps = etapes.map(function(lbl, i) { return { id: "ia-" + Date.now() + "-" + i, label: String(lbl), done: false, fromPlan: false }; });
-          upd("Gamme", steps);
+          // Generation AUTO : la reponse arrive quelques secondes apres l'ouverture. Si entre-temps
+          // des etapes ont ete saisies a la main (piece, prix, temps), on les GARDE a la suite de
+          // celles de l'IA au lieu de les ecraser ; et si un plan a ete lie, la gamme vient du plan.
+          if (silent) {
+            setF(function(p) {
+              if (p.Plan) return p;
+              var deja = Array.isArray(p.Gamme) ? p.Gamme : [];
+              return Object.assign({}, p, { Gamme: steps.concat(deja) });
+            });
+          } else upd("Gamme", steps);
         } catch (e) {
           if (!silent) alert("Generation IA impossible : " + ((e && e.message) || "erreur"));
         } finally {
@@ -4462,7 +4881,17 @@
             )
           ),
           isAutoFromPlan ? h("div", { style: { fontSize: 11, color: "#a5b4fc", marginBottom: 10, padding: "6px 10px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 6 } }, h(IconText, { icon: "info", size: 11, color: "#a5b4fc" }, "Etapes 'PLAN' issues du plan \"" + f.Plan + "\" (libelles verrouilles). Vous pouvez cocher l'etat et ajouter des etapes custom.")) : null,
-          h(GammeChecklist, { items: f.Gamme || [], onChange: function(items) { upd("Gamme", items); }, allowAddCustom: true })
+          h(GammeChecklist, { items: f.Gamme || [], onChange: function(items) { upd("Gamme", items); }, allowAddCustom: true }),
+          // Pied : total des pieces et du temps saisis sur les sous-lignes des etapes
+          (function() {
+            var cg = pcCoutGamme(f.Gamme);
+            if (!(cg.pieces > 0) && !(cg.temps > 0)) return null;
+            var dejaReporte = String(f.Cout == null ? "" : f.Cout) === String(cg.pieces);
+            return h("div", { style: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "#a1a1aa" } },
+              cg.pieces > 0 ? h("span", null, "Pieces de la gamme : ", h("b", { style: { color: "#fafafa" } }, fmtMoney(cg.pieces))) : null,
+              cg.temps > 0 ? h("span", null, "Temps saisi : ", h("b", { style: { color: "#fafafa" } }, pcTxtQte(cg.temps, "h"))) : null,
+              cg.pieces > 0 && !dejaReporte ? h("button", { type: "button", onClick: function() { upd("Cout", String(cg.pieces)); }, title: "Recopie le total des pieces dans le champ Cout de l'intervention", style: { marginLeft: "auto", padding: "4px 10px", background: "rgba(99,102,241,0.10)", border: "1px solid rgba(129,140,248,0.35)", borderRadius: 6, color: "#a5b4fc", cursor: "pointer", fontSize: 11.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "inherit" } }, h(Icon, { name: "corner-down-right", size: 11, color: "#a5b4fc" }), "Reporter dans Cout") : null);
+          })()
         ),
         // ─── Materiel necessaire (info) : references / consommables agreges depuis la gamme ───
         (function() {
@@ -4647,6 +5076,62 @@
         showModal && h(Modal, { title: editing ? "Modifier l'equipement" : "Nouvel equipement", onClose: () => { setShowModal(false); setEditing(null); } },
           h(EquipementForm, { onSave: handleSave, onCancel: () => { setShowModal(false); setEditing(null); }, editItem: editing || { Title: "", Nom: "", Categorie: onglet, Type: onglet === "Vehicule" ? "Vehicule leger" : "Engin de chantier", Localisation: "Zone A", Horametre: "0", KM: "0", DernierEntretienH: "", DernierEntretienKM: "", Statut: "En service", DateMiseEnService: localISODate() } })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'equipement ?", message: "Confirmer la suppression de \"" + toDelete.Title + " - " + toDelete.Nom + "\" ? (Les interventions et releves associes seront supprimes.)", onConfirm: handleConfirmDelete, onCancel: () => setToDelete(null) }));
+    }
+
+    // ─── Pieces changees sur une machine (carte de la fiche equipement) ──
+    // Historique reel : etapes de gamme cochees portant une reference, dans les
+    // interventions de cette machine. Composant a part : ses hooks restent
+    // independants des retours anticipes de la fiche.
+    function PiecesChangeesEquipement({ equipement }) {
+      var ctx = useAppData();
+      var _ouv = useState({}); var ouverte = _ouv[0]; var setOuverte = _ouv[1];
+      var today = pcJour(localISODate());
+      var groupes = useMemo(function() {
+        if (!equipement) return [];
+        var inters = (ctx.interventions || []).filter(function(i) { return i.EquipementId === equipement.Id || i.Equipement === equipement.Title; });
+        var ch = pcChangements(inters, ctx.pieces || [], ctx.piecesEquipements || [], [equipement]);
+        // Une seule machine ici : une seule serie par reference, quel que soit le libelle saisi
+        ch.forEach(function(c) { c.eqKey = "FICHE"; c.eqNom = equipement.Title || "Machine"; });
+        return pcSynthese(ch, 60, today);
+      }, [ctx.interventions, ctx.pieces, ctx.piecesEquipements, equipement, today]);
+      var th = { padding: "10px 12px", fontSize: 11, fontWeight: 700, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, textAlign: "left", whiteSpace: "nowrap" };
+      var td = { padding: "9px 12px", fontSize: 13, color: "#d4d4d8", verticalAlign: "middle" };
+      function basculer(k) {
+        setOuverte(function(prev) { var n = Object.assign({}, prev); if (n[k]) delete n[k]; else n[k] = true; return n; });
+      }
+      return h(Card, { style: { marginBottom: 20 } },
+        h("h3", { style: { margin: "0 0 6px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "history", size: 16, color: "#a78bfa" }, "Pieces changees sur cette machine (" + groupes.length + ")")),
+        h("div", { style: { fontSize: 12, color: "#71717a", marginBottom: 14 } }, "Etapes de gamme cochees portant une reference. Le rythme est connu des le 2e changement de la meme reference."),
+        groupes.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20, margin: 0 } }, "Aucune piece changee enregistree sur cette machine") :
+          h("div", { style: { overflowX: "auto" } },
+            h("table", { style: { width: "100%", minWidth: 760, borderCollapse: "collapse" } },
+              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)" } },
+                h("th", { style: Object.assign({}, th, { width: 18, padding: "10px 4px 10px 12px" }) }, ""),
+                ["Reference", "Designation", "Changee", "Dernier changement", "Rythme constate", "Prochain estime"].map(function(x, i) { return h("th", { key: i, style: th }, x); }),
+                h("th", { style: Object.assign({}, th, { textAlign: "right" }) }, "Stock"))),
+              h("tbody", null, groupes.map(function(g) {
+                var s = g.series[0];
+                var open = !!ouverte[g.key];
+                var prevu = s.avg !== null && !s.interrompu;
+                return h(React.Fragment, { key: g.key },
+                  h("tr", { onClick: function() { basculer(g.key); }, style: { borderTop: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", background: open ? "rgba(99,102,241,0.06)" : "transparent" } },
+                    h("td", { style: Object.assign({}, td, { padding: "9px 4px 9px 12px" }) }, h(Icon, { name: open ? "chevron-down" : "chevron-right", size: 14, color: "#a1a1aa" })),
+                    h("td", { style: Object.assign({}, td, { fontFamily: "'SF Mono', Consolas, monospace", fontWeight: 700, color: "#fafafa", whiteSpace: "nowrap" }) }, g.ref),
+                    h("td", { style: td }, g.des || "—"),
+                    h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap" }) }, s.n + " fois"),
+                    h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap" }) }, pcDateFr(pcDateDeJour(s.dernier))),
+                    h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap" }) }, s.avg === null ? "pas encore connu" : pcTxtRythme(s.avg) + (s.interrompu ? " (interrompu)" : "")),
+                    h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap", color: prevu && s.retard ? "#fda4af" : "#d4d4d8", fontWeight: prevu && s.retard ? 700 : 400 }) }, prevu ? pcTxtEcheance(s.next, today) : "—"),
+                    h("td", { style: Object.assign({}, td, { textAlign: "right", whiteSpace: "nowrap", color: g.stock === null ? "#71717a" : "#d4d4d8" }) }, g.stock === null ? "inconnu" : pcTxtQte(g.stock, g.unite))),
+                  open ? h("tr", null, h("td", { colSpan: 8, style: { padding: "2px 12px 12px 44px", background: "rgba(99,102,241,0.04)" } },
+                    s.evts.slice().reverse().map(function(e, i) {
+                      return h("div", { key: i, style: { display: "flex", gap: 14, flexWrap: "wrap", padding: "5px 0", fontSize: 12.5, color: "#d4d4d8", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
+                        h("span", { style: { fontWeight: 700, color: "#fafafa", minWidth: 82 } }, pcDateFr(e.date)),
+                        h("span", { style: { minWidth: 44 } }, "× " + pcTxtQte(e.qte, g.unite)),
+                        h("span", { style: { minWidth: 90, color: e.montant > 0 ? "#c4b5fd" : "#52525b" } }, e.montant > 0 ? fmtMoney(e.montant) : "prix non saisi"),
+                        h("span", { style: { color: "#a1a1aa" } }, e.inters.join(" / ")));
+                    }))) : null);
+              })))));
     }
 
     // ─── Ecran Fiche Equipement ─────────────────────────────────────────
@@ -5136,6 +5621,7 @@
                         ? h("button", { onClick: () => setReleveToDelete(r), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 15, padding: 4, color: "#f43f5e" }, title: "Supprimer ce releve" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" }))
                         : h(Icon, { name: "lock", size: 14, color: "#52525b" })));
                 }))))),
+        h(PiecesChangeesEquipement, { equipement: eq }),
         h(Card, null,
           h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "#fafafa" } }, h(IconText, { icon: "wrench", size: 16, color: "#a78bfa" }, "Historique des interventions")),
           eqInterventions.length === 0 ? h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention") :
@@ -5213,8 +5699,10 @@
       const [rejeteMotifModal, setRejeteMotifModal] = useState(null);  // { interv, motif }
       // Vue "Par equipement" : machines avec interventions A FAIRE (macarons
       // jaune = preventif, rouge = curatif) ; accordeon multi-ouvert
-      const [vueInter, setVueInter] = useState("liste"); // liste | equipements
+      const [vueInter, setVueInter] = useState("liste"); // liste (a faire) | termines | equipements
       const [expandedEqInter, setExpandedEqInter] = useState({});
+      const [nonFaitOuvert, setNonFaitOuvert] = useState(false); // section "Non realisees" (rejetees, annulees) de l'onglet Termines
+      const bpInter = useBreakpoint();
 
       // Index code -> mecanicien sous-traitant (pour resoudre nom + taux)
       const mecaniciensByCode = (function() {
@@ -5384,6 +5872,83 @@
       var macaronInter = function(nb, fond, texte, titre) {
         return h("span", { title: titre, style: { minWidth: 26, height: 26, borderRadius: 999, background: fond, color: texte, fontWeight: 900, fontSize: 12.5, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 8px", boxShadow: "0 1px 4px " + fond + "66", flexShrink: 0 } }, String(nb));
       };
+      // ── Rangement des interventions filtrees : Liste (a faire) / Termines / Non realisees ──
+      // Le rangement suit le statut EFFECTIF (gamme entierement cochee = Termine).
+      var todayInter = localISODate();
+      var dateInter = function(i) { return String(i.Date_Intervention || i.DateDemande || ""); };
+      var intersListe = [], intersTermines = [], intersNonFait = [];
+      filtered.forEach(function(i) {
+        var st = computeIntervStatus(i);
+        if (st === "Termine") intersTermines.push(i);
+        // "Pas fait" reste dans la Liste : c'est une intervention encore a faire (les
+        // preventives [Auto] dues sont creees avec ce statut), pas une intervention close.
+        else if (st === "Rejetee" || st === "Annulee") intersNonFait.push(i);
+        else intersListe.push(i);
+      });
+      // A faire : la plus ancienne (donc la plus en retard) en haut, sans date a la fin.
+      // Termines / non realisees : la plus recente en haut (tri de "filtered").
+      intersListe.sort(function(a, b) { return (dateInter(a) || "9999").localeCompare(dateInter(b) || "9999"); });
+      var pastilleInter = function(id, label) {
+        var actif = vueInter === id;
+        return h("span", { onClick: function() { setVueInter(id); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: actif ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: actif ? "#ffffff" : "#a1a1aa", border: "1px solid " + (actif ? "transparent" : "rgba(255,255,255,0.12)") } }, label);
+      };
+      // Carte d'une intervention (enListe = vue "a faire" : signale les retards)
+      var carteInter = function(item, enListe) {
+        var prog = gammeProgress(item.Gamme);
+        var effStatus = computeIntervStatus(item);
+        var isSourceMec = item.Source === "mecanicien";
+        var mecLabel = item.MecanicienCode ? getMecanicienLabel(item.MecanicienCode) : "";
+        var facturable = item.DureeHeures && item.TauxHoraireApplique ? parseFloat(item.DureeHeures) * parseFloat(item.TauxHoraireApplique) : 0;
+        var dateI = String(item.Date_Intervention || "").slice(0, 10);
+        var enRetard = !!enListe && dateI !== "" && dateI < todayInter && (effStatus === "Planifiee" || effStatus === "En cours" || effStatus === "Partiellement terminee");
+        var coutPieces = pcCoutGamme(item.Gamme).pieces;
+        return h(Card, { key: item.Id, style: { padding: 14, borderLeft: isSourceMec ? "3px solid #fbbf24" : "" } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+            h("div", { style: { flex: 1, minWidth: 180, cursor: "pointer" }, onClick: function() { openEdit(item); } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
+                h("div", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, item.Title || item.Travaux_Effectues),
+                isSourceMec ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)", letterSpacing: 0.5 } }, "🔧 SOUS-TRAITANT") : null,
+                item.Urgence === "urgente" ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(244,63,94,0.20)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.40)" } }, "⚡ URGENT") : null
+              ),
+              h("div", { style: { display: "flex", gap: 16, fontSize: 13, color: "#a1a1aa", flexWrap: "wrap" } },
+                h("span", null, h(IconText, { icon: "hard-hat", size: 12, color: "#a1a1aa" }, item.Equipement)),
+                enRetard
+                  ? h("span", { style: { color: "#fda4af", fontWeight: 700 } }, h(IconText, { icon: "calendar", size: 12, color: "#fda4af" }, item.Date_Intervention + " (en retard)"))
+                  : h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, item.Date_Intervention)),
+                item.Technicien && h("span", null, h(IconText, { icon: "user", size: 12, color: "#a1a1aa" }, item.Technicien)),
+                item.CreePar ? h("span", { style: { color: "#93c5fd" } }, h(IconText, { icon: "user-plus", size: 12, color: "#93c5fd" }, "Cree par " + String(item.CreePar).split("@")[0])) : null,
+                item.ValidePar ? h("span", { style: { color: "#86efac" } }, h(IconText, { icon: "shield-check", size: 12, color: "#86efac" }, "Accepte par " + String(item.ValidePar).split("@")[0])) : null,
+                mecLabel ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 12, color: "#fde68a" }, mecLabel)) : null,
+                item.Horametre && h("span", null, h(IconText, { icon: "timer", size: 12, color: "#a1a1aa" }, fmtNum(item.Horametre) + " h")),
+                item.DureeHeures && h("span", null, h(IconText, { icon: "clock", size: 12, color: "#a5b4fc" }, item.DureeHeures + " h")),
+                facturable > 0 && h("span", { style: { color: "#86efac", fontWeight: 700 } }, "💰 " + fmtNum(Math.round(facturable)) + " XPF"),
+                item.Type && h("span", null, h(IconText, { icon: item.Type === "Preventive" ? "shield-check" : "flame", size: 12, color: item.Type === "Preventive" ? "#60a5fa" : "#f43f5e" }, item.Type)),
+                prog.total > 0 && h("span", null, h(IconText, { icon: "list-checks", size: 12, color: "#a78bfa" }, "Gamme " + prog.done + "/" + prog.total)),
+                coutPieces > 0 ? h("span", { style: { color: "#c4b5fd" } }, h(IconText, { icon: "package", size: 12, color: "#c4b5fd" }, fmtNum(coutPieces) + " XPF de pieces")) : null)),
+            h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+              h(StatusBadge, { status: effStatus }),
+              h("button", { onClick: function() { openEdit(item); }, style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
+              h("button", { onClick: function() { setToDelete(item); }, style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })))));
+      };
+      // Une colonne (Preventif ou Curatif) : en-tete colore + compteur + cartes
+      var colonneInter = function(titre, icone, couleur, items, enListe) {
+        return h("div", { style: { minWidth: 0 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "8px 12px", borderRadius: 10, background: couleur + "14", border: "1px solid " + couleur + "40" } },
+            h(Icon, { name: icone, size: 15, color: couleur }),
+            h("span", { style: { fontWeight: 800, fontSize: 13, color: "#fafafa", letterSpacing: 0.3 } }, titre),
+            h("span", { style: { marginLeft: "auto", minWidth: 24, height: 22, padding: "0 8px", borderRadius: 999, background: couleur, color: "#1a1a2e", fontWeight: 900, fontSize: 12, display: "inline-flex", alignItems: "center", justifyContent: "center" } }, String(items.length))),
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+            items.length === 0
+              ? h("div", { style: { padding: "18px 12px", textAlign: "center", color: "#71717a", fontSize: 12.5, border: "1px dashed rgba(255,255,255,0.10)", borderRadius: 10 } }, "Rien ici")
+              : items.map(function(it) { return carteInter(it, enListe); })));
+      };
+      var deuxColonnesInter = function(items, enListe) {
+        var prevI = items.filter(function(i) { return i.Type === "Preventive"; });
+        var curI = items.filter(function(i) { return i.Type !== "Preventive"; });
+        return h("div", { style: { display: "grid", gridTemplateColumns: bpInter.isCompact ? "1fr" : "1fr 1fr", gap: 14, alignItems: "start" } },
+          colonneInter("Preventif", "shield-check", "#fbbf24", prevI, enListe),
+          colonneInter("Curatif", "flame", "#f43f5e", curI, enListe));
+      };
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "wrench", size: 20 }, "Interventions"), subtitle: interventions.length + " interventions" + (demandesEnAttente.length > 0 ? " · " + demandesEnAttente.length + " demande" + (demandesEnAttente.length > 1 ? "s" : "") + " en attente" : ""), action: h(Button, { onClick: openNew }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle intervention")) }),
         // ─── BANDEAU DEMANDES EN ATTENTE ───
@@ -5411,12 +5976,13 @@
             })
           )
         ) : null,
-        // ── Bascule de vue : Liste classique / Par equipement (a faire) ──
+        // ── Bascule de vue : Liste (a faire) / Termines / Par equipement (a faire) ──
         h("div", { style: { display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" } },
-          h("span", { onClick: function() { setVueInter("liste"); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: vueInter === "liste" ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: vueInter === "liste" ? "#ffffff" : "#a1a1aa", border: "1px solid " + (vueInter === "liste" ? "transparent" : "rgba(255,255,255,0.12)") } }, "Liste"),
-          h("span", { onClick: function() { setVueInter("equipements"); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: vueInter === "equipements" ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: vueInter === "equipements" ? "#ffffff" : "#a1a1aa", border: "1px solid " + (vueInter === "equipements" ? "transparent" : "rgba(255,255,255,0.12)") } }, "Par equipement" + (parEquipInter.length > 0 ? " (" + parEquipInter.length + ")" : ""))
+          pastilleInter("liste", "Liste (" + intersListe.length + ")"),
+          pastilleInter("termines", "Termines (" + intersTermines.length + ")"),
+          pastilleInter("equipements", "Par equipement" + (parEquipInter.length > 0 ? " (" + parEquipInter.length + ")" : ""))
         ),
-        vueInter === "liste" ? h(Card, { style: { marginBottom: 16 } },
+        vueInter !== "equipements" ? h(Card, { style: { marginBottom: 16 } },
           h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: 12 } },
             h(SearchInput, { placeholder: "Titre...", value: sT, onChange: setST }),
             h(SearchInput, { placeholder: "Machine...", value: sM, onChange: setSM }),
@@ -5430,39 +5996,28 @@
             )
           )
         ) : null,
-        vueInter === "liste" ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-          filtered.length === 0 ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention trouvee")) :
-            filtered.map((item) => {
-              const prog = gammeProgress(item.Gamme);
-              const effStatus = computeIntervStatus(item);
-              var isSourceMec = item.Source === "mecanicien";
-              var mecLabel = item.MecanicienCode ? getMecanicienLabel(item.MecanicienCode) : "";
-              var facturable = item.DureeHeures && item.TauxHoraireApplique ? parseFloat(item.DureeHeures) * parseFloat(item.TauxHoraireApplique) : 0;
-              return h(Card, { key: item.Id, style: { padding: 14, borderLeft: isSourceMec ? "3px solid #fbbf24" : "" } },
-              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 } },
-                h("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => openEdit(item) },
-                  h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
-                    h("div", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, item.Title || item.Travaux_Effectues),
-                    isSourceMec ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)", letterSpacing: 0.5 } }, "🔧 SOUS-TRAITANT") : null,
-                    item.Urgence === "urgente" ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(244,63,94,0.20)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.40)" } }, "⚡ URGENT") : null
-                  ),
-                  h("div", { style: { display: "flex", gap: 16, fontSize: 13, color: "#a1a1aa", flexWrap: "wrap" } },
-                    h("span", null, h(IconText, { icon: "hard-hat", size: 12, color: "#a1a1aa" }, item.Equipement)),
-                    h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, item.Date_Intervention)),
-                    item.Technicien && h("span", null, h(IconText, { icon: "user", size: 12, color: "#a1a1aa" }, item.Technicien)),
-                    item.CreePar ? h("span", { style: { color: "#93c5fd" } }, h(IconText, { icon: "user-plus", size: 12, color: "#93c5fd" }, "Cree par " + String(item.CreePar).split("@")[0])) : null,
-                    item.ValidePar ? h("span", { style: { color: "#86efac" } }, h(IconText, { icon: "shield-check", size: 12, color: "#86efac" }, "Accepte par " + String(item.ValidePar).split("@")[0])) : null,
-                    mecLabel ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 12, color: "#fde68a" }, mecLabel)) : null,
-                    item.Horametre && h("span", null, h(IconText, { icon: "timer", size: 12, color: "#a1a1aa" }, fmtNum(item.Horametre) + " h")),
-                    item.DureeHeures && h("span", null, h(IconText, { icon: "clock", size: 12, color: "#a5b4fc" }, item.DureeHeures + " h")),
-                    facturable > 0 && h("span", { style: { color: "#86efac", fontWeight: 700 } }, "💰 " + fmtNum(Math.round(facturable)) + " XPF"),
-                    item.Type && h("span", null, h(IconText, { icon: item.Type === "Preventive" ? "shield-check" : "flame", size: 12, color: item.Type === "Preventive" ? "#60a5fa" : "#f43f5e" }, item.Type)),
-                    prog.total > 0 && h("span", null, h(IconText, { icon: "list-checks", size: 12, color: "#a78bfa" }, "Gamme " + prog.done + "/" + prog.total)))),
-                h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                  h(StatusBadge, { status: effStatus }),
-                  h("button", { onClick: () => openEdit(item), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
-                  h("button", { onClick: () => setToDelete(item), style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })))));
-            })) : null,
+        // ── Vues LISTE (a faire) et TERMINES : deux colonnes Preventif | Curatif ──
+        (vueInter === "liste" || vueInter === "termines") && filtered.length === 0
+          ? h(Card, null, h("p", { style: { textAlign: "center", color: "#71717a", padding: 20 } }, "Aucune intervention trouvee")) : null,
+        // Recherche qui ne tombe que sur des terminees / rejetees : le dire, au lieu de deux colonnes vides
+        vueInter === "liste" && filtered.length > 0 && intersListe.length === 0
+          ? h("div", { onClick: function() { setVueInter("termines"); }, style: { display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderRadius: 10, cursor: "pointer", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(129,140,248,0.28)", marginBottom: 12, fontSize: 12.5, color: "#c7d2fe", flexWrap: "wrap" } },
+              h(Icon, { name: "corner-down-right", size: 13, color: "#a5b4fc" }),
+              "Rien a faire ne correspond : " + (intersTermines.length + intersNonFait.length) + " resultat(s) dans l'onglet Termines") : null,
+        vueInter === "liste" && filtered.length > 0 ? deuxColonnesInter(intersListe, true) : null,
+        vueInter === "termines" && filtered.length > 0 ? (function() {
+          // Rejetees / annulees : rangees a part, repliees par defaut (ouvertes d'office
+          // quand il n'y a rien d'autre a montrer, ex. recherche sur le statut "Rejetee")
+          var nfOuvert = nonFaitOuvert || intersTermines.length === 0;
+          return h("div", null,
+            intersTermines.length > 0 || intersNonFait.length === 0 ? deuxColonnesInter(intersTermines, false) : null,
+            intersNonFait.length > 0 ? h("div", { style: { marginTop: intersTermines.length > 0 ? 18 : 0 } },
+              h("div", { onClick: function() { setNonFaitOuvert(!nonFaitOuvert); }, style: { display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderRadius: 10, cursor: "pointer", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", marginBottom: nfOuvert ? 10 : 0, flexWrap: "wrap" } },
+                h(Icon, { name: nfOuvert ? "chevron-down" : "chevron-right", size: 14, color: "#a1a1aa" }),
+                h("span", { style: { fontWeight: 700, fontSize: 13, color: "#d4d4d8" } }, "Non realisees (" + intersNonFait.length + ")"),
+                h("span", { style: { fontSize: 12, color: "#71717a" } }, "rejetees, annulees")),
+              nfOuvert ? deuxColonnesInter(intersNonFait, false) : null) : null);
+        })() : null,
         // ── Vue PAR EQUIPEMENT : machines avec du travail en attente ──
         // Macaron JAUNE = nb preventives a faire, ROUGE = nb curatives ; un
         // equipement sans rien a faire n'apparait pas. Accordeon multi-ouvert :
@@ -35358,12 +35913,34 @@
       // Filtres
       var _horizon = useState("90"); var horizon = _horizon[0]; var setHorizon = _horizon[1];
       var _equipFilter = useState("all"); var equipFilter = _equipFilter[0]; var setEquipFilter = _equipFilter[1];
-      var _vue = useState("par-piece"); var vue = _vue[0]; var setVue = _vue[1]; // "par-piece" | "par-machine" | "conso-forage"
+      var _vue = useState("par-piece"); var vue = _vue[0]; var setVue = _vue[1]; // "par-piece" | "par-machine" | "conso-forage" | "pieces-changees"
       // ── Consommables forage (usure au metrage) ──
       var _margeConso = useState(20); var margeConso = _margeConso[0]; var setMargeConso = _margeConso[1];
       var _delaiConso = useState(6); var delaiConso = _delaiConso[0]; var setDelaiConso = _delaiConso[1];
       var _consoOuverte = useState(null); var consoOuverte = _consoOuverte[0]; var setConsoOuverte = _consoOuverte[1];
       var _chExcluConso = useState({}); var chExcluConso = _chExcluConso[0]; var setChExcluConso = _chExcluConso[1];
+      // ── Pieces changees (historique reel : etapes de gamme cochees portant une reference) ──
+      var _pcHorizon = useState("60"); var pcHorizon = _pcHorizon[0]; var setPcHorizon = _pcHorizon[1];
+      var _pcEquip = useState("all"); var pcEquip = _pcEquip[0]; var setPcEquip = _pcEquip[1];
+      var _pcOuverte = useState({}); var pcOuverte = _pcOuverte[0]; var setPcOuverte = _pcOuverte[1];
+      var pcTous = useMemo(function() {
+        return pcChangements(ctx.interventions || [], ctx.pieces || [], ctx.piecesEquipements || [], ctx.equipements || []);
+      }, [ctx.interventions, ctx.pieces, ctx.piecesEquipements, ctx.equipements]);
+      var pcToday = pcJour(localISODate());
+      var pcH = parseInt(pcHorizon, 10) || 60;
+      var pcMachines = (function() {
+        var vus = Object.create(null), out = [];
+        pcTous.forEach(function(c) { if (!vus[c.eqKey]) { vus[c.eqKey] = true; out.push({ key: c.eqKey, nom: c.eqNom }); } });
+        return out.sort(function(a, b) { return String(a.nom).localeCompare(String(b.nom)); });
+      })();
+      var pcGroupes = pcSynthese(pcEquip === "all" ? pcTous : pcTous.filter(function(c) { return c.eqKey === pcEquip; }), pcH, pcToday);
+      var pcConnus = pcGroupes.filter(function(g) { return g.connu; });
+      var pcSansPrev = pcGroupes.filter(function(g) { return !g.connu; });
+      var pcNbRefsCmd = 0, pcUnitesCmd = 0, pcBudget = 0, pcNbRetard = 0;
+      pcConnus.forEach(function(g) {
+        if (g.aCmd > 0) { pcNbRefsCmd++; pcUnitesCmd += g.aCmd; pcBudget += g.cout; }
+        pcNbRetard += g.retard;
+      });
 
       var today = new Date();
       var horizonDate = new Date(today.getTime() + parseInt(horizon, 10) * 86400000);
@@ -35697,17 +36274,150 @@
 
       var sectionStyle = { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" };
 
+      // ── Vue "Pieces changees" : une ligne par reference, toutes machines confondues ──
+      var pcTh = { padding: "10px 12px", fontSize: 11, fontWeight: 700, color: "#a5b4fc", textTransform: "uppercase", letterSpacing: 0.4, textAlign: "left", whiteSpace: "nowrap" };
+      var pcTd = { padding: "9px 12px", fontSize: 12.5, color: "#d4d4d8", verticalAlign: "middle" };
+      var pcTdD = { padding: "6px 10px", fontSize: 12, color: "#d4d4d8", verticalAlign: "top" };
+      var pcMono = "'SF Mono', Consolas, monospace";
+      function pcBasculer(k) {
+        setPcOuverte(function(prev) { var n = Object.assign({}, prev); if (n[k]) delete n[k]; else n[k] = true; return n; });
+      }
+      function pcBadgesMachines(g) {
+        return h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } }, g.series.map(function(s) {
+          return h("span", { key: s.eqKey, title: s.n + " changement" + (s.n > 1 ? "s" : "") + " sur " + s.eqNom, style: { padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.28)", color: "#c7d2fe", whiteSpace: "nowrap" } }, s.eqNom + (s.n > 1 ? " ×" + s.n : ""));
+        }));
+      }
+      function pcCelluleACmd(g) {
+        if (g.aCmd > 0) return h("div", null,
+          h("span", { style: { fontSize: 18, fontWeight: 800, color: "#fcd34d" } }, pcTxtQte(g.aCmd, g.unite)),
+          g.stock === null ? h("div", { style: { fontSize: 10.5, color: "#71717a" } }, "stock inconnu") : null);
+        if (g.besoin > 0) return h("span", { style: { padding: "2px 9px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.30)", color: "#86efac" } }, "Stock suffisant");
+        return h("span", { style: { color: "#52525b" } }, "—");
+      }
+      // Detail d'une reference : une ligne par machine
+      function pcDetail(g) {
+        return h("table", { style: { width: "100%", borderCollapse: "collapse", marginTop: 4 } },
+          h("thead", null, h("tr", null, ["Machine", "Changements", "Rythme", "Dernier", "Prochain", "Prevu sur la periode"].map(function(x, i) {
+            return h("th", { key: i, style: { padding: "6px 10px", fontSize: 10, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.4, textAlign: "left" } }, x);
+          }))),
+          h("tbody", null, g.series.map(function(s) {
+            var dates = s.evts.slice(-6).map(function(e) { return pcDateFr(e.date); }).join(", ");
+            return h("tr", { key: s.eqKey, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+              h("td", { style: Object.assign({}, pcTdD, { fontWeight: 700, color: "#fafafa", whiteSpace: "nowrap" }) }, s.eqNom),
+              h("td", { style: pcTdD }, s.n + " : " + (s.evts.length > 6 ? "... " : "") + dates),
+              h("td", { style: Object.assign({}, pcTdD, { whiteSpace: "nowrap" }) }, s.avg === null ? "pas encore connu" : pcTxtRythme(s.avg) + (s.interrompu ? " (interrompu)" : "")),
+              h("td", { style: Object.assign({}, pcTdD, { whiteSpace: "nowrap" }) }, pcDateFr(pcDateDeJour(s.dernier))),
+              h("td", { style: Object.assign({}, pcTdD, { whiteSpace: "nowrap", color: s.retard ? "#fda4af" : "#d4d4d8" }) }, s.avg === null || s.interrompu ? "—" : pcTxtEcheance(s.next, pcToday)),
+              h("td", { style: Object.assign({}, pcTdD, { whiteSpace: "nowrap" }) }, s.nb > 0 ? pcTxtQte(s.nb * s.qteHab, g.unite) + (s.retard ? " (dont 1 changement en retard)" : "") : "—"));
+          })));
+      }
+      function pcRenderVue() {
+        if (pcTous.length === 0) {
+          return h("div", { style: Object.assign({}, sectionStyle, { padding: 60, textAlign: "center", color: "#71717a" }) },
+            h(Icon, { name: "history", size: 28, color: "#52525b" }),
+            h("div", { style: { marginTop: 12, fontSize: 14, color: "#a1a1aa", fontWeight: 600 } }, "Aucune piece changee enregistree"),
+            h("div", { style: { marginTop: 6, fontSize: 12.5 } }, "Dans une intervention, ajoutez une etape a la gamme, saisissez la reference de la piece et cochez l'etape : elle apparaitra ici."));
+        }
+        return h("div", null,
+          // Regle de calcul
+          h("div", { style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 14, borderRadius: 10, background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.20)", fontSize: 12, color: "#c7d2fe", lineHeight: 1.5 } },
+            h(Icon, { name: "info", size: 14, color: "#a5b4fc", style: { marginTop: 2 } }),
+            h("div", null, "Chaque etape de gamme cochee qui porte une reference compte comme un changement. Des le 2e changement d'une meme reference sur une machine, l'ecart moyen donne le rythme et la date du prochain (deux changements a moins de 7 jours d'ecart ne suffisent pas : il en faut un 3e). A commander = changements prevus sur la periode, moins le stock du catalogue. Une reference qui n'a plus ete changee depuis plus de 3 fois son rythme n'est plus comptee (rythme interrompu).")),
+          // Tableau principal : references au rythme connu
+          pcConnus.length === 0
+            ? h("div", { style: Object.assign({}, sectionStyle, { padding: 40, textAlign: "center", color: "#71717a", marginBottom: 16 }) }, "Pas encore de rythme connu : il faut au moins 2 changements de la meme reference sur une machine.")
+            : h("div", { style: Object.assign({}, sectionStyle, { overflow: "hidden", marginBottom: 16 }) },
+                h("div", { style: { padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+                  h(IconText, { icon: "history", size: 15, color: "#a78bfa" }, h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, "A commander d'ici " + pcH + " jours")),
+                  h("span", { style: { fontSize: 12, color: "#94a3b8" } }, "Une ligne par reference, toutes machines confondues")),
+                h("div", { style: { overflowX: "auto" } },
+                  h("table", { style: { width: "100%", minWidth: 1040, borderCollapse: "collapse" } },
+                    h("thead", null, h("tr", { style: { background: "rgba(99,102,241,0.08)" } },
+                      h("th", { style: Object.assign({}, pcTh, { width: 18, padding: "10px 4px 10px 12px" }) }, ""),
+                      h("th", { style: pcTh }, "Reference"),
+                      h("th", { style: pcTh }, "Designation"),
+                      h("th", { style: pcTh }, "Machines"),
+                      h("th", { style: pcTh }, "Changee"),
+                      h("th", { style: pcTh }, "Rythme"),
+                      h("th", { style: pcTh }, "Prochain changement"),
+                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Besoin " + pcH + " j"),
+                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Stock"),
+                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "A commander"),
+                      h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Cout estime"))),
+                    h("tbody", null, pcConnus.map(function(g) {
+                      var open = !!pcOuverte[g.key];
+                      var enRetard = g.retard > 0;
+                      return h(React.Fragment, { key: g.key },
+                        h("tr", { onClick: function() { pcBasculer(g.key); }, style: { borderTop: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", background: open ? "rgba(99,102,241,0.06)" : "transparent" } },
+                          h("td", { style: Object.assign({}, pcTd, { padding: "9px 4px 9px 12px" }) }, h(Icon, { name: open ? "chevron-down" : "chevron-right", size: 14, color: "#a1a1aa" })),
+                          h("td", { style: Object.assign({}, pcTd, { fontFamily: pcMono, fontWeight: 700, color: "#fafafa", whiteSpace: "nowrap" }) }, g.ref),
+                          h("td", { style: pcTd }, g.des || "—"),
+                          h("td", { style: pcTd }, pcBadgesMachines(g)),
+                          h("td", { style: Object.assign({}, pcTd, { whiteSpace: "nowrap" }) }, g.nbCh + " fois"),
+                          h("td", { style: Object.assign({}, pcTd, { whiteSpace: "nowrap" }) }, pcTxtRythme(g.rythme)),
+                          h("td", { style: Object.assign({}, pcTd, { whiteSpace: "nowrap", color: enRetard ? "#fda4af" : "#d4d4d8", fontWeight: enRetard ? 700 : 400 }) }, pcTxtEcheance(g.next, pcToday)),
+                          h("td", { style: Object.assign({}, pcTd, { textAlign: "right", whiteSpace: "nowrap" }) }, g.besoin > 0 ? pcTxtQte(g.besoin, g.unite) : "—"),
+                          h("td", { style: Object.assign({}, pcTd, { textAlign: "right", whiteSpace: "nowrap", color: g.stock === null ? "#71717a" : "#d4d4d8" }) }, g.stock === null ? "inconnu" : pcTxtQte(g.stock, g.unite)),
+                          h("td", { style: Object.assign({}, pcTd, { textAlign: "right", whiteSpace: "nowrap" }) }, pcCelluleACmd(g)),
+                          h("td", { style: Object.assign({}, pcTd, { textAlign: "right", whiteSpace: "nowrap" }) }, g.cout > 0 ? fmtMoney(g.cout) : "—")),
+                        open ? h("tr", null, h("td", { colSpan: 11, style: { padding: "0 12px 12px 44px", background: "rgba(99,102,241,0.04)" } }, pcDetail(g))) : null);
+                    }))))),
+          // Bloc du bas : references sans prevision (une seule fois / rythme interrompu)
+          pcSansPrev.length > 0 ? h("div", { style: Object.assign({}, sectionStyle, { overflow: "hidden" }) },
+            h("div", { style: { padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+              h(IconText, { icon: "hourglass", size: 15, color: "#94a3b8" }, h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, "Sans prevision (" + pcSansPrev.length + ")")),
+              h("span", { style: { fontSize: 12, color: "#94a3b8" } }, "Rythme pas encore connu ou interrompu : rien n'est compte a commander")),
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", minWidth: 760, borderCollapse: "collapse" } },
+                h("thead", null, h("tr", { style: { background: "rgba(99,102,241,0.08)" } },
+                  ["Reference", "Designation", "Machines", "Changee", "Dernier changement", "Motif"].map(function(x, i) { return h("th", { key: i, style: pcTh }, x); }),
+                  h("th", { style: Object.assign({}, pcTh, { textAlign: "right" }) }, "Stock"))),
+                h("tbody", null, pcSansPrev.map(function(g) {
+                  return h("tr", { key: g.key, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: Object.assign({}, pcTd, { fontFamily: pcMono, fontWeight: 700, color: "#fafafa", whiteSpace: "nowrap" }) }, g.ref),
+                    h("td", { style: pcTd }, g.des || "—"),
+                    h("td", { style: pcTd }, pcBadgesMachines(g)),
+                    h("td", { style: Object.assign({}, pcTd, { whiteSpace: "nowrap" }) }, g.nbCh + " fois"),
+                    h("td", { style: Object.assign({}, pcTd, { whiteSpace: "nowrap" }) }, g.dernier === null ? "—" : pcDateFr(pcDateDeJour(g.dernier))),
+                    h("td", { style: Object.assign({}, pcTd, { color: "#94a3b8" }) }, g.interrompu ? "rythme interrompu" : (g.rapproche ? "2 changements trop rapproches" : (g.nbCh > 1 ? "une seule fois par machine" : "changee une seule fois"))),
+                    h("td", { style: Object.assign({}, pcTd, { textAlign: "right", whiteSpace: "nowrap", color: g.stock === null ? "#71717a" : "#d4d4d8" }) }, g.stock === null ? "inconnu" : pcTxtQte(g.stock, g.unite)));
+                }))))) : null
+        );
+      }
+
       return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "shopping-cart", size: 20 }, "Achats previsionnels"), subtitle: "Materiel necessaire pour les plans de maintenance a venir" }),
 
-        // KPIs
+        // KPIs (la vue "Pieces changees" a les siens)
+        vue === "pieces-changees" ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
+          KpiTile({ icon: "shopping-cart", accent: "#fbbf24", label: "References a commander", value: pcNbRefsCmd, hint: pcConnus.length + " au rythme connu" }),
+          KpiTile({ icon: "package", accent: "#a78bfa", label: "Unites a commander", value: fmtNum(pcUnitesCmd), hint: "d'ici " + pcH + " jours" }),
+          KpiTile({ icon: "wallet", accent: "#34d399", label: "Budget estime", value: pcBudget > 1000000 ? (pcBudget / 1000000).toFixed(1) + " MF" : Math.round(pcBudget / 1000) + " k", hint: "XPF, prix catalogue" }),
+          KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Changements en retard", value: pcNbRetard, hint: "echeance depassee" })
+        ) :
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12, marginBottom: 18 } },
           KpiTile({ icon: "package", accent: "#a78bfa", label: "References necessaires", value: totalRefs, hint: inCatalogue + " en catalogue" }),
           KpiTile({ icon: "alert-triangle", accent: "#f43f5e", label: "Refs en deficit", value: besoins.filter(function(b) { return b.pieceCatalogue && (parseFloat(b.pieceCatalogue.Stock) || 0) < b.qtyTotal; }).length, hint: "stock insuffisant" }),
           KpiTile({ icon: "wallet", accent: "#fbbf24", label: "Cout estime", value: totalCost > 1000000 ? (totalCost / 1000000).toFixed(1) + " MF" : Math.round(totalCost / 1000) + " k", hint: "XPF a debourser" })
         ),
 
-        // Filtres
+        // Filtres (la vue "Pieces changees" a les siens : periode + machine)
+        vue === "pieces-changees" ? h("div", { style: Object.assign({}, sectionStyle, { padding: 14, marginBottom: 16, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }) },
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Periode"),
+          h("select", { value: pcHorizon, onChange: function(e) { setPcHorizon(e.target.value); },
+            style: { padding: "7px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit" } },
+            h("option", { value: "30" }, "30 jours"),
+            h("option", { value: "60" }, "60 jours"),
+            h("option", { value: "90" }, "90 jours")
+          ),
+          h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Machine"),
+          h("select", { value: pcEquip, onChange: function(e) { setPcEquip(e.target.value); },
+            style: { padding: "7px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#fafafa", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit" } },
+            h("option", { value: "all" }, "Toutes"),
+            pcMachines.map(function(m) { return h("option", { key: m.key, value: m.key }, m.nom); })
+          ),
+          h("span", { style: { marginLeft: "auto", fontSize: 12, color: "#94a3b8" } }, pcGroupes.length + " reference" + (pcGroupes.length > 1 ? "s" : "") + " changee" + (pcGroupes.length > 1 ? "s" : ""))
+        ) :
         h("div", { style: Object.assign({}, sectionStyle, { padding: 14, marginBottom: 16, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }) },
           h("span", { style: { fontSize: 11, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Horizon"),
           h("select", { value: horizon, onChange: function(e) { setHorizon(e.target.value); },
@@ -35731,8 +36441,12 @@
         h("div", { style: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" } },
           vueTabBtn("par-piece", "Par piece", "package", besoins.length),
           vueTabBtn("par-machine", "Par machine", "truck", besoinsParMachine.length),
-          vueTabBtn("conso-forage", "Consommables forage", "layers", consoForage.lignes.length)
+          vueTabBtn("conso-forage", "Consommables forage", "layers", consoForage.lignes.length),
+          vueTabBtn("pieces-changees", "Pieces changees", "history", pcGroupes.length)
         ),
+
+        // ─ VUE PIECES CHANGEES (historique reel des gammes cochees) ─
+        vue === "pieces-changees" ? pcRenderVue() :
 
         // ─ VUE CONSOMMABLES FORAGE (usure au metrage) ─
         vue === "conso-forage" ? h("div", null,
