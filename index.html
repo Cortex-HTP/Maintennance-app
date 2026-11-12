@@ -3523,6 +3523,11 @@
     // donc dans le JSON de la gamme : aucune colonne en base.
     function GammeSousLigne({ item, pieces, onPatch, isMobile, listId }) {
       var _txt = useState(null); var txt = _txt[0]; var setTxt = _txt[1];
+      // Reference hors catalogue -> "+ Ajouter au stock" : petit formulaire sur place qui cree
+      // la piece dans Pieces detachees (ref + prix de la ligne) et y relie aussitot l'etape.
+      var ctxSL = useAppData();
+      var catsPiece = useParams("cat_piece");
+      var _aj = useState(null); var ajout = _aj[0]; var setAjout = _aj[1];
       // Dernieres valeurs posees automatiquement (prix catalogue, libelle) : elles ne
       // sont remplacees / retirees que si l'utilisateur ne les a pas modifiees depuis.
       var auto = useRef({ prix: null, label: null });
@@ -3596,9 +3601,50 @@
           h("span", { style: { color: stock > 0 ? "#86efac" : "#fda4af", fontWeight: 600 } }, stock > 0 ? "stock : " + pcTxtQte(stock, "u") : "rupture"),
           h("span", { style: { color: "#94a3b8" } }, " - " + (pieceCat.Designation || pieceCat.Reference || "")));
       } else if (aRef) {
-        info = h("span", { title: "Reference absente du catalogue des pieces : elle est suivie telle que saisie", style: { flex: "1 1 60px", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 10.5, color: "#94a3b8", textAlign: isMobile ? "left" : "right" } }, "hors catalogue");
+        info = h("span", { style: { flex: "1 1 60px", minWidth: 0, display: "flex", alignItems: "center", justifyContent: isMobile ? "flex-start" : "flex-end", gap: 6 } },
+          h("span", { title: "Reference absente du catalogue des pieces : elle est suivie telle que saisie", style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 10.5, color: "#94a3b8", minWidth: 0 } }, "hors catalogue"),
+          ajout ? null : h("button", { type: "button", onClick: ouvrirAjout, title: "Creer cette reference dans Pieces detachees (prix et reference de la ligne)", style: { flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, height: 20, padding: "0 7px", borderRadius: 5, border: "1px solid rgba(129,140,248,0.45)", background: "rgba(99,102,241,0.14)", color: "#c7d2fe", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" } },
+            h(Icon, { name: "package-plus", size: 11, color: "#c7d2fe" }), "Ajouter au stock"));
       }
-      return h("div", { style: { display: "flex", alignItems: "center", gap: isMobile ? "4px 5px" : 6, flexWrap: isMobile ? "wrap" : "nowrap", padding: isMobile ? "4px 8px 5px 8px" : "4px 10px 5px 12px", borderTop: "1px dashed rgba(99,102,241,0.30)", background: "rgba(99,102,241,0.05)", fontSize: 11 } },
+      function ouvrirAjout() {
+        var lbl = String(item.label || "").trim();
+        var des = /^remplacement\s+/i.test(lbl) ? lbl.replace(/^remplacement\s+/i, "") : lbl;
+        if (pcNorm(des) === pcNorm(refTexte)) des = "";
+        setAjout({ designation: des, categorie: catsPiece.indexOf("Autre") >= 0 ? "Autre" : (catsPiece[0] || "Autre"), stock: "", fournisseur: "", saving: false, erreur: "" });
+      }
+      async function creerPiece() {
+        var ref = refTexte.trim();
+        if (!ref || !ajout || ajout.saving) return;
+        var des = String(ajout.designation || "").trim() || ref;
+        var deja = pcTrouverPiece(pieces, ref);
+        setAjout(function(a) { return Object.assign({}, a, { saving: true, erreur: "" }); });
+        try {
+          var np = deja || await ctxSL.addPiece({ Reference: ref, Designation: des, Categorie: ajout.categorie || "Autre", Fournisseur: String(ajout.fournisseur || "").trim(), PrixUnitaire: prix > 0 ? String(prix) : "", Stock: String(Math.max(0, parseFloat(String(ajout.stock).replace(",", ".")) || 0)), StockMin: "0", Emplacement: "", Compatible: "" });
+          if (!np || np.Id == null) throw new Error("piece non creee");
+          var patch = { pieceType: "piece", pieceRef: String(np.Id), pieceLabel: String(np.Designation || np.Reference || ref) };
+          // Libelle propose "Remplacement <ref>" (ou vide) -> "Remplacement <designation>"
+          var lbl = String(item.label || "").trim();
+          if (!lbl || lbl === libAuto(null, ref)) { var lb = libAuto(np, ""); if (lb) { patch.label = lb; auto.current.label = lb; } }
+          if (prix > 0) auto.current.prix = prix;
+          onPatch(patch);
+          setAjout(null);
+        } catch (e) {
+          setAjout(function(a) { return Object.assign({}, a, { saving: false, erreur: (e && e.message) || "erreur" }); });
+        }
+      }
+      var champAj = { height: isMobile ? 34 : 26, padding: "0 8px", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#e2e8f0", fontSize: isMobile ? 16 : 12, fontFamily: "inherit", boxSizing: "border-box", minWidth: 0 };
+      var panneauAjout = ajout ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: isMobile ? "6px 8px 8px" : "6px 10px 8px 30px", borderTop: "1px dashed rgba(129,140,248,0.35)", background: "rgba(99,102,241,0.09)" } },
+        h("span", { style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#c7d2fe", whiteSpace: "nowrap" } }, h(Icon, { name: "package-plus", size: 12, color: "#a5b4fc" }), "Nouvelle piece " + refTexte.trim()),
+        h("input", { type: "text", value: ajout.designation, placeholder: "Designation", title: "Designation de la piece", onChange: function(e) { var v = e.target.value; setAjout(function(a) { return Object.assign({}, a, { designation: v }); }); }, style: Object.assign({}, champAj, { flex: "1 1 170px" }) }),
+        h("select", { value: ajout.categorie, title: "Categorie de la piece", onChange: function(e) { var v = e.target.value; setAjout(function(a) { return Object.assign({}, a, { categorie: v }); }); }, style: Object.assign({}, champAj, { flex: "0 1 140px" }) },
+          (catsPiece.indexOf(ajout.categorie) >= 0 ? catsPiece : [ajout.categorie].concat(catsPiece)).map(function(c) { return h("option", { key: c, value: c }, c); })),
+        h("input", { type: "text", inputMode: "decimal", value: ajout.stock, placeholder: "Stock", title: "Quantite en stock (0 si vide)", onChange: function(e) { var v = e.target.value.replace(/[^0-9.,]/g, ""); setAjout(function(a) { return Object.assign({}, a, { stock: v }); }); }, style: Object.assign({}, champAj, { width: 64, flex: "0 0 64px", textAlign: "right" }) }),
+        h("input", { type: "text", value: ajout.fournisseur, placeholder: "Fournisseur", title: "Fournisseur (facultatif)", onChange: function(e) { var v = e.target.value; setAjout(function(a) { return Object.assign({}, a, { fournisseur: v }); }); }, style: Object.assign({}, champAj, { flex: "0 1 130px" }) }),
+        h("button", { type: "button", onClick: creerPiece, disabled: ajout.saving, style: { height: isMobile ? 34 : 26, padding: "0 11px", borderRadius: 6, border: "none", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: ajout.saving ? "wait" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" } }, ajout.saving ? "Creation..." : "Creer la piece"),
+        h("button", { type: "button", onClick: function() { setAjout(null); }, disabled: ajout.saving, style: { height: isMobile ? 34 : 26, padding: "0 8px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "#a1a1aa", fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "Annuler"),
+        ajout.erreur ? h("div", { style: { flexBasis: "100%", fontSize: 11, color: "#fda4af" } }, "Creation impossible : " + ajout.erreur) : null,
+        h("div", { style: { flexBasis: "100%", fontSize: 10.5, color: "#94a3b8" } }, "Reference et prix (" + (prix > 0 ? fmtNum(prix) + " F" : "non saisi") + ") repris de la ligne. Modifiable ensuite dans Pieces detachees.")) : null;
+      return h("div", null, h("div", { style: { display: "flex", alignItems: "center", gap: isMobile ? "4px 5px" : 6, flexWrap: isMobile ? "wrap" : "nowrap", padding: isMobile ? "4px 8px 5px 8px" : "4px 10px 5px 12px", borderTop: "1px dashed rgba(99,102,241,0.30)", background: "rgba(99,102,241,0.05)", fontSize: 11 } },
         isMobile ? null : h(Icon, { name: "corner-down-right", size: 12, color: "#818cf8", style: { flexShrink: 0, opacity: 0.8 } }),
         // Mobile : les 4 champs tiennent sur une ligne (la police des champs y est
         // imposee a 16px), le total et l'info passent dessous.
@@ -3618,7 +3664,7 @@
           h(PcChampNum, { value: item.tempsH, placeholder: isMobile ? "Tps" : "", onChange: function(n) { onPatch({ tempsH: n }); }, style: champNum }),
           h("span", { style: suff }, "h")),
         prix > 0 ? h("span", { title: "Total de la ligne", style: { fontWeight: 700, fontSize: 11.5, whiteSpace: "nowrap", color: "#e2e8f0", flexShrink: 0 } }, "= " + fmtNum(qte * prix) + " F") : null,
-        info);
+        info), panneauAjout);
     }
 
     function GammeChecklist({ items, onChange, allowAddCustom }) {
@@ -41838,10 +41884,12 @@
       const addPiece = async (item) => {
         const { data, error } = await supabase.from("pieces").insert(pieceToDb(item)).select().single();
         if (error) { showToast(error.message, "error"); throw error; }
-        setPieces((p) => [...p, pieceFromDb(data)]);
+        const nouvelle = pieceFromDb(data);
+        setPieces((p) => [...p, nouvelle]);
         showToast("Piece ajoutee");
         // Premiere observation de prix (si > 0)
         trackPrixObservation(item, null, "creation piece");
+        return nouvelle; // la sous-ligne d'une etape de gamme s'y relie aussitot
       };
       const updatePiece = async (item) => {
         // Recupere l'ancien prix avant l'update pour ne tracker que si ca a change
