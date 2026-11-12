@@ -5973,43 +5973,66 @@
         var actif = vueInter === id;
         return h("span", { onClick: function() { setVueInter(id); }, style: { padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", background: actif ? "linear-gradient(135deg, #6366f1, #818cf8)" : "rgba(255,255,255,0.05)", color: actif ? "#ffffff" : "#a1a1aa", border: "1px solid " + (actif ? "transparent" : "rgba(255,255,255,0.12)") } }, label);
       };
+      // Affichage homogene des cartes (demande Tomy 2026-11-13 : "les polices changent") :
+      // une seule taille / un seul gris pour les infos, l'etat porte par un liseret a gauche.
+      var dateFrInter = function(d) {
+        var s = String(d || "").slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + "/" + s.slice(5, 7) + "/" + s.slice(0, 4) : s;
+      };
+      // Nom du mecanicien sans son code, en casse normale ("JEAN DUPONT" -> "Jean Dupont")
+      var nomMecInter = function(code) {
+        var m = mecaniciensByCode[code];
+        var nom = m ? ((m.prenom || "") + " " + (m.nom || "")).trim() : "";
+        if (!nom) return String(code || "");
+        return nom.toLowerCase().replace(/(^|[\s\-'])(\S)/g, function(t, sep, c) { return sep + c.toUpperCase(); });
+      };
+      var infoInter = function(cle, icone, texte, rouge) {
+        return h("span", { key: cle, style: { display: "inline-flex", alignItems: "center", gap: 5, color: rouge ? "#fca5a5" : "#a1a1aa", whiteSpace: "nowrap" } },
+          h(Icon, { name: icone, size: 12, color: rouge ? "#fca5a5" : "#71717a" }), texte);
+      };
+      var pastilleCarteInter = function(icone, texte, couleur, bord) {
+        return h("span", { style: { display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 7px", borderRadius: 999, fontSize: 11, fontWeight: 600, color: couleur, border: "1px solid " + bord, whiteSpace: "nowrap" } },
+          h(Icon, { name: icone, size: 11, color: couleur }), texte);
+      };
       // Carte d'une intervention (enListe = vue "a faire" : signale les retards)
       var carteInter = function(item, enListe) {
         var prog = gammeProgress(item.Gamme);
         var effStatus = computeIntervStatus(item);
         var isSourceMec = item.Source === "mecanicien";
-        var mecLabel = item.MecanicienCode ? getMecanicienLabel(item.MecanicienCode) : "";
         var facturable = item.DureeHeures && item.TauxHoraireApplique ? parseFloat(item.DureeHeures) * parseFloat(item.TauxHoraireApplique) : 0;
+        var duree = parseFloat(String(item.DureeHeures || "").replace(",", "."));
         var dateI = String(item.Date_Intervention || "").slice(0, 10);
         var enRetard = !!enListe && dateI !== "" && dateI < todayInter && (effStatus === "Planifiee" || effStatus === "En cours" || effStatus === "Partiellement terminee");
         var coutPieces = pcCoutGamme(item.Gamme).pieces;
-        return h(Card, { key: item.Id, style: { padding: 14, borderLeft: isSourceMec ? "3px solid #fbbf24" : "" } },
-          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+        var infos = [];
+        if (item.Equipement) infos.push(infoInter("eq", "hard-hat", item.Equipement));
+        if (dateI) infos.push(infoInter("dt", "calendar", dateFrInter(dateI) + (enRetard ? " · en retard" : ""), enRetard));
+        if (item.Technicien) infos.push(infoInter("te", "user", item.Technicien));
+        if (prog.total > 0) infos.push(infoInter("ga", "list-checks", "Gamme " + prog.done + "/" + prog.total));
+        if (duree > 0) infos.push(infoInter("du", "clock", String(duree).replace(".", ",") + " h"));
+        if (parseFloat(item.Horametre) > 0) infos.push(infoInter("ho", "timer", fmtNum(item.Horametre) + " h compteur"));
+        if (facturable > 0) infos.push(infoInter("fa", "receipt", fmtNum(Math.round(facturable)) + " XPF"));
+        if (coutPieces > 0) infos.push(infoInter("pc", "package", fmtNum(coutPieces) + " XPF de pieces"));
+        var suivi = [];
+        if (item.MecanicienCode) suivi.push("Sous-traitant : " + nomMecInter(item.MecanicienCode));
+        if (item.CreePar) suivi.push("Cree par " + String(item.CreePar).split("@")[0]);
+        if (item.ValidePar) suivi.push("Accepte par " + String(item.ValidePar).split("@")[0]);
+        var liseret = enRetard ? "3px solid #f87171" : (isSourceMec ? "3px solid #fbbf24" : "");
+        return h(Card, { key: item.Id, style: { padding: "12px 14px", borderLeft: liseret } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" } },
             h("div", { style: { flex: 1, minWidth: 180, cursor: "pointer" }, onClick: function() { openEdit(item); } },
-              h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
-                h("div", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, item.Title || item.Travaux_Effectues),
-                isSourceMec ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(245,158,11,0.20)", color: "#fde68a", border: "1px solid rgba(245,158,11,0.40)", letterSpacing: 0.5 } }, "🔧 SOUS-TRAITANT") : null,
-                item.Urgence === "urgente" ? h("span", { style: { padding: "2px 7px", borderRadius: 999, fontSize: 9.5, fontWeight: 800, background: "rgba(244,63,94,0.20)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.40)" } }, "⚡ URGENT") : null
-              ),
-              h("div", { style: { display: "flex", gap: 16, fontSize: 13, color: "#a1a1aa", flexWrap: "wrap" } },
-                h("span", null, h(IconText, { icon: "hard-hat", size: 12, color: "#a1a1aa" }, item.Equipement)),
-                enRetard
-                  ? h("span", { style: { color: "#fda4af", fontWeight: 700 } }, h(IconText, { icon: "calendar", size: 12, color: "#fda4af" }, item.Date_Intervention + " (en retard)"))
-                  : h("span", null, h(IconText, { icon: "calendar", size: 12, color: "#a1a1aa" }, item.Date_Intervention)),
-                item.Technicien && h("span", null, h(IconText, { icon: "user", size: 12, color: "#a1a1aa" }, item.Technicien)),
-                item.CreePar ? h("span", { style: { color: "#93c5fd" } }, h(IconText, { icon: "user-plus", size: 12, color: "#93c5fd" }, "Cree par " + String(item.CreePar).split("@")[0])) : null,
-                item.ValidePar ? h("span", { style: { color: "#86efac" } }, h(IconText, { icon: "shield-check", size: 12, color: "#86efac" }, "Accepte par " + String(item.ValidePar).split("@")[0])) : null,
-                mecLabel ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 12, color: "#fde68a" }, mecLabel)) : null,
-                item.Horametre && h("span", null, h(IconText, { icon: "timer", size: 12, color: "#a1a1aa" }, fmtNum(item.Horametre) + " h")),
-                item.DureeHeures && h("span", null, h(IconText, { icon: "clock", size: 12, color: "#a5b4fc" }, item.DureeHeures + " h")),
-                facturable > 0 && h("span", { style: { color: "#86efac", fontWeight: 700 } }, "💰 " + fmtNum(Math.round(facturable)) + " XPF"),
-                item.Type && h("span", null, h(IconText, { icon: item.Type === "Preventive" ? "shield-check" : "flame", size: 12, color: item.Type === "Preventive" ? "#60a5fa" : "#f43f5e" }, item.Type)),
-                prog.total > 0 && h("span", null, h(IconText, { icon: "list-checks", size: 12, color: "#a78bfa" }, "Gamme " + prog.done + "/" + prog.total)),
-                coutPieces > 0 ? h("span", { style: { color: "#c4b5fd" } }, h(IconText, { icon: "package", size: 12, color: "#c4b5fd" }, fmtNum(coutPieces) + " XPF de pieces")) : null)),
-            h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                h("span", { style: { fontWeight: 600, fontSize: 14, color: "#fafafa", lineHeight: 1.35 } }, item.Title || item.Travaux_Effectues || "(sans titre)"),
+                isSourceMec ? pastilleCarteInter("wrench", "Sous-traitant", "#fde68a", "rgba(245,158,11,0.40)") : null,
+                item.Urgence === "urgente" ? pastilleCarteInter("zap", "Urgent", "#fda4af", "rgba(244,63,94,0.40)") : null),
+              infos.length > 0 ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 12.5, marginTop: 5 } }, infos) : null,
+              suivi.length > 0 ? h("div", { style: { fontSize: 11.5, color: "#71717a", marginTop: 5 } }, suivi.join(" · ")) : null,
+              prog.total > 0 ? h("div", { style: { height: 3, borderRadius: 2, background: "rgba(255,255,255,0.08)", marginTop: 8, overflow: "hidden" } },
+                h("div", { style: { height: "100%", width: Math.round(100 * prog.done / prog.total) + "%", background: "#818cf8" } })) : null),
+            h("div", { style: { display: "flex", gap: 4, alignItems: "center", flexShrink: 0 } },
               h(StatusBadge, { status: effStatus }),
-              h("button", { onClick: function() { openEdit(item); }, style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
-              h("button", { onClick: function() { setToDelete(item); }, style: { background: "transparent", border: "none", cursor: "pointer", fontSize: 16, padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })))));
+              h("button", { onClick: function() { openEdit(item); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#a1a1aa" }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15, color: "#a1a1aa" })),
+              h("button", { onClick: function() { setToDelete(item); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#f43f5e" }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 15, color: "#f43f5e" })))));
       };
       // Une colonne (Preventif ou Curatif) : en-tete colore + compteur + cartes
       var colonneInter = function(titre, icone, couleur, items, enListe) {
@@ -6126,11 +6149,11 @@
                       return h("div", { key: "eqi" + it.Id, style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "rgba(0,0,0,0.22)", border: "1px solid " + (estPrev ? "rgba(251,191,36,0.25)" : "rgba(244,63,94,0.25)"), borderRadius: 8, flexWrap: "wrap" } },
                         h("span", { title: estPrev ? "Preventive" : "Curative", style: { width: 10, height: 10, borderRadius: 999, background: estPrev ? "#fbbf24" : "#f43f5e", flexShrink: 0 } }),
                         h("div", { style: { flex: 1, minWidth: 180 } },
-                          h("div", { style: { fontWeight: 700, fontSize: 13, color: "#fafafa" } }, it.Title || it.Travaux_Effectues || "(sans titre)"),
-                          h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 2, display: "flex", gap: 12, flexWrap: "wrap" } },
-                            it.Date_Intervention ? h("span", null, h(IconText, { icon: "calendar", size: 11, color: "#a1a1aa" }, it.Date_Intervention)) : null,
-                            it.Technicien ? h("span", null, h(IconText, { icon: "user", size: 11, color: "#a1a1aa" }, it.Technicien)) : null,
-                            it.MecanicienCode ? h("span", { style: { color: "#fde68a" } }, h(IconText, { icon: "wrench", size: 11, color: "#fde68a" }, getMecanicienLabel(it.MecanicienCode))) : null
+                          h("div", { style: { fontWeight: 600, fontSize: 13, color: "#fafafa" } }, it.Title || it.Travaux_Effectues || "(sans titre)"),
+                          h("div", { style: { fontSize: 12, marginTop: 3, display: "flex", gap: "4px 12px", flexWrap: "wrap" } },
+                            it.Date_Intervention ? infoInter("dt", "calendar", dateFrInter(it.Date_Intervention)) : null,
+                            it.Technicien ? infoInter("te", "user", it.Technicien) : null,
+                            it.MecanicienCode ? infoInter("me", "wrench", "Sous-traitant : " + nomMecInter(it.MecanicienCode)) : null
                           )
                         ),
                         h(StatusBadge, { status: computeIntervStatus(it) }),
