@@ -29885,7 +29885,7 @@
       var inputS = { width: "100%", padding: "8px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, color: "#e5e7eb", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
       var labelS = { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
 
-      return h(Modal, { title: "Planifier l'intervention", onClose: onClose, size: 600 },
+      return h(Modal, { title: "Planifier l'intervention", onClose: onClose, size: 760 },
         // Info source
         h("div", { style: { background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#c7d2fe" } },
           h(IconText, { icon: "info", size: 13, color: "#a5b4fc" },
@@ -29987,51 +29987,21 @@
                 (form.Gamme || []).every(function(g) { return g.done; }) ? "Tout decocher" : "Tout fait") : null
             ),
             iaLoad ? h("div", { style: { padding: "10px 12px", background: "rgba(167,139,250,0.06)", border: "1px dashed rgba(167,139,250,0.30)", borderRadius: 8, fontSize: 12, color: "#c4b5fd" } }, "L'IA convertit la description de la demande en etapes...") : null,
-            (!iaLoad && Array.isArray(form.Gamme) && form.Gamme.length > 0) ? h("div", { style: { background: "rgba(0,0,0,0.20)", borderRadius: 8, padding: "8px 12px" } },
-              form.Gamme.map(function(g, gi) {
-                return h("div", { key: g.id || gi, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: gi < form.Gamme.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
-                  // Etape FAITE : cochable directement a la planification (le
-                  // travail est souvent deja realise quand la demande arrive)
-                  h("input", { type: "checkbox", checked: !!g.done, title: g.done ? "Etape faite" : "Etape a faire",
-                    onChange: function(e) {
-                      var v = e.target.checked;
-                      setForm(function(prev) {
-                        var arr = (prev.Gamme || []).slice();
-                        arr[gi] = Object.assign({}, arr[gi], { done: v });
-                        return Object.assign({}, prev, { Gamme: arr });
-                      });
-                    },
-                    style: { width: 16, height: 16, accentColor: "#22c55e", cursor: "pointer", flexShrink: 0 } }),
-                  h("span", { style: { fontSize: 10.5, fontWeight: 800, color: "#71717a", minWidth: 18 } }, (gi + 1) + "."),
-                  h("input", { type: "text", value: g.label || "",
-                    onChange: function(e) {
-                      var v = e.target.value;
-                      setForm(function(prev) {
-                        var arr = (prev.Gamme || []).slice();
-                        arr[gi] = Object.assign({}, arr[gi], { label: v });
-                        return Object.assign({}, prev, { Gamme: arr });
-                      });
-                    },
-                    style: { flex: 1, padding: "5px 8px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, color: g.done ? "#86efac" : "#e5e7eb", textDecoration: g.done ? "line-through" : "none", fontSize: 12.5, fontFamily: "inherit" } }),
-                  h("button", { type: "button", title: "Retirer cette etape",
-                    onClick: function() {
-                      setForm(function(prev) {
-                        return Object.assign({}, prev, { Gamme: (prev.Gamme || []).filter(function(_, xi) { return xi !== gi; }) });
-                      });
-                    },
-                    style: { background: "transparent", border: "none", cursor: "pointer", padding: 3, color: "#f43f5e" } }, h(Icon, { name: "x", size: 13, color: "#f43f5e" }))
-                );
-              })
-            ) : null,
-            (!iaLoad && (!Array.isArray(form.Gamme) || form.Gamme.length === 0)) ? h("div", { style: { fontSize: 11.5, color: "#71717a", fontStyle: "italic" } }, "Aucune etape. La gamme est generee automatiquement depuis la description de la demande.") : null,
-            !iaLoad ? h("button", { type: "button",
-              onClick: function() {
-                setForm(function(prev) {
-                  return Object.assign({}, prev, { Gamme: (Array.isArray(prev.Gamme) ? prev.Gamme : []).concat([{ id: "man-" + Date.now(), label: "", done: false, fromPlan: false }]) });
-                });
-              },
-              style: { marginTop: 7, padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: "1px dashed rgba(255,255,255,0.25)", background: "transparent", color: "#a1a1aa", display: "inline-flex", alignItems: "center", gap: 5 } },
-              h(Icon, { name: "plus", size: 12, color: "#a1a1aa" }), "Ajouter une etape") : null,
+            // Meme liste d'etapes que le formulaire d'intervention : case "faite" (le travail
+            // est souvent deja realise quand la demande arrive), libelle, et pour chaque etape
+            // ajoutee a la main ou par l'IA la sous-ligne reference / quantite / prix / temps.
+            !iaLoad ? h(GammeChecklist, { items: Array.isArray(form.Gamme) ? form.Gamme : [], allowAddCustom: true,
+              onChange: function(items) { setForm(function(prev) { return Object.assign({}, prev, { Gamme: items }); }); } }) : null,
+            // Pied : total des pieces et du temps saisis (comme dans le formulaire d'intervention)
+            !iaLoad ? (function() {
+              var cg = pcCoutGamme(form.Gamme);
+              if (!(cg.pieces > 0) && !(cg.temps > 0)) return null;
+              var dejaReporte = String(form.Cout == null ? "" : form.Cout) === String(cg.pieces);
+              return h("div", { style: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "#a1a1aa" } },
+                cg.pieces > 0 ? h("span", null, "Pieces de la gamme : ", h("b", { style: { color: "#fafafa" } }, fmtMoney(cg.pieces))) : null,
+                cg.temps > 0 ? h("span", null, "Temps saisi : ", h("b", { style: { color: "#fafafa" } }, pcTxtQte(cg.temps, "h"))) : null,
+                cg.pieces > 0 && !dejaReporte ? h("button", { type: "button", onClick: function() { setForm(function(prev) { return Object.assign({}, prev, { Cout: String(cg.pieces) }); }); }, title: "Recopie le total des pieces dans le champ Cout estime", style: { marginLeft: "auto", padding: "4px 10px", background: "rgba(99,102,241,0.10)", border: "1px solid rgba(129,140,248,0.35)", borderRadius: 6, color: "#a5b4fc", cursor: "pointer", fontSize: 11.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "inherit" } }, h(Icon, { name: "corner-down-right", size: 11, color: "#a5b4fc" }), "Reporter dans Cout") : null);
+            })() : null,
             iaInfo && iaInfo.erreur ? h("div", { style: { fontSize: 11, color: "#fda4af", marginTop: 5 } }, "IA indisponible (" + iaInfo.erreur + ") - tu peux saisir les etapes a la main ou relancer.") : null,
             iaInfo && !iaInfo.erreur ? h("div", { style: { fontSize: 11, color: iaInfo.source === "ia" ? "#86efac" : "#fde68a", marginTop: 5 } },
               iaInfo.source === "ia"
