@@ -9687,21 +9687,114 @@
       }
     }
 
-    // ═══ Agent RH : redaction de contrat en discutant avec l'IA ═══════════
+    // ═══ Agent RH : documents RH en discutant avec l'IA ═══════════════════
     // Meme cerveau que le projet claude.ai "RH Wallis-Label" : l'agent lit la
-    // fiche (JAMAIS le PIN), discute, et remplit le gabarit PDF VERROUILLE
+    // fiche (JAMAIS le PIN), discute, et remplit un gabarit PDF VERROUILLE
     // (api/rh-agent -> api/rh-pdf, pre-signe cote societe). L'envoi au Coffre
     // RH reste un clic manuel. Apercu en BLOB URL (la CSP interdit data:).
-    function RhContratIA({ emp, onClose }) {
+    // Mode NOUVELLE EMBAUCHE (pas de fiche) : une carte d'identite remplace la
+    // fiche ; la fiche Personnel n'est creee qu'au depot du contrat au Coffre.
+    var RH_DOCS_IA = [
+      { k: "contrat", g: "Contrats", t: "Nouveau contrat", s: "CDD (usage, remplacement, regularisation) ou CDI", icon: "file-text", c: "#a5b4fc" },
+      { k: "avenant_cdd", g: "Contrats", t: "Renouvellement de CDD", s: "Avenant, a signer avant le terme", icon: "repeat", c: "#a5b4fc", si: function(e, vivant) { return vivant && e.typeContrat === "CDD"; } },
+      { k: "avenant_cdi", g: "Contrats", t: "Avenant au CDI", s: "Poste, classification, salaire", icon: "pen-line", c: "#a5b4fc", si: function(e, vivant) { return vivant && (e.typeContrat || "CDI") === "CDI"; } },
+      { k: "attestation_travail", g: "Attestations", t: "Attestation de travail", s: "Banque, logement, administration", icon: "badge-check", c: "#86efac", si: function(e, vivant) { return vivant; } },
+      { k: "certificat_travail", g: "Attestations", t: "Certificat de travail", s: "A remettre a la fin du contrat", icon: "award", c: "#86efac" },
+      { k: "autorisation_conduite", g: "Autres", t: "Autorisation de conduite", s: "Vehicules de la societe", icon: "car", c: "#fde68a", si: function(e, vivant) { return vivant; } },
+      { k: "courrier", g: "Autres", t: "Courrier libre", s: "Tu decris, l'agent redige (relu par toi)", icon: "mail", c: "#fde68a" },
+      { k: "convocation", g: "Discipline (etape suivante)", t: "Convocation entretien prealable", s: "Delais et risques rappeles", icon: "gavel", c: "#fda4af", off: true },
+      { k: "avertissement", g: "Discipline (etape suivante)", t: "Avertissement", s: "Lettre motivee", icon: "gavel", c: "#fda4af", off: true }
+    ];
+    var RH_DOC_LIBELLE = { contrat: "Contrat", avenant_cdd: "Renouvellement de CDD", avenant_cdi: "Avenant au CDI", attestation_travail: "Attestation de travail", certificat_travail: "Certificat de travail", autorisation_conduite: "Autorisation de conduite", promesse_embauche: "Promesse d'embauche", courrier: "Courrier" };
+    // Type du Coffre RH (rh_documents.type_document) de chaque document genere
+    var RH_DOC_COFFRE = { contrat: "contrat", avenant_cdd: "avenant", avenant_cdi: "avenant", attestation_travail: "attestation", certificat_travail: "certificat", autorisation_conduite: "autorisation", promesse_embauche: "promesse", courrier: "courrier" };
+    var RH_DOC_PREFIXE = { avenant_cdd: "Avenant_contrat_", avenant_cdi: "Avenant_contrat_", attestation_travail: "Attestation_travail_", certificat_travail: "Certificat_travail_", autorisation_conduite: "Autorisation_conduite_", promesse_embauche: "Promesse_embauche_", courrier: "Courrier_" };
+    // Signature du salarie sur tablette ? Attestation, certificat, promesse :
+    // societe seule. Courrier : seulement s'il est remis en main propre.
+    function rhDocASigner(docType, data) {
+      if (docType === "attestation_travail" || docType === "certificat_travail" || docType === "promesse_embauche") return false;
+      if (docType === "courrier") return !!(data && data.remise_main_propre === true);
+      return true;
+    }
+    var RH_ROLES_FICHE = ["Sondeur", "Aide sondeur", "Chauffeur", "Mecanicien", "Atelier", "Bureau", "Autre"];
+    var RH_ISO_JOUR = /^\d{4}-\d{2}-\d{2}$/;
+    // Prochain code "pN" libre (memes regles que le formulaire Personnel : les
+    // codes de secours "p<timestamp>" sont ignores). codesSupp : codes deja
+    // presents au Coffre RH, pour ne jamais redonner le code d'une fiche
+    // supprimee (le nouveau salarie verrait les documents de l'ancien)
+    function prochainCodePersonnel(personnel, codesSupp) {
+      var maxN = 0;
+      (personnel || []).concat((codesSupp || []).map(function(c) { return { code: c }; })).forEach(function(p) {
+        var m = String(p.code || "").match(/^p(\d+)$/);
+        if (m) { var n = parseInt(m[1]); if (n < 100000 && n > maxN) maxN = n; }
+      });
+      return "p" + (maxN + 1);
+    }
+    function rhSansAccents(s) {
+      return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().trim();
+    }
+    var RH_SUGGESTIONS = {
+      contrat: [
+        { t: "Nouveau CDD", s: "CDD d'usage BTP (renfort)", m: "Nouveau CDD d'usage pour un renfort : " },
+        { t: "CDD de remplacement", s: "Remplace un salarie absent", m: "CDD de remplacement : " },
+        { t: "Regularisation", s: "Terme depasse, contrat a date reelle", m: "Contrat de regularisation : " },
+        { t: "CDI", s: "Embauche, ou passage d'un CDD en CDI", m: "CDI : " }
+      ],
+      embauche: [
+        { t: "CDD d'usage", s: "Renfort de chantier", m: "Nouvelle embauche en CDD d'usage : " },
+        { t: "CDI", s: "Embauche en CDI", m: "Nouvelle embauche en CDI : " },
+        { t: "Promesse d'embauche", s: "Avant le contrat (logement, billet d'avion...)", m: "Promesse d'embauche : " }
+      ],
+      avenant_cdd: [{ t: "Prolonger le CDD", s: "Avenant signe avant le terme", m: "Renouvelle son CDD jusqu'au " }],
+      avenant_cdi: [
+        { t: "Changement de fonction", s: "Nouveau poste, classification", m: "Avenant : a partir du , il devient " },
+        { t: "Augmentation", s: "Nouveau salaire", m: "Avenant : son salaire passe a " },
+        { t: "Vehicule de fonction", s: "Avec usage prive", m: "Avenant : vehicule de fonction avec usage prive a partir du " }
+      ],
+      attestation_travail: [
+        { t: "Attestation simple", s: "Sans salaire", m: "Fais son attestation de travail, sans salaire." },
+        { t: "Pour sa banque", s: "Avec salaire", m: "Attestation de travail pour sa banque, avec son salaire." }
+      ],
+      certificat_travail: [{ t: "Fin de contrat", s: "Rempli depuis sa fiche", m: "Fais son certificat de travail de fin de contrat." }],
+      autorisation_conduite: [{ t: "Vehicules legers (B)", s: "Cas general", m: "Autorisation de conduite pour les vehicules legers (permis B)." }],
+      courrier: [
+        { t: "Courrier simple", s: "Information, confirmation", m: "Courrier : " },
+        { t: "Remis en main propre", s: "Avec decharge signee", m: "Courrier remis en main propre contre decharge : " }
+      ]
+    };
+    var RH_CHAMPS_IDENTITE = [
+      { k: "nom", l: "Nom", ia: "nom" }, { k: "prenom", l: "Prenom", ia: "prenom" },
+      { k: "dateNaissance", l: "Date de naissance", ia: "date_naissance_iso", date: true },
+      { k: "lieuNaissance", l: "Lieu de naissance", ia: "lieu_naissance" }, { k: "nationalite", l: "Nationalite", ia: "nationalite" },
+      { k: "adresse", l: "Adresse", ia: "adresse" }, { k: "numeroCafat", l: "N° CAFAT", ia: "numero_cafat" }
+    ];
+
+    function RhContratIA({ emp, doc, embauche, personnel, onCreerFiche, onProlonger, onClose }) {
+      var docDemande = doc || "contrat";
       var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
       var _saisie = useState(""); var saisie = _saisie[0]; var setSaisie = _saisie[1];
       var _enCours = useState(false); var enCours = _enCours[0]; var setEnCours = _enCours[1];
       var _contrat = useState(null); var contrat = _contrat[0]; var setContrat = _contrat[1];
+      var _docType = useState(docDemande); var docType = _docType[0]; var setDocType = _docType[1];
       var _pdfUrl = useState(null); var pdfUrl = _pdfUrl[0]; var setPdfUrl = _pdfUrl[1];
       var _police = useState(""); var police = _police[0]; var setPolice = _police[1];
       var _genEnCours = useState(false); var genEnCours = _genEnCours[0]; var setGenEnCours = _genEnCours[1];
       var _errA = useState(""); var errA = _errA[0]; var setErrA = _errA[1];
       var _depose = useState(""); var depose = _depose[0]; var setDepose = _depose[1]; // '' | 'encours' | 'ok'
+      // Nouvelle embauche : carte d'identite, fiche creee au depot
+      var _ident = useState({ nom: "", prenom: "", dateNaissance: "", lieuNaissance: "", nationalite: "", adresse: "", numeroCafat: "" });
+      var ident = _ident[0]; var setIdent = _ident[1];
+      var _identSale = useState(false); var identSale = _identSale[0]; var setIdentSale = _identSale[1];
+      var _empCree = useState(null); var empCree = _empCree[0]; var setEmpCree = _empCree[1];
+      var _confirmFiche = useState(false); var confirmFiche = _confirmFiche[0]; var setConfirmFiche = _confirmFiche[1];
+      var _infoDepot = useState(""); var infoDepot = _infoDepot[0]; var setInfoDepot = _infoDepot[1];
+      // Derniere fonction de prolongation recue (l'appel arrive apres le depot :
+      // celle du rendu d'origine lirait une liste du personnel perimee)
+      var onProlongerRef = React.useRef(onProlonger);
+      onProlongerRef.current = onProlonger;
+      // Compteur des corrections manuelles de la carte : une reponse de l'agent
+      // partie AVANT une correction ne doit ni l'ecraser ni la marquer a jour
+      var identSeqRef = React.useRef(0);
       var filRef = React.useRef(null);
       var pdfUrlRef = React.useRef(null);
       // Le Blob lui-meme est garde : la CSP (connect-src) interdit de RELIRE
@@ -9721,16 +9814,30 @@
         if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
       }, [msgs, enCours]);
 
-      // La fiche transmise a l'IA : identite et contrat UNIQUEMENT (jamais le
-      // PIN ni l'email de connexion)
+      // Salarie concerne : la fiche existante, ou celle creee pendant l'embauche
+      var cible = empCree || emp || null;
+      var modeEmbauche = !!embauche;
+      var nomAffiche = cible ? ((cible.prenom || "") + " " + (cible.nom || "")).trim() : ((ident.prenom || "") + " " + (ident.nom || "")).trim();
+
+      // Ce qui part a l'IA : identite et contrat UNIQUEMENT (jamais le PIN ni
+      // l'email de connexion). Sans fiche : la carte d'identite de l'ecran.
       var fichePourIA = function() {
+        if (!cible) {
+          return { nouvelleEmbauche: true, nom: ident.nom, prenom: ident.prenom, dateNaissance: ident.dateNaissance,
+            lieuNaissance: ident.lieuNaissance, nationalite: ident.nationalite, adresse: ident.adresse, numeroCafat: ident.numeroCafat };
+        }
+        var e = cible;
         return {
-          code: emp.code || ("u" + emp.id), nom: emp.nom || "", prenom: emp.prenom || "",
-          dateNaissance: emp.dateNaissance || "", role: emp.role || "",
-          typeContrat: emp.typeContrat || "", dateEmbauche: emp.dateEmbauche || "",
-          dateFinContrat: emp.dateFinContrat || "", salaire: emp.salaire || "",
-          contratsHistorique: (Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : []).map(function(c) {
+          code: e.code || ("u" + e.id), nom: e.nom || "", prenom: e.prenom || "",
+          dateNaissance: e.dateNaissance || "", lieuNaissance: e.lieuNaissance || "", nationalite: e.nationalite || "",
+          adresse: e.adresse || "", numeroCafat: e.numeroCafat || "", role: e.role || "",
+          typeContrat: e.typeContrat || "", dateEmbauche: e.dateEmbauche || "",
+          dateFinContrat: e.dateFinContrat || "", motifFin: e.motifFin || "", salaire: e.salaire || "",
+          contratsHistorique: (Array.isArray(e.contratsHistorique) ? e.contratsHistorique : []).map(function(c) {
             return { dateEmbauche: (c && c.dateEmbauche) || "", dateFinContrat: (c && c.dateFinContrat) || "", typeContrat: (c && c.typeContrat) || "" };
+          }),
+          prolongations: (Array.isArray(e.prolongations) ? e.prolongations : []).map(function(p) {
+            return { ancienneFin: (p && p.ancienneFin) || "", nouvelleFin: (p && p.nouvelleFin) || "", date: (p && p.date) || "" };
           })
         };
       };
@@ -9745,20 +9852,20 @@
         return String((c && c.type) || "").trim().toLowerCase() === "cdi";
       };
       // Apercu ET Blob vides ensemble : un PDF perime ne doit jamais rester
-      // deposable sous l'identite (nom, dates) d'un contrat plus recent
+      // deposable sous l'identite (nom, dates) d'un document plus recent
       var viderPdf = function() {
         if (pdfUrlRef.current) { try { URL.revokeObjectURL(pdfUrlRef.current); } catch (e) {} }
         pdfUrlRef.current = null;
         pdfBlobRef.current = null;
         setPdfUrl(null);
       };
-      var genererPdf = function(c, tok) {
+      var genererPdf = function(c, dt, tok) {
         var seq = ++genSeqRef.current;
         setGenEnCours(true);
         fetch("/api/rh-pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
-          body: JSON.stringify({ type: estCdi(c) ? "cdi" : "cdd", data: c })
+          body: JSON.stringify({ type: dt === "contrat" ? (estCdi(c) ? "cdi" : "cdd") : dt, data: c })
         }).then(function(r) {
           return r.json().catch(function() { return { error: "HTTP " + r.status }; })
             .then(function(j) { return { ok: r.ok, j: j }; });
@@ -9766,9 +9873,9 @@
             if (!monteRef.current || seq !== genSeqRef.current) return; // modal ferme ou generation plus recente
             setGenEnCours(false);
             if (!out.ok || !out.j.ok) {
-              // le contrat affiche a change mais son PDF n'existe pas : on retire l'ancien
+              // le document affiche a change mais son PDF n'existe pas : on retire l'ancien
               viderPdf();
-              setErrA("PDF non genere (" + ((out.j && out.j.error) || "echec") + ") - l'apercu precedent est retire, redemande le contrat.");
+              setErrA("PDF non genere (" + ((out.j && out.j.error) || "echec") + ") - l'apercu precedent est retire, redemande le document.");
               return;
             }
             var bin = atob(out.j.pdf_base64);
@@ -9787,21 +9894,23 @@
             if (!monteRef.current || seq !== genSeqRef.current) return;
             setGenEnCours(false);
             viderPdf();
-            setErrA("PDF non genere (" + (e.message || e) + ") - l'apercu precedent est retire, redemande le contrat.");
+            setErrA("PDF non genere (" + (e.message || e) + ") - l'apercu precedent est retire, redemande le document.");
           });
       };
       var envoyer = function(texteForce) {
         var txt = String(texteForce || saisie || "").trim();
-        if (!txt || enCours) return;
+        if (!txt || enCours || confirmFiche || depose === "encours") return;
         var nouveaux = msgs.concat([{ role: "user", content: txt }]);
+        var sansFiche = !cible;
+        var seqCarte = identSeqRef.current;
         setMsgs(nouveaux); setSaisie(""); setEnCours(true); setErrA("");
         jeton().then(function(tok) {
           return fetch("/api/rh-agent", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
-            // le contrat courant repart avec la demande : l'agent ajuste CES
+            // le document courant repart avec la demande : l'agent ajuste CES
             // valeurs au lieu de tout reconstruire de memoire
-            body: JSON.stringify({ messages: nouveaux, fiche: fichePourIA(), contrat: contrat })
+            body: JSON.stringify({ messages: nouveaux, fiche: fichePourIA(), contrat: contrat, doc: docDemande, embauche: modeEmbauche && sansFiche })
           }).then(function(r) {
             return r.json().catch(function() { return { error: "HTTP " + r.status }; })
               .then(function(j) { return { ok: r.ok, j: j, tok: tok }; });
@@ -9811,31 +9920,61 @@
           setEnCours(false);
           if (!out.ok || !out.j.ok) { setErrA((out.j && out.j.error) || "echec de l'agent"); return; }
           setMsgs(nouveaux.concat([{ role: "assistant", content: out.j.reponse || "" }]));
-          if (out.j.contrat) { setContrat(out.j.contrat); genererPdf(out.j.contrat, out.tok); }
+          if (out.j.contrat) {
+            var dt = out.j.doc_type || docDemande;
+            var idIA = out.j.contrat.identite;
+            // Carte d'identite : l'agent la renvoie complete et a jour
+            var carteIntacte = seqCarte === identSeqRef.current;
+            if (sansFiche && carteIntacte && idIA && typeof idIA === "object") {
+              setIdent(function(prev) {
+                var n = Object.assign({}, prev);
+                RH_CHAMPS_IDENTITE.forEach(function(ch) {
+                  var v = idIA[ch.ia];
+                  if (typeof v !== "string" || !v.trim()) return;
+                  if (ch.date && !RH_ISO_JOUR.test(v.trim())) return;
+                  n[ch.k] = ch.k === "nom" ? v.trim().toUpperCase() : v.trim();
+                });
+                return n;
+              });
+            }
+            if (sansFiche && carteIntacte) setIdentSale(false);
+            setContrat(out.j.contrat); setDocType(dt); setConfirmFiche(false);
+            genererPdf(out.j.contrat, dt, out.tok);
+          }
         }).catch(function(e) { if (!monteRef.current) return; setEnCours(false); setErrA(e.message || String(e)); });
       };
+      var majIdent = function(k, v) {
+        identSeqRef.current++;
+        setIdent(function(prev) { var n = Object.assign({}, prev); n[k] = v; return n; });
+        if (contrat) setIdentSale(true);
+      };
       var nomFichier = function() {
-        var n = String((contrat && contrat.nom_fichier) || "contrat.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+        var n = String((contrat && contrat.nom_fichier) || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+        if (docType === "contrat") {
+          if (!n) n = "contrat.pdf";
+          // le prefixe suit le type REEL du contrat (un CDD passe en CDI en cours
+          // de discussion ne doit pas garder un nom "CDD_...")
+          if (estCdi(contrat)) n = n.replace(/^CDD_/i, "CDI_");
+          else n = n.replace(/^CDI_/i, "CDD_");
+        } else {
+          var pref = RH_DOC_PREFIXE[docType] || "Document_";
+          if (n.toLowerCase().indexOf(pref.toLowerCase()) !== 0) n = pref + (n || "document");
+        }
         if (!/\.pdf$/i.test(n)) n = n + ".pdf";
-        // le prefixe suit le type REEL du contrat (un CDD passe en CDI en cours
-        // de discussion ne doit pas garder un nom "CDD_...")
-        if (estCdi(contrat)) n = n.replace(/^CDD_/i, "CDI_");
-        else n = n.replace(/^CDI_/i, "CDD_");
         return n;
       };
-      var deposerCoffre = function() {
-        if (!pdfBlobRef.current || !contrat || depose === "encours" || genEnCours) return;
-        if (!emp.code) {
-          alert("Cette fiche n'a pas de code interne : ouvre Modifier et renseigne le champ Code (ex. p21) avant le depot, sinon le document serait invisible dans le Coffre de l'employe.");
-          return;
-        }
-        if (!confirm("Deposer " + nomFichier() + " au Coffre RH de " + (emp.prenom || "") + " " + (emp.nom || "") + " pour signature sur tablette ?")) return;
+      var aSigner = rhDocASigner(docType, contrat);
+      var deposer = function(fiche) {
+        if (!pdfBlobRef.current || !contrat) return;
         setDepose("encours");
         var tok, storagePath;
+        var finIso = String((contrat && contrat.fin_iso) || "");
+        // Alerte d'echeance du Coffre : terme du CDD (contrat ou avenant de renouvellement)
+        var expiration = ((docType === "contrat" && !estCdi(contrat)) || docType === "avenant_cdd") && RH_ISO_JOUR.test(finIso) ? finIso : null;
         jeton().then(function(t) {
           tok = t;
           var ts = new Date().toISOString().replace(/[:.]/g, "-");
-          storagePath = emp.code + "/" + ts + "_" + nomFichier();
+          storagePath = fiche.code + "/" + ts + "_" + nomFichier();
           // envoi du Blob garde en memoire (relire l'URL blob est interdit par la CSP)
           return fetch("https://employes-psi.vercel.app/api/rh-upload", {
             method: "POST",
@@ -9848,49 +9987,175 @@
         }).then(function(s) {
           var email = (s && s.data && s.data.session && s.data.session.user && s.data.session.user.email) || null;
           return supabase.from("rh_documents").insert({
-            personnel_code: emp.code,
-            personnel_nom: ((emp.prenom || "") + " " + (emp.nom || "")).trim(),
-            type_document: "contrat",
+            personnel_code: fiche.code,
+            personnel_nom: ((fiche.prenom || "") + " " + (fiche.nom || "")).trim(),
+            type_document: RH_DOC_COFFRE[docType] || "autre",
             nom_fichier: nomFichier(),
             storage_path: storagePath,
             // emission = jour du depot (date LOCALE Noumea, jamais toISOString :
-            // avant 11h la date UTC est celle de la veille) ; expiration = fin
-            // du CDD fournie par l'agent (alerte du Coffre), toujours vide en CDI
+            // avant 11h la date UTC est celle de la veille)
             date_emission: localISODate(new Date()),
-            date_expiration: (contrat && !estCdi(contrat) && /^\d{4}-\d{2}-\d{2}$/.test(String(contrat.fin_iso || ""))) ? contrat.fin_iso : null,
-            status: "pending_signature",
-            needs_signature: true,
+            date_expiration: expiration,
+            status: aSigner ? "pending_signature" : "active",
+            needs_signature: aSigner,
             uploaded_by: email,
-            notes: "Genere par l'agent RH (IA) - pre-signe cote societe"
+            notes: "Genere par l'agent RH (IA) - " + (RH_DOC_LIBELLE[docType] || "document") + " - pre-signe cote societe"
           }).select("*").single();
         }).then(function(ins) {
           if (ins.error) {
             supabase.storage.from("rh-documents").remove([storagePath]);
             throw new Error("insert : " + ins.error.message);
           }
-          if (monteRef.current) setDepose("ok");
+          var nf = "";
+          if (docType === "avenant_cdd" && onProlongerRef.current) nf = onProlongerRef.current(fiche.id, finIso, nomFichier()) || "";
+          if (monteRef.current) { setInfoDepot(nf ? "Fin de contrat de la fiche reportee au " + fmtIso(nf) + "." : ""); setDepose("ok"); }
         }).catch(function(e) {
           if (monteRef.current) setDepose("");
           alert("Depot impossible : " + (e.message || e));
         });
       };
+      // Fiche Personnel d'une nouvelle embauche, construite depuis la carte et
+      // le contrat (memes champs que le formulaire Personnel)
+      var construireFiche = function() {
+        var c = contrat || {};
+        var cdi = estCdi(c);
+        var debutIso = String(c.debut_iso || ""), finIso = String(c.fin_iso || "");
+        var sal = parseFloat(c.salaire_mensuel);
+        return {
+          id: Date.now(),
+          code: prochainCodePersonnel(personnel),
+          nom: String(ident.nom || "").trim().toUpperCase(),
+          prenom: String(ident.prenom || "").trim().toUpperCase(),
+          dateNaissance: RH_ISO_JOUR.test(ident.dateNaissance) ? ident.dateNaissance : "",
+          lieuContrat: "",
+          salaire: sal > 0 ? String(Math.round(sal)) : "",
+          dateEmbauche: RH_ISO_JOUR.test(debutIso) ? debutIso : "",
+          typeContrat: cdi ? "CDI" : "CDD",
+          dateFinContrat: (!cdi && RH_ISO_JOUR.test(finIso)) ? finIso : "",
+          motifFin: "",
+          role: RH_ROLES_FICHE.indexOf(c.role_app) >= 0 ? c.role_app : "Aide sondeur",
+          email: "", pin: "", accesAppEmploye: false, roleMecanicien: false, tauxHoraire: 0, tauxHoraires: [],
+          lieuNaissance: String(ident.lieuNaissance || "").trim(),
+          nationalite: String(ident.nationalite || "").trim(),
+          adresse: String(ident.adresse || "").trim(),
+          numeroCafat: String(ident.numeroCafat || "").trim(),
+          suiviEmbauche: { creeLe: localISODate(new Date()), demarches: {} }
+        };
+      };
+      var deposerCoffre = function() {
+        if (!pdfBlobRef.current || !contrat || depose === "encours" || genEnCours || enCours) return;
+        if (!cible) {
+          if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
+          setConfirmFiche(true); // recapitulatif avant la creation de la fiche
+          return;
+        }
+        if (!cible.code) {
+          alert("Cette fiche n'a pas de code interne : ouvre Modifier et renseigne le champ Code (ex. p21) avant le depot, sinon le document serait invisible dans le Coffre de l'employe.");
+          return;
+        }
+        if (!confirm("Deposer " + nomFichier() + " au Coffre RH de " + nomAffiche + (aSigner ? " pour signature sur tablette ?" : " ? (document signe par la societe seule)"))) return;
+        deposer(cible);
+      };
+      var confirmerEmbauche = function() {
+        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current) return;
+        var fiche = construireFiche();
+        if (!fiche.nom || !fiche.prenom) { alert("Le nom et le prenom sont obligatoires (carte a gauche)."); return; }
+        var doublon = (personnel || []).find(function(p) {
+          return rhSansAccents(p.nom) === rhSansAccents(fiche.nom) && rhSansAccents(p.prenom) === rhSansAccents(fiche.prenom);
+        });
+        if (doublon && !confirm("Une fiche existe deja pour " + doublon.prenom + " " + doublon.nom + " (code " + (doublon.code || "?") + "). Pour un ancien salarie, utilise plutot Reembaucher, puis Documents RH depuis sa fiche.\n\nCreer quand meme une NOUVELLE fiche ?")) return;
+        setDepose("encours");
+        // Codes deja utilises au Coffre RH (fiches supprimees comprises)
+        fetchAllRows(function() { return supabase.from("rh_documents").select("id,personnel_code").like("personnel_code", "p%").order("id"); }).then(function(res) {
+          var codesCoffre = ((res && res.data) || []).map(function(r) { return r.personnel_code; });
+          fiche.code = prochainCodePersonnel(personnel, codesCoffre);
+          if (!onCreerFiche) throw new Error("creation de fiche indisponible");
+          return onCreerFiche(fiche, codesCoffre);
+        }).then(function(f) {
+          if (!monteRef.current) return;
+          setEmpCree(f || fiche);
+          setConfirmFiche(false);
+          deposer(f || fiche);
+        }).catch(function(e) {
+          if (monteRef.current) setDepose("");
+          alert("Creation de la fiche impossible : " + (e.message || e));
+        });
+      };
 
-      var suggestions = [
-        { t: "Nouveau CDD", s: "CDD d'usage BTP (renfort)", m: "Nouveau CDD d'usage pour un renfort : " },
-        { t: "CDD de remplacement", s: "Remplace un salarie absent", m: "CDD de remplacement : " },
-        { t: "Regularisation", s: "Terme depasse, contrat a date reelle", m: "Contrat de regularisation : " },
-        { t: "CDI", s: "Embauche, ou passage d'un CDD en CDI", m: "CDI : " }
-      ];
+      var suggestions = RH_SUGGESTIONS[modeEmbauche && !empCree ? "embauche" : docDemande] || [];
       var bulleStyle = function(mien) {
         return { alignSelf: mien ? "flex-end" : "flex-start", maxWidth: "88%", padding: "8px 12px", borderRadius: mien ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", background: mien ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: mien ? "none" : "1px solid rgba(255,255,255,0.07)", color: mien ? "#fff" : "#e8e8ed", marginTop: 8 };
       };
-      return h(Modal, { title: "Agent RH - contrat de " + ((emp.prenom || "") + " " + (emp.nom || "")).trim(), onClose: onClose, size: 1150 },
+      var champStyle = function(vide) {
+        return { width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid " + (vide ? "rgba(244,63,94,0.45)" : "rgba(255,255,255,0.1)"), borderRadius: 8, color: "#fafafa", fontFamily: "inherit", fontSize: 12.5, padding: "7px 9px", outline: "none", colorScheme: "dark" };
+      };
+      var fmtIso = function(d) { var p = String(d || "").split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : ""; };
+      var titre = modeEmbauche
+        ? (empCree ? "Nouvelle embauche - " + nomAffiche : "Nouvelle embauche - agent RH")
+        : (RH_DOC_LIBELLE[docDemande] || "Document") + " - " + nomAffiche;
+      var intro = modeEmbauche && !empCree
+        ? "Nouvelle embauche : la personne n'a pas encore de fiche. Donne son identite et le contrat voulu (ou remplis la carte a gauche) : ce qui manque sort en rouge. La fiche Personnel sera creee au depot du contrat au Coffre RH."
+        : "Discute comme avec le projet RH : decris le document, ajuste, l'apercu se met a jour a droite. L'agent lit deja la fiche du salarie.";
+      var placeholder = docDemande === "attestation_travail" ? "Ex : ajoute son salaire, c'est pour sa banque..."
+        : docDemande === "avenant_cdd" ? "Ex : renouvelle jusqu'au 18 decembre..."
+        : modeEmbauche ? "Ex : Jean DUPONT, ne le ..., CDD aide-sondeur du ... au ..., chantier ..., au SMG..."
+        : "Ex : CDD du 10 au 21 novembre, chantier Tiebaghi, au SMG...";
+
+      // ── Carte d'identite (nouvelle embauche, tant que la fiche n'existe pas) ──
+      var carte = (modeEmbauche && !empCree) ? h("div", { style: { flex: "0 0 240px", minWidth: 220, height: 560, overflowY: "auto", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "10px 12px" } },
+        h("div", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } }, h(Icon, { name: "id-card", size: 13, color: "#a1a1aa" }), "Futur salarie"),
+        RH_CHAMPS_IDENTITE.map(function(ch) {
+          var v = ident[ch.k] || "";
+          return h("div", { key: ch.k },
+            h("div", { style: { fontSize: 10.5, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.4, margin: "9px 0 3px" } }, ch.l),
+            h("input", { type: ch.date ? "date" : "text", value: v, onChange: function(e) { majIdent(ch.k, ch.k === "nom" ? e.target.value.toUpperCase() : e.target.value); }, style: champStyle(!v && !!contrat) }));
+        }),
+        h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 10, lineHeight: 1.45 } }, "L'agent remplit cette carte a partir de la discussion ; tu peux aussi corriger ici. Rien n'est enregistre avant la creation de la fiche."),
+        identSale ? h("div", { style: { marginTop: 10, padding: "8px 10px", borderRadius: 9, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 11.5, color: "#fde68a" } },
+          "Carte modifiee : le document n'en tient pas encore compte.",
+          h("div", { style: { marginTop: 7 } }, h(Button, { variant: "secondary", disabled: enCours, onClick: function() { envoyer("J'ai corrige la carte d'identite : mets le document a jour avec ces valeurs, sans rien changer d'autre."); } }, h(IconText, { icon: "refresh-cw", size: 13 }, "Mettre a jour le document")))
+        ) : null
+      ) : null;
+
+      // ── Recapitulatif avant creation de la fiche (nouvelle embauche) ──
+      var recapFiche = function() {
+        var f = construireFiche();
+        var manque = RH_CHAMPS_IDENTITE.filter(function(ch) { return !String(ident[ch.k] || "").trim(); }).map(function(ch) { return ch.l; });
+        var ligne = function(a, b) { return h("tr", { key: a }, h("td", { style: { padding: "4px 6px", color: "#a1a1aa", width: "40%", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, a), h("td", { style: { padding: "4px 6px", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, b)); };
+        return h("div", { style: { marginTop: 10, padding: "12px 14px", borderRadius: 12, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.35)", fontSize: 12.5 } },
+          h("div", { style: { fontWeight: 800, marginBottom: 6, display: "flex", alignItems: "center", gap: 7 } }, h(Icon, { name: "user-plus", size: 15, color: "#a5b4fc" }), "Ce qui va etre cree"),
+          h("table", { style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null,
+            ligne("Fiche Personnel", f.nom + " " + f.prenom + " - code interne attribue automatiquement"),
+            ligne("Contrat", f.typeContrat + (f.dateEmbauche ? " a partir du " + fmtIso(f.dateEmbauche) : " - date de debut inconnue") + (f.dateFinContrat ? " jusqu'au " + fmtIso(f.dateFinContrat) : "")),
+            ligne("Role", f.role),
+            ligne("Salaire de la fiche", f.salaire ? fmtMoney(f.salaire) : "a renseigner dans la fiche"),
+            ligne("Acces APP Employes", "desactive pour l'instant (PIN a generer avant son premier rapport)"),
+            ligne("Coffre RH", nomFichier() + " - en attente de sa signature sur tablette")
+          )),
+          manque.length ? h("div", { style: { color: "#fda4af", fontSize: 12, marginTop: 8 } }, "Champs encore vides : " + manque.join(", ") + " (completables ensuite dans la fiche).") : null,
+          h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 } },
+            h(Button, { variant: "secondary", onClick: function() { setConfirmFiche(false); } }, "Annuler"),
+            h(Button, { onClick: confirmerEmbauche, disabled: depose === "encours" || enCours || genEnCours }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Creation..." : "Confirmer")))
+        );
+      };
+
+      var promesseSansFiche = !cible && docType === "promesse_embauche";
+      var actions = depose === "ok"
+        ? h("span", { style: { alignSelf: "center", fontSize: 12.5, fontWeight: 800, color: "#86efac", textAlign: "right" } },
+            (empCree && docType === "contrat" ? "Fiche " + empCree.code + " creee - " : "") + (aSigner ? "Depose au Coffre RH - en attente de signature" : "Depose au Coffre RH - visible dans son APP Employes") + (infoDepot ? " " + infoDepot : ""))
+        : promesseSansFiche
+          ? h("span", { style: { alignSelf: "center", fontSize: 11.5, color: "#a1a1aa", maxWidth: 300 } }, "A telecharger et remettre au candidat. Demande ensuite son contrat : la fiche sera creee a ce moment-la.")
+          : h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours || enCours || confirmFiche },
+              h(IconText, { icon: cible ? "lock" : "user-plus", size: 14 }, depose === "encours" ? "Depot..." : (cible ? (aSigner ? "Deposer au Coffre RH" : "Deposer au Coffre RH (sans signature)") : "Creer la fiche et deposer au Coffre RH")));
+
+      return h(Modal, { title: titre, onClose: onClose, size: carte ? 1320 : 1150 },
         h("div", { style: { display: "flex", gap: 16, alignItems: "stretch", flexWrap: "wrap" } },
+          carte,
           // ── Colonne discussion ──
-          h("div", { style: { flex: "1 1 380px", minWidth: 320, display: "flex", flexDirection: "column", height: 560, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, overflow: "hidden" } },
+          h("div", { style: { flex: "1 1 360px", minWidth: 300, display: "flex", flexDirection: "column", height: 560, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, overflow: "hidden" } },
             h("div", { ref: filRef, style: { flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column" } },
               msgs.length === 0 ? h("div", null,
-                h("div", { style: { fontSize: 12.5, color: "#a1a1aa", marginBottom: 10 } }, "Discute comme avec le projet RH : decris le contrat, ajuste, l'apercu se met a jour a droite. L'agent lit deja la fiche de l'employe."),
+                h("div", { style: { fontSize: 12.5, color: "#a1a1aa", marginBottom: 10, lineHeight: 1.5 } }, intro),
                 suggestions.map(function(sg) {
                   return h("button", { key: sg.t, onClick: function() { setSaisie(sg.m); }, style: { display: "block", width: "100%", textAlign: "left", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 10, padding: "9px 12px", marginBottom: 7, cursor: "pointer", color: "#e8e8ed", fontFamily: "inherit" } },
                     h("div", { style: { fontSize: 12.5, fontWeight: 800 } }, sg.t),
@@ -9904,33 +10169,178 @@
             h("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", alignItems: "flex-end" } },
               h("textarea", { value: saisie, onChange: function(e) { setSaisie(e.target.value); },
                 onKeyDown: function(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); envoyer(); } },
-                placeholder: "Ex : CDD du 10 au 21 novembre, chantier Tiebaghi, au SMG...",
+                placeholder: placeholder,
                 style: { flex: 1, resize: "none", height: 52, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", fontFamily: "inherit", fontSize: 12.5, padding: "9px 11px", outline: "none" } }),
-              h(Button, { onClick: function() { envoyer(); }, disabled: enCours }, h(IconText, { icon: "send", size: 14 }, "Envoyer"))
+              h(Button, { onClick: function() { envoyer(); }, disabled: enCours || confirmFiche || depose === "encours" }, h(IconText, { icon: "send", size: 14 }, "Envoyer"))
             )
           ),
           // ── Colonne apercu ──
-          h("div", { style: { flex: "1.15 1 420px", minWidth: 340, display: "flex", flexDirection: "column", height: 560 } },
+          h("div", { style: { flex: "1.15 1 400px", minWidth: 320, display: "flex", flexDirection: "column", height: 560 } },
             pdfUrl ? h(React.Fragment, null,
-              h("iframe", { src: pdfUrl, title: "apercu contrat", style: { flex: 1, width: "100%", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "#fff" } }),
+              h("iframe", { src: pdfUrl, title: "apercu document", style: { flex: 1, width: "100%", minHeight: 200, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "#fff" } }),
               genEnCours ? h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 6 } }, "Mise a jour de l'apercu...") : null,
               police && police !== "carlito" ? h("div", { style: { fontSize: 11, color: "#fde68a", marginTop: 6 } }, "Police provisoire (" + police + ") : la version serveur utilisera Carlito.") : null,
-              contrat && Array.isArray(contrat.a_verifier) && contrat.a_verifier.length ? h("div", { style: { marginTop: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 11.5, color: "#fde68a" } },
+              contrat && Array.isArray(contrat.a_verifier) && contrat.a_verifier.length ? h("div", { style: { marginTop: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 11.5, color: "#fde68a", maxHeight: 110, overflowY: "auto" } },
                 h("div", { style: { fontWeight: 800, marginBottom: 3 } }, "A verifier avant envoi :"),
                 contrat.a_verifier.map(function(v, i) { return h("div", { key: i }, "- " + v); })
               ) : null,
-              h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end" } },
+              confirmFiche ? recapFiche() : h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" } },
                 h("a", { href: pdfUrl, download: nomFichier(), style: { textDecoration: "none" } },
                   h(Button, { variant: "secondary" }, h(IconText, { icon: "download", size: 14 }, "Telecharger"))),
-                depose === "ok"
-                  ? h("span", { style: { alignSelf: "center", fontSize: 12.5, fontWeight: 800, color: "#86efac" } }, "Depose au Coffre RH - en attente de signature")
-                  : h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours },
-                      h(IconText, { icon: "lock", size: 14 }, depose === "encours" ? "Depot..." : "Deposer au Coffre RH"))
+                actions
               )
-            ) : h("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", border: "1px dashed rgba(255,255,255,0.15)", borderRadius: 12, color: "#71717a", fontSize: 12.5, textAlign: "center", padding: 20 } },
-              genEnCours ? "Generation du PDF..." : "L'apercu du contrat apparaitra ici des la premiere proposition de l'agent.\nTout ce qu'il remplit vient de la fiche et de tes consignes ; le texte juridique est verrouille.")
+            ) : h("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", border: "1px dashed rgba(255,255,255,0.15)", borderRadius: 12, color: "#71717a", fontSize: 12.5, textAlign: "center", padding: 20, whiteSpace: "pre-line" } },
+              genEnCours ? "Generation du PDF..." : "L'apercu du document apparaitra ici des la premiere proposition de l'agent.\nTout ce qu'il remplit vient de la fiche et de tes consignes ; le texte juridique est verrouille.")
           )
         )
+      );
+    }
+
+    // ═══ Documents RH d'un salarie : choix du document + deja emis ═════════
+    function RhDocumentsRH({ emp, onChoisir, onClose }) {
+      var _emis = useState(null); var emis = _emis[0]; var setEmis = _emis[1];
+      useEffect(function() {
+        var actif = true;
+        if (!emp || !emp.code) { setEmis([]); return; }
+        supabase.from("rh_documents").select("id,nom_fichier,type_document,status,date_emission,uploaded_at")
+          .eq("personnel_code", emp.code).order("uploaded_at", { ascending: false }).limit(30)
+          .then(function(r) { if (actif) setEmis(r.error ? [] : (r.data || [])); });
+        return function() { actif = false; };
+      }, [emp && emp.code]);
+      var maintenant = new Date();
+      var vivant = isActiveEmploye(emp, maintenant) || isFuturEmploye(emp, maintenant);
+      var groupes = [];
+      RH_DOCS_IA.forEach(function(d) {
+        if (d.si && !d.si(emp, vivant)) return;
+        var g = groupes.find(function(x) { return x.g === d.g; });
+        if (!g) { g = { g: d.g, items: [] }; groupes.push(g); }
+        g.items.push(d);
+      });
+      var fmtJ = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : ""; };
+      return h(Modal, { title: "Documents RH - " + ((emp.prenom || "") + " " + (emp.nom || "")).trim(), onClose: onClose, size: 780 },
+        groupes.map(function(g) {
+          return h("div", { key: g.g, style: { marginBottom: 14 } },
+            h("div", { style: { fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#71717a", marginBottom: 7 } }, g.g),
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 } },
+              g.items.map(function(d) {
+                return h("button", { key: d.k, disabled: !!d.off, onClick: function() { if (!d.off) onChoisir(d.k); },
+                  style: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 11, padding: "10px 12px", cursor: d.off ? "not-allowed" : "pointer", opacity: d.off ? 0.4 : 1, textAlign: "left", color: "#e8e8ed", display: "flex", gap: 10, alignItems: "flex-start", fontFamily: "inherit" } },
+                  h("div", { style: { width: 30, height: 30, borderRadius: 8, background: d.c + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: d.icon, size: 16, color: d.c })),
+                  h("div", null,
+                    h("div", { style: { fontSize: 12.5, fontWeight: 800 } }, d.t),
+                    h("div", { style: { fontSize: 10.5, color: "#71717a", marginTop: 2, lineHeight: 1.35 } }, d.s)));
+              })));
+        }),
+        h("div", { style: { marginTop: 6, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.07)" } },
+          h("div", { style: { fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#71717a", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "history", size: 12, color: "#71717a" }), "Deja au Coffre RH"),
+          emis === null ? h("div", { style: { fontSize: 12, color: "#71717a" } }, "Chargement...")
+            : emis.length === 0 ? h("div", { style: { fontSize: 12, color: "#71717a" } }, emp.code ? "Aucun document pour l'instant." : "Fiche sans code interne : renseigne-le dans Modifier.")
+            : emis.map(function(x) {
+                var st = x.status === "pending_signature" ? { t: "A signer", bg: "rgba(6,182,212,0.15)", c: "#67e8f9" }
+                  : x.status === "signed" ? { t: "Signe", bg: "rgba(34,197,94,0.15)", c: "#86efac" }
+                  : { t: "Disponible", bg: "rgba(148,163,184,0.15)", c: "#cbd5e1" };
+                return h("div", { key: x.id, style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", color: "#a1a1aa", flexWrap: "wrap" } },
+                  h(Icon, { name: "file-text", size: 14, color: "#a1a1aa" }),
+                  h("span", { style: { color: "#e8e8ed", fontWeight: 600, wordBreak: "break-all" } }, x.nom_fichier || "document"),
+                  h("span", null, getRhDocTypeInfo(x.type_document).label + (x.date_emission || x.uploaded_at ? " - " + fmtJ(x.date_emission || x.uploaded_at) : "")),
+                  h("span", { style: { marginLeft: "auto", fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: st.bg, color: st.c } }, st.t));
+              })
+        )
+      );
+    }
+
+    // ═══ Demarches d'embauche (fiche d'un salarie cree par Nouvelle embauche) ═══
+    var DEMARCHES_EMBAUCHE = [
+      { k: "dpae", t: "DPAE CAFAT - avant le premier jour", s: "Obligatoire avant l'embauche (Lp. 421-3). A faire sur le site de la CAFAT : le recapitulatif reprend ce qu'il faut y saisir." },
+      { k: "offre", t: "Offre d'emploi au service provincial de placement", s: "Pour toute nouvelle embauche (Lp. 432-3-1)." },
+      { k: "visite", t: "Visite medicale d'embauche", s: "Avant la fin de la periode d'essai (AIT art. 37)." },
+      { k: "signature", t: "Contrat signe sur tablette", s: "Se coche tout seul quand il signe dans le Coffre RH.", auto: true },
+      { k: "pieces", t: "Pieces a recuperer : CNI, RIB, carte CAFAT, permis", s: "A deposer dans son Coffre RH." },
+      { k: "pin", t: "Acces APP Employes (PIN)", s: "A activer dans Modifier avant son premier rapport de chantier.", auto: true }
+    ];
+    // Demarches manuelles restantes (hors signature, connue seulement du Coffre)
+    function demarchesEmbaucheRestantes(emp) {
+      if (!emp || !emp.suiviEmbauche) return 0;
+      var faits = emp.suiviEmbauche.demarches || {};
+      return DEMARCHES_EMBAUCHE.filter(function(d) {
+        if (d.k === "signature") return false;
+        if (d.k === "pin") return !(emp.accesAppEmploye && emp.pin);
+        return !faits[d.k];
+      }).length;
+    }
+    function DemarchesEmbauche({ emp, onCocher, onModifier, onCoffre }) {
+      var _sig = useState(""); var sig = _sig[0]; var setSig = _sig[1]; // '' | 'aucun' | 'attente' | 'signe'
+      var _recap = useState(false); var recap = _recap[0]; var setRecap = _recap[1];
+      useEffect(function() {
+        var actif = true;
+        if (!emp.code) return;
+        supabase.from("rh_documents").select("status").eq("personnel_code", emp.code).eq("type_document", "contrat").limit(20)
+          .then(function(r) {
+            if (!actif) return;
+            var rows = (r && r.data) || [];
+            setSig(rows.some(function(x) { return x.status === "signed"; }) ? "signe" : rows.some(function(x) { return x.status === "pending_signature"; }) ? "attente" : "aucun");
+          });
+        return function() { actif = false; };
+      }, [emp.code]);
+      var faits = (emp.suiviEmbauche && emp.suiviEmbauche.demarches) || {};
+      var etat = function(k) {
+        if (k === "signature") return sig === "signe";
+        if (k === "pin") return !!(emp.accesAppEmploye && emp.pin);
+        return !!faits[k];
+      };
+      var n = DEMARCHES_EMBAUCHE.filter(function(d) { return etat(d.k); }).length;
+      var fmtJ = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : ""; };
+      // CDD d'au moins un mois ? (question posee par la DPAE)
+      var unMoisOuPlus = function() {
+        if (!emp.dateEmbauche || !emp.dateFinContrat) return null;
+        var s = new Date(String(emp.dateEmbauche).substring(0, 10) + "T00:00:00");
+        var f = new Date(String(emp.dateFinContrat).substring(0, 10) + "T00:00:00");
+        if (isNaN(s.getTime()) || isNaN(f.getTime())) return null;
+        return f.getTime() >= new Date(s.getFullYear(), s.getMonth() + 1, s.getDate() - 1).getTime();
+      };
+      var lignesDpae = [
+        ["Nom", emp.nom || ""], ["Prenom", emp.prenom || ""],
+        ["Date de naissance", fmtJ(emp.dateNaissance)], ["Lieu de naissance", emp.lieuNaissance || ""],
+        ["Nationalite", emp.nationalite || ""], ["Adresse", emp.adresse || ""],
+        ["N° CAFAT", emp.numeroCafat || "a attribuer par la DPAE"],
+        ["Date d'embauche", fmtJ(emp.dateEmbauche)],
+        ["Contrat", emp.typeContrat === "CDD" ? "CDD" + (emp.dateFinContrat ? " jusqu'au " + fmtJ(emp.dateFinContrat) : "") + (unMoisOuPlus() === null ? "" : " - duree superieure ou egale a 1 mois : " + (unMoisOuPlus() ? "OUI" : "NON")) : (emp.typeContrat || "CDI")],
+        ["Emploi", emp.role || ""]
+      ];
+      var copier = function() {
+        var txt = lignesDpae.map(function(l) { return l[0] + " : " + l[1]; }).join("\n");
+        try {
+          navigator.clipboard.writeText(txt).then(function() { alert("Recapitulatif copie."); }, function() { window.prompt("Copie ce texte :", txt); });
+        } catch (e) { window.prompt("Copie ce texte :", txt); }
+      };
+      if (n === DEMARCHES_EMBAUCHE.length) {
+        return h("div", { style: { marginTop: 18, padding: "10px 14px", borderRadius: 10, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.25)", fontSize: 12.5, color: "#86efac", display: "flex", alignItems: "center", gap: 8 } }, h(Icon, { name: "check-circle", size: 15, color: "#86efac" }), "Demarches d'embauche terminees");
+      }
+      return h("div", { style: { marginTop: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(99,102,241,0.30)", borderRadius: 12, padding: "12px 14px" } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 800, color: "#c7d2fe" } }, h(Icon, { name: "clipboard-check", size: 16, color: "#a5b4fc" }), "Demarches d'embauche - " + n + "/" + DEMARCHES_EMBAUCHE.length),
+        h("div", { style: { height: 5, borderRadius: 99, background: "rgba(255,255,255,0.08)", overflow: "hidden", margin: "8px 0 4px" } }, h("div", { style: { height: "100%", width: Math.round(n * 100 / DEMARCHES_EMBAUCHE.length) + "%", background: "linear-gradient(90deg,#22c55e,#86efac)" } })),
+        DEMARCHES_EMBAUCHE.map(function(d) {
+          var ok = etat(d.k);
+          var sousTitre = d.k === "signature" && sig === "attente" ? "Contrat depose au Coffre RH, en attente de sa signature."
+            : d.k === "signature" && sig === "aucun" ? "Aucun contrat au Coffre RH pour l'instant." : d.s;
+          return h("div", { key: d.k, style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" } },
+            h("button", { title: d.auto ? "Se met a jour tout seul" : (ok ? "Decocher" : "Cocher"), onClick: function() { if (!d.auto) onCocher(d.k, !ok); },
+              style: { width: 20, height: 20, borderRadius: 6, border: "1.5px solid " + (ok ? "#16a34a" : "rgba(255,255,255,0.2)"), background: ok ? "#16a34a" : "rgba(255,255,255,0.04)", cursor: d.auto ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, padding: 0 } },
+              ok ? h(Icon, { name: "check", size: 13, color: "#fff" }) : null),
+            h("div", { style: { flex: 1, minWidth: 0 } },
+              h("div", { style: { fontSize: 12.5, fontWeight: 700, color: ok ? "#71717a" : "#e8e8ed", textDecoration: ok ? "line-through" : "none" } }, d.t),
+              h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2, lineHeight: 1.45 } }, sousTitre + (ok && faits[d.k] && typeof faits[d.k] === "string" ? " (fait le " + fmtJ(faits[d.k]) + ")" : "")),
+              d.k === "dpae" && !ok ? h("div", { style: { marginTop: 6 } },
+                h(Button, { variant: "secondary", onClick: function() { setRecap(!recap); } }, h(IconText, { icon: "file-text", size: 13 }, recap ? "Masquer le recapitulatif" : "Recapitulatif pour la DPAE")),
+                recap ? h("div", { style: { marginTop: 8, padding: "10px 12px", borderRadius: 9, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", fontSize: 12, lineHeight: 1.7 } },
+                  lignesDpae.map(function(l) { return h("div", { key: l[0] }, h("span", { style: { color: "#a1a1aa", display: "inline-block", minWidth: 140 } }, l[0]), h("b", null, l[1] || "-")); }),
+                  h("div", { style: { marginTop: 8 } }, h(Button, { variant: "secondary", onClick: copier }, h(IconText, { icon: "copy", size: 13 }, "Copier")))
+                ) : null
+              ) : null,
+              d.k === "pieces" && !ok && onCoffre ? h("div", { style: { marginTop: 6 } }, h(Button, { variant: "secondary", onClick: onCoffre }, h(IconText, { icon: "folder-lock", size: 13 }, "Ouvrir le Coffre RH"))) : null,
+              d.k === "pin" && !ok ? h("div", { style: { marginTop: 6 } }, h(Button, { variant: "secondary", onClick: onModifier }, h(IconText, { icon: "pencil", size: 13 }, "Modifier la fiche"))) : null
+            ));
+        })
       );
     }
 
@@ -9956,6 +10366,13 @@
       // facturent differemment selon la prestation (Diagnostic vs Mecanique lourde, etc.).
       // Le 1er taux de la liste est utilise comme defaut si tauxHoraire principal vide.
       var _tauxHorairesList = useState((editItem && Array.isArray(editItem.tauxHoraires)) ? editItem.tauxHoraires : []);
+      // Etat civil repris par l'agent RH dans les contrats, attestations et la
+      // DPAE (jamais transmis a l'APP Employes : personnel-list ne renvoie que
+      // code / nom / role)
+      var _lieuNaissance = useState(editItem && editItem.lieuNaissance ? editItem.lieuNaissance : "");
+      var _nationalite = useState(editItem && editItem.nationalite ? editItem.nationalite : "");
+      var _adresse = useState(editItem && editItem.adresse ? editItem.adresse : "");
+      var _numeroCafat = useState(editItem && editItem.numeroCafat ? editItem.numeroCafat : "");
 
       // Auto-generate code "p{N+1}" pour un nouvel employe
       useEffect(function() {
@@ -10015,6 +10432,10 @@
           pin: _pin[0] || "",
           accesAppEmploye: !!_acces[0],
           roleMecanicien: !!_roleMec[0],
+          lieuNaissance: String(_lieuNaissance[0] || "").trim(),
+          nationalite: String(_nationalite[0] || "").trim(),
+          adresse: String(_adresse[0] || "").trim(),
+          numeroCafat: String(_numeroCafat[0] || "").trim(),
           tauxHoraire: parseFloat(_tauxHoraire[0]) || 0,
           // Filtre les lignes vides (label ou taux non saisis) avant persistance
           tauxHoraires: (_tauxHorairesList[0] || []).filter(function(t) {
@@ -10048,6 +10469,20 @@
           // utilisateur (app_users) a cette fiche -> sans lui, le Coffre-fort RH
           // de l'employe s'affiche VIDE (constate 2026-09-15).
           h(FormField, { label: "Email (connexion app admin)" }, h("input", { type: "email", style: inputStyle, value: _email[0], onChange: function(e) { _email[1](e.target.value); }, placeholder: "le meme email que son compte utilisateur" })),
+        ),
+        // Etat civil : repris automatiquement dans les documents RH (agent IA)
+        isSousTraitantAuto ? null : h("div", { style: { marginTop: 20, padding: 16, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12 } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } },
+            h(Icon, { name: "id-card", size: 18, color: "#a5b4fc" }),
+            h("div", { style: { fontSize: 14, fontWeight: 800, color: "#cbd5e1" } }, "Etat civil"),
+            h("span", { style: { fontSize: 10.5, color: "#94a3b8" } }, "repris dans les contrats, attestations et la DPAE")
+          ),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12 } },
+            h(FormField, { label: "Lieu de naissance" }, h("input", { style: inputStyle, value: _lieuNaissance[0], onChange: function(e) { _lieuNaissance[1](e.target.value); }, placeholder: "Ex : Kone" })),
+            h(FormField, { label: "Nationalite" }, h("input", { style: inputStyle, value: _nationalite[0], onChange: function(e) { _nationalite[1](e.target.value); }, placeholder: "Ex : francaise" })),
+            h(FormField, { label: "N° CAFAT" }, h("input", { style: Object.assign({}, inputStyle, { fontFamily: "monospace" }), value: _numeroCafat[0], onChange: function(e) { _numeroCafat[1](e.target.value); }, placeholder: "numero d'immatriculation" })),
+            h(FormField, { label: "Adresse" }, h("input", { style: inputStyle, value: _adresse[0], onChange: function(e) { _adresse[1](e.target.value); }, placeholder: "Rue, BP, code postal, commune" }))
+          )
         ),
         // Section fin de contrat (debauche / licenciement / fin CDD / demission) - cachee pour sous-traitants auto-entrepreneurs
         isSousTraitantAuto ? null : h("div", { style: { marginTop: 20, padding: 16, background: _dateFinContrat[0] ? "linear-gradient(135deg, rgba(244,63,94,0.08), rgba(244,63,94,0.02))" : "rgba(255,255,255,0.03)", border: "1px solid " + (_dateFinContrat[0] ? "rgba(244,63,94,0.30)" : "rgba(255,255,255,0.07)"), borderRadius: 12 } },
@@ -10205,9 +10640,13 @@
       var toDelete = _toDelete[0], setToDelete = _toDelete[1];
       var _viewFiche = useState(null);
       var viewFiche = _viewFiche[0], setViewFiche = _viewFiche[1];
-      // Agent RH (IA) : fiche de l'employe dont on redige un contrat
+      // Agent RH (IA) : { emp, doc, embauche } du document en cours de redaction
+      // (emp absent + embauche = nouvelle embauche, fiche creee au depot)
       var _contratIA = useState(null);
       var contratIA = _contratIA[0], setContratIA = _contratIA[1];
+      // Ecran "Documents RH" (choix du document) d'un salarie
+      var _docsRH = useState(null);
+      var docsRH = _docsRH[0], setDocsRH = _docsRH[1];
       // Onglet actif dans la fiche : 'infos' (par defaut) ou 'activite'
       var _ficheTab = useState("infos");
       var ficheTab = _ficheTab[0], setFicheTab = _ficheTab[1];
@@ -10335,6 +10774,65 @@
       function handleDelete(id) {
         setPersonnel(function(p) { return p.filter(function(x) { return x.id !== id; }); });
         setToDelete(null);
+      }
+      // Nouvelle embauche (agent RH) : la fiche n'est creee qu'au depot du
+      // contrat. Promesse resolue avec la fiche une fois la sauvegarde confirmee
+      // (le depot au Coffre a besoin du code de la fiche).
+      function creerFicheEmbauche(fiche, codesCoffre) {
+        return new Promise(function(resolve, reject) {
+          var avant = personnel;
+          var f = Object.assign({}, fiche);
+          // code repris entre-temps (autre onglet, autre poste) : prochain libre
+          if (avant.some(function(x) { return x.code === f.code; })) f.code = prochainCodePersonnel(avant, codesCoffre);
+          var next = avant.concat(f);
+          setPersonnelRaw(next);
+          savePersonnel(parametres, next, setSaving, function(result) {
+            if (!result.ok) {
+              setPersonnelRaw(avant);
+              reject(new Error(result.error || "sauvegarde impossible"));
+              return;
+            }
+            if (ctx.showToast) ctx.showToast("Fiche " + f.prenom + " " + f.nom + " creee (" + f.code + ")", "success");
+            resolve(f);
+          }, ctx.setParametres);
+        });
+      }
+      // Avenant de renouvellement de CDD depose par l'agent RH : meme effet que
+      // le bouton Prolonger de l'onglet Contrat (dateFinContrat repoussee +
+      // trace dans prolongations), sinon le salarie passerait "ancien" a
+      // l'ancien terme (acces APP Employes, paie, primes). Renvoie la nouvelle
+      // fin appliquee, ou "" si rien a faire.
+      function prolongerParAvenant(empId, nouvelleFin, fichier) {
+        var nf = String(nouvelleFin || "").substring(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nf)) return "";
+        var x0 = personnel.find(function(x) { return x.id === empId; });
+        if (!x0) return "";
+        var ancienne = x0.dateFinContrat ? String(x0.dateFinContrat).substring(0, 10) : "";
+        if (ancienne && nf <= ancienne) return "";
+        setPersonnel(function(p) {
+          return p.map(function(x) {
+            if (x.id !== empId) return x;
+            var histo = (x.prolongations || []).concat([{
+              ancienneFin: ancienne, nouvelleFin: nf, date: localISODate(new Date()),
+              note: "Avenant genere par l'agent RH" + (fichier ? " (" + fichier + ")" : "")
+            }]);
+            return Object.assign({}, x, { dateFinContrat: nf, prolongations: histo });
+          });
+        });
+        return nf;
+      }
+      // Case des demarches d'embauche (date du jour si cochee, vide sinon)
+      function cocherDemarche(empId, cle, fait) {
+        setPersonnel(function(p) {
+          return p.map(function(x) {
+            if (x.id !== empId) return x;
+            var suivi = Object.assign({}, x.suiviEmbauche || {});
+            var dem = Object.assign({}, suivi.demarches || {});
+            dem[cle] = fait ? localISODate(new Date()) : "";
+            suivi.demarches = dem;
+            return Object.assign({}, x, { suiviEmbauche: suivi });
+          });
+        });
       }
 
       // ─ Onglet (actifs / anciens / tous) + filtre type contrat ─
@@ -10573,6 +11071,9 @@
 
       // Fiche employe detail (modal) - 2 onglets : Infos et Activite
       function renderFiche(emp) {
+        // Version a jour de la fiche (les demarches d'embauche cochees ici la
+        // modifient : l'objet garde a l'ouverture serait perime)
+        emp = personnel.find(function(x) { return x.id === emp.id; }) || emp;
         var avatarColor = GROUP_COLORS[(emp.id % GROUP_COLORS.length)];
         var allEmpRapports = getEmpRapports(emp);
         var hasAnyRapport = allEmpRapports.length > 0;
@@ -10633,8 +11134,23 @@
               ) : null
             )
           ),
+          // Etat civil (repris par l'agent RH dans les documents)
+          (emp.lieuNaissance || emp.nationalite || emp.adresse || emp.numeroCafat) ? h("div", { style: { marginTop: 16, background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 14, fontSize: 12.5, lineHeight: 1.7 } },
+            h("div", { style: { fontSize: 11, color: "#a1a1aa", marginBottom: 4 } }, "Etat civil"),
+            emp.lieuNaissance ? h("div", null, h("span", { style: { color: "#a1a1aa" } }, "Ne a : "), emp.lieuNaissance) : null,
+            emp.nationalite ? h("div", null, h("span", { style: { color: "#a1a1aa" } }, "Nationalite : "), emp.nationalite) : null,
+            emp.adresse ? h("div", null, h("span", { style: { color: "#a1a1aa" } }, "Adresse : "), emp.adresse) : null,
+            emp.numeroCafat ? h("div", null, h("span", { style: { color: "#a1a1aa" } }, "N° CAFAT : "), h("span", { style: { fontFamily: "monospace" } }, emp.numeroCafat)) : null
+          ) : null,
+          // Demarches d'embauche : fiches creees par "Nouvelle embauche (IA)"
+          (ctx.isAdmin && emp.suiviEmbauche) ? h(DemarchesEmbauche, {
+            emp: emp,
+            onCocher: function(cle, fait) { cocherDemarche(emp.id, cle, fait); },
+            onModifier: function() { setViewFiche(null); setEditing(emp); setShowModal(true); },
+            onCoffre: onNavigate ? function() { setViewFiche(null); onNavigate("coffre-rh"); } : null
+          }) : null,
           h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 24, flexWrap: "wrap" } },
-            ctx.isAdmin && !emp.roleMecanicien ? h(Button, { onClick: function() { setViewFiche(null); setContratIA(emp); } }, h(IconText, { icon: "file-text", size: 14 }, "Rediger un contrat (IA)")) : null,
+            ctx.isAdmin && !emp.roleMecanicien ? h(Button, { onClick: function() { setViewFiche(null); setDocsRH(emp); } }, h(IconText, { icon: "folder-open", size: 14 }, "Documents RH")) : null,
             h(Button, { variant: "secondary", onClick: function() { setViewFiche(null); setEditing(emp); setShowModal(true); } }, h(IconText, { icon: "pencil", size: 14 }, "Modifier")),
             h(Button, { variant: "danger", onClick: function() { setViewFiche(null); setToDelete(emp); } }, h(IconText, { icon: "trash-2", size: 14 }, "Supprimer"))
           )
@@ -10942,7 +11458,9 @@
       }
 
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "user-round", size: 20 }, "Personnel"), subtitle: saving ? "Sauvegarde en cours..." : nbActifs + " employe" + (nbActifs > 1 ? "s" : "") + " actif" + (nbActifs > 1 ? "s" : "") + (nbAnciens > 0 ? " + " + nbAnciens + " ancien" + (nbAnciens > 1 ? "s" : "") : ""), action: h(Button, { onClick: function() { setEditing(null); setShowModal(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvel employe")) }),
+        h(PageHeader, { title: h(IconText, { icon: "user-round", size: 20 }, "Personnel"), subtitle: saving ? "Sauvegarde en cours..." : nbActifs + " employe" + (nbActifs > 1 ? "s" : "") + " actif" + (nbActifs > 1 ? "s" : "") + (nbAnciens > 0 ? " + " + nbAnciens + " ancien" + (nbAnciens > 1 ? "s" : "") : ""), action: h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          ctx.isAdmin ? h(Button, { onClick: function() { setContratIA({ emp: null, doc: "contrat", embauche: true }); } }, h(IconText, { icon: "sparkles", size: 14 }, "Nouvelle embauche (IA)")) : null,
+          h(Button, { variant: ctx.isAdmin ? "secondary" : undefined, onClick: function() { setEditing(null); setShowModal(true); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvel employe"))) }),
         // Bandeau alerte CDD imminents
         cddImminent.length > 0 ? h("div", { onClick: function() { setViewTab("actifs"); setTypeFilter("CDD"); }, style: { cursor: "pointer", marginBottom: 16, padding: "12px 16px", borderRadius: 12, background: "linear-gradient(135deg, rgba(251,191,36,0.15), rgba(251,191,36,0.05))", border: "1px solid rgba(251,191,36,0.35)", display: "flex", alignItems: "center", gap: 12 } },
           h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(251,191,36,0.25)", display: "flex", alignItems: "center", justifyContent: "center" } }, h(Icon, { name: "alert-circle", size: 18, color: "#fde68a" })),
@@ -10999,7 +11517,9 @@
                     h("td", { style: { padding: "10px 12px" } },
                       h("div", { style: { width: 32, height: 32, borderRadius: "50%", background: presentable ? avatarColor : "rgba(255,255,255,0.10)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, filter: presentable ? "" : "grayscale(0.5)" } }, getInitials(emp))
                     ),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: presentable ? "none" : "line-through" } }, emp.nom),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, textDecoration: presentable ? "none" : "line-through" } }, emp.nom,
+                      (ctx.isAdmin && presentable && demarchesEmbaucheRestantes(emp) > 0) ? h("div", { title: "Demarches d'embauche restantes (DPAE, visite medicale...) : voir la fiche", style: { marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: "rgba(99,102,241,0.14)", border: "1px solid rgba(99,102,241,0.40)", color: "#c7d2fe", whiteSpace: "nowrap", textDecoration: "none" } },
+                        h(Icon, { name: "clipboard-check", size: 11, color: "#c7d2fe" }), "Embauche : " + demarchesEmbaucheRestantes(emp) + " a faire") : null),
                     h("td", { style: { padding: "10px 12px", textDecoration: presentable ? "none" : "line-through" } }, emp.prenom),
                     h("td", { style: { padding: "10px 12px", fontSize: 12 } },
                       h("div", { style: { display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" } },
@@ -11051,6 +11571,7 @@
                     ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
                       (!actif && !futur) ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher : nouvelle ligne de contrat, ancien contrat conserve en historique" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
+                      (ctx.isAdmin && !emp.roleMecanicien) ? h("button", { onClick: function() { setDocsRH(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Documents RH (contrats, attestations, certificat...)" }, h(Icon, { name: "folder-open", size: 15, color: "#a5b4fc" })) : null,
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
                       h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer definitivement" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
                     )
@@ -11114,7 +11635,8 @@
           );
         })() : null,
         viewFiche && renderFiche(viewFiche),
-        contratIA && h(RhContratIA, { emp: contratIA, onClose: function() { setContratIA(null); } }),
+        docsRH && h(RhDocumentsRH, { emp: personnel.find(function(x) { return x.id === docsRH.id; }) || docsRH, onClose: function() { setDocsRH(null); }, onChoisir: function(k) { var e = docsRH; setDocsRH(null); setContratIA({ emp: e, doc: k, embauche: false }); } }),
+        contratIA && h(RhContratIA, { emp: contratIA.emp ? (personnel.find(function(x) { return x.id === contratIA.emp.id; }) || contratIA.emp) : null, doc: contratIA.doc, embauche: !!contratIA.embauche, personnel: personnel, onCreerFiche: creerFicheEmbauche, onProlonger: prolongerParAvenant, onClose: function() { setContratIA(null); } }),
         ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
     }
@@ -36833,6 +37355,12 @@
       { key: "habilitation",  label: "Habilitation electrique",      icon: "⚡", accent: "#f43f5e" },
       { key: "diplome",       label: "Diplome / Formation",          icon: "🎓", accent: "#8b5cf6" },
       { key: "id",            label: "Carte d'identite / Passeport", icon: "🆔", accent: "#64748b" },
+      // Documents produits par l'agent RH (Personnel > Documents RH) : icone Lucide
+      { key: "attestation",   label: "Attestation de travail",       icon: "", lucide: "badge-check", accent: "#22c55e" },
+      { key: "certificat",    label: "Certificat de travail",        icon: "", lucide: "award", accent: "#22c55e" },
+      { key: "autorisation",  label: "Autorisation de conduite",     icon: "", lucide: "car", accent: "#fbbf24" },
+      { key: "promesse",      label: "Promesse d'embauche",          icon: "", lucide: "mail-check", accent: "#a78bfa" },
+      { key: "courrier",      label: "Courrier",                     icon: "", lucide: "mail", accent: "#94a3b8" },
       { key: "autre",         label: "Autre",                        icon: "📄", accent: "#94a3b8" }
     ];
     function getRhDocTypeInfo(key) {
@@ -37286,10 +37814,13 @@
       // (ex. contrat remplace par un avenant) restent stockees en historique
       // mais ne comptent plus comme "expirees / a renouveler en urgence" :
       // le document de l'employe, lui, est a jour.
+      // Contrat et avenant forment UNE famille : l'avenant de renouvellement
+      // repousse l'echeance du CDD, l'ancien terme ne doit plus alerter
+      var familleEcheance = function(t) { return t === "avenant" ? "contrat" : String(t || ""); };
       var maxExpParEmpType = {};
       docs.forEach(function(d) {
         if (!d.date_expiration) return;
-        var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
+        var kET = String(d.personnel_code || "") + "|" + familleEcheance(d.type_document);
         if (!maxExpParEmpType[kET] || String(d.date_expiration) > maxExpParEmpType[kET]) maxExpParEmpType[kET] = String(d.date_expiration);
       });
       // Un contrat SANS date d'expiration (CDI) emis apres un CDD le remplace
@@ -37311,9 +37842,9 @@
       });
       var estVersionRemplacee = function(d) {
         if (!d.date_expiration) return false;
-        var kET = String(d.personnel_code || "") + "|" + String(d.type_document || "");
+        var kET = String(d.personnel_code || "") + "|" + familleEcheance(d.type_document);
         if (String(d.date_expiration) < (maxExpParEmpType[kET] || "")) return true;
-        if (d.type_document === "contrat") {
+        if (familleEcheance(d.type_document) === "contrat") {
           var rSansTerme = dernierContratSansTerme[String(d.personnel_code || "")] || "";
           var rDoc = refEmissionDoc(d);
           if (rSansTerme && rDoc && rSansTerme >= rDoc) return true;
@@ -37478,7 +38009,7 @@
                       background: typeFilter === t.key ? "rgba(99,102,241,0.20)" : "rgba(255,255,255,0.05)",
                       color: typeFilter === t.key ? "#c4b5fd" : "#cbd5e1",
                       border: "1px solid " + (typeFilter === t.key ? "rgba(99,102,241,0.45)" : "rgba(255,255,255,0.08)") } },
-                    t.icon + " " + t.label + " (" + count + ")");
+                    (t.icon ? t.icon + " " : "") + t.label + " (" + count + ")");
                 })
               ),
 
@@ -37516,7 +38047,7 @@
                       style: { position: "absolute", top: 8, right: 8, background: "rgba(244,63,94,0.10)", border: "1px solid rgba(244,63,94,0.20)", borderRadius: 6, padding: "4px 6px", cursor: "pointer", color: "#fda4af", fontSize: 12, lineHeight: 1 }
                     }, h(Icon, { name: "trash-2", size: 13, color: "#fda4af" })) : null,
                     h("div", { style: { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 } },
-                      h("div", { style: { width: 36, height: 36, borderRadius: 8, background: info.accent + "30", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 } }, info.icon),
+                      h("div", { style: { width: 36, height: 36, borderRadius: 8, background: info.accent + "30", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 } }, info.lucide ? h(Icon, { name: info.lucide, size: 18, color: info.accent }) : info.icon),
                       h("div", { style: { flex: 1, minWidth: 0, paddingRight: isRH ? 24 : 0 } },
                         h("div", { style: { fontSize: 10, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 } }, info.label),
                         h("div", { style: { fontSize: 13, fontWeight: 700, color: "#fafafa", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, d.nom_fichier)

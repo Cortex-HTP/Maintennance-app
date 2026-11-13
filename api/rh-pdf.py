@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
-# ═══ /api/rh-pdf — Genere le PDF d'un contrat RH (reportlab) ═══════════
+# ═══ /api/rh-pdf — Genere le PDF d'un document RH (reportlab) ══════════
 # POST { type: "cdd" | "cdi", data: {...champs gen_contrat...} }
+#   ou { type: "avenant_cdd" | "avenant_cdi" | "autorisation_conduite" |
+#        "attestation_travail" | "certificat_travail" | "promesse_embauche" |
+#        "courrier", data: {...champs gen_documents...} }
 #   -> { ok, pdf_base64, police, pages }
 #
 # ⚠️ Cet endpoint produit des documents PRE-SIGNES (signature + cachet du
@@ -21,8 +24,53 @@ from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_rh"))
 import gen_contrat  # noqa: E402 (import statique : bundle + erreurs visibles au demarrage)
+import gen_documents  # noqa: E402 (attestations, certificat, avenants, autorisation, courrier)
 
 MAX_CORPS = 300000  # ~300 Ko de JSON, tres au-dela d'un contrat normal
+
+# Champs obligatoires (texte non vide) des documents autres que le contrat
+CHAMPS_DOCS = {
+    "avenant_cdd": ("nom", "nom_box", "parties", "debut_initial", "fin_initiale", "debut_prolongation",
+                    "fin_nouvelle", "duree_prolongation", "duree_totale", "motif_prolongation",
+                    "fonction", "classif", "remuneration", "date_signature"),
+    "avenant_cdi": ("nom", "nom_box", "parties", "date_signature"),
+    "autorisation_conduite": ("nom", "nom_box", "beneficiaire", "objet", "date_signature"),
+    "attestation_travail": ("nom_complet", "depuis", "fonction", "type_contrat", "date_signature"),
+    "certificat_travail": ("nom_complet", "debut", "fin", "date_signature"),
+    "promesse_embauche": ("nom_complet", "fonction", "classif", "date_entree", "remuneration",
+                          "type_contrat", "date_signature"),
+    "courrier": ("nom_complet", "objet", "date_signature"),
+}
+
+
+def _liste_textes(v):
+    # une chaine seule vaut une liste d'un element (gen_documents la normalise pareil)
+    if isinstance(v, str):
+        v = [v]
+    return [x for x in v if isinstance(x, str) and x.strip()] if isinstance(v, list) else []
+
+
+def _valider_document(type_doc, data):
+    """Message d'erreur explicite, ou None si le document est generable."""
+    for champ in CHAMPS_DOCS[type_doc]:
+        if not str(data.get(champ) or "").strip():
+            return type_doc + " : champ " + champ + " manquant"
+    if type_doc in ("attestation_travail", "promesse_embauche"):
+        if str(data.get("type_contrat")).strip().lower() not in ("cdi", "cdd"):
+            return type_doc + " : type_contrat doit valoir cdi ou cdd"
+    if type_doc == "avenant_cdd" and not _liste_textes(data.get("preambule")):
+        return "avenant_cdd : preambule manquant"
+    if type_doc == "avenant_cdi":
+        arts = data.get("articles") if isinstance(data.get("articles"), list) else []
+        if not [a for a in arts if isinstance(a, dict) and str(a.get("titre") or "").strip() and _liste_textes(a.get("paragraphes"))]:
+            return "avenant_cdi : au moins un article (titre + paragraphes) requis"
+    if type_doc == "certificat_travail":
+        emplois = data.get("emplois") if isinstance(data.get("emplois"), list) else []
+        if not str(data.get("fonction") or "").strip() and not [e for e in emplois if isinstance(e, dict) and str(e.get("fonction") or "").strip()]:
+            return "certificat_travail : fonction ou emplois requis"
+    if type_doc == "courrier" and not _liste_textes(data.get("corps")):
+        return "courrier : corps manquant"
+    return None
 
 
 def _http_json(url, bearer, anon):
@@ -94,11 +142,21 @@ class handler(BaseHTTPRequestHandler):
                 return self._repondre(401, {"error": "reserve a l'Administrateur"})
             corps = json.loads(self.rfile.read(taille).decode("utf-8"))
             type_doc = str(corps.get("type") or "cdd").strip().lower()
-            if type_doc not in ("cdd", "cdi"):
-                return self._repondre(400, {"error": "type de document non gere (cdd ou cdi)"})
+            if type_doc not in ("cdd", "cdi") and type_doc not in gen_documents.BUILDERS:
+                return self._repondre(400, {"error": "type de document non gere"})
             data = corps.get("data")
             if not isinstance(data, dict):
                 return self._repondre(400, {"error": "data manquant"})
+            if type_doc in gen_documents.BUILDERS:
+                erreur = _valider_document(type_doc, data)
+                if erreur:
+                    return self._repondre(400, {"error": erreur})
+                octets = gen_documents.build_document_bytes(type_doc, data)
+                return self._repondre(200, {
+                    "ok": True,
+                    "pdf_base64": base64.b64encode(octets).decode("ascii"),
+                    "police": gen_contrat.POLICE_SOURCE,
+                })
             # Le type du gabarit vient de l'enveloppe, jamais d'un champ de data
             data = dict(data)
             data["type"] = type_doc
