@@ -11456,7 +11456,7 @@
                 var dur = (a.debut && a.fin) ? minsBetween(a.debut, a.fin) : 0;
                 return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" } },
                   h("span", { style: { width: 8, height: 8, borderRadius: 2, background: activityColorFor(a.libelle), flexShrink: 0 } }),
-                  h("span", { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, a.libelle),
+                  h("span", { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, a.libelle + (a.cause_panne && classerArret(a, {}) === "panne" ? " (" + a.cause_panne + ")" : "")),
                   h("span", { style: { fontSize: 11, color: "#71717a", fontFamily: "monospace" } }, (a.debut || "--:--") + " -> " + (a.fin || "--:--")),
                   h("span", { style: { fontSize: 12, fontWeight: 700, color: "#a78bfa", fontFamily: "monospace", minWidth: 50, textAlign: "right" } }, dur > 0 ? minsToHHmm(dur) : "-")
                 );
@@ -17211,6 +17211,414 @@
     }
 
     // ─── EcranAvancement ────────────────────────────────────────────────
+    // ═══ Analyse des arrets (Avancement) ═══════════════════════════════════
+    // Repartition des heures d'arret par cause, par machine et par semaine +
+    // detail des pannes (cause saisie dans l'APP Employes, remarque du rapport,
+    // intervention de maintenance du meme jour sur la machine).
+    // Classement IDENTIQUE a la barre "Disponibilite machine" de la carte
+    // chantier : PANNE / ARRET TECHNIQUE, MAINT, ATTENTE (facturable selon le
+    // drapeau de l'activite, sinon rf_activites_facturables).
+    // Palette validee (dataviz, fond sombre #1c1e2a, daltonisme compris).
+    var ARRET_CATS = [
+      { k: "panne", lib: "Panne", col: "#d6303c" },
+      { k: "maint", lib: "Maintenance", col: "#c08a0d" },
+      { k: "attf", lib: "Attente facturable", col: "#1f97cf" },
+      { k: "attnf", lib: "Attente non facturable", col: "#6d64f0" }
+    ];
+    var ARRET_INFO = {};
+    ARRET_CATS.forEach(function(c) { ARRET_INFO[c.k] = c; });
+    function minutesActiviteArret(d, f) {
+      if (!d || !f) return 0;
+      var p1 = String(d).split(":"); var p2 = String(f).split(":");
+      var mins = ((parseInt(p2[0]) || 0) * 60 + (parseInt(p2[1]) || 0)) - ((parseInt(p1[0]) || 0) * 60 + (parseInt(p1[1]) || 0));
+      if (mins < 0) mins += 24 * 60;
+      return mins;
+    }
+    function libellesFacturablesArret(parametres) {
+      var set = {};
+      (parametres || []).forEach(function(p) {
+        if (p && p.categorie === "rf_activites_facturables" && p.valeur) set[String(p.valeur).toUpperCase().trim()] = true;
+      });
+      return set;
+    }
+    function classerArret(a, factSet) {
+      var lib = String((a && a.libelle) || "").toUpperCase();
+      if (lib.indexOf("PANNE") >= 0 || lib.indexOf("ARRET TECHNIQUE") >= 0) return "panne";
+      if (lib.indexOf("MAINT") >= 0) return "maint";
+      if (lib.indexOf("ATTENTE") >= 0) {
+        var fact = (a && a.facturable === true) ? true : (a && a.facturable === false) ? false : !!factSet[lib.trim()];
+        return fact ? "attf" : "attnf";
+      }
+      return null;
+    }
+    // Rapports d'un chantier : MEME regle que la carte (chantier_id, sinon
+    // lieu/client SEULEMENT si le rapport n'est pas rattache a un autre chantier
+    // connu : sinon les campagnes successives d'un meme site se melangent)
+    function rapportsDuChantierArret(chantier, raps, idsConnus) {
+      return (raps || []).filter(function(r) {
+        if (!r) return false;
+        if (r.chantier_id != null && String(r.chantier_id) === String(chantier.id)) return true;
+        if (r.chantier_id != null && idsConnus && idsConnus[String(r.chantier_id)]) return false;
+        var lieu = String(r.lieu || r.client || "").toUpperCase().trim();
+        if (!lieu) return false;
+        var tt = String(chantier.titre || "").toUpperCase();
+        var ss = String(chantier.site || "").toUpperCase();
+        return (tt && tt.indexOf(lieu) >= 0) || (ss && (ss === lieu || ss.indexOf(lieu) >= 0 || lieu.indexOf(ss) >= 0));
+      });
+    }
+    function semaineIsoArret(iso) {
+      var d = new Date(String(iso).substring(0, 10) + "T00:00:00");
+      if (isNaN(d.getTime())) return null;
+      var t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      var jn = t.getUTCDay() || 7;
+      t.setUTCDate(t.getUTCDate() + 4 - jn);
+      var an = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+      var n = Math.ceil(((t - an) / 86400000 + 1) / 7);
+      return { cle: t.getUTCFullYear() + "-" + (n < 10 ? "0" : "") + n, lib: "S" + n };
+    }
+    function hhArret(min) { var m = Math.round(min); var hr = Math.floor(m / 60); var mm = m % 60; return hr + "h" + (mm < 10 ? "0" : "") + mm; }
+    function hDecArret(min) { return (min / 60).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " h"; }
+
+    function AnalyseArretsModal({ chantiers, chantierInitial, onClose }) {
+      var ctx = useAppData();
+      var _f = useState({ ch: chantierInitial == null ? "tous" : String(chantierInitial), periode: "tout", machine: "toutes" });
+      var F = _f[0]; var setF = _f[1];
+      var _tip = useState(null); var tip = _tip[0]; var setTip = _tip[1];
+      var _tout = useState(false); var toutesPannes = _tout[0]; var setToutesPannes = _tout[1];
+      var raps = ctx.dbRapportsForage || [];
+      var factSet = useMemo(function() { return libellesFacturablesArret(ctx.parametres); }, [ctx.parametres]);
+      useEffect(function() {
+        var masquer = function() { setTip(null); };
+        window.addEventListener("scroll", masquer, true);
+        window.addEventListener("touchstart", masquer, true);
+        return function() { window.removeEventListener("scroll", masquer, true); window.removeEventListener("touchstart", masquer, true); };
+      }, []);
+      var listeCh = chantiers || [];
+      var idsConnus = useMemo(function() { var m = {}; listeCh.forEach(function(c) { m[String(c.id)] = true; }); return m; }, [listeCh]);
+      // Prix d'attente : MEME regle que la facturation (lookupPrixAttente) -
+      // chantier_id, sinon site exact (chantier le plus recent a prix > 0),
+      // sinon meilleur recoupement de libelle
+      var prixIdx = useMemo(function() {
+      var prixParChantier = {}, prixParSite = {};
+      listeCh.forEach(function(c) {
+        var pa = parseFloat(c.prixAttente) || 0;
+        prixParChantier[String(c.id)] = pa;
+        if (c.site && pa > 0) {
+          var sk = String(c.site).toUpperCase().trim();
+          if (!prixParSite[sk] || (c.dateDebut || "") > (prixParSite[sk].dateDebut || "")) prixParSite[sk] = { prix: pa, dateDebut: c.dateDebut || "" };
+        }
+      });
+      return { parCh: prixParChantier, parSite: prixParSite };
+      }, [listeCh]);
+      var prixAttenteRapport = function(r) {
+        var prixParChantier = prixIdx.parCh, prixParSite = prixIdx.parSite;
+        if (r.chantier_id != null && prixParChantier[String(r.chantier_id)] != null) return prixParChantier[String(r.chantier_id)];
+        if (!r.lieu) return 0;
+        var lk = String(r.lieu).toUpperCase().trim();
+        if (prixParSite[lk]) return prixParSite[lk].prix;
+        var best = 0, bestLen = 0;
+        Object.keys(prixParSite).forEach(function(sk) {
+          if (sk.indexOf(lk) >= 0 || lk.indexOf(sk) >= 0) { var ml = Math.min(sk.length, lk.length); if (ml > bestLen) { best = prixParSite[sk].prix; bestLen = ml; } }
+        });
+        return best;
+      };
+      // Rapport -> chantier (chantier_id, sinon lieu ; a plusieurs candidats, celui
+      // dont les dates contiennent le rapport) : colonne Chantier des pannes
+      var rapChantier = useMemo(function() {
+        var parId = {};
+        listeCh.forEach(function(c) { parId[String(c.id)] = c; });
+        var m = {};
+        raps.forEach(function(r) {
+          if (!r) return;
+          if (r.chantier_id != null && parId[String(r.chantier_id)]) { m[r.id] = parId[String(r.chantier_id)]; return; }
+          var d = String(r.date_rapport || "").substring(0, 10);
+          var cands = listeCh.filter(function(c) { return rapportsDuChantierArret(c, [r], {}).length > 0; });
+          if (!cands.length) return;
+          var dansDates = cands.find(function(c) { return (!c.dateDebut || String(c.dateDebut).substring(0, 10) <= d) && (!c.dateFin || String(c.dateFin).substring(0, 10) >= d); });
+          m[r.id] = dansDates || cands[0];
+        });
+        return m;
+      }, [raps, listeCh]);
+      var chObj = F.ch === "tous" ? null : listeCh.find(function(c) { return String(c.id) === F.ch; });
+      // Chantiers proposes : ceux qui ont au moins un rapport (En cours en tete)
+      var chOptions = useMemo(function() {
+        return listeCh.filter(function(c) { return rapportsDuChantierArret(c, raps, idsConnus).length > 0; })
+          .sort(function(a, b) { return (a.statut === "En cours" ? 0 : 1) - (b.statut === "En cours" ? 0 : 1) || String(a.titre || "").localeCompare(String(b.titre || ""), "fr"); });
+      }, [listeCh, raps, idsConnus]);
+      var auj = localISODate(new Date());
+      var borne = (function() {
+        var d = new Date();
+        if (F.periode === "mois") return auj.substring(0, 8) + "01";
+        if (F.periode === "30j") { d.setDate(d.getDate() - 29); return localISODate(d); }
+        if (F.periode === "3mois") { d.setDate(d.getDate() - 89); return localISODate(d); }
+        return "";
+      })();
+      var perim = useMemo(function() {
+      var base = chObj ? rapportsDuChantierArret(chObj, raps, idsConnus) : raps;
+      var enPeriode = base.filter(function(r) { if (!r) return false; var d = String(r.date_rapport || "").substring(0, 10); return !borne || (d && d >= borne); });
+      var machines = Array.from(new Set(enPeriode.map(function(r) { return String(r.sondeuse_code || "").toUpperCase().trim() || "?"; }))).sort();
+      // machine choisie absente de la nouvelle periode : gardee dans la liste
+      if (F.machine !== "toutes" && machines.indexOf(F.machine) < 0) machines.push(F.machine);
+      var scope = F.machine === "toutes" ? enPeriode : enPeriode.filter(function(r) { return (String(r.sondeuse_code || "").toUpperCase().trim() || "?") === F.machine; });
+      return { machines: machines, scope: scope };
+      }, [raps, chObj, borne, F.machine, idsConnus]);
+      var machines = perim.machines, scope = perim.scope;
+
+      // Intervention de maintenance liee a une panne : meme machine, du jour
+      // precedent a 3 jours apres ; curative d'abord, puis la plus proche
+      var interventionLiee = function(r, mach, date) {
+        var t0 = new Date(date + "T00:00:00").getTime();
+        var cands = (ctx.interventions || []).filter(function(it) {
+          var memeMachine = (r.equipement_id != null && it.EquipementId != null && String(it.EquipementId) === String(r.equipement_id)) || (mach !== "?" && String(it.Equipement || "").toUpperCase().trim() === mach);
+          if (!memeMachine) return false;
+          if (it.Statut_Intervention === "Rejetee" || it.Statut_Intervention === "Annulee") return false;
+          var t = new Date(String(it.Date_Intervention || "").substring(0, 10) + "T00:00:00").getTime();
+          if (isNaN(t)) return false;
+          var ecart = (t - t0) / 86400000;
+          return ecart >= -1 && ecart <= 3;
+        });
+        cands.sort(function(a, b) {
+          var ca = a.Type === "Curative" ? 0 : 1, cb = b.Type === "Curative" ? 0 : 1;
+          if (ca !== cb) return ca - cb;
+          var da = Math.abs(new Date(String(a.Date_Intervention).substring(0, 10) + "T00:00:00").getTime() - t0);
+          var db = Math.abs(new Date(String(b.Date_Intervention).substring(0, 10) + "T00:00:00").getTime() - t0);
+          return da - db;
+        });
+        return cands[0] || null;
+      };
+
+      // ── Agregats (memorises : le survol d'une barre ne relance aucun calcul) ──
+      var agg = useMemo(function() {
+      var ouv = 0, parCat = { panne: 0, maint: 0, attf: 0, attnf: 0 }, parCause = {}, parMachine = {}, parSem = {}, pannes = [], manque = 0, sansPrix = 0;
+      scope.forEach(function(r) {
+        var mach = String(r.sondeuse_code || "").toUpperCase().trim() || "?";
+        var date = String(r.date_rapport || "").substring(0, 10);
+        var ch = rapChantier[r.id];
+        var prix = prixAttenteRapport(r);
+        var sem = semaineIsoArret(date);
+        var minPanne = 0, causes = {};
+        (Array.isArray(r.activites) ? r.activites : []).forEach(function(a) {
+          var m = minutesActiviteArret(a && a.debut, a && a.fin);
+          if (m <= 0) return;
+          ouv += m;
+          var cat = classerArret(a, factSet);
+          if (!cat) return;
+          parCat[cat] += m;
+          var libU = String(a.libelle || "").toUpperCase().trim() || "?";
+          var lib = cat === "panne" ? libU + " - " + (a.cause_panne ? String(a.cause_panne).toUpperCase() : "CAUSE NON RENSEIGNEE") : libU;
+          // cle = libelle + categorie : un meme libelle d'attente peut etre
+          // facturable sur un rapport et non facturable sur un autre
+          var cle = cat + "|" + lib;
+          if (!parCause[cle]) parCause[cle] = { cat: cat, lib: lib, min: 0, nb: 0 };
+          parCause[cle].min += m; parCause[cle].nb++;
+          if (!parMachine[mach]) parMachine[mach] = { panne: 0, maint: 0, attf: 0, attnf: 0 };
+          parMachine[mach][cat] += m;
+          if (sem) {
+            if (!parSem[sem.cle]) parSem[sem.cle] = { lib: sem.lib, panne: 0, maint: 0, attf: 0, attnf: 0 };
+            parSem[sem.cle][cat] += m;
+          }
+          if (cat === "attnf") { if (prix > 0) manque += m / 60 * prix; else sansPrix += m; }
+          if (cat === "panne") { minPanne += m; if (a.cause_panne) causes[a.cause_panne] = 1; }
+        });
+        if (minPanne > 0) pannes.push({ id: r.id, r: r, date: date, mach: mach, min: minPanne, causes: Object.keys(causes), remarque: String(r.remarques || "").trim(), chantier: ch ? (ch.titre || ch.site || "") : (r.lieu || "") });
+      });
+      pannes.sort(function(a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+      return { ouv: ouv, parCat: parCat, parCause: parCause, parMachine: parMachine, parSem: parSem, pannes: pannes, manque: manque, sansPrix: sansPrix };
+      }, [scope, factSet, rapChantier, prixIdx]);
+      var ouv = agg.ouv, parCat = agg.parCat, parCause = agg.parCause, parMachine = agg.parMachine, parSem = agg.parSem, pannes = agg.pannes, manque = agg.manque, sansPrix = agg.sansPrix;
+      var arret = parCat.panne + parCat.maint + parCat.attf + parCat.attnf;
+      var prod = Math.max(0, ouv - arret);
+
+      // ── Rendu ──
+      var montrerTip = function(e, titre, lignes, extra) { setTip({ x: e.clientX, y: e.clientY, titre: titre, lignes: lignes, extra: extra }); };
+      var cacherTip = function() { setTip(null); };
+      var selStyle = { background: "#1c1e2a", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#fafafa", fontFamily: "inherit", fontSize: 13, padding: "7px 10px", minWidth: 160 };
+      var labStyle = { fontSize: 11, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, display: "flex", flexDirection: "column", gap: 4 };
+      var blocStyle = { background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: "14px 16px", marginBottom: 14, minWidth: 0 };
+      var titreBloc = function(t, aide) {
+        return h(React.Fragment, null,
+          h("div", { style: { fontSize: 13.5, fontWeight: 700, color: "#fafafa", marginBottom: 3 } }, t),
+          h("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 10 } }, aide));
+      };
+      var legende = h("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11.5, color: "#cbd5e1", marginBottom: 10 } },
+        ARRET_CATS.map(function(c) {
+          return h("span", { key: c.k, style: { display: "inline-flex", alignItems: "center", gap: 6 } }, h("span", { style: { width: 10, height: 10, borderRadius: 2, background: c.col, display: "inline-block" } }), c.lib);
+        }));
+      var tuile = function(cle, couleur, titre, valeur, sous) {
+        return h("div", { key: cle, style: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: "12px 14px" } },
+          h("div", { style: { fontSize: 11, color: "#94a3b8", fontWeight: 600, display: "flex", alignItems: "center", gap: 7 } }, h("span", { style: { width: 8, height: 8, borderRadius: 2, background: couleur, display: "inline-block" } }), titre),
+          h("div", { style: { fontSize: 22, fontWeight: 700, marginTop: 6, color: "#fafafa", fontVariantNumeric: "tabular-nums" } }, valeur),
+          sous ? h("div", { style: { fontSize: 11.5, color: "#64748b", marginTop: 3, lineHeight: 1.4 } }, sous) : null);
+      };
+
+      // Par cause (Pareto)
+      var nbParLib = {};
+      Object.keys(parCause).forEach(function(k) { var l = parCause[k].lib; nbParLib[l] = (nbParLib[l] || 0) + 1; });
+      var causes = Object.keys(parCause).map(function(k) {
+        var c = parCause[k];
+        var lib = nbParLib[c.lib] > 1 ? c.lib + (c.cat === "attf" ? " (facturable)" : c.cat === "attnf" ? " (non facturable)" : "") : c.lib;
+        return { cle: k, lib: lib, cat: c.cat, min: c.min, nb: c.nb };
+      }).sort(function(a, b) { return b.min - a.min; });
+      var maxC = causes.length ? causes[0].min : 1;
+      // Par machine (empile)
+      var mach = Object.keys(parMachine).map(function(m) { var o = parMachine[m]; return { m: m, o: o, tot: o.panne + o.maint + o.attf + o.attnf }; }).sort(function(a, b) { return b.tot - a.tot; });
+      var maxM = mach.length ? mach[0].tot : 1;
+      // Par semaine (colonnes)
+      var sems = Object.keys(parSem).sort();
+      parSem = Object.assign({}, parSem);
+      if (sems.length > 1) {
+        var semComplete = [], dS = new Date(sems[0].substring(0, 4) + "-01-04T00:00:00");
+        // lundi de la 1re semaine ISO de l'annee de depart, puis +7 j jusqu'a la derniere
+        var jS = dS.getDay() || 7; dS.setDate(dS.getDate() - jS + 1 + (parseInt(sems[0].substring(5)) - 1) * 7);
+        for (var garde = 0; garde < 120; garde++) {
+          var w = semaineIsoArret(localISODate(dS));
+          if (!w || w.cle > sems[sems.length - 1]) break;
+          if (!parSem[w.cle]) parSem[w.cle] = { lib: w.lib, panne: 0, maint: 0, attf: 0, attnf: 0 };
+          semComplete.push(w.cle);
+          dS.setDate(dS.getDate() + 7);
+        }
+        if (semComplete.length) sems = semComplete;
+      }
+      var maxS = sems.reduce(function(m, k) { var o = parSem[k]; return Math.max(m, o.panne + o.maint + o.attf + o.attnf); }, 1);
+      var echelle = Math.max(60, Math.ceil(maxS / 60 / 5) * 5 * 60);
+      var HAUT = 180;
+      var lignesTip = function(o) { return ARRET_CATS.filter(function(c) { return o[c.k] > 0; }).map(function(c) { return [c.k, hhArret(o[c.k])]; }); };
+
+      var pannesVues = toutesPannes ? pannes : pannes.slice(0, 15);
+      var titre = "Analyse des arrets - " + (chObj ? (chObj.titre || chObj.site || "chantier") : "tous les chantiers");
+
+      return h(Modal, { title: titre, onClose: onClose, size: 1120 },
+        h("div", { style: { position: "relative" } },
+          // Filtres (une ligne, au-dessus des graphiques)
+          h("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 } },
+            h("label", { style: labStyle }, "Chantier",
+              h("select", { style: selStyle, value: F.ch, onChange: function(e) { setF(Object.assign({}, F, { ch: e.target.value, machine: "toutes" })); setToutesPannes(false); } },
+                h("option", { value: "tous" }, "Tous les chantiers"),
+                chOptions.map(function(c) { return h("option", { key: c.id, value: String(c.id) }, (c.titre || c.site || ("Chantier " + c.id)) + (c.statut && c.statut !== "En cours" ? " (" + c.statut + ")" : "")); }))),
+            h("label", { style: labStyle }, "Periode",
+              h("select", { style: selStyle, value: F.periode, onChange: function(e) { setF(Object.assign({}, F, { periode: e.target.value })); } },
+                [["tout", chObj ? "Tout le chantier" : "Depuis le debut"], ["3mois", "3 derniers mois"], ["30j", "30 derniers jours"], ["mois", "Mois en cours"]].map(function(p) { return h("option", { key: p[0], value: p[0] }, p[1]); }))),
+            h("label", { style: labStyle }, "Machine",
+              h("select", { style: selStyle, value: F.machine, onChange: function(e) { setF(Object.assign({}, F, { machine: e.target.value })); } },
+                h("option", { value: "toutes" }, "Toutes"),
+                machines.map(function(m) { return h("option", { key: m, value: m }, m); }))),
+            h("div", { style: { marginLeft: "auto", fontSize: 11.5, color: "#64748b" } }, scope.length + " rapport" + (scope.length > 1 ? "s" : ""))
+          ),
+          scope.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a" } }, "Aucun rapport de forage sur cette selection.") : h(React.Fragment, null,
+            // Tuiles
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 18 } },
+              tuile("dispo", "#10b981", "Disponibilite", (ouv ? (prod / ouv * 100).toFixed(1) : "0") + " %", hDecArret(prod) + " productives sur " + hDecArret(ouv)),
+              ARRET_CATS.map(function(c) {
+                var sous = ouv ? (parCat[c.k] / ouv * 100).toFixed(1) + " % du temps" : "";
+                if (c.k === "attnf" && parCat.attnf > 0) {
+                  sous += " - ~ " + fmtNum(Math.round(manque)) + " XPF non factures (heures x prix d'attente du chantier)";
+                  if (sansPrix > 0) sous += " ; " + hDecArret(sansPrix) + " sans prix d'attente renseigne";
+                }
+                return tuile(c.k, c.col, c.lib, hDecArret(parCat[c.k]), sous);
+              })
+            ),
+            // Par cause
+            h("div", { style: blocStyle },
+              titreBloc("Ou partent les heures - par cause", "Classe de la cause qui coute le plus a celle qui coute le moins : c'est la liste des priorites."),
+              legende,
+              causes.length === 0 ? h("div", { style: { color: "#71717a", fontStyle: "italic", fontSize: 12.5 } }, "Aucun arret sur cette selection.") :
+              causes.map(function(c) {
+                return h("div", { key: c.cle, onMouseMove: function(e) { montrerTip(e, c.lib, [[c.cat, hhArret(c.min)]], c.nb + " fois - " + (arret ? Math.round(c.min / arret * 100) : 0) + " % des arrets"); }, onMouseLeave: cacherTip,
+                  style: { display: "grid", gridTemplateColumns: "minmax(140px, 260px) 1fr 78px", alignItems: "center", gap: 10, padding: "4px 0", fontSize: 12.5 } },
+                  h("div", { title: c.lib, style: { color: "#cbd5e1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, c.lib),
+                  h("div", { style: { height: 14 } }, h("div", { style: { height: "100%", width: Math.max(1, c.min / maxC * 100) + "%", background: ARRET_INFO[c.cat].col, borderRadius: "0 4px 4px 0" } })),
+                  h("div", { style: { textAlign: "right", color: "#cbd5e1", fontVariantNumeric: "tabular-nums", lineHeight: 1.25 } }, hDecArret(c.min), h("div", { style: { fontSize: 10.5, color: "#64748b" } }, c.nb + " fois")));
+              })
+            ),
+            // Par machine + par semaine
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 420px), 1fr))", gap: 14 } },
+              h("div", { style: blocStyle },
+                titreBloc("Par machine", "Quelle machine perd le plus de temps, et pourquoi."),
+                legende,
+                mach.length === 0 ? h("div", { style: { color: "#71717a", fontStyle: "italic", fontSize: 12.5 } }, "Aucun arret.") :
+                mach.map(function(x) {
+                  return h("div", { key: x.m, onMouseMove: function(e) { montrerTip(e, x.m, lignesTip(x.o), "Total " + hhArret(x.tot)); }, onMouseLeave: cacherTip,
+                    style: { display: "grid", gridTemplateColumns: "56px 1fr 66px", alignItems: "center", gap: 10, padding: "4px 0", fontSize: 12.5 } },
+                    h("div", { style: { color: "#fafafa", fontWeight: 700 } }, x.m),
+                    h("div", { style: { height: 14, display: "flex", gap: 2, width: Math.max(2, x.tot / maxM * 100) + "%" } },
+                      ARRET_CATS.filter(function(c) { return x.o[c.k] > 0; }).map(function(c, i, arr) {
+                        return h("div", { key: c.k, style: { flex: x.o[c.k], height: "100%", background: c.col, borderRadius: i === arr.length - 1 ? "0 4px 4px 0" : 0 } });
+                      })),
+                    h("div", { style: { textAlign: "right", color: "#cbd5e1", fontVariantNumeric: "tabular-nums" } }, hDecArret(x.tot)));
+                })
+              ),
+              h("div", { style: blocStyle },
+                titreBloc("Par semaine", "Est-ce que ca s'ameliore ? (heures d'arret par semaine)"),
+                legende,
+                sems.length === 0 ? h("div", { style: { color: "#71717a", fontStyle: "italic", fontSize: 12.5 } }, "Aucun arret.") :
+                h("div", { style: { overflowX: "auto" } },
+                  h("div", { style: { minWidth: sems.length * 26 } },
+                    h("div", { style: { display: "flex", alignItems: "flex-end", gap: 8, height: HAUT + 2, borderBottom: "1px solid rgba(255,255,255,0.10)", position: "relative", padding: "0 2px" } },
+                      [0.5, 1].map(function(fr) {
+                        return h("div", { key: fr, style: { position: "absolute", left: 0, right: 0, bottom: fr * HAUT, borderTop: "1px dashed rgba(255,255,255,0.06)", fontSize: 10, color: "#64748b", pointerEvents: "none" } }, Math.round(echelle * fr / 60) + " h");
+                      }),
+                      sems.map(function(k) {
+                        var o = parSem[k];
+                        var tot = o.panne + o.maint + o.attf + o.attnf;
+                        var vis = ARRET_CATS.filter(function(c) { return o[c.k] > 0; });
+                        return h("div", { key: k, onMouseMove: function(e) { montrerTip(e, "Semaine " + o.lib.substring(1) + " (" + k.substring(0, 4) + ")", lignesTip(o), "Total " + hhArret(tot)); }, onMouseLeave: cacherTip,
+                          style: { flex: 1, minWidth: 18, display: "flex", flexDirection: "column-reverse", gap: 2, position: "relative", zIndex: 1 } },
+                          vis.map(function(c, i) {
+                            return h("div", { key: c.k, style: { height: Math.max(1, o[c.k] / echelle * HAUT), background: c.col, borderRadius: i === vis.length - 1 ? "4px 4px 0 0" : 0 } });
+                          }));
+                      })),
+                    h("div", { style: { display: "flex", gap: 8, padding: "6px 2px 0" } },
+                      sems.map(function(k) { return h("div", { key: k, style: { flex: 1, minWidth: 18, textAlign: "center", fontSize: 10.5, color: "#64748b" } }, parSem[k].lib); }))
+                  ))
+              )
+            ),
+            // Detail des pannes
+            h("div", { style: blocStyle },
+              titreBloc("Detail des pannes (" + pannes.length + ")", "Cause saisie par le sondeur (APP Employes), sa remarque du jour, et l'intervention de maintenance faite sur la machine du jour precedent a 3 jours apres."),
+              pannes.length === 0 ? h("div", { style: { color: "#71717a", fontStyle: "italic", fontSize: 12.5 } }, "Aucune panne sur cette selection.") :
+              h("div", { style: { overflowX: "auto" } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 760 } },
+                  h("thead", null, h("tr", null, ["Date", "Machine", "Duree", "Cause", "Remarque du rapport", "Intervention liee"].map(function(t) {
+                    return h("th", { key: t, style: { textAlign: "left", fontSize: 11, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, padding: "8px", borderBottom: "1px solid rgba(255,255,255,0.08)" } }, t);
+                  }))),
+                  h("tbody", null, pannesVues.map(function(p) {
+                    var it = interventionLiee(p.r, p.mach, p.date);
+                    var piecesIt = it && Array.isArray(it.Gamme) ? it.Gamme.filter(function(g) { return g && g.done && (g.pieceRef || g.pieceLabel); }).map(function(g) { return g.pieceLabel || g.pieceRef; }) : [];
+                    var td = { padding: "8px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: "#cbd5e1", verticalAlign: "top" };
+                    return h("tr", { key: p.id },
+                      h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }) }, p.date.split("-").reverse().join("/")),
+                      h("td", { style: td }, h("b", { style: { color: "#fafafa" } }, p.mach), F.ch === "tous" && p.chantier ? h("div", { style: { fontSize: 11, color: "#64748b" } }, p.chantier) : null),
+                      h("td", { style: Object.assign({}, td, { whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }) }, hhArret(p.min)),
+                      h("td", { style: td }, p.causes.length ? p.causes.join(", ") : h("span", { style: { color: "#64748b", fontStyle: "italic" } }, "non renseignee")),
+                      h("td", { style: td }, p.remarque || h("span", { style: { color: "#64748b", fontStyle: "italic" } }, "-")),
+                      h("td", { style: td }, it ? h(React.Fragment, null,
+                          h("span", { style: { display: "inline-block", fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, border: "1px solid " + (it.Type === "Curative" ? "rgba(214,48,60,0.5)" : "rgba(31,151,207,0.5)"), color: it.Type === "Curative" ? "#fca5a5" : "#8fd0ee", marginRight: 6 } }, it.Type === "Curative" ? "Curatif" : "Preventif"),
+                          it.Title || "Intervention",
+                          h("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2 } }, String(it.Date_Intervention || "").substring(0, 10).split("-").reverse().join("/") + (piecesIt.length ? " - pieces : " + piecesIt.slice(0, 3).join(", ") + (piecesIt.length > 3 ? "..." : "") : ""))
+                        ) : h("span", { style: { color: "#64748b", fontStyle: "italic" } }, "aucune intervention trouvee")));
+                  }))
+                )),
+              pannes.length > 15 ? h("div", { style: { marginTop: 8 } },
+                h("button", { onClick: function() { setToutesPannes(!toutesPannes); }, style: { background: "none", border: "none", color: "#a5b4fc", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0 } },
+                  toutesPannes ? "Afficher moins" : "Afficher les " + pannes.length + " pannes")) : null
+            )
+          )
+        ),
+        // Infobulle (survol des barres)
+        // Portail vers <body> : le panneau du Modal a un backdrop-filter, qui
+        // decalerait une infobulle en position fixe
+        tip ? ReactDOM.createPortal(h("div", { style: { position: "fixed", left: Math.min(tip.x + 14, window.innerWidth - 230), top: Math.min(tip.y + 14, window.innerHeight - 140), zIndex: 10050, pointerEvents: "none", background: "#0b0d18", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fafafa", minWidth: 180, boxShadow: "0 8px 24px rgba(0,0,0,0.5)" } },
+          h("div", { style: { fontWeight: 700, marginBottom: 2 } }, tip.titre),
+          tip.lignes.map(function(l) {
+            return h("div", { key: l[0], style: { display: "flex", justifyContent: "space-between", gap: 12, marginTop: 3 } },
+              h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, color: "#cbd5e1" } }, h("span", { style: { width: 8, height: 8, borderRadius: 2, background: ARRET_INFO[l[0]].col, display: "inline-block" } }), ARRET_INFO[l[0]].lib),
+              h("span", { style: { fontVariantNumeric: "tabular-nums" } }, l[1]));
+          }),
+          tip.extra ? h("div", { style: { color: "#94a3b8", marginTop: 5, fontSize: 11 } }, tip.extra) : null
+        ), document.body) : null
+      );
+    }
+
     function EcranAvancement() {
       var ctxAv = useAppData();
       var _cm2 = useState(new Date());
@@ -17221,6 +17629,8 @@
       var showImport = _showImport[0]; var setShowImport = _showImport[1];
       var _vp = useState(null); // id du chantier dont la fenetre "Vitesse - moyennes" est ouverte
       var vitPopover = _vp[0]; var setVitPopover = _vp[1];
+      // Analyse des arrets : null (fermee), "tous" ou id du chantier
+      var _aa = useState(null); var analyseArrets = _aa[0]; var setAnalyseArrets = _aa[1];
       // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
       var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
       // Helper de fetch meteo pour 1 chantier (idempotent : skip si deja en cache)
@@ -17397,6 +17807,8 @@
         return order.map(function(k) { return byMachine[k]; });
       }
       var chantiers = ctxAv.dbChantiers;
+      var idsChantiersAv = {};
+      (chantiers || []).forEach(function(c) { idsChantiersAv[String(c.id)] = true; });
       var setChantiers = ctxAv.setDbChantiers;
       var saisies = ctxAv.dbSaisies;
 
@@ -18314,11 +18726,13 @@
           title: h(IconText, { icon: "hard-hat", size: 20 }, "Avancement"),
           subtitle: "Suivi des chantiers actifs",
           action: h(React.Fragment, null,
+            h(Button, { variant: "secondary", onClick: function() { setAnalyseArrets("tous"); } }, h(IconText, { icon: "bar-chart-3", size: 14 }, "Analyse des arrets")),
             h(Button, { variant: "secondary", onClick: function() { setShowImport(true); } }, h(IconText, { icon: "upload", size: 14 }, "Importer")),
             h(Button, { onClick: openNewChantier }, h(IconText, { icon: "plus", size: 14, color: "white" }, "Nouveau chantier"))
           )
         }),
         showImport ? h(ImportRelevesModal, { onClose: function() { setShowImport(false); } }) : null,
+        analyseArrets != null ? h(AnalyseArretsModal, { chantiers: chantiers, chantierInitial: analyseArrets === "tous" ? null : analyseArrets, onClose: function() { setAnalyseArrets(null); } }) : null,
         vitPopover != null ? (function() {
           var ch = (chantiers || []).find(function(c) { return String(c.id) === String(vitPopover); });
           if (!ch) return null;
@@ -18828,6 +19242,8 @@
                     var rapsCh = (ctxAv.dbRapportsForage || []).filter(function(r) {
                       if (!r) return false;
                       if (r.chantier_id != null && String(r.chantier_id) === String(chantier.id)) return true;
+                      // Rattache a un AUTRE chantier connu : jamais repris par le lieu
+                      if (r.chantier_id != null && idsChantiersAv[String(r.chantier_id)]) return false;
                       // Fallback : match par lieu/client sur titre/site du chantier
                       var lieu = String(r.lieu || r.client || "").toUpperCase().trim();
                       if (!lieu) return false;
@@ -18941,7 +19357,9 @@
                         minMaint > 0 ? legendItem(COL_MAINT, "Maintenance", minMaint, pcMaint) : null,
                         minAttFact > 0 ? legendItem(COL_ATT_FACT, "Attente facturable", minAttFact, pcAttFact) : null,
                         minAttNonFact > 0 ? legendItem(COL_ATT_NF, "Attente non fact.", minAttNonFact, pcAttNonFact) : null,
-                        h("div", { style: { marginLeft: "auto", color: "#475569", fontSize: 10 } }, rapsCh.length + " rapport" + (rapsCh.length > 1 ? "s" : ""))
+                        h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 } },
+                          h("span", { style: { color: "#475569", fontSize: 10 } }, rapsCh.length + " rapport" + (rapsCh.length > 1 ? "s" : "")),
+                          h("button", { onClick: function(e) { e.stopPropagation(); setAnalyseArrets(String(chantier.id)); }, title: "Repartition des pannes, maintenances et attentes (par cause, machine, semaine)", style: { background: "none", border: "none", color: "#a5b4fc", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, padding: 0 } }, "Voir le detail des arrets", h(Icon, { name: "chevron-right", size: 13, color: "#a5b4fc" })))
                       )
                     );
                   })(),
@@ -30458,7 +30876,13 @@
                   h(Icon, { name: "trash-2", size: 12, color: "#fda4af" }))
               ),
               // Ligne 2 : toggle Facturable / Non facturable + commentaire
-              h("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
+              h("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" } },
+                // Cause d'une panne (saisie par le sondeur, ou ajoutee ici pour
+                // les anciens rapports) : alimente l'analyse des arrets
+                classerArret(a, {}) === "panne" ? h("select", { value: a.cause_panne || "", title: "Cause de la panne (analyse des arrets)", onChange: function(e) { updateList("activites", idx, "cause_panne", e.target.value || undefined); }, style: Object.assign({}, inputStyleEdit, { marginTop: 0, width: "auto", minWidth: 170, fontWeight: 600, borderColor: a.cause_panne ? undefined : "rgba(244,63,94,0.55)" }) },
+                  h("option", { value: "" }, "Cause de la panne..."),
+                  ["Hydraulique", "Moteur", "Electrique", "Outil de forage", "Autre"].map(function(c) { return h("option", { key: c, value: c }, c); })
+                ) : null,
                 h("div", { style: { display: "flex", gap: 0, background: "rgba(0,0,0,0.30)", borderRadius: 6, padding: 2 } },
                   h("button", {
                     onClick: function() { updateList("activites", idx, "facturable", fact === true ? null : true); },
@@ -32995,7 +33419,7 @@
                     var dureeStr = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
                     var horaireStr = (a.debut && a.fin) ? (a.debut + " - " + a.fin) : "";
                     return h("div", { key: i, style: { padding: "5px 0", borderBottom: i < activites.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", display: "flex", justifyContent: "space-between", gap: 8 } },
-                      h("span", { style: { flex: 1 } }, (a.libelle || a.type || "Activite") + (horaireStr ? " " : ""), horaireStr ? h("span", { style: { color: "#71717a", fontSize: 11 } }, horaireStr) : null),
+                      h("span", { style: { flex: 1 } }, (a.libelle || a.type || "Activite") + (a.cause_panne && classerArret(a, {}) === "panne" ? " (" + a.cause_panne + ")" : "") + (horaireStr ? " " : ""), horaireStr ? h("span", { style: { color: "#71717a", fontSize: 11 } }, horaireStr) : null),
                       h("span", { style: { color: "#a78bfa", fontWeight: 700, fontFamily: "monospace" } }, dureeStr)
                     );
                   })
