@@ -39444,10 +39444,40 @@
           { key: "administration", label: "Administration", lucide: "user-cog" },
         ]},
       ];
+      // Menu reduit aux icones (fleche), ordinateur seulement - choix memorise
+      var _reduitM = useState(function() {
+        try { return localStorage.getItem("wl_sidebar_reduite") === "1"; } catch (e) { return false; }
+      });
+      var menuReduitChoix = _reduitM[0], setMenuReduitBrut = _reduitM[1];
+      var reduit = menuReduitChoix && !isMobile;
+      var basculerMenu = function() {
+        var v = !menuReduitChoix;
+        setMenuReduitBrut(v);
+        try { localStorage.setItem("wl_sidebar_reduite", v ? "1" : "0"); } catch (e) {}
+      };
+      // Pastille d'une entree en mode reduit : total des compteurs de l'entree
+      var pastilleReduite = function(p) {
+        var n = 0, c = "#f43f5e";
+        if (p.key === "administration" && isAdmin) n = (pendingCount || 0) + (ticketsPending || 0);
+        else if (p.key === "soumissions") { n = (soumissionsPending || 0) + (rapportsModifPending || 0); c = "#f59e0b"; }
+        else if (p.key === "alertes-saisies") n = alertesSaisiesPending || 0;
+        else if (p.key === "pieces") { n = piecesPending || 0; c = "#06b6d4"; }
+        else if (p.key === "financement") { n = demandesFinPending || 0; c = "#f59e0b"; }
+        else if (p.key === "emprunts") { n = empruntsFinProche || 0; c = "#ca8a04"; }
+        else if (p.key === "achats-previsionnels") { n = achatsPrevisionnelsPending || 0; c = "#f59e0b"; }
+        else if (p.key === "coffre-rh") { n = rhSignaturesPending || 0; c = "#06b6d4"; }
+        else if (p.key === "compta-ext") { n = comptaPending || 0; c = "#22c55e"; }
+        else if (p.key === "facturation-ext") { n = facturationPending || 0; c = "#6366f1"; }
+        if (!(n > 0)) return null;
+        return h("span", { style: { position: "absolute", top: 1, right: 1, background: c, color: "#fff", fontSize: 9.5, fontWeight: 800, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.4)" } }, n > 99 ? "99+" : n);
+      };
       // Style adaptatif : drawer flottant sur mobile, fixe sur desktop/tablette
       var sidebarStyle = isMobile
         ? { position: "fixed", left: 0, top: 0, bottom: 0, width: 260, maxWidth: "85vw", background: "rgba(20, 22, 35, 0.96)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", borderRight: "1px solid rgba(255,255,255,0.08)", color: "#fafafa", display: "flex", flexDirection: "column", zIndex: 999, transform: isOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.25s ease-out", boxShadow: isOpen ? "8px 0 32px rgba(0,0,0,0.5)" : "none" }
-        : { width: 256, background: "rgba(30, 33, 50, 0.6)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "1px solid rgba(255,255,255,0.06)", color: "#fafafa", minHeight: "100dvh", display: "flex", flexDirection: "column", flexShrink: 0 };
+        : { width: reduit ? 68 : 256, background: "rgba(30, 33, 50, 0.6)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "1px solid rgba(255,255,255,0.06)", color: "#fafafa", minHeight: "100dvh", display: "flex", flexDirection: "column", flexShrink: 0 };
+      var boutonFleche = isMobile ? null : h("button", { onClick: basculerMenu, title: reduit ? "Agrandir le menu" : "Reduire le menu (icones seules)", "aria-label": reduit ? "Agrandir le menu" : "Reduire le menu",
+        style: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, borderRadius: 8, border: "1px solid rgba(129,140,248,0.30)", background: "rgba(129,140,248,0.10)", cursor: "pointer", flexShrink: 0 } },
+        h(Icon, { name: reduit ? "chevrons-right" : "chevrons-left", size: 15, color: "#a5b4fc" }));
       var navigateThenClose = function(key) { onNavigate(key); if (isMobile && onClose) onClose(); };
       // Pour les items externes (link vers autre app), ouvre dans nouvel onglet
       var handleItemClick = function(p) {
@@ -39455,20 +39485,35 @@
         navigateThenClose(p.key);
       };
       return h("div", { style: sidebarStyle },
-        h("div", { style: { padding: "20px 16px" } },
-          h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
-            h("div", { style: { width: 36, height: 36, borderRadius: 10, background: "linear-gradient(135deg, #818cf8, #c084fc)", display: "flex", alignItems: "center", justifyContent: "center", color: "#ffffff", fontWeight: 800, fontSize: 16, boxShadow: "0 4px 16px rgba(129, 140, 248, 0.4)" } }, "W"),
-            h("div", null,
+        h("div", { style: { padding: reduit ? "16px 8px 6px" : "20px 16px" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: reduit ? 10 : 12, flexDirection: reduit ? "column" : "row" } },
+            h("div", { title: reduit ? "Wallis-Label" : null, style: { width: 36, height: 36, borderRadius: 10, background: "linear-gradient(135deg, #818cf8, #c084fc)", display: "flex", alignItems: "center", justifyContent: "center", color: "#ffffff", fontWeight: 800, fontSize: 16, boxShadow: "0 4px 16px rgba(129, 140, 248, 0.4)", flexShrink: 0 } }, "W"),
+            reduit ? null : h("div", { style: { flex: 1, minWidth: 0 } },
               h("div", { style: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em", color: "#fafafa" } }, "Wallis-Label"),
               h("div", { style: { fontSize: 11.5, color: "#71717a", marginTop: 1 } }, "Maintenance & chantiers")
-            )
+            ),
+            boutonFleche
           )
         ),
-        h("nav", { style: { flex: 1, padding: "8px 8px 16px", overflowY: "auto" } },
+        h("nav", { style: { flex: 1, padding: reduit ? "4px 6px 16px" : "8px 8px 16px", overflowY: "auto", overflowX: "hidden" } },
           sections.map((section) => h("div", { key: section.name },
-            h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
+            reduit
+              ? h("div", { title: section.name, style: { borderTop: "1px solid rgba(255,255,255,0.08)", margin: "10px 10px 8px" } })
+              : h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
             section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.key === "stock-ext") return stockAllowed === true; if (p.key === "paies-ext") return isAdmin === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
+              if (reduit) {
+                return h("button", { key: p.key, onClick: () => handleItemClick(p), title: p.label + (p.external ? " (nouvel onglet)" : ""), "aria-label": p.label,
+                  style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", width: 44, height: 40, margin: "0 auto 2px", padding: 0, border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
+                    background: isActive ? "linear-gradient(135deg, rgba(129, 140, 248, 0.18), rgba(192, 132, 252, 0.10))" : "transparent",
+                    boxShadow: isActive ? "inset 0 0 0 1px rgba(129, 140, 248, 0.30)" : "none" },
+                  onMouseEnter: (e) => { if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; },
+                  onMouseLeave: (e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }
+                },
+                  h(Icon, { name: p.lucide, size: 18, color: isActive ? "#a5b4fc" : "#94a3b8" }),
+                  pastilleReduite(p)
+                );
+              }
               return h("button", { key: p.key, onClick: () => handleItemClick(p),
                 style: {
                   display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "9px 14px",
@@ -39509,7 +39554,10 @@
                 p.key === "paies-ext" ? h("span", { style: { marginLeft: "auto" } }, h(Icon, { name: "external-link", size: 10, color: "#71717a" })) : null
               );
             })))),
-        h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
+        reduit ? h("div", { style: { padding: "10px 8px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "center" } },
+          h("button", { onClick: onLogout, title: "Deconnexion" + (userEmail ? " (" + userEmail + ")" : ""), "aria-label": "Deconnexion", style: { width: 40, height: 36, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, cursor: "pointer" } },
+            h(Icon, { name: "log-out", size: 16, color: "#cbd5e1" }))
+        ) : h("div", { style: { padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" } },
           h("div", { style: { fontSize: 11, color: "#71717a", marginBottom: 8, wordBreak: "break-all" } }, userEmail || ""),
           h("button", { onClick: onLogout, style: { width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.15s", fontFamily: "inherit" } }, h(IconText, { icon: "log-out", size: 14, color: "#cbd5e1" }, "Deconnexion"))));
     }
