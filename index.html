@@ -149,7 +149,9 @@
       /* Hint scroll horizontal sur tables */
       .scrollable-x::after { content: "← Faites glisser →"; display: block; text-align: center; font-size: 10px; color: rgba(255,255,255,0.35); padding: 4px 0; }
       /* Reset des grilles 2 colonnes vers 1 colonne sur mobile via une classe utilitaire */
-      .grid-2-col-mobile { grid-template-columns: 1fr !important; }
+      /* minmax(0, 1fr) : une ligne longue (resume de la Notice sur une ligne)
+         ne peut plus elargir la colonne au-dela de l'ecran (texte coupe) */
+      .grid-2-col-mobile { grid-template-columns: minmax(0, 1fr) !important; }
       /* Grilles composites (lignes d'edition) : 2 colonnes souples sur mobile */
       .grid-stack-2-mobile { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
       /* Bandeau 14 jours (meteo) : 7 colonnes sur 2 rangees sur mobile */
@@ -8956,6 +8958,14 @@
         { key: "portail_client",       label: "Acces portail client", lucide: "key",           group: "admin" },
       ];
       const [selected, setSelected] = useState("aide_notice"); // la Notice s'ouvre en premier
+      // Sommaire reduit aux icones (fleche), choix memorise sur ce navigateur
+      const [sommaireReduit, setSommaireReduitBrut] = useState(function() {
+        try { return localStorage.getItem("wl_param_sommaire_reduit") === "1"; } catch (e) { return false; }
+      });
+      const setSommaireReduit = function(v) {
+        setSommaireReduitBrut(v);
+        try { localStorage.setItem("wl_param_sommaire_reduit", v ? "1" : "0"); } catch (e) {}
+      };
       const [newValeur, setNewValeur] = useState("");
       const [toDelete, setToDelete] = useState(null);
       const [saving, setSaving] = useState(false);
@@ -9035,20 +9045,37 @@
         ),
         // minmax(0, 1fr) : un tableau large (Destinataires emails) defile DANS sa
         // carte au lieu d'elargir toute la page
-        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 16 } },
-          // Colonne gauche : categories regroupees par app (Employes / Admin)
-          h(Card, { style: { padding: 12 } },
+        h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: (sommaireReduit ? "64px" : "240px") + " minmax(0, 1fr)", gap: 16 } },
+          // Colonne gauche : categories regroupees par app (Employes / Admin).
+          // Reduite : icones seules (nom au survol), fleche pour agrandir.
+          h(Card, { style: { padding: sommaireReduit ? 8 : 12, alignSelf: "start" } },
+            h("div", { style: { display: "flex", alignItems: "center", justifyContent: sommaireReduit ? "center" : "space-between", marginBottom: sommaireReduit ? 8 : 10 } },
+              sommaireReduit ? null : h("span", { style: { fontSize: 11, color: "#71717a", fontWeight: 800, textTransform: "uppercase", letterSpacing: 1 } }, "Sommaire"),
+              h("button", { onClick: function() { setSommaireReduit(!sommaireReduit); }, title: sommaireReduit ? "Agrandir le sommaire" : "Reduire le sommaire (icones seules)", "aria-label": sommaireReduit ? "Agrandir le sommaire" : "Reduire le sommaire",
+                style: { width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(167,139,250,0.30)", background: "rgba(167,139,250,0.10)", cursor: "pointer", padding: 0 } },
+                h(Icon, { name: sommaireReduit ? "chevrons-right" : "chevrons-left", size: 16, color: "#c4b5fd" }))
+            ),
             CATEGORY_GROUPS.map(function(g) {
               const inGroup = categories.filter(function(c) { return c.group === g.key; });
               if (inGroup.length === 0) return null;
-              return h("div", { key: g.key, style: { marginBottom: 14 } },
-                h("div", { style: { fontSize: 11, color: "#a78bfa", fontWeight: 800, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingBottom: 6, borderBottom: "1px solid rgba(167,139,250,0.20)" } }, g.label),
-                inGroup.map(function(c) {
-                  return h("button", { key: c.key, onClick: function() { setSelected(c.key); },
-                    style: { display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "10px 12px", marginBottom: 4, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: selected === c.key ? 700 : 500, background: selected === c.key ? "rgba(167,139,250,0.15)" : "transparent", color: selected === c.key ? "#ddd6fe" : "#e5e7eb" } },
-                    c.lucide && h(Icon, { name: c.lucide, size: 14 }), c.label
-                  );
-                })
+              return h("div", { key: g.key, style: { marginBottom: sommaireReduit ? 8 : 14 } },
+                sommaireReduit
+                  ? h("div", { title: g.label, style: { borderBottom: "1px solid rgba(167,139,250,0.25)", margin: "0 4px 8px" } })
+                  : h("div", { style: { fontSize: 11, color: "#a78bfa", fontWeight: 800, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingBottom: 6, borderBottom: "1px solid rgba(167,139,250,0.20)" } }, g.label),
+                h("div", { style: sommaireReduit ? { display: "flex", flexWrap: "wrap", gap: 4, justifyContent: "center" } : null },
+                  inGroup.map(function(c) {
+                    var actif = selected === c.key;
+                    if (sommaireReduit) {
+                      return h("button", { key: c.key, onClick: function() { setSelected(c.key); }, title: c.label, "aria-label": c.label,
+                        style: { width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, border: "none", borderRadius: 8, cursor: "pointer", background: actif ? "rgba(167,139,250,0.22)" : "transparent", color: actif ? "#ddd6fe" : "#e5e7eb" } },
+                        h(Icon, { name: c.lucide || "list", size: 17, color: actif ? "#ddd6fe" : "#cbd5e1" }));
+                    }
+                    return h("button", { key: c.key, onClick: function() { setSelected(c.key); },
+                      style: { display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "10px 12px", marginBottom: 4, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: actif ? 700 : 500, background: actif ? "rgba(167,139,250,0.15)" : "transparent", color: actif ? "#ddd6fe" : "#e5e7eb" } },
+                      c.lucide && h(Icon, { name: c.lucide, size: 14 }), c.label
+                    );
+                  })
+                )
               );
             })
           ),
