@@ -8731,6 +8731,10 @@
       var inputSm = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: "6px 10px", color: "#e5e7eb", fontSize: 12, fontFamily: "inherit", width: "100%" };
       var thStyle = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid rgba(255,255,255,0.07)", whiteSpace: "nowrap" };
       var tdStyle = { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", verticalAlign: "middle" };
+      // Colonne Email assez large pour l'adresse la plus longue (les 10 colonnes
+      // de types de documents l'ecrasaient : adresses coupees a l'affichage)
+      var emailMaxLen = groups.reduce(function(m, g) { return Math.max(m, String(g.email || "").length); }, 0);
+      var largeurEmail = Math.min(460, Math.max(240, Math.round(emailMaxLen * 7.3) + 34));
 
       return h("div", null,
         // Bandeau info
@@ -8751,7 +8755,7 @@
           h("table", { style: { width: "100%", borderCollapse: "collapse", minWidth: 980 } },
             h("thead", null,
               h("tr", null,
-                h("th", { style: thStyle }, "Email"),
+                h("th", { style: Object.assign({}, thStyle, { minWidth: largeurEmail, width: largeurEmail }) }, "Email"),
                 h("th", { style: Object.assign({}, thStyle, { width: 80 }) }, "Role"),
                 h("th", { style: Object.assign({}, thStyle, { width: 100 }) }, "Scope"),
                 h("th", { style: Object.assign({}, thStyle, { width: 160 }) }, "Chantier"),
@@ -8773,7 +8777,7 @@
                 return h("tr", { key: g.key },
                   // Email
                   h("td", { style: tdStyle },
-                    h("input", { type: "email", style: inputSm, value: g.email || "", placeholder: "email@exemple.com", onChange: function(e) { updateGroup(g, { email: e.target.value }); } })
+                    h("input", { type: "email", style: Object.assign({}, inputSm, { minWidth: largeurEmail - 20 }), title: g.email || "", value: g.email || "", placeholder: "email@exemple.com", onChange: function(e) { updateGroup(g, { email: e.target.value }); } })
                   ),
                   // Role (TO = recoit, CC = copie, Signataire = recoit + signe le rapport)
                   h("td", { style: tdStyle },
@@ -42382,7 +42386,17 @@
         run();
       }, [session, dataLoading, autoGenDone]);
 
-      const navigate = useCallback((page, data = null) => { setCurrentPage(page); setPageData(data); }, []);
+      // Zone de contenu (elle defile sur ordinateur, la fenetre sur mobile)
+      const mainScrollRef = React.useRef(null);
+      const navigate = useCallback((page, data = null) => {
+        setCurrentPage(page); setPageData(data);
+        // Nouvel ecran = haut de page (sinon on arrivait avec le defilement de
+        // l'ecran precedent, ex. Administration ouverte en bas de la Notice)
+        try {
+          if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
+          window.scrollTo(0, 0);
+        } catch (e) {}
+      }, []);
 
       // Helper : mapping code <-> id equipement
       const eqIdByCode = useMemo(() => {
@@ -43371,7 +43385,7 @@
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
           h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, stockAllowed: stockAllowed, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
-          h("div", { style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
+          h("div", { ref: mainScrollRef, style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
             // Decalage sous le bouton hamburger sur mobile
