@@ -32730,7 +32730,9 @@
               tagTitle: r.non_productif ? ("Journee declaree NON PRODUCTIVE par l'equipe" + (r.motif_non_productif ? " - motif : " + r.motif_non_productif : "")) : null,
               sender: personnelLabel(r.personnel_id),
               right: r.date_rapport ? "Rapport du " + fmtDate(r.date_rapport) : (r.created_at ? "Envoye le " + fmtDateTime(r.created_at) : "-"),
-              statut: r.statut,
+              // Signe par le client mais reste "envoye" (ancien renvoi apres
+              // signature) : on affiche l'etat reel
+              statut: (r.signed_client_at && (r.statut === "envoye" || r.statut === "soumis")) ? "signe_client" : r.statut,
               isExpanded: isExp,
               onClick: function() { toggleExpand("r", r.id); }
             }),
@@ -32993,7 +32995,8 @@
                 r.statut !== "valide_admin" && r.statut !== "demande_modification" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
                 r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
                 actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingRapportId(r.id); } }),
-                canEditSoumissions ? actionBtn({ label: "Renvoyer au client", icon: "send", color: "neutral", onClick: function() { renvoyerRapportManuel(r); } }) : null,
+                // Pas de renvoi pour signature d'un rapport deja signe (signature definitive)
+                canEditSoumissions && !r.signed_client_at ? actionBtn({ label: "Renvoyer au client", icon: "send", color: "neutral", onClick: function() { renvoyerRapportManuel(r); } }) : null,
                 canEditSoumissions ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteRapport(r); } }) : null
               )
             ]) : null
@@ -34071,6 +34074,9 @@
       var proposerRenvoiRapportCorrige = function(rapport) {
         var vMatch = correctionClientPourRapport(rapport);
         if (!vMatch) return;
+        // Deja signe par le client : la signature est definitive, le serveur
+        // refuserait le renvoi (lien de signature inutilisable)
+        if (rapport.signed_client_at) return;
         var dateR = String(rapport.date_rapport || "").substring(0, 10);
         var fmtDd = dateR.split("-").reverse().join("/");
         if (!confirm("Cette journee (" + fmtDd + (rapport.sondeuse_code ? " - " + rapport.sondeuse_code : "") + ") fait l'objet d'une correction demandee par le client" + (vMatch.validataire_nom ? " (" + vMatch.validataire_nom + ")" : "") + ".\n\nRenvoyer CE rapport corrige au client pour verification et re-signature ?\n(Si la correction visait une autre machine du meme jour, reponds Annuler.)")) return;
