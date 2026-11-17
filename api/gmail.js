@@ -11,12 +11,17 @@
 // verifiee de l'utilisateur : chacun ne pourra lire QUE sa propre boite.
 // =====================================================================
 const { jetonGoogle, cleCompteService, adresseDuDomaine, SCOPE_GMAIL, SCOPE_AGENDA, DOMAINE } = require('./_google.js');
+const { identiteAdmin } = require('./_identite.js');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST uniquement' });
   const body = req.body || {};
   if (body.action === 'sante') {
+    // Reserve aux administrateurs connectes (test des boites de l'equipe)
+    const moi = await identiteAdmin(req);
+    if (!moi) return res.status(401).json({ ok: false, error: 'Session requise' });
+    if (!moi.estAdmin) return res.status(403).json({ ok: false, error: 'Reserve aux administrateurs' });
     const sujet = adresseDuDomaine(body.sujet);
     if (!sujet) return res.status(400).json({ ok: false, error: 'Adresse @' + DOMAINE + ' requise' });
     try {
