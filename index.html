@@ -37,6 +37,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet"/>
   <style>
     :root {
       /* Theme D3 Dark Premium */
@@ -39835,8 +39836,1198 @@
       );
     }
 
-    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, facturationAllowed, stockAllowed, ticketsPending, allowedPages, isMobile, isOpen, onClose }) {
+    // ═══ TACHES + MON TABLEAU DE BORD (demande Tomy 2026-11-17) ═══════════
+    // Table Supabase `taches` (sql_taches.sql, base WALLIS-LABEL). Une tache =
+    // une chose a faire saisie a la main. "pour" / "par" = email du compte
+    // app_users. Tout le monde voit tout SAUF les taches privees (auteur +
+    // personne concernee) : filtre AUSSI en RLS. Dates calendaires en heure
+    // locale (localISODate), jamais toISOString.
+    var TK_JOURS = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+    var TK_JC = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
+    var TK_MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+    var TK_COULEURS = ["#f5a524", "#2dd4bf", "#fb7185", "#60a5fa", "#a78bfa", "#34d399", "#fbbf24", "#f472b6", "#38bdf8", "#c084fc"];
+    // Charge de l'equipe : palette validee (dataviz, fond sombre)
+    var TK_COUL_CHARGE = { r: "#d6303c", s: "#1f97cf", p: "#6d64f0" };
+
+    function tkAuj() { var d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+    function tkLire(s) { var p = String(s).substring(0, 10).split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+    function tkEcart(s) { return Math.round((tkLire(s).getTime() - tkAuj().getTime()) / 86400000); }
+    function tkJour(n) { var d = tkAuj(); d.setDate(d.getDate() + n); return localISODate(d); }
+    function tkPlusJours(s, n) { var d = tkLire(s); d.setDate(d.getDate() + n); return localISODate(d); }
+    function tkLundi(d) { var x = new Date(d.getTime()); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+    function tkProchainJour(idx, inclureAuj) {
+      var a = tkAuj();
+      for (var k = inclureAuj ? 0 : 1; k <= 7; k++) { var d = new Date(a.getTime()); d.setDate(d.getDate() + k); if (d.getDay() === idx) return localISODate(d); }
+      return localISODate(a);
+    }
+    function tkCap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+    function tkPad(n) { return (n < 10 ? "0" : "") + n; }
+    function tkJjmm(s) { var d = tkLire(s); return tkPad(d.getDate()) + "/" + tkPad(d.getMonth() + 1); }
+    function tkLibDate(s) {
+      var e = tkEcart(s);
+      if (e === 0) return "Aujourd'hui"; if (e === 1) return "Demain"; if (e === -1) return "Hier";
+      return tkCap(TK_JC[tkLire(s).getDay()]) + " " + tkJjmm(s);
+    }
+    function tkPl(n, s, p) { return n + " " + (n > 1 ? p : s); }
+    function tkSansAcc(s) { return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
+    function tkPrioRang(p) { return p === "urgente" ? 0 : (p === "haute" ? 1 : 2); }
+    function tkOuverte(t) { return t.statut !== "fait"; }
+    function tkHeure(hh) { return hh ? String(hh).substring(0, 5).replace(":", "h") : ""; }
+    function tkTrier(a, b) {
+      var ea = a.echeance ? tkEcart(a.echeance) : 9999, eb = b.echeance ? tkEcart(b.echeance) : 9999;
+      if (ea !== eb) return ea - eb;
+      var pa = tkPrioRang(a.priorite), pb = tkPrioRang(b.priorite);
+      if (pa !== pb) return pa - pb;
+      return (a.heure || "99") < (b.heure || "99") ? -1 : 1;
+    }
+    // Prochaine occurrence d'une tache repetee (toujours dans le futur).
+    // Mensuelle : jour d'ancrage = jour de la 1re tache de la serie (sinon le
+    // 31/01 glissait 28/02 -> 28/03...) ; une echeance en fin de mois reste en
+    // fin de mois.
+    function tkProchaine(t, jourAncre) {
+      var d = t.echeance || localISODate();
+      if (t.recurrence === "semaine") { do { d = tkPlusJours(d, 7); } while (tkEcart(d) <= 0); return d; }
+      var x = tkLire(d), aujIso = localISODate();
+      var finDeMois = x.getDate() === new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate();
+      var j = jourAncre || (finDeMois ? 31 : x.getDate());
+      do {
+        var m = new Date(x.getFullYear(), x.getMonth() + 1, 1);
+        var dern = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+        x = new Date(m.getFullYear(), m.getMonth(), Math.min(j, dern));
+      } while (localISODate(x) <= aujIso);
+      return localISODate(x);
+    }
+
+    function tacheFromDb(r) {
+      return {
+        id: r.id, titre: r.titre || "", description: r.description || "",
+        echeance: r.echeance ? String(r.echeance).substring(0, 10) : null,
+        heure: r.heure ? String(r.heure).substring(0, 5) : null,
+        pour: String(r.pour_email || "").toLowerCase(), par: String(r.par_email || "").toLowerCase(),
+        priorite: r.priorite || "normale", statut: r.statut || "a_faire",
+        faitLe: r.fait_le ? String(r.fait_le).substring(0, 10) : null, faitPar: r.fait_par || null,
+        etapes: Array.isArray(r.etapes) ? r.etapes : [],
+        lien: r.lien_type ? { type: r.lien_type, id: r.lien_id || null, nom: r.lien_nom || "" } : null,
+        recurrence: r.recurrence || null, rappel: r.rappel !== false, privee: r.privee === true, agenda: r.agenda === true,
+        serieId: r.serie_id || null,
+        journal: Array.isArray(r.journal) ? r.journal : [], creeLe: r.created_at || null
+      };
+    }
+    // Patch partiel (seules les cles presentes sont envoyees)
+    function tachePatchToDb(p) {
+      var o = {};
+      if ("id" in p && p.id) o.id = p.id;
+      if ("titre" in p) o.titre = String(p.titre || "").trim();
+      if ("description" in p) o.description = p.description || "";
+      if ("echeance" in p) o.echeance = p.echeance || null;
+      if ("heure" in p) o.heure = p.heure || null;
+      if ("pour" in p) o.pour_email = String(p.pour || "").toLowerCase();
+      if ("par" in p) o.par_email = String(p.par || "").toLowerCase();
+      if ("priorite" in p) o.priorite = p.priorite || "normale";
+      if ("statut" in p) o.statut = p.statut || "a_faire";
+      if ("faitLe" in p) o.fait_le = p.faitLe || null;
+      if ("faitPar" in p) o.fait_par = p.faitPar || null;
+      if ("etapes" in p) o.etapes = p.etapes || [];
+      if ("lien" in p) { o.lien_type = p.lien ? p.lien.type : null; o.lien_id = p.lien && p.lien.id != null ? String(p.lien.id) : null; o.lien_nom = p.lien ? (p.lien.nom || "") : null; }
+      if ("recurrence" in p) o.recurrence = p.recurrence || null;
+      if ("rappel" in p) o.rappel = p.rappel !== false;
+      if ("privee" in p) o.privee = p.privee === true;
+      if ("agenda" in p) o.agenda = p.agenda === true;
+      if ("journal" in p) o.journal = p.journal || [];
+      if ("serieId" in p && p.serieId) o.serie_id = p.serieId;
+      return o;
+    }
+
+    function tkCouleur(email) { var hh = 0, s = String(email || ""); for (var i = 0; i < s.length; i++) hh = (hh * 31 + s.charCodeAt(i)) % 9973; return TK_COULEURS[hh % TK_COULEURS.length]; }
+    function tkInitiales(nom) { var p = String(nom || "?").replace(/[^A-Za-zÀ-ÿ ]/g, " ").trim().split(/\s+/); return ((p[0] || "?").charAt(0) + (p[1] ? p[1].charAt(0) : "")).toUpperCase(); }
+    function tkCourt(nom) { var p = String(nom || "").trim().split(/\s+/); var w = p[0] || ""; return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ""; }
+    function tkPersonneDe(email, nom) { var n = String(nom || "").trim() || String(email || "?").split("@")[0]; return { email: String(email || "").toLowerCase(), nom: n, court: tkCourt(n), ini: tkInitiales(n), c: tkCouleur(email) }; }
+    // Comptes de l'app (app_users actifs) = les personnes a qui confier une tache
+    function tkGens(appUsers, moi) {
+      var out = [], vus = {};
+      (appUsers || []).forEach(function(u) {
+        var em = String(u.email || "").toLowerCase();
+        if (!em || vus[em]) return;
+        if (u.statut === "Inactif" && em !== moi) return;
+        vus[em] = true; out.push(tkPersonneDe(em, u.nom));
+      });
+      if (moi && !vus[moi]) out.push(tkPersonneDe(moi, ""));
+      out.sort(function(a, b) { if (a.email === moi) return -1; if (b.email === moi) return 1; return a.nom.localeCompare(b.nom); });
+      return out;
+    }
+    function tkPersonne(gens, email) {
+      for (var i = 0; i < gens.length; i++) { if (gens[i].email === email) return gens[i]; }
+      return tkPersonneDe(email, "");
+    }
+
+    // ── Lecture de la saisie rapide ("Relancer X demain 14h @Lea !urgent #D38") ──
+    var TK_JOURS_RE = "lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche";
+    var TK_FIN = "(?=[\\s,.;!?])";
+    function tkAnalyser(txt, opts) {
+      var r = { titre: "", echeance: null, heure: null, pour: null, priorite: null, lien: null, recurrence: null, jetons: [] };
+      var reste = " " + String(txt || "") + " ";
+      function essai(re, fn) {
+        var m = reste.match(re); if (!m) return;
+        var res = fn(m); if (res === false) return;
+        reste = reste.replace(m[0], " ");
+        res.brut = m[0].trim(); r.jetons.push(res);
+      }
+      function dateFixe(d) { if (r.echeance) return false; r.echeance = d; return { type: "ech", lib: tkLibDate(d) }; }
+      essai(new RegExp("\\s(chaque|tous les|toutes les)\\s+(" + TK_JOURS_RE + "|semaines?|mois)s?" + TK_FIN, "i"), function(m) {
+        var w = m[2].toLowerCase();
+        if (w.indexOf("mois") === 0) { r.recurrence = "mois"; return { type: "recur", lib: "Chaque mois" }; }
+        r.recurrence = "semaine";
+        if (w.indexOf("semaine") === 0) return { type: "recur", lib: "Chaque semaine" };
+        r.echeance = tkProchainJour(TK_JOURS.indexOf(w), true);
+        return { type: "recur", lib: "Chaque " + w + " · dès " + tkLibDate(r.echeance).toLowerCase() };
+      });
+      essai(new RegExp("\\sapr[eè]s[- ]demain" + TK_FIN, "i"), function() { return dateFixe(tkJour(2)); });
+      essai(new RegExp("\\sdemain" + TK_FIN, "i"), function() { return dateFixe(tkJour(1)); });
+      essai(new RegExp("\\s(aujourd['’]hui|auj|ce soir|ce matin|cet apr[eè]s-midi)" + TK_FIN, "i"), function() { return dateFixe(tkJour(0)); });
+      essai(new RegExp("\\sdans\\s+(\\d{1,2})\\s*(jours?|j|semaines?|sem)" + TK_FIN, "i"), function(m) { var n = +m[1]; if (/^s/i.test(m[2])) n = n * 7; return dateFixe(tkJour(n)); });
+      essai(new RegExp("\\s(la\\s+)?semaine prochaine" + TK_FIN, "i"), function() { return dateFixe(tkProchainJour(1, false)); });
+      essai(new RegExp("\\s([àa]\\s+la\\s+)?fin du mois" + TK_FIN, "i"), function() { var a = tkAuj(); return dateFixe(localISODate(new Date(a.getFullYear(), a.getMonth() + 1, 0))); });
+      essai(new RegExp("\\s(?:ce\\s+|le\\s+)?(" + TK_JOURS_RE + ")(\\s+prochain)?" + TK_FIN, "i"), function(m) { return dateFixe(tkProchainJour(TK_JOURS.indexOf(m[1].toLowerCase()), false)); });
+      // 25/11 : mois sur 2 chiffres, sauf avec "le" ("flexible 3/4", "1/2 pouce" ne sont pas des dates)
+      essai(new RegExp("\\s(?:le\\s+(\\d{1,2})/(\\d{1,2})|(\\d{1,2})/(\\d{2}))(?:/(\\d{2,4}))?" + TK_FIN), function(m0) {
+        var m = [m0[0], m0[1] || m0[3], m0[2] || m0[4], m0[5]];
+        var j = +m[1], mo = +m[2] - 1, a = m[3] ? (+m[3] < 100 ? 2000 + (+m[3]) : +m[3]) : tkAuj().getFullYear();
+        var d = new Date(a, mo, j); if (d.getDate() !== j || d.getMonth() !== mo) return false;
+        if (!m[3] && d < tkAuj()) d.setFullYear(a + 1);
+        return dateFixe(localISODate(d));
+      });
+      // "le 6" seul (pas un numero de telephone "le 06 12 34 56 78")
+      essai(new RegExp("\\sle\\s+(\\d{1,2})(?!\\s*h)(?!\\s+\\d)" + TK_FIN, "i"), function(m) {
+        var j = +m[1]; if (j < 1 || j > 31) return false;
+        // prochain mois (a partir de celui-ci) ou ce jour existe ("le 31" en novembre = 31 decembre)
+        var a = tkAuj();
+        for (var k = 0; k < 13; k++) {
+          var d = new Date(a.getFullYear(), a.getMonth() + k, j);
+          if (d.getDate() === j && d >= a) return dateFixe(localISODate(d));
+        }
+        return false;
+      });
+      // 14h, 14h30 (colle : "2 h de location" n'est pas une heure). Une duree
+      // n'est pas une heure : "2h de route", "toutes les 8h", "pendant 3h".
+      essai(new RegExp("\\s(?:[àa]\\s+)?(\\d{1,2})h(\\d{2})?(?!\\s+(?:de\\s|d['’]))" + TK_FIN, "i"), function(m) {
+        var hh = +m[1], mm = m[2] ? +m[2] : 0; if (hh > 23 || mm > 59) return false;
+        if (/(toutes les|tous les|pendant|dans|en|environ|de|fait|faire)\s*$/i.test(reste.slice(Math.max(0, m.index - 16), m.index))) return false;
+        r.heure = tkPad(hh) + ":" + tkPad(mm); return { type: "heure", lib: hh + "h" + (mm ? tkPad(mm) : "") };
+      });
+      essai(new RegExp("\\s(?:[àa]\\s+)?(\\d{1,2}):(\\d{2})" + TK_FIN), function(m) {
+        var hh = +m[1], mm = +m[2]; if (hh > 23 || mm > 59) return false;
+        r.heure = tkPad(hh) + ":" + tkPad(mm); return { type: "heure", lib: hh + "h" + (mm ? tkPad(mm) : "") };
+      });
+      essai(/\s@([A-Za-zÀ-ÿ.\-]+)(?=[\s,;!?])/, function(m) {
+        var q = tkSansAcc(m[1]).replace(/[.\-]+$/, ""), trouve = null;
+        if (q === "moi") trouve = opts.moiP;
+        else {
+          // d'abord le prenom (1er mot), puis les autres mots du nom / de l'email
+          (opts.gens || []).forEach(function(g) { if (!trouve && tkSansAcc(g.court || g.nom).indexOf(q) === 0) trouve = g; });
+          (opts.gens || []).forEach(function(g) {
+            if (trouve) return;
+            var mots = tkSansAcc(g.nom).split(/\s+/).concat([tkSansAcc(g.email.split("@")[0])]);
+            if (mots.some(function(w) { return w && w.indexOf(q) === 0; })) trouve = g;
+          });
+        }
+        if (!trouve) return false; r.pour = trouve.email; return { type: "pour", lib: trouve.court || trouve.nom, c: trouve.c };
+      });
+      essai(/\s(!!|!urgente?|!urg)(?=[\s,.;?])/i, function() { r.priorite = "urgente"; return { type: "prio", lib: "Urgente", c: "#ff6b5b" }; });
+      essai(/\s(urgente?)(?=[\s,.;!?])/i, function() { if (r.priorite) return false; r.priorite = "urgente"; return { type: "prio", lib: "Urgente", c: "#ff6b5b" }; });
+      essai(/\s(!haute|!important)(?=[\s,.;?!])/i, function() { if (r.priorite) return false; r.priorite = "haute"; return { type: "prio", lib: "Haute", c: "#fbbf24" }; });
+      essai(/\s#([A-Za-z0-9À-ÿ\-]+)(?=[\s,.;!?])/, function(m) {
+        var q = tkSansAcc(m[1]).replace(/-/g, " "), qc = q.replace(/\s/g, ""), trouve = null;
+        (opts.machines || []).forEach(function(x) {
+          if (trouve) return;
+          var s = tkSansAcc(x.nom), sc = s.replace(/\s/g, "");
+          if (sc === qc || s.split(/\s+/).pop() === q) trouve = { type: "equipement", id: x.id, nom: x.nom };
+        });
+        // chantier : debut d'un mot du titre ou du site, 2 caracteres minimum
+        if (!trouve && q.length >= 2) (opts.chantiers || []).forEach(function(x) {
+          if (trouve) return;
+          var mots = tkSansAcc(x.nom + " " + (x.site || "")).split(/[\s\-]+/);
+          if (mots.some(function(w) { return w && w.indexOf(q) === 0; }) || tkSansAcc(x.nom).replace(/\s/g, "").indexOf(qc) === 0) trouve = { type: "chantier", id: x.id, nom: x.nom };
+        });
+        if (!trouve) return false; r.lien = trouve; return { type: "lien", lib: trouve.nom };
+      });
+      // (heure seule ou "chaque mois" sans date : la date par defaut est posee
+      //  a la creation, apres celle du calendrier - cf. tkNouvelle)
+      var t = reste.replace(/\s+/g, " ").trim().replace(/[\s,;:\-]+$/, "");
+      r.titre = t ? tkCap(t) : "";
+      return r;
+    }
+    // Nouvelle tache a partir d'une saisie analysee
+    function tkNouvelle(r, defauts, moi, nomCourt) {
+      var aujIso = localISODate();
+      var pour = r.pour || defauts.pour || moi;
+      var j = [{ d: aujIso, t: "Créée par " + nomCourt(moi), par: moi }];
+      if (pour !== moi) j.push({ d: aujIso, t: "Confiée à " + nomCourt(pour), par: moi });
+      var ech = r.echeance || defauts.echeance || ((r.heure || r.recurrence) ? aujIso : null);
+      return { titre: r.titre, description: defauts.description || "", echeance: ech, heure: r.heure || null, pour: pour, par: moi, priorite: r.priorite || defauts.priorite || "normale", statut: "a_faire", etapes: [], lien: r.lien || defauts.lien || null, recurrence: r.recurrence || null, rappel: true, privee: false, agenda: false, journal: j };
+    }
+    function tkLibEch(t) {
+      if (t.statut === "fait") return { lib: t.faitLe === localISODate() ? "Faite aujourd'hui" : "Faite le " + tkJjmm(t.faitLe || localISODate()), cls: "faite" };
+      if (!t.echeance) return { lib: "Sans date", cls: "aucune" };
+      var e = tkEcart(t.echeance), hh = t.heure ? " · " + tkHeure(t.heure) : "";
+      if (e < 0) return { lib: e === -1 ? "En retard · hier" : "En retard de " + (-e) + " j", cls: "retard" };
+      if (e === 0) return { lib: "Aujourd'hui" + hh, cls: "auj" };
+      if (e === 1) return { lib: "Demain" + hh, cls: "" };
+      if (e < 7) return { lib: tkCap(TK_JOURS[tkLire(t.echeance).getDay()]) + hh, cls: "" };
+      return { lib: tkCap(TK_JC[tkLire(t.echeance).getDay()]) + " " + tkJjmm(t.echeance) + hh, cls: "" };
+    }
+
+    var TK_CSS = [
+      ".tk{color:#f5f4f0;--tkl:rgba(255,255,255,.07);--tkl2:rgba(255,255,255,.13)}",
+      ".tk .tk-serif{font-family:'Fraunces',Georgia,serif}",
+      ".tk-av{display:inline-grid;place-items:center;border-radius:50%;flex-shrink:0;font-weight:800;color:#14131c;letter-spacing:.2px}",
+      ".tk-carte{background:linear-gradient(180deg,rgba(40,45,72,.74),rgba(31,35,56,.74));border:1px solid var(--tkl);border-radius:18px;padding:16px 18px;box-shadow:0 16px 40px -26px rgba(0,0,0,.75);min-width:0}",
+      ".tk-c-tete{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}",
+      ".tk-c-tete h2{font-size:15px;font-weight:700;display:flex;align-items:center;gap:9px;margin:0 auto 0 0}",
+      ".tk-c-tete .n{font-size:12px;color:#969db1;font-weight:600}",
+      ".tk-onglets{display:inline-flex;gap:3px;padding:3px;border-radius:11px;background:rgba(10,12,22,.42);border:1px solid var(--tkl);max-width:100%;overflow-x:auto}",
+      ".tk-onglets button{border:none;background:none;color:#969db1;font-size:12px;font-weight:650;padding:5px 10px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:pointer;min-height:0}",
+      ".tk-onglets button .cpt{font-size:10.5px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.08)}",
+      ".tk-onglets button.actif{background:rgba(255,255,255,.1);color:#f5f4f0}",
+      ".tk-mini{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border-radius:8px;border:1px solid var(--tkl2);background:rgba(255,255,255,.05);color:#cdd1db;font-size:11.5px;font-weight:650;white-space:nowrap;cursor:pointer;min-height:0}",
+      ".tk-mini:hover{background:rgba(255,255,255,.1);color:#fff}",
+      ".tk-btn-prim{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:10px;border:none;font-weight:750;font-size:12.5px;color:#241505;background:linear-gradient(135deg,#f5a524,#ff7d4d);cursor:pointer;white-space:nowrap}",
+      ".tk-btn-prim:hover{filter:brightness(1.07)}",
+      ".tk-btn-sec{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:10px;border:1px solid var(--tkl2);background:rgba(255,255,255,.05);font-weight:650;font-size:12.5px;color:#f5f4f0;cursor:pointer}",
+      ".tk-btn-sec:hover{background:rgba(255,255,255,.1)}",
+      ".tk-btn-danger{color:#fda4af;border-color:rgba(244,63,94,.35)}",
+      ".tk-lien{background:none;border:none;color:#fcd34d;font-weight:700;font-size:12.5px;display:inline-flex;gap:6px;align-items:center;padding:4px 0;cursor:pointer;min-height:0}",
+      ".tk-lien:hover{text-decoration:underline}",
+      ".tk-astuce{font-size:11.5px;color:#697089;display:flex;gap:6px;align-items:center}",
+      ".tk-vide{text-align:center;padding:26px 10px;color:#969db1;font-size:13px}",
+      /* hero */
+      ".tk-hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:26px;align-items:center;padding:24px 28px;border-radius:22px;background:linear-gradient(118deg,rgba(245,165,36,.17),rgba(255,107,91,.10) 46%,rgba(45,212,191,.07));border:1px solid rgba(245,165,36,.22)}",
+      ".tk-hero .topo{position:absolute;right:-60px;top:-80px;width:520px;height:360px;opacity:.5;pointer-events:none}",
+      ".tk-hero .date{font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:1.4px;color:#fcd9a0}",
+      ".tk-hero h1{font-family:'Fraunces',Georgia,serif;font-size:36px;font-weight:600;letter-spacing:-.6px;margin:4px 0 0}",
+      ".tk-hero .resume{font-size:15px;color:#cdd1db;margin-top:8px;line-height:1.65;max-width:720px}",
+      ".tk-hl{font-weight:700;color:#f5f4f0;border:none;background:none;padding:0 1px;cursor:pointer;font-size:inherit;min-height:0;border-bottom:2px solid var(--c)}",
+      ".tk-hl:hover{background:color-mix(in srgb,var(--c) 18%,transparent)}",
+      ".tk-puces{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;position:relative}",
+      ".tk-puce{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;background:rgba(10,12,22,.38);border:1px solid var(--tkl2);font-size:12px;font-weight:650;color:#cdd1db;cursor:pointer;min-height:0}",
+      ".tk-puce:hover{border-color:rgba(245,165,36,.5);color:#fff}",
+      ".tk-puce.info{cursor:default}",
+      ".tk-anneau{position:relative;width:138px;height:138px}",
+      ".tk-anneau svg{width:138px;height:138px;transform:rotate(-90deg)}",
+      ".tk-anneau .prog{transition:stroke-dashoffset 1s cubic-bezier(.2,.8,.2,1)}",
+      ".tk-anneau .centre{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}",
+      ".tk-anneau .pct{font-family:'Fraunces',Georgia,serif;font-size:32px;font-weight:600;line-height:1}",
+      ".tk-anneau .lib{font-size:11px;color:#969db1;font-weight:650;margin-top:4px}",
+      ".tk-grille{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:18px;margin-top:18px;align-items:start}",
+      ".tk-bas{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px;margin-top:18px;align-items:stretch}",
+      /* a faire */
+      ".tk-fi{display:flex;gap:12px;align-items:flex-start;padding:11px 10px;border-radius:13px;position:relative;transition:background .15s}",
+      ".tk-fi:hover{background:rgba(255,255,255,.04)}",
+      ".tk-fi-ico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;background:color-mix(in srgb,var(--c) 17%,transparent)}",
+      ".tk-fi-corps{flex:1;min-width:0;cursor:pointer}",
+      ".tk-fi-t{font-weight:620;font-size:13.5px;line-height:1.35}",
+      ".tk-fi-s{font-size:12px;color:#969db1;margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}",
+      ".tk-fi-actions{position:absolute;right:8px;top:50%;transform:translate(6px,-50%);display:flex;gap:5px;opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;padding:4px 4px 4px 22px;background:linear-gradient(90deg,transparent,#2b3050 26%);border-radius:10px}",
+      ".tk-fi:hover .tk-fi-actions{opacity:1;transform:translate(0,-50%);pointer-events:auto}",
+      ".tk-tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:rgba(129,140,248,.1);color:#c7d2fe;border:1px solid rgba(129,140,248,.35);white-space:nowrap}",
+      /* case a cocher */
+      ".tk-case{width:21px;height:21px;border-radius:7px;border:2px solid rgba(255,255,255,.3);background:transparent;flex-shrink:0;position:relative;display:grid;place-items:center;margin-top:1px;cursor:pointer;padding:0;min-height:0;transition:border-color .15s,background .15s,transform .15s}",
+      ".tk-case:hover{border-color:#34d399;background:rgba(52,211,153,.12);transform:scale(1.06)}",
+      ".tk-case.urgente{border-color:rgba(255,107,91,.75)}",
+      ".tk-case.haute{border-color:rgba(245,165,36,.75)}",
+      ".tk-case.ok{background:#34d399;border-color:#34d399}",
+      ".tk-case.ok::after{content:'';width:5px;height:10px;border:solid #062b1d;border-width:0 2.5px 2.5px 0;transform:rotate(45deg) translate(-1px,-1px)}",
+      ".tk-case.sm{width:17px;height:17px;border-radius:6px}",
+      ".tk-eclat{position:absolute;left:50%;top:50%;pointer-events:none}",
+      ".tk-eclat i{position:absolute;width:5px;height:5px;margin:-2.5px;border-radius:50%;animation:tkEclat .6s ease-out forwards}",
+      "@keyframes tkEclat{from{transform:rotate(var(--a)) translateY(0);opacity:1}to{transform:rotate(var(--a)) translateY(-24px);opacity:0}}",
+      ".tk-coche .tk-fi-t,.tk-coche .tk-l-titre,.tk-coche .tk-k-titre{text-decoration:line-through;color:#969db1}",
+      ".tk-coche{opacity:.75;transition:opacity .3s}",
+      ".tk-flash{animation:tkFlash 1.6s ease-out}",
+      "@keyframes tkFlash{0%{box-shadow:0 0 0 2px #f5a524;background:rgba(245,165,36,.2)}100%{box-shadow:0 0 0 0 transparent}}",
+      ".tk-secoue{animation:tkSecoue .35s}",
+      "@keyframes tkSecoue{25%{transform:translateX(-6px)}50%{transform:translateX(6px)}75%{transform:translateX(-3px)}}",
+      /* saisie rapide */
+      ".tk-ajout{display:flex;align-items:center;gap:10px;padding:6px 6px 6px 14px;border-radius:15px;background:rgba(10,12,22,.5);border:1px solid var(--tkl2);transition:border-color .15s,box-shadow .15s;cursor:text}",
+      ".tk-ajout:focus-within{border-color:rgba(245,165,36,.6);box-shadow:0 0 0 4px rgba(245,165,36,.12)}",
+      ".tk-ajout input{flex:1;min-width:0;background:none;border:none;outline:none;font-size:14.5px;padding:10px 0;color:#f5f4f0;box-shadow:none}",
+      ".tk-ajout input::placeholder{color:#697089}",
+      ".tk-ajout.compact{border-style:dashed;padding:2px 12px;border-radius:12px;margin-top:10px}",
+      ".tk-ajout.compact input{font-size:13px;padding:8px 0}",
+      ".tk-apercu{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:28px;margin:8px 2px 0}",
+      ".tk-jeton{display:inline-flex;align-items:center;gap:5px;padding:3px 5px 3px 9px;border-radius:999px;font-size:12px;font-weight:650;color:color-mix(in srgb,var(--c) 80%,white);background:color-mix(in srgb,var(--c) 15%,transparent);border:1px solid color-mix(in srgb,var(--c) 36%,transparent)}",
+      ".tk-jeton button{border:none;background:none;color:inherit;opacity:.65;display:grid;place-items:center;padding:1px;border-radius:50%;cursor:pointer;min-height:0}",
+      ".tk-jeton button:hover{opacity:1;background:rgba(255,255,255,.1)}",
+      ".tk-jeton-titre{font-size:12.5px;color:#cdd1db;display:inline-flex;gap:5px;align-items:center}",
+      ".tk-aide{font-size:11.5px;color:#697089;line-height:1.7}",
+      ".tk-aide code{font-family:inherit;font-weight:700;color:#cdd1db;background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px}",
+      /* page taches */
+      ".tk-entete{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:18px}",
+      ".tk-entete h1{font-family:'Fraunces',Georgia,serif;font-size:34px;font-weight:600;letter-spacing:-.6px;margin:0}",
+      ".tk-entete p{color:#969db1;font-size:13.5px;margin:3px 0 0}",
+      ".tk-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}",
+      ".tk-stat{position:relative;overflow:hidden;text-align:left;padding:14px 16px;border-radius:16px;border:1px solid var(--tkl);background:linear-gradient(180deg,rgba(40,45,72,.74),rgba(31,35,56,.74));color:#f5f4f0;cursor:pointer;transition:transform .15s,border-color .15s,box-shadow .15s}",
+      ".tk-stat:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--c) 45%,transparent)}",
+      ".tk-stat.actif{border-color:var(--c);box-shadow:inset 0 0 0 1px var(--c),0 14px 34px -18px var(--c)}",
+      ".tk-stat .n{font-family:'Fraunces',Georgia,serif;font-size:34px;font-weight:600;line-height:1.1;color:var(--c)}",
+      ".tk-stat .l{font-size:12.5px;color:#cdd1db;font-weight:650;margin-top:2px}",
+      ".tk-stat .fond{position:absolute;right:-6px;bottom:-8px;opacity:.13}",
+      ".tk-stat .barre-p{height:4px;border-radius:99px;background:rgba(255,255,255,.08);margin-top:8px;overflow:hidden}",
+      ".tk-stat .barre-p i{display:block;height:100%;background:var(--c);border-radius:99px}",
+      ".tk-seg{display:inline-flex;gap:3px;padding:3px;border-radius:11px;background:rgba(10,12,22,.45);border:1px solid var(--tkl);flex-wrap:wrap}",
+      ".tk-seg button{border:none;background:none;color:#969db1;font-size:12px;font-weight:650;padding:6px 11px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;min-height:0}",
+      ".tk-seg button.actif{background:rgba(255,255,255,.1);color:#f5f4f0}",
+      ".tk-seg button.actif.urg{background:rgba(255,107,91,.2);color:#ffb4aa}",
+      ".tk-seg button.actif.hte{background:rgba(245,165,36,.2);color:#fde7b8}",
+      ".tk-outils{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:16px 0 14px}",
+      ".tk-gens{display:flex;gap:4px;align-items:center;flex-wrap:wrap}",
+      ".tk-gens button{border:none;background:none;padding:0;border-radius:50%;opacity:.45;cursor:pointer;min-height:0;transition:opacity .15s,transform .15s}",
+      ".tk-gens button:hover{opacity:.85;transform:translateY(-1px)}",
+      ".tk-gens button.actif{opacity:1}",
+      ".tk-gens button.actif .tk-av{box-shadow:0 0 0 2px #151827,0 0 0 4px var(--c)}",
+      ".tk-rech{display:flex;align-items:center;gap:8px;padding:4px 11px;border-radius:11px;background:rgba(10,12,22,.42);border:1px solid var(--tkl);margin-left:auto;min-width:200px}",
+      ".tk-rech input{background:none;border:none;outline:none;font-size:12.5px;width:100%;color:#f5f4f0;padding:5px 0;box-shadow:none}",
+      ".tk-filtre-actif{display:inline-flex;align-items:center;gap:6px;padding:5px 6px 5px 11px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(245,165,36,.14);color:#fde7b8;border:1px solid rgba(245,165,36,.4)}",
+      ".tk-filtre-actif button{border:none;background:none;color:inherit;display:grid;place-items:center;cursor:pointer;min-height:0;padding:0}",
+      ".tk-groupe{margin-bottom:16px}",
+      ".tk-g-tete{display:flex;align-items:center;gap:9px;padding:4px 4px 8px;font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:color-mix(in srgb,var(--c) 85%,white);background:none;border:none;width:100%;text-align:left;cursor:pointer;min-height:0}",
+      ".tk-g-tete .cpt{font-size:11px;padding:1px 8px;border-radius:999px;background:color-mix(in srgb,var(--c) 18%,transparent);letter-spacing:0}",
+      ".tk-g-tete .trait{flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb,var(--c) 45%,transparent),transparent)}",
+      ".tk-ligne{position:relative;overflow:hidden;display:flex;align-items:center;gap:12px;padding:11px 12px 11px 14px;border-radius:13px;margin-bottom:6px;background:rgba(40,45,72,.55);border:1px solid var(--tkl);transition:border-color .15s,background .15s}",
+      ".tk-ligne::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent}",
+      ".tk-ligne.p-urgente::before,.tk-carte-k.p-urgente::before{background:#ff6b5b}",
+      ".tk-ligne.p-haute::before,.tk-carte-k.p-haute::before{background:#f5a524}",
+      ".tk-ligne:hover{border-color:var(--tkl2);background:rgba(46,52,82,.7)}",
+      ".tk-ligne.faite{opacity:.62}",
+      ".tk-ligne.faite .tk-l-titre{text-decoration:line-through}",
+      ".tk-l-corps{flex:1;min-width:0;cursor:pointer}",
+      ".tk-l-titre{font-weight:620;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".tk-l-meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:11.5px;color:#969db1}",
+      ".tk-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:6px;background:rgba(255,255,255,.055);color:#cdd1db;font-size:11px;font-weight:600;white-space:nowrap}",
+      ".tk-chip.prive{color:#c4b5fd}",
+      ".tk-sousbar{width:40px;height:4px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden;display:inline-block}",
+      ".tk-sousbar i{display:block;height:100%;background:#34d399}",
+      ".tk-ech{font-size:12px;font-weight:700;white-space:nowrap;padding:4px 9px;border-radius:8px;color:#cdd1db;background:rgba(255,255,255,.05)}",
+      ".tk-ech.retard{color:#fda4af;background:rgba(244,63,94,.13)}",
+      ".tk-ech.auj{color:#fcd34d;background:rgba(245,165,36,.13)}",
+      ".tk-ech.aucune{color:#697089;background:none}",
+      ".tk-ech.faite{color:#6ee7b7;background:rgba(52,211,153,.1)}",
+      ".tk-rapides{display:none;gap:4px}",
+      ".tk-ligne:hover .tk-rapides{display:flex}",
+      ".tk-par{font-size:11px;color:#697089}",
+      ".tk-kanban{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}",
+      ".tk-col{background:rgba(10,12,22,.3);border:1px solid var(--tkl);border-radius:18px;padding:12px;min-height:360px;transition:border-color .15s,background .15s}",
+      ".tk-col.survol{border-color:var(--c);background:color-mix(in srgb,var(--c) 9%,rgba(10,12,22,.3))}",
+      ".tk-col-tete{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:750;padding:2px 4px 12px}",
+      ".tk-col-tete .pt{width:9px;height:9px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c)}",
+      ".tk-col-tete .cpt{margin-left:auto;font-size:11.5px;color:#969db1;font-weight:700}",
+      ".tk-carte-k{position:relative;overflow:hidden;background:rgba(40,45,72,.85);border:1px solid var(--tkl);border-radius:13px;padding:11px 12px 11px 14px;margin-bottom:8px;cursor:grab;transition:transform .15s,box-shadow .15s,border-color .15s}",
+      ".tk-carte-k::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent}",
+      ".tk-carte-k:hover{transform:translateY(-2px);box-shadow:0 14px 26px -16px rgba(0,0,0,.85);border-color:var(--tkl2)}",
+      ".tk-k-titre{font-weight:620;font-size:13.5px;line-height:1.35}",
+      ".tk-k-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}",
+      ".tk-k-pied{display:flex;align-items:center;justify-content:space-between;margin-top:10px;gap:8px}",
+      ".tk-col-vide{border:1.5px dashed var(--tkl2);border-radius:12px;padding:22px 10px;text-align:center;color:#697089;font-size:12px}",
+      ".tk-cal-tete{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}",
+      ".tk-cal-tete h3{font-family:'Fraunces',Georgia,serif;font-size:22px;font-weight:600;text-transform:capitalize;min-width:190px;text-align:center;margin:0}",
+      ".tk-btn-ico{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:rgba(255,255,255,.05);border:1px solid var(--tkl2);cursor:pointer;padding:0;min-height:0}",
+      ".tk-btn-ico:hover{background:rgba(255,255,255,.1)}",
+      ".tk-cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}",
+      ".tk-cal-jn{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:#969db1;text-align:center;padding:2px 0 4px}",
+      ".tk-cell{position:relative;min-height:112px;padding:6px;border-radius:12px;background:rgba(40,45,72,.45);border:1px solid var(--tkl);min-width:0;transition:background .15s,border-color .15s}",
+      ".tk-cell.we{background:rgba(40,45,72,.22)}",
+      ".tk-cell.hors{opacity:.38}",
+      ".tk-cell.auj{border-color:rgba(245,165,36,.6);box-shadow:inset 0 0 0 1px rgba(245,165,36,.3)}",
+      ".tk-cell.survol{background:rgba(245,165,36,.14);border-color:#f5a524}",
+      ".tk-cell .num{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:#cdd1db;margin-bottom:2px}",
+      ".tk-cell.auj .num b{background:#f5a524;color:#241505;border-radius:999px;padding:1px 7px}",
+      ".tk-cell .plus{opacity:0;border:none;background:rgba(255,255,255,.08);width:20px;height:20px;border-radius:6px;display:grid;place-items:center;cursor:pointer;padding:0;min-height:0}",
+      ".tk-cell:hover .plus{opacity:1}",
+      ".tk-pill{display:block;width:100%;text-align:left;font-size:11.5px;font-weight:600;padding:3px 7px;margin-top:4px;border-radius:7px;border:none;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 22%,#1a1d30);color:#f5f4f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:grab;min-height:0}",
+      ".tk-pill:hover{filter:brightness(1.15)}",
+      ".tk-pill.fait{opacity:.45;text-decoration:line-through}",
+      ".tk-pill.retard{box-shadow:inset 0 0 0 1px rgba(244,63,94,.7)}",
+      ".tk-pill-plus{font-size:11px;color:#969db1;margin-top:4px;padding-left:4px;font-weight:600}",
+      ".tk-sans-date{margin-top:16px}",
+      ".tk-sans-date h4{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:#969db1;margin:0 0 8px;display:flex;gap:8px;align-items:center}",
+      ".tk-sans-date .liste{display:flex;gap:8px;flex-wrap:wrap}",
+      ".tk-sans-date .tk-pill{width:auto;max-width:260px;margin:0;padding:6px 10px}",
+      /* tiroir */
+      ".tk-tiroir-fond{position:fixed;inset:0;background:rgba(5,6,12,.5);z-index:10090}",
+      ".tk-tiroir{position:fixed;top:0;right:0;bottom:0;width:450px;max-width:100vw;z-index:10100;overflow-y:auto;padding:18px 22px 30px;background:#1d2136;border-left:1px solid var(--tkl2);box-shadow:-30px 0 60px -20px rgba(0,0,0,.75);animation:tkTiroir .28s cubic-bezier(.2,.8,.2,1)}",
+      "@keyframes tkTiroir{from{transform:translateX(60px);opacity:0}}",
+      ".tk-titre-inp{width:100%;background:transparent;border:none;outline:none;font-family:'Fraunces',Georgia,serif;font-size:23px;font-weight:600;color:#f5f4f0;padding:4px 0;border-bottom:1px dashed transparent;box-shadow:none}",
+      ".tk-titre-inp:focus{border-bottom-color:rgba(245,165,36,.5)}",
+      ".tk-champ{margin-top:16px}",
+      ".tk-champ>label{display:flex;gap:6px;align-items:center;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:#969db1;margin-bottom:7px}",
+      ".tk-inp{width:100%;background:rgba(10,12,22,.45);border:1px solid var(--tkl2);border-radius:10px;color:#f5f4f0;padding:9px 11px;font-size:13.5px;outline:none;color-scheme:dark;box-sizing:border-box}",
+      ".tk-inp:focus{border-color:rgba(245,165,36,.6)}",
+      "textarea.tk-inp{resize:vertical;min-height:70px;line-height:1.5}",
+      ".tk-ligne-champs{display:flex;gap:8px;flex-wrap:wrap;align-items:center}",
+      ".tk-choix-gens{display:flex;gap:6px;flex-wrap:wrap}",
+      ".tk-choix-gens button{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 3px;border-radius:999px;border:1px solid var(--tkl2);background:rgba(255,255,255,.03);font-size:12px;font-weight:650;color:#cdd1db;cursor:pointer;min-height:0}",
+      ".tk-choix-gens button.actif{border-color:var(--c);background:color-mix(in srgb,var(--c) 15%,transparent);color:#fff}",
+      ".tk-st{display:flex;align-items:center;gap:9px;padding:6px 4px;border-radius:8px}",
+      ".tk-st:hover{background:rgba(255,255,255,.035)}",
+      ".tk-st span{flex:1;font-size:13px}",
+      ".tk-st.ok span{text-decoration:line-through;color:#969db1}",
+      ".tk-st .x{opacity:0;border:none;background:none;display:grid;cursor:pointer;padding:0;min-height:0}",
+      ".tk-st:hover .x{opacity:1}",
+      ".tk-prog-sous{display:flex;align-items:center;gap:10px;font-size:11.5px;color:#969db1;font-weight:650;margin-bottom:4px}",
+      ".tk-prog-sous .b{flex:1;height:6px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}",
+      ".tk-prog-sous .b i{display:block;height:100%;background:#34d399;border-radius:99px;transition:width .4s}",
+      ".tk-opt{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--tkl)}",
+      ".tk-opt .txt{flex:1;min-width:0}",
+      ".tk-opt .txt b{display:block;font-size:13px;font-weight:650}",
+      ".tk-opt .txt span{font-size:11.5px;color:#969db1}",
+      ".tk-sw{width:40px;height:23px;border-radius:999px;border:none;background:rgba(255,255,255,.14);position:relative;flex-shrink:0;cursor:pointer;padding:0;min-height:0;transition:background .2s}",
+      ".tk-sw::after{content:'';position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 2px 6px rgba(0,0,0,.4)}",
+      ".tk-sw.on{background:#10b981}",
+      ".tk-sw.on::after{transform:translateX(17px)}",
+      ".tk-sel{background:rgba(10,12,22,.45);border:1px solid var(--tkl2);border-radius:8px;color:#f5f4f0;padding:5px 8px;font-size:12px;color-scheme:dark}",
+      ".tk-journal{list-style:none;border-left:2px solid var(--tkl2);margin:0 0 0 6px;padding:0 0 0 14px}",
+      ".tk-journal li{position:relative;font-size:12px;color:#969db1;padding:4px 0}",
+      ".tk-journal li::before{content:'';position:absolute;left:-19px;top:9px;width:8px;height:8px;border-radius:50%;background:#262b45;border:2px solid #f5a524}",
+      ".tk-d-pied{display:flex;justify-content:space-between;gap:8px;margin-top:22px;padding-top:14px;border-top:1px solid var(--tkl)}",
+      /* toast */
+      ".tk-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10110;display:flex;align-items:center;gap:11px;padding:10px 12px 10px 14px;border-radius:13px;background:#2a2f4c;border:1px solid var(--tkl2);box-shadow:0 16px 40px -12px rgba(0,0,0,.85);font-size:13px;font-weight:550;color:#f5f4f0;animation:tkMonte .22s;max-width:calc(100vw - 24px)}",
+      ".tk-toast button{border:none;background:rgba(255,255,255,.07);color:#fcd34d;font-weight:750;font-size:12.5px;padding:5px 10px;border-radius:8px;cursor:pointer;min-height:0}",
+      "@keyframes tkMonte{from{transform:translate(-50%,12px);opacity:0}}",
+      /* graphes */
+      ".tk-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}",
+      ".tk-kpi{position:relative;overflow:hidden;padding:13px 14px 14px;border-radius:14px;background:rgba(10,12,22,.32);border:1px solid var(--tkl);transition:border-color .15s,transform .15s}",
+      ".tk-kpi:hover{border-color:var(--tkl2);transform:translateY(-2px)}",
+      ".tk-kpi .lab{font-size:11.5px;color:#969db1;font-weight:650;display:flex;gap:6px;align-items:center}",
+      ".tk-kpi .val{font-family:'Fraunces',Georgia,serif;font-size:27px;font-weight:600;margin-top:6px;letter-spacing:-.5px}",
+      ".tk-delta{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:750;padding:2px 7px;border-radius:999px;margin-top:4px}",
+      ".tk-delta.bon{color:#6ee7b7;background:rgba(52,211,153,.12)}",
+      ".tk-delta.mauvais{color:#fda4af;background:rgba(244,63,94,.12)}",
+      ".tk-delta.neutre{color:#cdd1db;background:rgba(255,255,255,.07)}",
+      ".tk-spark{position:absolute;right:12px;bottom:12px;width:84px;height:30px}",
+      ".tk-legende{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:#cdd1db;margin-bottom:10px}",
+      ".tk-legende span{display:inline-flex;gap:6px;align-items:center}",
+      ".tk-legende i{width:10px;height:10px;border-radius:3px;display:inline-block}",
+      ".tk-charge{display:grid;grid-template-columns:26px minmax(60px,90px) minmax(0,1fr) 22px;gap:10px;align-items:center;padding:6px;border-radius:10px;cursor:pointer;transition:background .15s}",
+      ".tk-charge:hover{background:rgba(255,255,255,.045)}",
+      ".tk-charge .nom{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".tk-charge .pile{display:flex;gap:2px;height:12px}",
+      ".tk-charge .pile span{display:block;height:100%}",
+      ".tk-charge .pile span:first-child{border-radius:4px 0 0 4px}",
+      ".tk-charge .pile span:last-child{border-radius:0 4px 4px 0}",
+      ".tk-charge .pile span:only-child{border-radius:4px}",
+      ".tk-charge .tot{font-size:12px;font-weight:750;color:#cdd1db;text-align:right}",
+      ".tk-g7 .hit{fill:transparent;cursor:default}",
+      ".tk-g7 .hit:hover{fill:rgba(255,255,255,.04)}",
+      ".tk-google{text-align:center;padding:14px 10px 6px}",
+      ".tk-google .icones{display:flex;justify-content:center;gap:10px;margin-bottom:12px}",
+      ".tk-google .icones span{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 16%,transparent)}",
+      ".tk-google h3{font-family:'Fraunces',Georgia,serif;font-size:20px;font-weight:600;margin:0}",
+      ".tk-google p{color:#cdd1db;font-size:13px;margin:6px 0 0;line-height:1.55}",
+      "@media (max-width:1100px){.tk-grille,.tk-bas{grid-template-columns:minmax(0,1fr)}}",
+      "@media (max-width:760px){.tk-hero{grid-template-columns:minmax(0,1fr);padding:20px}.tk-hero h1{font-size:29px}.tk-anneau-bloc{display:none}.tk-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.tk-kanban{grid-template-columns:minmax(0,1fr)}.tk-fi{flex-wrap:wrap}.tk-fi-actions{position:static;opacity:1;transform:none;pointer-events:auto;background:none;padding:0 0 0 46px;width:100%}.tk-rech{margin-left:0;min-width:0;flex:1}.tk-cell{min-height:74px;padding:4px}.tk-pill{font-size:10px;padding:2px 4px}.tk-rapides{display:none!important}}"
+    ].join("\n");
+
+    function TkStyle() { return h("style", null, TK_CSS); }
+    function TkAvatar(props) {
+      var p = props.p; if (!p) return null;
+      var t = props.taille === "sm" ? 22 : (props.taille === "lg" ? 36 : 28);
+      return h("span", { className: "tk-av", title: p.nom, style: { width: t, height: t, fontSize: t < 24 ? 9 : (t > 30 ? 12.5 : 10.5), background: p.c, "--c": p.c } }, p.ini);
+    }
+    function TkCase(props) {
+      var t = props.t, coche = props.coche, ouverte = tkOuverte(t);
+      var eclats = [];
+      if (coche) { for (var i = 0; i < 10; i++) eclats.push(h("i", { key: i, style: { "--a": (i * 36) + "deg", background: i % 2 ? "#34d399" : "#f5a524" } })); }
+      return h("button", { type: "button", className: "tk-case " + (props.petit ? "sm " : "") + t.priorite + ((coche || !ouverte) ? " ok" : ""), title: ouverte ? "Marquer comme faite" : "Rouvrir", onClick: function(e) { e.stopPropagation(); props.onClick(); } },
+        coche ? h("span", { className: "tk-eclat" }, eclats) : null);
+    }
+    function tkChips(t) {
+      var out = [], ok = t.etapes.filter(function(s) { return s.ok; }).length;
+      if (t.lien) out.push(h("span", { key: "l", className: "tk-chip" }, h(Icon, { name: t.lien.type === "equipement" ? "truck" : (t.lien.type === "email" ? "mail" : "hard-hat"), size: 12 }), t.lien.nom));
+      if (t.etapes.length) out.push(h("span", { key: "e", className: "tk-chip" }, h("span", { className: "tk-sousbar" }, h("i", { style: { width: Math.round(ok * 100 / t.etapes.length) + "%" } })), ok + "/" + t.etapes.length));
+      if (t.recurrence) out.push(h("span", { key: "r", className: "tk-chip", title: "Tâche répétée" }, h(Icon, { name: "repeat", size: 12 }), t.recurrence === "semaine" ? "Chaque semaine" : "Chaque mois"));
+      if (t.privee) out.push(h("span", { key: "p", className: "tk-chip prive" }, h(Icon, { name: "lock", size: 12 }), "Privée"));
+      if (t.description) out.push(h("span", { key: "d", className: "tk-chip", title: t.description }, h(Icon, { name: "align-left", size: 12 })));
+      return out;
+    }
+    function tkApercu(r, opts, retirer) {
+      if (!r.titre && !r.jetons.length) return h("span", { className: "tk-aide" }, "Tape ta tâche en langage courant : la date, la personne et la priorité sont reconnues toutes seules.");
+      var STYLE = { ech: ["calendar", "#f5a524"], heure: ["clock", "#f5a524"], pour: ["user", null], prio: ["flag", null], lien: ["link-2", "#2dd4bf"], recur: ["repeat", "#a78bfa"] };
+      var out = [];
+      if (r.titre) out.push(h("span", { key: "t", className: "tk-jeton-titre" }, h(Icon, { name: "corner-down-right", size: 13, color: "#969db1" }), h("b", null, r.titre)));
+      r.jetons.forEach(function(j, i) {
+        var st = STYLE[j.type], c = j.c || st[1];
+        out.push(h("span", { key: "j" + i, className: "tk-jeton", style: { "--c": c } }, h(Icon, { name: st[0], size: 13 }), j.lib,
+          h("button", { type: "button", title: "Retirer", onClick: function(e) { e.preventDefault(); retirer(j); } }, h(Icon, { name: "x", size: 12 }))));
+      });
+      if (!r.pour && opts.moiP) out.push(h("span", { key: "moi", className: "tk-jeton", style: { "--c": opts.moiP.c, opacity: 0.55 } }, h(Icon, { name: "user", size: 13 }), "Pour moi"));
+      return out;
+    }
+    // Saisie rapide avec apercu des elements reconnus
+    function TkSaisie(props) {
+      var _t = useState(""); var texte = _t[0], setTexte = _t[1];
+      var _s = useState(false); var secoue = _s[0], setSecoue = _s[1];
+      var inputRef = useRef(null);
+      useEffect(function() {
+        if (!props.focusCle) return;
+        if (inputRef.current) { inputRef.current.focus(); try { inputRef.current.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {} }
+      }, [props.focusCle]);
+      var r = tkAnalyser(texte, props.opts);
+      var valider = function() {
+        var a = tkAnalyser(texte, props.opts);
+        if (!a.titre) { setSecoue(true); setTimeout(function() { setSecoue(false); }, 400); return; }
+        props.onCreer(a); setTexte("");
+        setTimeout(function() { if (inputRef.current) inputRef.current.focus(); }, 0);
+      };
+      var retirer = function(j) {
+        // brut peut contenir des espaces multiples (texte deja ampute des autres elements)
+        var mots = String(j.brut || "").trim().split(/\s+/).filter(function(w) { return w; }).map(function(w) { return w.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&"); });
+        var nv = texte;
+        if (mots.length) {
+          var re = new RegExp(mots.join("\\s+"));
+          nv = re.test(texte) ? texte.replace(re, " ") : texte.replace(new RegExp(mots[mots.length - 1]), " ");
+        }
+        setTexte(nv.replace(/\s+/g, " ").trim() + " ");
+        if (inputRef.current) inputRef.current.focus();
+      };
+      return h("div", null,
+        h("label", { className: "tk-ajout" + (props.compact ? " compact" : "") + (secoue ? " tk-secoue" : "") },
+          h(Icon, { name: props.compact ? "plus" : "sparkles", size: props.compact ? 16 : 19, color: "#f5a524" }),
+          h("input", { ref: inputRef, value: texte, placeholder: props.placeholder, autoComplete: "off", onChange: function(e) { setTexte(e.target.value); }, onKeyDown: function(e) { if (e.key === "Enter") { e.preventDefault(); valider(); } } }),
+          props.compact ? null : h("button", { type: "button", className: "tk-btn-prim", onClick: valider }, h(Icon, { name: "plus", size: 14, color: "#241505" }), "Ajouter")),
+        (texte.trim() || !props.compact) ? h("div", { className: "tk-apercu" }, tkApercu(r, props.opts, retirer)) : null);
+    }
+
+    // Actions partagees (page Taches + Mon tableau de bord) : creation,
+    // fin (avec tache repetee), report, toast "Annuler"
+    function useTkActions() {
+      var ctx = useAppData();
+      var moi = String(ctx.userEmail || "").toLowerCase();
+      var gens = useMemo(function() { return tkGens(ctx.dbAppUsers, moi); }, [ctx.dbAppUsers, moi]);
+      var moiP = tkPersonne(gens, moi);
+      var chantiers = useMemo(function() {
+        return (ctx.dbChantiers || []).filter(function(c) { return c.statut !== "Termine"; }).map(function(c) { return { id: c.id, nom: c.titre || c.site, site: c.site || "" }; }).filter(function(c) { return c.nom; });
+      }, [ctx.dbChantiers]);
+      var machines = useMemo(function() {
+        return (ctx.equipements || []).map(function(e) { return { id: e.Id, nom: e.Title || e.Nom }; }).filter(function(m) { return m.nom; });
+      }, [ctx.equipements]);
+      var opts = { gens: gens, moi: moi, moiP: moiP, chantiers: chantiers, machines: machines };
+      var _t = useState(null); var toastU = _t[0], setToastU = _t[1];
+      var _f = useState(null); var flashId = _f[0], setFlashId = _f[1];
+      useEffect(function() { if (!toastU) return; var tm = setTimeout(function() { setToastU(null); }, 5500); return function() { clearTimeout(tm); }; }, [toastU]);
+      useEffect(function() { if (!flashId) return; var tm = setTimeout(function() { setFlashId(null); }, 1800); return function() { clearTimeout(tm); }; }, [flashId]);
+      var toast = function(msg, ico, lib, fn) { setToastU({ k: Date.now(), msg: msg, ico: ico || "circle-check", lib: lib || null, fn: fn || null }); };
+      var nomCourt = function(email) { var p = tkPersonne(gens, email); return p.court || p.nom; };
+      var entree = function(txt) { return { d: localISODate(), t: txt, par: moi }; };
+      var creer = function(r, defauts) {
+        var t = tkNouvelle(r, defauts || {}, moi, nomCourt);
+        return ctx.creerTache(t).then(function(n) {
+          if (n) { setFlashId(n.id); toast(n.pour === moi ? "Tâche ajoutée" : "Tâche créée pour " + nomCourt(n.pour), "list-plus"); }
+          return n;
+        });
+      };
+      // Garde anti double-clic : une tache ne se termine qu'une fois a la fois
+      var enFinRef = useRef({});
+      var terminer = function(t) {
+        if (enFinRef.current[t.id]) return;
+        enFinRef.current[t.id] = true;
+        setTimeout(function() { delete enFinRef.current[t.id]; }, 3000);
+        var avant = { statut: t.statut, faitLe: t.faitLe, faitPar: t.faitPar, journal: t.journal };
+        ctx.majTache(t.id, { statut: "fait", faitLe: localISODate(), faitPar: moi, journal: t.journal.concat([entree("Faite par " + nomCourt(moi))]) });
+        var pNouvelle = null, suivante = null;
+        if (t.recurrence) {
+          // jour d'ancrage mensuel = 1re tache de la serie (si encore presente)
+          var racine = null, idR = t.serieId || t.id;
+          (ctx.dbTaches || []).forEach(function(x) { if (x.id === idR) racine = x; });
+          var ancre = racine && racine.echeance ? tkLire(racine.echeance).getDate() : null;
+          suivante = tkProchaine(t, t.recurrence === "mois" ? ancre : null);
+          // Creee COTE SERVEUR (RPC) : garde l'auteur d'origine de la serie et
+          // refuse un doublon (meme serie, meme date) - double clic, rouvrir/refaire
+          pNouvelle = ctx.creerOccurrenceSuivante(t.id, suivante);
+        }
+        toast(suivante ? "Faite. La suivante est prévue " + tkLibDate(suivante).toLowerCase() : "Bravo, une de moins.", "circle-check", "Annuler", function() {
+          ctx.majTache(t.id, avant);
+          if (pNouvelle) pNouvelle.then(function(n) { if (n) ctx.supprimerTache(n.id); });
+        });
+      };
+      var rouvrir = function(t) {
+        delete enFinRef.current[t.id];
+        ctx.majTache(t.id, { statut: "a_faire", faitLe: null, faitPar: null, journal: t.journal.concat([entree("Rouverte par " + nomCourt(moi))]) });
+        toast("Tâche rouverte", "rotate-ccw");
+      };
+      var reporter = function(t, d, verbe) {
+        var avant = { echeance: t.echeance, journal: t.journal };
+        var txt = d ? (verbe || "Reportée") + " à " + tkLibDate(d).toLowerCase() : "Échéance retirée";
+        ctx.majTache(t.id, { echeance: d, journal: t.journal.concat([entree(txt)]) });
+        setFlashId(t.id);
+        toast(txt, "calendar-clock", "Annuler", function() { ctx.majTache(t.id, avant); });
+      };
+      var toastEl = toastU ? h("div", { className: "tk-toast", key: toastU.k },
+        h(Icon, { name: toastU.ico, size: 16, color: "#34d399" }), h("span", null, toastU.msg),
+        toastU.lib ? h("button", { type: "button", onClick: function() { if (toastU.fn) toastU.fn(); setToastU(null); } }, toastU.lib) : null) : null;
+      return { ctx: ctx, moi: moi, gens: gens, moiP: moiP, opts: opts, toast: toast, toastEl: toastEl, creer: creer, terminer: terminer, rouvrir: rouvrir, reporter: reporter, flashId: flashId, nomCourt: nomCourt, entree: entree };
+    }
+    function tkDateRapide(v) { if (v === "auj") return tkJour(0); if (v === "demain") return tkJour(1); if (v === "lundi") return tkProchainJour(1, false); return null; }
+
+    // Panneau de detail d'une tache (a droite)
+    function TkTiroir(props) {
+      var t = props.t, A = props.A, ctx = A.ctx;
+      var _ti = useState(t.titre); var titre = _ti[0], setTitre = _ti[1];
+      var _de = useState(t.description); var desc = _de[0], setDesc = _de[1];
+      var _et = useState(""); var nouvEtape = _et[0], setNouvEtape = _et[1];
+      var _cs = useState(false); var confirmSuppr = _cs[0], setConfirmSuppr = _cs[1];
+      useEffect(function() { setTitre(t.titre); setDesc(t.description); setConfirmSuppr(false); }, [t.id]);
+      useEffect(function() {
+        var onKey = function(e) { if (e.key === "Escape") props.onFermer(); };
+        document.addEventListener("keydown", onKey);
+        return function() { document.removeEventListener("keydown", onKey); };
+      }, []);
+      var maj = function(patch, txt) { if (txt) patch.journal = t.journal.concat([A.entree(txt)]); ctx.majTache(t.id, patch); };
+      var peutSupprimer = ctx.isAdmin || t.par === A.moi;
+      var ok = t.etapes.filter(function(s) { return s.ok; }).length;
+      var pct = t.etapes.length ? Math.round(ok * 100 / t.etapes.length) : 0;
+      var seg = function(val, opts, onClic) {
+        return h("div", { className: "tk-seg" }, opts.map(function(o) {
+          return h("button", { key: o[0], type: "button", className: val === o[0] ? "actif " + (o[2] || "") : "", onClick: function() { onClic(o[0]); } }, o[1]);
+        }));
+      };
+      var listeLien = t.lien && t.lien.type === "equipement" ? A.opts.machines : A.opts.chantiers;
+      var champ = function(ico, lib, enfant) { return h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: ico, size: 13 }), lib), enfant); };
+      return h("div", null,
+        h("div", { className: "tk-tiroir-fond", onClick: props.onFermer }),
+        h("aside", { className: "tk-tiroir" },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+            h("span", { style: { marginRight: "auto" } }, t.privee ? h("span", { className: "tk-chip prive" }, h(Icon, { name: "lock", size: 12 }), "Privée") : h("span", { className: "tk-chip" }, h(Icon, { name: "users", size: 12 }), "Visible par l'équipe")),
+            h("button", { type: "button", className: "tk-btn-ico", title: "Fermer (Échap)", onClick: props.onFermer }, h(Icon, { name: "x", size: 16, color: "#cdd1db" }))),
+          h("input", { className: "tk-titre-inp", value: titre, onChange: function(e) { setTitre(e.target.value); }, onBlur: function() { var v = titre.trim(); if (v && v !== t.titre) maj({ titre: v }); else setTitre(t.titre); }, onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); } }),
+          champ("circle-dot", "État", seg(t.statut, [["a_faire", "À faire"], ["en_cours", "En cours"], ["fait", "Faite"]], function(v) {
+            if (v === t.statut) return;
+            if (v === "fait") { A.terminer(t); return; }
+            if (t.statut === "fait") maj({ statut: v, faitLe: null, faitPar: null }, "Rouverte par " + A.nomCourt(A.moi));
+            else maj({ statut: v }, v === "en_cours" ? "Passée en cours" : "Remise à faire");
+          })),
+          champ("calendar", "Échéance", h("div", { className: "tk-ligne-champs" },
+            h("input", { key: "ech-" + t.id + "-" + (t.echeance || ""), type: "date", className: "tk-inp", style: { width: "auto" }, defaultValue: t.echeance || "", onChange: function(e) { var v = e.target.value || null; if (v && !(+v.substring(0, 4) >= 2000 && +v.substring(0, 4) <= 2100)) return; if (v === t.echeance) return; maj({ echeance: v }, v ? "Échéance : " + tkLibDate(v).toLowerCase() : "Échéance retirée"); } }),
+            h("input", { type: "time", className: "tk-inp", style: { width: "auto" }, value: t.heure || "", onChange: function(e) { var v = e.target.value || null; var p = { heure: v }; if (v && !t.echeance) p.echeance = tkJour(0); maj(p); } }),
+            [["auj", "Auj."], ["demain", "Demain"], ["lundi", "Lundi"], ["aucune", "Aucune"]].map(function(o) {
+              return h("button", { key: o[0], type: "button", className: "tk-mini", onClick: function() { var d = tkDateRapide(o[0]); var p = { echeance: d }; if (!d) p.heure = null; maj(p, d ? "Échéance : " + tkLibDate(d).toLowerCase() : "Échéance retirée"); } }, o[1]);
+            }))),
+          champ("user", "Pour", h("div", { className: "tk-choix-gens" }, A.gens.map(function(g) {
+            return h("button", { key: g.email, type: "button", className: t.pour === g.email ? "actif" : "", style: { "--c": g.c }, onClick: function() { if (t.pour === g.email) return; maj({ pour: g.email }, "Confiée à " + (g.court || g.nom)); } }, h(TkAvatar, { p: g, taille: "sm" }), g.court || g.nom);
+          }))),
+          champ("flag", "Priorité", seg(t.priorite, [["normale", "Normale"], ["haute", "Haute", "hte"], ["urgente", "Urgente", "urg"]], function(v) { maj({ priorite: v }); })),
+          champ("list-checks", "Étapes", h("div", null,
+            t.etapes.length ? h("div", { className: "tk-prog-sous" }, h("div", { className: "b" }, h("i", { style: { width: pct + "%" } })), ok + "/" + t.etapes.length) : null,
+            t.etapes.map(function(s, i) {
+              return h("div", { key: i, className: "tk-st" + (s.ok ? " ok" : "") },
+                h("button", { type: "button", className: "tk-case sm" + (s.ok ? " ok" : ""), onClick: function() { var e2 = t.etapes.map(function(x, j) { return j === i ? { t: x.t, ok: !x.ok } : x; }); maj({ etapes: e2 }); } }),
+                h("span", null, s.t),
+                h("button", { type: "button", className: "x", title: "Supprimer l'étape", onClick: function() { maj({ etapes: t.etapes.filter(function(x, j) { return j !== i; }) }); } }, h(Icon, { name: "x", size: 14, color: "#969db1" })));
+            }),
+            h("input", { className: "tk-inp", style: { marginTop: 6 }, placeholder: "+ Ajouter une étape (Entrée)", value: nouvEtape, onChange: function(e) { setNouvEtape(e.target.value); }, onKeyDown: function(e) { if (e.key === "Enter") { e.preventDefault(); var v = nouvEtape.trim(); if (!v) return; maj({ etapes: t.etapes.concat([{ t: v, ok: false }]) }); setNouvEtape(""); } } }))),
+          champ("align-left", "Détails", h("textarea", { className: "tk-inp", placeholder: "Notes, numéro de téléphone, référence...", value: desc, onChange: function(e) { setDesc(e.target.value); }, onBlur: function() { if (desc !== t.description) maj({ description: desc }); } })),
+          champ("link-2", "Lié à", h("div", { className: "tk-ligne-champs" },
+            h("select", { className: "tk-inp", style: { width: "auto" }, value: t.lien ? t.lien.type : "", onChange: function(e) {
+              var v = e.target.value;
+              if (!v) { maj({ lien: null }); return; }
+              var l = v === "equipement" ? A.opts.machines : A.opts.chantiers;
+              maj({ lien: l.length ? { type: v, id: l[0].id, nom: l[0].nom } : null });
+            } },
+              h("option", { value: "" }, "Rien"), h("option", { value: "chantier" }, "Un chantier"), h("option", { value: "equipement" }, "Une machine"),
+              t.lien && t.lien.type === "email" ? h("option", { value: "email" }, "Un email") : null),
+            t.lien && t.lien.type !== "email" ? h("select", { className: "tk-inp", style: { width: "auto", flex: 1, minWidth: 0 }, value: String(t.lien.id), onChange: function(e) {
+              var x = listeLien.filter(function(l) { return String(l.id) === e.target.value; })[0];
+              if (x) maj({ lien: { type: t.lien.type, id: x.id, nom: x.nom } });
+            } }, listeLien.some(function(l) { return String(l.id) === String(t.lien.id); }) ? null : h("option", { value: String(t.lien.id) }, t.lien.nom),
+              listeLien.map(function(l) { return h("option", { key: l.id, value: String(l.id) }, l.nom); })) : null)),
+          champ("settings-2", "Options", h("div", null,
+            h("div", { className: "tk-opt" }, h(Icon, { name: "repeat", size: 18, color: "#f5a524" }),
+              h("div", { className: "txt" }, h("b", null, "Répéter"), h("span", null, "Une fois faite, la suivante se crée toute seule")),
+              h("select", { className: "tk-sel", value: t.recurrence || "", onChange: function(e) { var v = e.target.value || null; var p = { recurrence: v }; if (v && !t.echeance) p.echeance = tkJour(0); maj(p); } },
+                h("option", { value: "" }, "Non"), h("option", { value: "semaine" }, "Chaque semaine"), h("option", { value: "mois" }, "Chaque mois"))),
+            h("div", { className: "tk-opt" }, h(Icon, { name: "bell-ring", size: 18, color: "#f5a524" }),
+              h("div", { className: "txt" }, h("b", null, "Rappel le matin"), h("span", null, "Email et notification le jour de l'échéance (mise en service très bientôt)")),
+              h("button", { type: "button", className: "tk-sw" + (t.rappel ? " on" : ""), onClick: function() { maj({ rappel: !t.rappel }); } })),
+            h("div", { className: "tk-opt" }, h(Icon, { name: "lock", size: 18, color: "#f5a524" }),
+              h("div", { className: "txt" }, h("b", null, "Privée"), h("span", null, "Visible seulement par toi et la personne concernée")),
+              h("button", { type: "button", className: "tk-sw" + (t.privee ? " on" : ""), onClick: function() { maj({ privee: !t.privee }, t.privee ? "Rendue visible à l'équipe" : "Rendue privée"); } })))),
+          champ("history", "Historique", h("ul", { className: "tk-journal" }, t.journal.slice().reverse().map(function(j, i) {
+            return h("li", { key: i }, j.t + " · " + (j.d ? tkLibDate(j.d).toLowerCase() : ""));
+          }))),
+          confirmSuppr ? h("div", { className: "tk-d-pied", style: { alignItems: "center" } },
+              h("span", { style: { fontSize: 13, color: "#fda4af", fontWeight: 600 } }, "Supprimer pour tout le monde ?"),
+              h("div", { style: { display: "flex", gap: 8 } },
+                h("button", { type: "button", className: "tk-btn-sec", onClick: function() { setConfirmSuppr(false); } }, "Non"),
+                h("button", { type: "button", className: "tk-btn-sec tk-btn-danger", onClick: function() { props.onSupprimer(t); } }, h(Icon, { name: "trash-2", size: 14, color: "#fda4af" }), "Oui, supprimer")))
+            : h("div", { className: "tk-d-pied" },
+              peutSupprimer ? h("button", { type: "button", className: "tk-btn-sec tk-btn-danger", onClick: function() { setConfirmSuppr(true); } }, h(Icon, { name: "trash-2", size: 14, color: "#fda4af" }), "Supprimer") : h("span", null),
+              h("button", { type: "button", className: "tk-btn-prim", onClick: props.onFermer }, h(Icon, { name: "check", size: 14, color: "#241505" }), "Terminé"))));
+    }
+
+    // Etat de la table (SQL pas encore execute / erreur reseau)
+    function TkEtatTable(props) {
+      if (props.etat === "ok") return null;
+      if (props.etat === "chargement") return h("div", { className: "tk-carte tk-vide" }, "Chargement des tâches...");
+      return h("div", { className: "tk-carte", style: { borderColor: "rgba(245,165,36,.45)", marginBottom: 16, display: "flex", gap: 12, alignItems: "center" } },
+        h(Icon, { name: "database", size: 20, color: "#f5a524" }),
+        h("div", { style: { fontSize: 13, color: "#cdd1db", lineHeight: 1.5 } },
+          props.etat === "absente" ? "La table des tâches n'existe pas encore dans la base. Il faut exécuter le script SQL « sql_taches.sql » (base WALLIS-LABEL)." : "Les tâches n'ont pas pu être chargées (réseau ou droits). Réessaie dans un instant."));
+    }
+
+    function EcranTaches(props) {
+      var A = useTkActions();
+      var ctx = A.ctx, moi = A.moi, gens = A.gens;
+      var init = props.initial || {};
+      var _v = useState(function() { try { return localStorage.getItem("wl_taches_vue") || "liste"; } catch (e) { return "liste"; } });
+      var vue = _v[0], setVueBrut = _v[1];
+      var setVue = function(v) { setVueBrut(v); try { localStorage.setItem("wl_taches_vue", v); } catch (e) {} };
+      var _fp = useState(init.pour || "moi"); var filtrePour = _fp[0], setFiltrePour = _fp[1];
+      var _st = useState("a_faire"); var statut = _st[0], setStatut = _st[1];
+      var _fs = useState(init.filtreStat || null); var filtreStat = _fs[0], setFiltreStat = _fs[1];
+      var _r = useState(""); var recherche = _r[0], setRecherche = _r[1];
+      var _pl = useState({}); var plie = _pl[0], setPlie = _pl[1];
+      var _cm = useState(0); var calMois = _cm[0], setCalMois = _cm[1];
+      var _ou = useState(init.ouvrir || null); var ouverteId = _ou[0], setOuverteId = _ou[1];
+      var _co = useState({}); var coches = _co[0], setCoches = _co[1];
+      var _sv = useState(null); var survol = _sv[0], setSurvol = _sv[1];
+      var _fc = useState(0); var focusCle = _fc[0], setFocusCle = _fc[1];
+      var dragRef = useRef(null);
+      // Touche N = nouvelle tache (hors champ de saisie)
+      useEffect(function() {
+        var onKey = function(e) {
+          var tag = String((e.target && e.target.tagName) || "").toLowerCase();
+          if ((e.key === "n" || e.key === "N") && !e.ctrlKey && !e.metaKey && !e.altKey && tag !== "input" && tag !== "textarea" && tag !== "select") { e.preventDefault(); setFocusCle(Date.now()); }
+        };
+        document.addEventListener("keydown", onKey);
+        return function() { document.removeEventListener("keydown", onKey); };
+      }, []);
+      var taches = ctx.dbTaches || [];
+      var trouver = function(id) { for (var i = 0; i < taches.length; i++) { if (taches[i].id === id) return taches[i]; } return null; };
+      var visible = function(t) { return !t.privee || t.par === moi || t.pour === moi; };
+      var okPour = function(t) { if (filtrePour === "moi") return t.pour === moi; if (filtrePour === "tous") return true; return t.pour === filtrePour; };
+      var okRech = function(t) {
+        if (!recherche.trim()) return true;
+        var q = tkSansAcc(recherche.trim());
+        return tkSansAcc(t.titre + " " + t.description + " " + (t.lien ? t.lien.nom : "") + " " + tkPersonne(gens, t.pour).nom).indexOf(q) >= 0;
+      };
+      var base = taches.filter(function(t) { return visible(t) && okPour(t); });
+      var lundiIso = localISODate(tkLundi(new Date()));
+      var estRetard = function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) < 0; };
+      var estAuj = function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) === 0; };
+      var est7j = function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) >= 1 && tkEcart(t.echeance) <= 7; };
+      var estFaiteSem = function(t) { return t.statut === "fait" && t.faitLe && t.faitLe >= lundiIso; };
+      var st = { retard: base.filter(estRetard).length, auj: base.filter(estAuj).length, semaine: base.filter(est7j).length, faites: base.filter(estFaiteSem).length, ouvertes: base.filter(tkOuverte).length };
+      var liste = (function() {
+        var b = base.filter(okRech);
+        if (filtreStat === "retard") return b.filter(estRetard);
+        if (filtreStat === "auj") return b.filter(estAuj);
+        if (filtreStat === "semaine") return b.filter(est7j);
+        if (filtreStat === "faites") return b.filter(estFaiteSem);
+        if (statut === "a_faire") return b.filter(tkOuverte);
+        if (statut === "faites") return b.filter(function(t) { return !tkOuverte(t); });
+        return b;
+      })();
+      var cliquerCase = function(t) {
+        if (coches[t.id]) return;
+        if (!tkOuverte(t)) { A.rouvrir(t); return; }
+        var c = Object.assign({}, coches); c[t.id] = true; setCoches(c);
+        setTimeout(function() {
+          A.terminer(t);
+          setCoches(function(prev) { var n = Object.assign({}, prev); delete n[t.id]; return n; });
+        }, 650);
+      };
+      var dragProps = function(t) {
+        return { draggable: true,
+          onDragStart: function(e) { dragRef.current = t.id; try { e.dataTransfer.setData("text/plain", t.id); e.dataTransfer.effectAllowed = "move"; } catch (er) {} },
+          onDragEnd: function() { dragRef.current = null; setSurvol(null); } };
+      };
+      var dropProps = function(cle, surDepot) {
+        return {
+          onDragOver: function(e) { if (!dragRef.current) return; e.preventDefault(); if (survol !== cle) setSurvol(cle); },
+          onDragLeave: function(e) { if (e.currentTarget.contains(e.relatedTarget)) return; if (survol === cle) setSurvol(null); },
+          onDrop: function(e) { e.preventDefault(); var id = dragRef.current; dragRef.current = null; setSurvol(null); var t = trouver(id); if (t) surDepot(t); }
+        };
+      };
+      var ouvrirTache = function(id) { setOuverteId(id); };
+      var flash = function(t) { return A.flashId === t.id ? " tk-flash" : ""; };
+
+      var ligne = function(t) {
+        var le = tkLibEch(t), coche = !!coches[t.id], ouverte = tkOuverte(t);
+        return h("div", { key: t.id, className: "tk-ligne p-" + t.priorite + (ouverte ? "" : " faite") + (coche ? " tk-coche" : "") + flash(t) },
+          h(TkCase, { t: t, coche: coche, onClick: function() { cliquerCase(t); } }),
+          h("div", { className: "tk-l-corps", onClick: function() { ouvrirTache(t.id); } },
+            h("div", { className: "tk-l-titre" }, t.titre),
+            h("div", { className: "tk-l-meta" }, tkChips(t), t.par !== t.pour ? h("span", { className: "tk-par" }, "de " + A.nomCourt(t.par)) : null)),
+          ouverte ? h("div", { className: "tk-rapides" }, [["auj", "Auj."], ["demain", "Demain"], ["lundi", "Lundi"]].map(function(o) {
+            return h("button", { key: o[0], type: "button", className: "tk-mini", onClick: function() { A.reporter(t, tkDateRapide(o[0])); } }, o[1]);
+          })) : null,
+          h("span", { className: "tk-ech " + le.cls }, le.lib),
+          h(TkAvatar, { p: tkPersonne(gens, t.pour), taille: "sm" }));
+      };
+      var renderListe = function() {
+        if (!liste.length) return h("div", { className: "tk-carte tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "party-popper", size: 30, color: "#34d399" })), "Aucune tâche ici" + (recherche.trim() ? " pour « " + recherche.trim() + " »" : "") + ".");
+        var G = [
+          { k: "retard", lib: "En retard", c: "#ff6b5b", f: estRetard },
+          { k: "auj", lib: "Aujourd'hui", c: "#f5a524", f: estAuj },
+          { k: "demain", lib: "Demain", c: "#fb923c", f: function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) === 1; } },
+          { k: "semaine", lib: "Cette semaine", c: "#818cf8", f: function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) >= 2 && tkEcart(t.echeance) <= 7; } },
+          { k: "tard", lib: "Plus tard", c: "#60a5fa", f: function(t) { return tkOuverte(t) && t.echeance && tkEcart(t.echeance) > 7; } },
+          { k: "sans", lib: "Sans date", c: "#94a3b8", f: function(t) { return tkOuverte(t) && !t.echeance; } },
+          { k: "faites", lib: "Faites", c: "#34d399", f: function(t) { return !tkOuverte(t); } }
+        ];
+        return G.map(function(g) {
+          var ts = liste.filter(g.f);
+          if (!ts.length) return null;
+          if (g.k === "faites") ts.sort(function(a, b) { return (b.faitLe || "") < (a.faitLe || "") ? -1 : 1; }); else ts.sort(tkTrier);
+          var estPlie = !!plie[g.k];
+          return h("div", { key: g.k, className: "tk-groupe" },
+            h("button", { type: "button", className: "tk-g-tete", style: { "--c": g.c }, onClick: function() { var p = Object.assign({}, plie); p[g.k] = !estPlie; setPlie(p); } },
+              h(Icon, { name: estPlie ? "chevron-right" : "chevron-down", size: 15, color: g.c }), g.lib, h("span", { className: "cpt" }, ts.length), h("span", { className: "trait" })),
+            estPlie ? null : ts.slice(0, g.k === "faites" ? 60 : 500).map(ligne));
+        });
+      };
+      var renderKanban = function() {
+        var b = base.filter(okRech), il7 = tkJour(-7);
+        var cols = [
+          { k: "a_faire", lib: "À faire", c: "#818cf8", ts: b.filter(function(t) { return t.statut === "a_faire"; }).sort(tkTrier) },
+          { k: "en_cours", lib: "En cours", c: "#f5a524", ts: b.filter(function(t) { return t.statut === "en_cours"; }).sort(tkTrier) },
+          { k: "fait", lib: "Faites · 7 derniers jours", c: "#34d399", ts: b.filter(function(t) { return t.statut === "fait" && t.faitLe && t.faitLe >= il7; }) }
+        ];
+        var deposer = function(colK) {
+          return function(t) {
+            if (t.statut === colK) return;
+            if (colK === "fait") { A.terminer(t); return; }
+            var avant = { statut: t.statut, faitLe: t.faitLe, faitPar: t.faitPar, journal: t.journal };
+            var p = { statut: colK, journal: t.journal.concat([A.entree(t.statut === "fait" ? "Rouverte par " + A.nomCourt(moi) : (colK === "en_cours" ? "Passée en cours" : "Remise à faire"))]) };
+            if (t.statut === "fait") { p.faitLe = null; p.faitPar = null; }
+            ctx.majTache(t.id, p);
+            A.toast(colK === "en_cours" ? "Passée en cours" : "Remise à faire", "move", "Annuler", function() { ctx.majTache(t.id, avant); });
+          };
+        };
+        return h("div", null,
+          h("div", { className: "tk-astuce", style: { marginBottom: 10 } }, h(Icon, { name: "move", size: 13 }), "Glisse une carte d'une colonne à l'autre pour changer son état."),
+          h("div", { className: "tk-kanban" }, cols.map(function(c) {
+            return h("div", Object.assign({ key: c.k, className: "tk-col" + (survol === "col:" + c.k ? " survol" : ""), style: { "--c": c.c } }, dropProps("col:" + c.k, deposer(c.k))),
+              h("div", { className: "tk-col-tete" }, h("span", { className: "pt" }), c.lib, h("span", { className: "cpt" }, c.ts.length)),
+              c.ts.length ? c.ts.map(function(t) {
+                var le = tkLibEch(t);
+                return h("div", Object.assign({ key: t.id, className: "tk-carte-k p-" + t.priorite + flash(t), onClick: function() { ouvrirTache(t.id); } }, dragProps(t)),
+                  h("div", { className: "tk-k-titre" }, t.titre),
+                  h("div", { className: "tk-k-meta" }, tkChips(t)),
+                  h("div", { className: "tk-k-pied" }, h("span", { className: "tk-ech " + le.cls }, le.lib), h(TkAvatar, { p: tkPersonne(gens, t.pour), taille: "sm" })));
+              }) : h("div", { className: "tk-col-vide" }, "Glisse une carte ici"));
+          })));
+      };
+      var pill = function(t) {
+        var p = tkPersonne(gens, t.pour);
+        return h("button", Object.assign({ key: t.id, type: "button", className: "tk-pill" + (tkOuverte(t) ? "" : " fait") + (estRetard(t) ? " retard" : ""), style: { "--c": p.c }, title: t.titre + " · " + (p.court || p.nom) + (t.heure ? " · " + tkHeure(t.heure) : ""), onClick: function() { ouvrirTache(t.id); } }, dragProps(t)),
+          (t.heure ? tkHeure(t.heure) + " " : "") + t.titre);
+      };
+      var renderCalendrier = function() {
+        var a = tkAuj(), ref = new Date(a.getFullYear(), a.getMonth() + calMois, 1);
+        var debut = tkLundi(ref), finMois = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+        var fin = new Date(finMois.getTime()); fin.setDate(fin.getDate() + (6 - (fin.getDay() + 6) % 7));
+        var b = base.filter(okRech), aujIso = localISODate(a), cellules = [];
+        for (var d = new Date(debut.getTime()); d <= fin; d.setDate(d.getDate() + 1)) {
+          (function(di, jourN, horsMois, we) {
+            var ts = b.filter(function(t) { return t.echeance === di; }).sort(function(x, y) { return (tkOuverte(x) ? 0 : 1) - (tkOuverte(y) ? 0 : 1) || tkPrioRang(x.priorite) - tkPrioRang(y.priorite); });
+            cellules.push(h("div", Object.assign({ key: di, className: "tk-cell" + (horsMois ? " hors" : "") + (di === aujIso ? " auj" : "") + (we ? " we" : "") + (survol === "jour:" + di ? " survol" : "") },
+                dropProps("jour:" + di, function(t) { if (t.echeance !== di) A.reporter(t, di, "Déplacée"); })),
+              h("div", { className: "num" }, h("b", null, jourN), h("button", { type: "button", className: "plus", title: "Ajouter une tâche ce jour", onClick: function() { setDateNouvelle(di); } }, h(Icon, { name: "plus", size: 13, color: "#cdd1db" }))),
+              ts.slice(0, 3).map(pill),
+              ts.length > 3 ? h("div", { className: "tk-pill-plus" }, "+ " + (ts.length - 3) + " autres") : null));
+          })(localISODate(d), d.getDate(), d.getMonth() !== ref.getMonth(), d.getDay() === 0 || d.getDay() === 6);
+        }
+        var sd = b.filter(function(t) { return tkOuverte(t) && !t.echeance; });
+        return h("div", null,
+          h("div", { className: "tk-cal-tete" },
+            h("button", { type: "button", className: "tk-btn-ico", title: "Mois précédent", onClick: function() { setCalMois(calMois - 1); } }, h(Icon, { name: "chevron-left", size: 16, color: "#cdd1db" })),
+            h("h3", null, TK_MOIS[ref.getMonth()] + " " + ref.getFullYear()),
+            h("button", { type: "button", className: "tk-btn-ico", title: "Mois suivant", onClick: function() { setCalMois(calMois + 1); } }, h(Icon, { name: "chevron-right", size: 16, color: "#cdd1db" })),
+            calMois ? h("button", { type: "button", className: "tk-btn-sec", onClick: function() { setCalMois(0); } }, "Aujourd'hui") : null,
+            h("span", { className: "tk-astuce", style: { marginLeft: "auto" } }, h(Icon, { name: "move", size: 13 }), "Glisse une tâche sur un autre jour pour la déplacer")),
+          h("div", { className: "tk-cal" }, ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."].map(function(j) { return h("div", { key: j, className: "tk-cal-jn" }, j); }), cellules),
+          sd.length ? h("div", { className: "tk-sans-date" }, h("h4", null, h(Icon, { name: "inbox", size: 14 }), "Sans date · glisse-les sur un jour"), h("div", { className: "liste" }, sd.map(pill))) : null);
+      };
+      // Ajout depuis le "+" d'un jour du calendrier : la saisie prend cette date par defaut
+      var _dn = useState(null); var dateNouvelle = _dn[0], setDateNouvelle = _dn[1];
+      useEffect(function() { if (dateNouvelle) setFocusCle(Date.now()); }, [dateNouvelle]);
+
+      var ouverte = ouverteId ? trouver(ouverteId) : null;
+      var stat = function(k, lib, c, ico, extra) {
+        return h("button", { key: k, type: "button", className: "tk-stat" + (filtreStat === k ? " actif" : ""), style: { "--c": c }, onClick: function() { setFiltreStat(filtreStat === k ? null : k); if (vue !== "liste") setVue("liste"); } },
+          h("div", { className: "n" }, st[k]), h("div", { className: "l" }, lib), extra || null, h("span", { className: "fond" }, h(Icon, { name: ico, size: 64, color: c })));
+      };
+      var pctF = (st.faites + st.ouvertes) ? Math.round(st.faites * 100 / (st.faites + st.ouvertes)) : 0;
+      var LIB_STAT = { retard: "En retard", auj: "Aujourd'hui", semaine: "7 prochains jours", faites: "Faites cette semaine" };
+      return h("div", { className: "tk" }, h(TkStyle),
+        h("div", { className: "tk-entete" },
+          h("div", { style: { marginRight: "auto" } }, h("h1", null, "Tâches"), h("p", null, "Tout ce qu'il y a à faire, au même endroit. Tout le monde voit tout, sauf les tâches privées.")),
+          h("div", { className: "tk-seg" }, [["liste", "list", "Liste"], ["tableau", "kanban", "Tableau"], ["calendrier", "calendar-days", "Calendrier"]].map(function(v) {
+            return h("button", { key: v[0], type: "button", className: vue === v[0] ? "actif" : "", onClick: function() { setVue(v[0]); if (v[0] !== "liste") setFiltreStat(null); } }, h(Icon, { name: v[1], size: 14 }), v[2]);
+          }))),
+        h(TkEtatTable, { etat: ctx.tachesEtat }),
+        h("div", { className: "tk-stats" },
+          stat("retard", "En retard", "#ff6b5b", "alarm-clock"), stat("auj", "Aujourd'hui", "#f5a524", "sun"), stat("semaine", "7 prochains jours", "#818cf8", "calendar-days"),
+          stat("faites", "Faites cette semaine", "#34d399", "circle-check", h("div", { className: "barre-p" }, h("i", { style: { width: pctF + "%" } })))),
+        dateNouvelle ? h("div", { className: "tk-astuce", style: { marginBottom: 6, color: "#fde7b8" } }, h(Icon, { name: "calendar-plus", size: 13 }), "Nouvelle tâche pour le " + tkLibDate(dateNouvelle).toLowerCase() + " (si tu ne précises pas d'autre date)",
+          h("button", { type: "button", className: "tk-lien", onClick: function() { setDateNouvelle(null); } }, "annuler")) : null,
+        h(TkSaisie, { opts: A.opts, focusCle: focusCle, placeholder: "Ex. : Relancer le fournisseur demain 14h @" + (gens[1] ? (gens[1].court || "Léa") : "Léa") + " !urgent", onCreer: function(r) {
+          var cree = A.creer(r, dateNouvelle ? { echeance: dateNouvelle } : {});
+          setDateNouvelle(null);
+          cree.then(function(n) {
+            if (!n) return;
+            if (filtrePour !== "tous" && !(filtrePour === "moi" ? n.pour === moi : n.pour === filtrePour)) setFiltrePour("tous");
+            if (filtreStat) setFiltreStat(null);
+            if (statut === "faites") setStatut("a_faire");
+          });
+        } }),
+        h("div", { className: "tk-aide", style: { margin: "2px 2px 0" } }, "Reconnu automatiquement : ", ["demain", "vendredi", "25/11", "dans 3 jours", "14h", "@prénom", "!urgent", "#machine", "#chantier", "chaque lundi"].map(function(c) { return h("code", { key: c, style: { marginRight: 4 } }, c); })),
+        h("div", { className: "tk-outils" },
+          h("div", { className: "tk-seg" },
+            h("button", { type: "button", className: filtrePour === "moi" ? "actif" : "", onClick: function() { setFiltrePour("moi"); } }, h(Icon, { name: "user", size: 14 }), "Mes tâches"),
+            h("button", { type: "button", className: filtrePour === "tous" ? "actif" : "", onClick: function() { setFiltrePour("tous"); } }, h(Icon, { name: "users", size: 14 }), "Tout le monde")),
+          h("div", { className: "tk-gens" }, gens.map(function(g) {
+            return h("button", { key: g.email, type: "button", className: filtrePour === g.email ? "actif" : "", title: "Tâches de " + g.nom, onClick: function() { setFiltrePour(filtrePour === g.email ? "tous" : g.email); } }, h(TkAvatar, { p: g, taille: "sm" }));
+          })),
+          vue === "liste" && !filtreStat ? h("div", { className: "tk-seg" }, [["a_faire", "À faire"], ["faites", "Faites"], ["toutes", "Toutes"]].map(function(x) {
+            return h("button", { key: x[0], type: "button", className: statut === x[0] ? "actif" : "", onClick: function() { setStatut(x[0]); } }, x[1]);
+          })) : null,
+          filtreStat ? h("span", { className: "tk-filtre-actif" }, LIB_STAT[filtreStat], h("button", { type: "button", title: "Retirer le filtre", onClick: function() { setFiltreStat(null); } }, h(Icon, { name: "x", size: 13 }))) : null,
+          h("label", { className: "tk-rech" }, h(Icon, { name: "search", size: 15, color: "#969db1" }), h("input", { placeholder: "Rechercher...", value: recherche, onChange: function(e) { setRecherche(e.target.value); } }))),
+        vue === "tableau" ? renderKanban() : (vue === "calendrier" ? renderCalendrier() : renderListe()),
+        ouverte ? h(TkTiroir, { t: ouverte, A: A, onFermer: function() { setOuverteId(null); }, onSupprimer: function(t) {
+          setOuverteId(null);
+          ctx.supprimerTache(t.id).then(function(okS) {
+            if (okS) A.toast("Tâche supprimée", "trash-2", "Annuler", function() { ctx.restaurerTache(t); });
+          });
+        } }) : null,
+        A.toastEl);
+    }
+
+    // Mon tableau de bord : ce qui m'attend (taches + ce que l'app signale)
+    function tkTopo() {
+      var el = [];
+      for (var i = 0; i < 9; i++) {
+        el.push(h("ellipse", { key: i, cx: 300, cy: 170, rx: 60 + i * 28, ry: 38 + i * 19, transform: "rotate(" + (-18 + i * 2.5) + " 300 170)", stroke: "rgba(253,217,160," + (0.22 - i * 0.018).toFixed(3) + ")", strokeWidth: 1.2, strokeDasharray: i % 3 === 0 ? "0" : "3 5", fill: "none" }));
+      }
+      return h("svg", { className: "topo", viewBox: "0 0 520 360" }, el);
+    }
+    function TkAnneau(props) {
+      var r = 56, c = 2 * Math.PI * r;
+      var _o = useState(c); var off = _o[0], setOff = _o[1];
+      useEffect(function() { var id = requestAnimationFrame(function() { setOff(c * (1 - props.pct / 100)); }); return function() { cancelAnimationFrame(id); }; }, [props.pct]);
+      return h("div", { className: "tk-anneau" },
+        h("svg", { viewBox: "0 0 138 138" },
+          h("defs", null, h("linearGradient", { id: "tkGradA", x1: 0, y1: 0, x2: 1, y2: 1 }, h("stop", { offset: 0, stopColor: "#f5a524" }), h("stop", { offset: 1, stopColor: "#ff6b5b" }))),
+          h("circle", { cx: 69, cy: 69, r: r, stroke: "rgba(255,255,255,0.09)", strokeWidth: 12, fill: "none" }),
+          h("circle", { className: "prog", cx: 69, cy: 69, r: r, stroke: "url(#tkGradA)", strokeWidth: 12, fill: "none", strokeLinecap: "round", strokeDasharray: c.toFixed(1), strokeDashoffset: off.toFixed(1) })),
+        h("div", { className: "centre" }, h("div", { className: "pct" }, props.pct, h("small", { style: { fontSize: 16 } }, "%")), h("div", { className: "lib" }, "de ta journée")));
+    }
+    function tkSpark(vals, c) {
+      var w = 84, hh = 30, mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), r = (mx - mn) || 1;
+      var pts = vals.map(function(v, i) { return [i * (w - 4) / Math.max(1, vals.length - 1) + 2, hh - 4 - (v - mn) / r * (hh - 8)]; });
+      var d = "M" + pts.map(function(p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" L");
+      var last = pts[pts.length - 1];
+      return h("svg", { className: "tk-spark", viewBox: "0 0 " + w + " " + hh },
+        h("path", { d: d + " L" + last[0].toFixed(1) + "," + hh + " L2," + hh + " Z", fill: c, opacity: 0.13 }),
+        h("path", { d: d, fill: "none", stroke: c, strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }),
+        h("circle", { cx: last[0].toFixed(1), cy: last[1].toFixed(1), r: 3, fill: c, stroke: "#232843", strokeWidth: 2 }));
+    }
+    function tkSignalMasque(cle) { try { return localStorage.getItem("wl_signal_masque_" + cle) === localISODate(); } catch (e) { return false; } }
+
+    function EcranMonTableau(props) {
+      var A = useTkActions();
+      var ctx = A.ctx, moi = A.moi, gens = A.gens;
+      var _og = useState("tout"); var onglet = _og[0], setOnglet = _og[1];
+      var _co = useState({}); var coches = _co[0], setCoches = _co[1];
+      var _ou = useState(null); var ouverteId = _ou[0], setOuverteId = _ou[1];
+      var _mq = useState(0); var masquesV = _mq[0], setMasquesV = _mq[1];
+      var taches = ctx.dbTaches || [];
+      var trouver = function(id) { for (var i = 0; i < taches.length; i++) { if (taches[i].id === id) return taches[i]; } return null; };
+      var aujIso = localISODate();
+      var mes = taches.filter(function(t) { return t.pour === moi && tkOuverte(t); });
+      var retard = mes.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; });
+      var auj = mes.filter(function(t) { return t.echeance && tkEcart(t.echeance) === 0; });
+      var faitesAuj = taches.filter(function(t) { return t.pour === moi && t.statut === "fait" && t.faitLe === aujIso; });
+      var total = faitesAuj.length + retard.length + auj.length;
+      var pct = total ? Math.round(faitesAuj.length * 100 / total) : 100;
+      var signaux = (props.signaux || []).filter(function(s) { return !tkSignalMasque(s.cle); });
+      void masquesV;
+      // Liste "A faire" : mes taches (retard, aujourd'hui, 7 jours, urgentes sans date) + signaux
+      var items = [];
+      mes.forEach(function(t) {
+        var e = t.echeance ? tkEcart(t.echeance) : null;
+        if (e !== null && e > 7) return;
+        if (e === null && t.priorite === "normale") return;
+        items.push({ type: "tache", t: t, rang: e === null ? 3 : (e < 0 ? 0 : (e === 0 ? 1 : 2)), p: tkPrioRang(t.priorite), e: e === null ? 99 : e });
+      });
+      signaux.forEach(function(s) { var rg = s.niv === "retard" ? 0 : (s.niv === "auj" ? 1 : 2); items.push({ type: "signal", s: s, rang: rg, p: 1, e: rg === 0 ? -1 : (rg === 1 ? 0 : 3) }); });
+      items.sort(function(a, b) { return a.rang - b.rang || a.e - b.e || a.p - b.p; });
+      var nT = items.filter(function(x) { return x.type === "tache"; }).length, nS = items.length - nT;
+      var visibles = items.filter(function(x) { return onglet === "tout" || (onglet === "taches" ? x.type === "tache" : x.type === "signal"); });
+      var cliquerCase = function(t) {
+        if (coches[t.id]) return;
+        var c = Object.assign({}, coches); c[t.id] = true; setCoches(c);
+        setTimeout(function() { A.terminer(t); setCoches(function(prev) { var n = Object.assign({}, prev); delete n[t.id]; return n; }); }, 650);
+      };
+      var aller = function(page, data) { if (props.onNavigate) props.onNavigate(page, data || null); };
+      var hNow = new Date().getHours(), salut = (hNow >= 18 || hNow < 4) ? "Bonsoir" : "Bonjour";
+      var morceaux = [];
+      if (retard.length) morceaux.push(h("button", { key: "r", type: "button", className: "tk-hl", style: { "--c": "#ff6b5b" }, onClick: function() { aller("taches", { filtreStat: "retard" }); } }, tkPl(retard.length, "tâche en retard", "tâches en retard")));
+      if (auj.length) morceaux.push(h("button", { key: "a", type: "button", className: "tk-hl", style: { "--c": "#f5a524" }, onClick: function() { aller("taches", { filtreStat: "auj" }); } }, (retard.length ? auj.length : tkPl(auj.length, "tâche", "tâches")) + " pour aujourd'hui"));
+      if (signaux.length) morceaux.push(h("button", { key: "s", type: "button", className: "tk-hl", style: { "--c": "#818cf8" }, onClick: function() { setOnglet("signal"); } }, tkPl(signaux.length, "point signalé par l'app", "points signalés par l'app")));
+      var phrase = [];
+      if (!morceaux.length) phrase = ["Rien d'urgent aujourd'hui. Belle journée."];
+      else {
+        phrase.push("Tu as ");
+        morceaux.forEach(function(m, i) { if (i > 0) phrase.push(i === morceaux.length - 1 ? " et " : ", "); phrase.push(m); });
+        phrase.push(".");
+      }
+      var a0 = tkAuj();
+      var fiTache = function(t) {
+        var le = tkLibEch(t), coche = !!coches[t.id], ok = t.etapes.filter(function(s) { return s.ok; }).length;
+        return h("div", { key: t.id, className: "tk-fi" + (coche ? " tk-coche" : "") + (A.flashId === t.id ? " tk-flash" : "") },
+          h(TkCase, { t: t, coche: coche, onClick: function() { cliquerCase(t); } }),
+          h("div", { className: "tk-fi-corps", onClick: function() { setOuverteId(t.id); } },
+            h("div", { className: "tk-fi-t" }, t.titre),
+            h("div", { className: "tk-fi-s" }, h("span", { className: "tk-ech " + le.cls }, le.lib),
+              t.priorite === "urgente" ? h("span", { className: "tk-chip", style: { color: "#ffb4aa" } }, h(Icon, { name: "flag", size: 12 }), "Urgente") : null,
+              t.lien ? h("span", { className: "tk-chip" }, h(Icon, { name: t.lien.type === "equipement" ? "truck" : "hard-hat", size: 12 }), t.lien.nom) : null,
+              t.etapes.length ? h("span", { className: "tk-chip" }, h("span", { className: "tk-sousbar" }, h("i", { style: { width: Math.round(ok * 100 / t.etapes.length) + "%" } })), ok + "/" + t.etapes.length) : null,
+              t.par !== moi ? h("span", { className: "tk-par" }, "de " + A.nomCourt(t.par)) : null)),
+          h("div", { className: "tk-fi-actions" }, h("button", { type: "button", className: "tk-mini", title: "Reporter à demain", onClick: function() { A.reporter(t, tkJour(1)); } }, h(Icon, { name: "sunrise", size: 13 }), "Demain")));
+      };
+      var fiSignal = function(s) {
+        var niv = s.niv === "retard" ? h("span", { className: "tk-ech retard" }, "En retard") : (s.niv === "auj" ? h("span", { className: "tk-ech auj" }, "À traiter") : h("span", { className: "tk-ech" }, "Cette semaine"));
+        return h("div", { key: s.cle, className: "tk-fi" },
+          h("div", { className: "tk-fi-ico", style: { "--c": s.c } }, h(Icon, { name: s.ico, size: 17, color: s.c })),
+          h("div", { className: "tk-fi-corps", onClick: function() { aller(s.page, s.data); } },
+            h("div", { className: "tk-fi-t" }, s.titre),
+            h("div", { className: "tk-fi-s" }, niv, s.sous ? h("span", null, s.sous) : null, h("span", { className: "tk-tag" }, s.src))),
+          h("div", { className: "tk-fi-actions" },
+            h("button", { type: "button", className: "tk-mini", onClick: function() { aller(s.page, s.data); } }, h(Icon, { name: "arrow-up-right", size: 13 }), "Ouvrir"),
+            h("button", { type: "button", className: "tk-mini", title: "Masquer jusqu'à demain", onClick: function() {
+              try { localStorage.setItem("wl_signal_masque_" + s.cle, localISODate()); } catch (e) {}
+              setMasquesV(masquesV + 1);
+              A.toast("Masqué jusqu'à demain", "clock-3", "Annuler", function() { try { localStorage.removeItem("wl_signal_masque_" + s.cle); } catch (e) {} setMasquesV(Date.now()); });
+            } }, h(Icon, { name: "clock-3", size: 13 }), "Plus tard")));
+      };
+      // Mes chiffres (taches : fiables, sans calcul metier)
+      var lundi = tkLundi(new Date()), semaines = [];
+      for (var w = 7; w >= 0; w--) {
+        var dW = new Date(lundi.getTime()); dW.setDate(dW.getDate() - 7 * w);
+        var deb = localISODate(dW), dF = new Date(dW.getTime()); dF.setDate(dF.getDate() + 7);
+        var finS = localISODate(dF);
+        semaines.push(taches.filter(function(t) { return t.statut === "fait" && t.faitPar && String(t.faitPar).toLowerCase() === moi && t.faitLe >= deb && t.faitLe < finS; }).length);
+      }
+      var faitesSem = semaines[7], faitesPrec = semaines[6];
+      var ouvertesEq = taches.filter(function(t) { return tkOuverte(t) && (!t.privee || t.par === moi || t.pour === moi); });
+      var retardEq = ouvertesEq.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; }).length;
+      var accesInter = ctx.isAdmin || !ctx.allowedPages || ctx.allowedPages.indexOf("interventions") >= 0;
+      var interOuvertes = (ctx.interventions || []).filter(function(i) { var s = i.Statut_Intervention; return s && s !== "Termine" && s !== "Rejetee" && s !== "Annulee"; }).length;
+      var kpis = [
+        { ic: "circle-check", lab: "Faites cette semaine", val: String(faitesSem), d: faitesSem >= faitesPrec ? "+" + (faitesSem - faitesPrec) + " vs sem. dernière" : (faitesSem - faitesPrec) + " vs sem. dernière", ton: faitesSem >= faitesPrec ? "bon" : "neutre", sp: semaines },
+        { ic: "alarm-clock", lab: "Mes tâches en retard", val: String(retard.length), d: retard.length ? "à rattraper" : "rien en retard", ton: retard.length ? "mauvais" : "bon" },
+        { ic: "users", lab: "Ouvertes dans l'équipe", val: String(ouvertesEq.length), d: retardEq ? retardEq + " en retard" : "aucune en retard", ton: retardEq ? "mauvais" : "neutre" },
+        accesInter ? { ic: "wrench", lab: "Interventions ouvertes", val: String(interOuvertes), d: "maintenance", ton: "neutre", page: "interventions" } : { ic: "list-todo", lab: "Mes tâches ouvertes", val: String(mes.length), d: "toutes échéances", ton: "neutre", page: "taches" }
+      ];
+      // 7 derniers jours
+      var vals7 = [], jours7 = [];
+      for (var k = 6; k >= 0; k--) {
+        var dj = new Date(a0.getTime()); dj.setDate(dj.getDate() - k); var dIso = localISODate(dj);
+        jours7.push(dj);
+        vals7.push(taches.filter(function(t) { return t.statut === "fait" && t.faitLe === dIso && String(t.faitPar || "").toLowerCase() === moi; }).length);
+      }
+      var graphe7 = (function() {
+        var W = 520, H = 200, pb = 28, pt = 20, mx = Math.max(4, Math.max.apply(null, vals7)), pas = (W - 16) / 7, bw = 30, el = [], tot = 0;
+        [0, 0.5, 1].forEach(function(f, fi) { var y = H - pb - (H - pb - pt) * f; el.push(h("line", { key: "g" + fi, x1: 8, x2: W - 8, y1: y, y2: y, stroke: "rgba(255,255,255," + (f === 0 ? "0.14" : "0.05") + ")", strokeDasharray: f === 0 ? "0" : "3 4" })); });
+        vals7.forEach(function(v, i) {
+          tot += v;
+          var x = 8 + pas * i + (pas - bw) / 2, hg = (H - pb - pt) * v / mx, y = H - pb - hg, r = Math.min(4, hg), estAuj = i === 6, d = jours7[i];
+          if (v > 0) el.push(h("path", { key: "b" + i, d: "M" + x + "," + (H - pb) + " V" + (y + r) + " Q" + x + "," + y + " " + (x + r) + "," + y + " H" + (x + bw - r) + " Q" + (x + bw) + "," + y + " " + (x + bw) + "," + (y + r) + " V" + (H - pb) + " Z", fill: estAuj ? "#ff7d4d" : "#f5a524", opacity: estAuj ? 1 : 0.78 }));
+          else el.push(h("rect", { key: "b" + i, x: x, y: H - pb - 2, width: bw, height: 2, rx: 1, fill: "rgba(255,255,255,0.18)" }));
+          if ((estAuj || v === mx) && v > 0) el.push(h("text", { key: "v" + i, x: x + bw / 2, y: y - 6, textAnchor: "middle", fontSize: 11, fontWeight: 700, fill: "#cdd1db" }, v));
+          el.push(h("text", { key: "j" + i, x: x + bw / 2, y: H - 8, textAnchor: "middle", fontSize: 10.5, fontWeight: estAuj ? 800 : 600, fill: estAuj ? "#fde7b8" : "#697089" }, estAuj ? "auj." : TK_JC[d.getDay()].replace(".", "")));
+          el.push(h("rect", { key: "h" + i, className: "hit", x: 8 + pas * i, y: pt, width: pas, height: H - pt - 14, rx: 6 }, h("title", null, tkCap(TK_JC[d.getDay()]) + " " + tkPad(d.getDate()) + "/" + tkPad(d.getMonth() + 1) + " : " + tkPl(v, "tâche faite", "tâches faites"))));
+        });
+        return { svg: h("svg", { className: "tk-g7", viewBox: "0 0 " + W + " " + H, style: { width: "100%", height: "auto", display: "block" } }, el), tot: tot };
+      })();
+      // Charge de l'equipe (taches ouvertes visibles)
+      var charge = gens.map(function(g) {
+        var ts = ouvertesEq.filter(function(t) { return t.pour === g.email; });
+        var r = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; }).length;
+        var s = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) >= 0 && tkEcart(t.echeance) <= 7; }).length;
+        return { g: g, r: r, s: s, p: ts.length - r - s, tot: ts.length };
+      }).filter(function(l) { return l.tot > 0 || l.g.email === moi; }).sort(function(a, b) { return b.tot - a.tot; }).slice(0, 10);
+      var mxC = Math.max.apply(null, charge.map(function(l) { return l.tot; }).concat([1]));
+      var ouverte = ouverteId ? trouver(ouverteId) : null;
+      var ong = function(v, lib, n) { return h("button", { key: v, type: "button", className: onglet === v ? "actif" : "", onClick: function() { setOnglet(v); } }, lib, " ", h("span", { className: "cpt" }, n)); };
+
+      return h("div", { className: "tk" }, h(TkStyle),
+        h(TkEtatTable, { etat: ctx.tachesEtat === "chargement" ? "ok" : ctx.tachesEtat }),
+        h("section", { className: "tk-hero" }, tkTopo(),
+          h("div", { style: { position: "relative" } },
+            h("div", { className: "date" }, tkCap(TK_JOURS[a0.getDay()]) + " " + a0.getDate() + " " + TK_MOIS[a0.getMonth()]),
+            h("h1", null, salut + " " + (A.moiP.court || A.moiP.nom)),
+            h("p", { className: "resume" }, phrase),
+            h("div", { className: "tk-puces" },
+              h("button", { type: "button", className: "tk-puce", onClick: function() { aller("taches"); } }, h(Icon, { name: "list-todo", size: 14, color: "#f5a524" }), "Toutes mes tâches"),
+              h("button", { type: "button", className: "tk-puce", onClick: function() { aller("taches", { pour: "tous" }); } }, h(Icon, { name: "users", size: 14, color: "#f5a524" }), "Les tâches de l'équipe"),
+              h("span", { className: "tk-puce info" }, h(Icon, { name: "mail", size: 14, color: "#969db1" }), "Emails et agenda Google : bientôt"))),
+          h("div", { className: "tk-anneau-bloc" }, h(TkAnneau, { pct: pct }), h("div", { style: { textAlign: "center", fontSize: 12, color: "#cdd1db", marginTop: 6, fontWeight: 600 } }, faitesAuj.length + " faite" + (faitesAuj.length > 1 ? "s" : "") + " sur " + total))),
+        h("div", { className: "tk-grille" },
+          h("section", { className: "tk-carte" },
+            h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "list-checks", size: 18, color: "#f5a524" }), "À faire"), h("div", { className: "tk-onglets" }, ong("tout", "Tout", items.length), ong("taches", "Mes tâches", nT), ong("signal", "L'app signale", nS))),
+            visibles.length ? visibles.slice(0, 12).map(function(x) { return x.type === "tache" ? fiTache(x.t) : fiSignal(x.s); })
+              : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "party-popper", size: 30, color: "#34d399" })), "Rien à faire ici. Tout est à jour."),
+            visibles.length > 12 ? h("div", { className: "tk-astuce", style: { marginTop: 4 } }, "+ " + (visibles.length - 12) + " autres") : null,
+            h(TkSaisie, { compact: true, opts: A.opts, placeholder: "Ajouter pour moi... ex. : rappeler le garage demain 9h", onCreer: function(r) { A.creer(r, { pour: moi }); } }),
+            h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } }, h("button", { type: "button", className: "tk-lien", onClick: function() { aller("taches"); } }, "Toutes mes tâches", h(Icon, { name: "arrow-right", size: 14, color: "#fcd34d" })))),
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 18, minWidth: 0 } },
+            h("section", { className: "tk-carte" },
+              h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "users", size: 18, color: "#f5a524" }), "Charge de l'équipe"), h("span", { className: "n" }, "tâches ouvertes")),
+              h("div", { className: "tk-legende" }, h("span", null, h("i", { style: { background: TK_COUL_CHARGE.r } }), "En retard"), h("span", null, h("i", { style: { background: TK_COUL_CHARGE.s } }), "7 prochains jours"), h("span", null, h("i", { style: { background: TK_COUL_CHARGE.p } }), "Plus tard / sans date")),
+              charge.map(function(l) {
+                return h("div", { key: l.g.email, className: "tk-charge", title: "Voir les tâches de " + l.g.nom, onClick: function() { aller("taches", { pour: l.g.email }); } },
+                  h(TkAvatar, { p: l.g, taille: "sm" }), h("span", { className: "nom" }, l.g.court || l.g.nom),
+                  h("div", { className: "pile" }, ["r", "s", "p"].filter(function(kk) { return l[kk] > 0; }).map(function(kk) {
+                    var lib = kk === "r" ? "en retard" : (kk === "s" ? "dans les 7 jours" : "plus tard ou sans date");
+                    return h("span", { key: kk, title: (l.g.court || l.g.nom) + " : " + l[kk] + " " + lib, style: { width: (l[kk] / mxC * 100) + "%", background: TK_COUL_CHARGE[kk] } });
+                  })),
+                  h("span", { className: "tot" }, l.tot));
+              }),
+              h("div", { className: "tk-astuce", style: { marginTop: 6 } }, h(Icon, { name: "mouse-pointer-click", size: 13 }), "Clique une personne pour voir ses tâches")),
+            h("section", { className: "tk-carte" },
+              h("div", { className: "tk-google" },
+                h("div", { className: "icones" }, h("span", { style: { "--c": "#f5a524" } }, h(Icon, { name: "mail", size: 22, color: "#f5a524" })), h("span", { style: { "--c": "#2dd4bf" } }, h(Icon, { name: "calendar-days", size: 22, color: "#2dd4bf" })), h("span", { style: { "--c": "#a78bfa" } }, h(Icon, { name: "sparkles", size: 22, color: "#a78bfa" }))),
+                h("h3", null, "Emails et agenda : bientôt ici"),
+                h("p", null, "Tes emails importants triés par l'IA (avec la tâche proposée) et tes rendez-vous du jour arriveront ici dès que la connexion Google Workspace sera en place."))))),
+        h("div", { className: "tk-bas" },
+          h("section", { className: "tk-carte" },
+            h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "activity", size: 18, color: "#f5a524" }), "Mes chiffres")),
+            h("div", { className: "tk-kpis" }, kpis.map(function(kp, i) {
+              var c = kp.ton === "bon" ? "#34d399" : (kp.ton === "mauvais" ? "#ff6b5b" : "#f5a524");
+              return h("div", { key: i, className: "tk-kpi", style: { cursor: kp.page ? "pointer" : "default" }, onClick: kp.page ? function() { aller(kp.page); } : undefined },
+                h("div", { className: "lab" }, h(Icon, { name: kp.ic, size: 14, color: "#f5a524" }), kp.lab),
+                h("div", { className: "val" }, kp.val),
+                h("span", { className: "tk-delta " + kp.ton }, kp.ton === "bon" ? h(Icon, { name: "trending-up", size: 12 }) : (kp.ton === "mauvais" ? h(Icon, { name: "trending-down", size: 12 }) : null), kp.d),
+                kp.sp ? tkSpark(kp.sp, c) : null);
+            }))),
+          h("section", { className: "tk-carte" },
+            h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "bar-chart-3", size: 18, color: "#f5a524" }), "Mes 7 derniers jours"), h("span", { className: "n" }, tkPl(graphe7.tot, "tâche faite", "tâches faites"))),
+            graphe7.svg)),
+        ouverte ? h(TkTiroir, { t: ouverte, A: A, onFermer: function() { setOuverteId(null); }, onSupprimer: function(t) {
+          setOuverteId(null);
+          ctx.supprimerTache(t.id).then(function(okS) { if (okS) A.toast("Tâche supprimée", "trash-2", "Annuler", function() { ctx.restaurerTache(t); }); });
+        } }) : null,
+        A.toastEl);
+    }
+
+    function Sidebar({ currentPage, onNavigate, userEmail, onLogout, isAdmin, isSecretaire, pendingCount, soumissionsPending, rapportsModifPending, piecesPending, demandesFinPending, empruntsFinProche, alertesSaisiesPending, achatsPrevisionnelsPending, rhSignaturesPending, comptaPending, facturationPending, facturationAllowed, stockAllowed, ticketsPending, tachesPending, allowedPages, isMobile, isOpen, onClose }) {
       const sections = [
+        { name: "Ma journee", pages: [
+          { key: "mon-tableau", label: "Mon tableau de bord", lucide: "layout-dashboard" },
+          { key: "taches", label: "Taches", lucide: "list-todo" },
+        ]},
         { name: "Tableau de bord", pages: [
           { key: "statistiques", label: "Accueil", lucide: "bar-chart-3" },
           { key: "accueil", label: "Maintenance", lucide: "wrench" },
@@ -39893,6 +41084,7 @@
       var pastilleReduite = function(p) {
         var n = 0, c = "#f43f5e";
         if (p.key === "administration" && isAdmin) n = (pendingCount || 0) + (ticketsPending || 0);
+        else if (p.key === "taches") n = tachesPending || 0;
         else if (p.key === "soumissions") { n = (soumissionsPending || 0) + (rapportsModifPending || 0); c = "#f59e0b"; }
         else if (p.key === "alertes-saisies") n = alertesSaisiesPending || 0;
         else if (p.key === "pieces") { n = piecesPending || 0; c = "#06b6d4"; }
@@ -39934,7 +41126,7 @@
             reduit
               ? h("div", { title: section.name, style: { borderTop: "1px solid rgba(255,255,255,0.08)", margin: "10px 10px 8px" } })
               : h("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.6, padding: "16px 14px 8px" } }, section.name),
-            section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.key === "stock-ext") return stockAllowed === true; if (p.key === "paies-ext") return isAdmin === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
+            section.pages.filter(function(p) { if (p.key === "facturation-ext") return facturationAllowed === true; if (p.key === "stock-ext") return stockAllowed === true; if (p.key === "paies-ext") return isAdmin === true; if (p.adminOnly && !isAdmin) return false; if (p.key === "administration") return true; if (p.key === "coffre-rh") return true; if (p.key === "taches" || p.key === "mon-tableau") return true; if (!isAdmin && allowedPages && allowedPages.indexOf(p.key) < 0) return false; return true; }).map((p) => {
               var isActive = currentPage === p.key;
               if (reduit) {
                 return h("button", { key: p.key, onClick: () => handleItemClick(p), title: p.label + (p.external ? " (nouvel onglet)" : ""), "aria-label": p.label,
@@ -39970,6 +41162,7 @@
                   soumissionsPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" }, title: "Releves / Conges / Commandes / Interventions en attente" }, soumissionsPending) : null,
                   rapportsModifPending > 0 ? h("span", { style: { background: "linear-gradient(135deg, #f97316, #ea580c)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(249, 115, 22, 0.5)" }, title: rapportsModifPending + " demande(s) de modification rapport client" }, rapportsModifPending) : null
                 ) : null,
+                p.key === "taches" && tachesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Mes taches en retard ou pour aujourd'hui" }, tachesPending) : null,
                 p.key === "alertes-saisies" && alertesSaisiesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f43f5e, #e11d48)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(244, 63, 94, 0.4)" }, title: "Saisies manquantes (rapport / heures) depuis le 1er juin" }, alertesSaisiesPending) : null,
                 p.key === "pieces" && piecesPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #06b6d4, #0891b2)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(6, 182, 212, 0.4)" }, title: "Pieces saisies par les sondeurs non reperees dans le catalogue" }, piecesPending) : null,
                 p.key === "financement" && demandesFinPending > 0 ? h("span", { style: { marginLeft: "auto", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, minWidth: 20, textAlign: "center", boxShadow: "0 2px 8px rgba(245, 158, 11, 0.4)" } }, demandesFinPending) : null,
@@ -40558,6 +41751,7 @@
       function canAccessPage(pageKey) {
         if (isAdmin) return true;
         if (pageKey === "accueil" || pageKey === "fiche-equipement") return true;
+        if (pageKey === "taches" || pageKey === "mon-tableau") return true;
         if (pageKey === "administration") return true; // toujours (profil utilisateur)
         return allowedPages.indexOf(pageKey) >= 0;
       }
@@ -40715,6 +41909,8 @@
         if (!qq) {
           // Mode "raccourcis pages" : filtre selon allowedPages
           var raccourcis = [
+            { group: "Pages", iconKey: "page", title: "Mon tableau de bord", sub: "Ce qui m'attend aujourd'hui", label: "tableau de bord journee", shortcut: "Page", pageKey: "mon-tableau", action: function() { onNavigate("mon-tableau"); } },
+            { group: "Pages", iconKey: "page", title: "Taches",          sub: "Choses a faire, par personne",  label: "taches a faire todo", shortcut: "Page", pageKey: "taches", action: function() { onNavigate("taches"); } },
             { group: "Pages", iconKey: "page", title: "Accueil",         sub: "Statistiques & KPIs",            label: "accueil",      shortcut: "Page", pageKey: "statistiques",   action: function() { onNavigate("statistiques"); } },
             { group: "Pages", iconKey: "page", title: "Maintenance",     sub: "Vue d'ensemble interventions",   label: "maintenance",  shortcut: "Page", pageKey: "accueil",        action: function() { onNavigate("accueil"); } },
             { group: "Pages", iconKey: "page", title: "Avancement",      sub: "Saisie metres / jour",           label: "avancement",   shortcut: "Page", pageKey: "avancement",     action: function() { onNavigate("avancement"); } },
@@ -43415,6 +44611,100 @@
         };
       }, [session]);
 
+      // ── Taches (page Taches + Mon tableau de bord) ─────────────────────
+      // Chargement separe (la table peut ne pas exister tant que le SQL
+      // n'est pas execute) + temps reel + rafraichissement de secours.
+      var _tk = useState([]); var dbTaches = _tk[0], setDbTaches = _tk[1];
+      var _tke = useState("chargement"); var tachesEtat = _tke[0], setTachesEtat = _tke[1];
+      var tachesChargerRef = useRef(null);
+      var tachesVersionRef = useRef({});
+      var tachesEnVolRef = useRef({});
+      useEffect(function() {
+        if (!session) return;
+        var stop = false, minuterie = null;
+        var charger = function() {
+          fetchAllRows(function() { return supabase.from("taches").select("*").order("created_at", { ascending: false }).order("id"); }).then(function(res) {
+            if (stop) return;
+            if (res.error) {
+              var m = String(res.error.message || "");
+              setTachesEtat(/does not exist|schema cache|relation/i.test(m) ? "absente" : "erreur");
+              return;
+            }
+            // Une tache en cours d'enregistrement garde sa version locale : le
+            // rechargement (temps reel / minuterie) ne doit pas la faire revenir
+            var lignes = (res.data || []).map(tacheFromDb);
+            setDbTaches(function(prev) {
+              var enVol = tachesEnVolRef.current, locales = {};
+              prev.forEach(function(x) { if (enVol[x.id]) locales[x.id] = x; });
+              return lignes.map(function(x) { return locales[x.id] || x; });
+            });
+            setTachesEtat("ok");
+          });
+        };
+        tachesChargerRef.current = charger;
+        charger();
+        var canal = null;
+        try {
+          canal = supabase.channel("taches-live").on("postgres_changes", { event: "*", schema: "public", table: "taches" }, function() {
+            clearTimeout(minuterie); minuterie = setTimeout(charger, 600);
+          }).subscribe();
+        } catch (e) {}
+        var tid = setInterval(charger, 180000);
+        return function() {
+          stop = true; clearInterval(tid); clearTimeout(minuterie);
+          if (canal) { try { supabase.removeChannel(canal); } catch (e) {} }
+        };
+      }, [session]);
+      var recharger = function() { if (tachesChargerRef.current) tachesChargerRef.current(); };
+      var creerTache = function(t) {
+        return supabase.from("taches").insert(tachePatchToDb(t)).select().single().then(function(res) {
+          if (res.error) { showToast("Tâche non enregistrée : " + res.error.message, "error"); return null; }
+          var n = tacheFromDb(res.data);
+          setDbTaches(function(prev) { return [n].concat(prev.filter(function(x) { return x.id !== n.id; })); });
+          return n;
+        });
+      };
+      // Mise a jour optimiste ; la reponse serveur n'ecrase que si aucune
+      // modification plus recente n'a ete faite entre-temps sur la meme tache
+      var majTache = function(id, patch) {
+        var v = (tachesVersionRef.current[id] || 0) + 1;
+        tachesVersionRef.current[id] = v;
+        tachesEnVolRef.current[id] = (tachesEnVolRef.current[id] || 0) + 1;
+        var finVol = function() { var c = (tachesEnVolRef.current[id] || 1) - 1; if (c > 0) tachesEnVolRef.current[id] = c; else delete tachesEnVolRef.current[id]; };
+        setDbTaches(function(prev) { return prev.map(function(x) { return x.id === id ? Object.assign({}, x, patch) : x; }); });
+        return supabase.from("taches").update(tachePatchToDb(patch)).eq("id", id).select().single().then(function(res) {
+          finVol();
+          if (res.error) { showToast("Modification non enregistrée : " + res.error.message, "error"); recharger(); return null; }
+          if (tachesVersionRef.current[id] !== v) return null;
+          var n = tacheFromDb(res.data);
+          setDbTaches(function(prev) { return prev.map(function(x) { return x.id === id ? n : x; }); });
+          return n;
+        });
+      };
+      var supprimerTache = function(id) {
+        setDbTaches(function(prev) { return prev.filter(function(x) { return x.id !== id; }); });
+        return supabase.from("taches").delete().eq("id", id).then(function(res) {
+          if (res.error) { showToast("Suppression impossible : " + res.error.message, "error"); recharger(); return false; }
+          return true;
+        });
+      };
+      var restaurerTache = function(t) { return creerTache(Object.assign({}, t, { par: t.par })); };
+      // Occurrence suivante d'une tache repetee : creee par la base (fonction
+      // tache_occurrence_suivante) avec l'auteur d'origine ; null si elle existe deja
+      var creerOccurrenceSuivante = function(idSource, echeance) {
+        return supabase.rpc("tache_occurrence_suivante", { p_source: idSource, p_echeance: echeance }).then(function(res) {
+          if (res.error) { showToast("Tâche suivante non créée : " + res.error.message, "error"); return null; }
+          if (!res.data || !res.data.id) return null;
+          var n = tacheFromDb(res.data);
+          setDbTaches(function(prev) { return [n].concat(prev.filter(function(x) { return x.id !== n.id; })); });
+          return n;
+        });
+      };
+      var tachesPendingCount = (function() {
+        var me = String(userEmail || "").toLowerCase(), aujT = localISODate();
+        return dbTaches.filter(function(t) { return t.pour === me && t.statut !== "fait" && t.echeance && t.echeance <= aujT; }).length;
+      })();
+
       // Allowed pages: admin gets everything, others get only assigned pages
       var allowedPages = null; // null = all pages (admin)
       if (!isAdmin && currentAppUser) {
@@ -43842,6 +45132,7 @@
         linkPieceEquipement, unlinkPieceEquipement,
         addParametre, updateParametre, deleteParametre,
         approvePending, rejectPending, updatePendingItem, deletePendingItem,
+        dbTaches, tachesEtat, creerTache, majTache, supprimerTache, restaurerTache, creerOccurrenceSuivante,
       };
 
       // ── Hooks responsive : DOIVENT etre appeles avant tout early return (Rules of Hooks) ──
@@ -43856,8 +45147,56 @@
       if (recoveryMode) return h(RecoveryPasswordScreen, { onDone: () => { setRecoveryMode(false); setSession(null); } });
       if (!session) return h(LoginScreen, { onLoggedIn: () => {} });
 
+      // Ce que l'app signale dans "Mon tableau de bord" : compteurs deja
+      // calcules pour les pastilles du menu, filtres selon les pages autorisees
+      var signauxTableau = function() {
+        var out = [];
+        var acces = function(p) { return isAdmin || !allowedPages || allowedPages.indexOf(p) >= 0; };
+        var add = function(cle, n, page, ico, c, titre, sous, src, niv, data) {
+          if (n > 0) out.push({ cle: cle, page: page, ico: ico, c: c, titre: titre, sous: sous, src: src, niv: niv, data: data || null });
+        };
+        var n;
+        if (isAdmin) { n = pendingValidations.length; add("validations", n, "administration", "clipboard-check", "#818cf8", tkPl(n, "modification à valider", "modifications à valider"), "Saisies en attente de ton accord", "Validation", "auj"); }
+        if (isAdmin) { n = ticketsPending || 0; add("tickets", n, "administration", "life-buoy", "#f472b6", tkPl(n, "ticket support ouvert", "tickets support ouverts"), "Bugs et demandes signalés", "Support", "semaine"); }
+        if (acces("soumissions")) {
+          n = soumissionsPendingCount || 0; add("soumissions", n, "soumissions", "inbox", "#f59e0b", tkPl(n, "soumission employé en attente", "soumissions employés en attente"), "Relevés, congés, commandes, interventions", "Soumissions", "auj");
+          n = (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length;
+          add("rapports-modif", n, "soumissions", "file-text", "#fb923c", tkPl(n, "rapport à corriger", "rapports à corriger"), "Demande de modification sur un rapport de forage", "Rapports", "auj");
+        }
+        n = rhSignaturesPending || 0; add("rh", n, "coffre-rh", "pen-line", "#a78bfa", tkPl(n, "document RH à signer", "documents RH à signer"), "Coffre-fort RH", "Coffre RH", "auj");
+        if (isAdmin) { n = (alertesSaisies && alertesSaisies.count) || 0; add("alertes", n, "alertes-saisies", "triangle-alert", "#ff6b5b", tkPl(n, "saisie manquante", "saisies manquantes"), "Rapports ou heures non saisis", "Alertes saisies", "retard"); }
+        if (acces("pieces")) { n = piecesPendingCount || 0; add("pieces", n, "pieces", "package", "#06b6d4", tkPl(n, "pièce hors catalogue", "pièces hors catalogue"), "Saisies par les sondeurs, à rattacher au catalogue", "Pièces", "semaine"); }
+        if (acces("achats-previsionnels")) { n = achatsPrevisionnelsPending || 0; add("achats", n, "achats-previsionnels", "shopping-cart", "#f5a524", tkPl(n, "référence en déficit", "références en déficit"), "Dans les 90 prochains jours", "Achats", "semaine"); }
+        if (acces("financement")) {
+          n = (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === userEmail) && (d.statut === "soumise" || d.statut === "info_demandee"); }).length;
+          add("financement", n, "financement", "wallet", "#f59e0b", tkPl(n, "demande de financement en attente", "demandes de financement en attente"), "À traiter", "Financement", "auj");
+        }
+        if (acces("emprunts")) { n = countEmpruntsFinProche(dbEmprunts); add("emprunts", n, "emprunts", "landmark", "#ca8a04", n > 1 ? n + " prêts arrivent à terme" : "1 prêt arrive à terme", "Dans les 30 jours", "Emprunts", "semaine"); }
+        // CDD qui finissent dans les 15 jours
+        if (isRH || acces("personnel")) {
+          try {
+            var rowP = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
+            var pers = rowP && rowP.valeur ? (JSON.parse(rowP.valeur) || []) : [];
+            var a0 = new Date(); a0.setHours(0, 0, 0, 0);
+            pers.forEach(function(emp) {
+              if (!emp || emp.roleMecanicien || emp.typeContrat !== "CDD" || !emp.dateFinContrat) return;
+              if (emp.dateEmbauche && tkLire(emp.dateEmbauche).getTime() > a0.getTime()) return; // pas encore embauche
+              var reste = Math.round((tkLire(emp.dateFinContrat).getTime() - a0.getTime()) / 86400000);
+              if (isNaN(reste) || reste < 0 || reste > 15) return;
+              var nomE = ((emp.prenom || "") + " " + (emp.nom || "")).trim() || "un salarié";
+              add("cdd-" + (emp.code || emp.id) + "-" + String(emp.dateFinContrat).substring(0, 10), 1, "personnel", "calendar-clock", "#f5a524",
+                "CDD de " + nomE + " : fin " + (reste === 0 ? "aujourd'hui" : "dans " + tkPl(reste, "jour", "jours")), "Prolonger par avenant ou préparer la sortie", "Personnel", reste <= 7 ? "auj" : "semaine");
+            });
+          } catch (e) {}
+        }
+        return out;
+      };
+
       const renderPage = () => {
         // Check page access for non-admins
+        // Taches + Mon tableau de bord : ouverts a tout compte connecte
+        if (currentPage === "taches") return h(EcranTaches, { key: "taches-" + JSON.stringify(pageData || {}), onNavigate: navigate, initial: pageData });
+        if (currentPage === "mon-tableau") return h(EcranMonTableau, { onNavigate: navigate, signaux: signauxTableau() });
         if (!isAdmin && allowedPages && currentPage !== "accueil" && currentPage !== "fiche-equipement" && currentPage !== "administration" && currentPage !== "alertes-saisies" && currentPage !== "coffre-rh" && allowedPages.indexOf(currentPage) < 0) {
           return h(EcranAccueil, { onNavigate: navigate });
         }
@@ -43914,7 +45253,7 @@
         h("div", { style: { display: "flex", height: bpInfo.isMobile ? "auto" : "100dvh", minHeight: "100dvh", overflow: bpInfo.isMobile ? "visible" : "hidden", background: "transparent", fontFamily: "'Inter', system-ui, -apple-system, sans-serif", position: "relative", zIndex: 1 } },
           // Overlay derriere le drawer mobile (clic ferme)
           bpInfo.isMobile && sidebarOpen ? h("div", { onClick: function() { setSidebarOpen(false); }, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 998 } }) : null,
-          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, stockAllowed: stockAllowed, ticketsPending: ticketsPending, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
+          h(Sidebar, { currentPage, onNavigate: navigate, userEmail: session.user && session.user.email, onLogout: logout, isAdmin, isSecretaire, pendingCount: pendingValidations.length, soumissionsPending: soumissionsPendingCount, rapportsModifPending: (dbRapportsForage || []).filter(function(r) { return r.statut === "demande_modification"; }).length, piecesPending: piecesPendingCount, demandesFinPending: (function() { var u = session.user && session.user.email; return (dbDemandesFin || []).filter(function(d) { return (isAdmin || d.demandeurEmail === u) && (d.statut === "soumise" || (d.statut === "info_demandee" && (isAdmin || d.demandeurEmail === u))); }).length; }()), empruntsFinProche: countEmpruntsFinProche(dbEmprunts), alertesSaisiesPending: (alertesSaisies && alertesSaisies.count) || 0, achatsPrevisionnelsPending: achatsPrevisionnelsPending, rhSignaturesPending: rhSignaturesPending, comptaPending: comptaPending, facturationPending: facturationPending, facturationAllowed: facturationAllowed, stockAllowed: stockAllowed, ticketsPending: ticketsPending, tachesPending: tachesPendingCount, allowedPages: allowedPages, isMobile: bpInfo.isMobile, isOpen: sidebarOpen, onClose: function() { setSidebarOpen(false); } }),
           h("div", { ref: mainScrollRef, style: { flex: 1, padding: mainPadding, overflowY: bpInfo.isMobile ? "visible" : "auto", maxHeight: bpInfo.isMobile ? "none" : "100dvh", position: "relative", width: "100%", minWidth: 0 } },
             // Bouton hamburger sur mobile (en haut a gauche, fixed)
             bpInfo.isMobile ? h("button", { onClick: function() { setSidebarOpen(true); }, "aria-label": "Ouvrir le menu", style: { position: "fixed", top: "calc(12px + env(safe-area-inset-top))", left: "calc(12px + env(safe-area-inset-left))", width: 40, height: 40, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fafafa", cursor: "pointer", zIndex: 997, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" } }, h(Icon, { name: "menu", size: 20, color: "#fafafa" })) : null,
