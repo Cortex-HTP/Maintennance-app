@@ -41550,16 +41550,18 @@
             .catch(function(e) { if (!stop && !silencieux) setSt({ etat: e.code === "sans_boite" ? "sans_boite" : "erreur", ev: [], erreur: e.message }); });
         };
         charger(false);
+        chargerRef.current = charger;
         // Nouveau jour : on se recale tout seul (ligne « maintenant » ou 1er rendez-vous)
         defilRef.current.premier = true; defilRef.current.manuel = 0;
         // Un rendez-vous ajoute dans Google Agenda apparait sans recharger la
-        // page : toutes les 5 min, et au retour sur l'onglet (30 s mini entre 2)
-        var t = setInterval(function() { if (!document.hidden) charger(true); }, 5 * 60000);
-        var auRetour = function() { if (!document.hidden && Date.now() - dernier > 30000) charger(true); };
+        // page : toutes les 30 s (onglet visible), et au retour sur l'onglet
+        var t = setInterval(function() { if (!document.hidden) charger(true); }, 30000);
+        var auRetour = function() { if (!document.hidden && Date.now() - dernier > 5000) charger(true); };
         document.addEventListener("visibilitychange", auRetour);
         window.addEventListener("focus", auRetour);
         return function() { stop = true; clearInterval(t); document.removeEventListener("visibilitychange", auRetour); window.removeEventListener("focus", auRetour); };
       }, [jour]);
+      var chargerRef = useRef(null);
       var changerJour = function(n) { var d = tkLire(jour); d.setDate(d.getDate() + n); setJour(localISODate(d)); };
       // La carte (hauteur fixe) suit l'heure reelle : la ligne rouge « maintenant »
       // est gardee au tiers haut, recalee chaque minute. Si on fait defiler a la
@@ -41587,7 +41589,8 @@
         h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 } },
           btnJour("chevron-left", "Jour précédent", function() { changerJour(-1); }),
           estAuj ? null : h("button", { type: "button", className: "tk-mini", title: "Revenir à aujourd'hui", onClick: function() { setJour(aujIso); } }, "Aujourd'hui"),
-          btnJour("chevron-right", "Jour suivant", function() { changerJour(1); })));
+          btnJour("chevron-right", "Jour suivant", function() { changerJour(1); }),
+          btnJour("refresh-cw", "Rafraîchir maintenant", function() { if (chargerRef.current) chargerRef.current(false); })));
       if (st.etat !== "ok") return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide" }, st.etat === "chargement" ? "Lecture de l'agenda..." : (st.etat === "sans_boite" ? "Ton agenda s'affichera ici dès que ton adresse @wallislabel.nc sera renseignée." : "Agenda indisponible : " + st.erreur)));
       var H0 = 7, H1 = 19, ph = 42, blocs = [], journee = st.ev.filter(function(e) { return e.journee; });
       var mn = function(hhmm) { var p = String(hhmm).split(":"); return (+p[0]) * 60 + (+p[1]); };
