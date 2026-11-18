@@ -8893,27 +8893,35 @@
     }
     function AideNotice({ data }) {
       var _q = useState(""); var q = _q[0]; var setQ = _q[1];
-      var _c = useState("tous"); var chap = _c[0]; var setChap = _c[1];
+      var _c = useState(null); var chap = _c[0]; var setChap = _c[1]; // null = accueil (cartes des themes)
       var _o = useState(null); var ouverte = _o[0]; var setOuverte = _o[1];
+      var COUL = { "compass": "#818cf8", "wrench": "#f59e0b", "hard-hat": "#fb923c", "users": "#2dd4bf", "inbox": "#f472b6" };
+      var couleur = function(icone) { return COUL[icone] || "#818cf8"; };
       var cartes = useMemo(function() {
         var out = [];
         (data || []).forEach(function(c) { (c.ecrans || []).forEach(function(e) { out.push(Object.assign({ chapitre: c.chapitre, icone: c.icone }, e)); }); });
         return out;
       }, [data]);
       var toks = aideNorm(q.trim()).split(/\s+/).filter(Boolean);
+      var recherche = toks.length > 0;
       var visibles = cartes.filter(function(c) {
-        if (toks.length === 0) return chap === "tous" || c.chapitre === chap;
+        if (!recherche) return c.chapitre === chap;
         var txt = aideNorm([c.titre, c.menu, c.resume].concat(c.attention || []).concat((c.gestes || []).map(function(g) { return g.titre + " " + (g.etapes || []).join(" "); })).join(" "));
         return toks.every(function(t) { return txt.indexOf(t) >= 0; });
       });
-      var chips = ["tous"].concat((data || []).map(function(c) { return c.chapitre; }));
+      var chapitres = data || [];
+      var iChap = -1;
+      chapitres.forEach(function(c, i) { if (c.chapitre === chap) iChap = i; });
+      var chapCourant = iChap >= 0 ? chapitres[iChap] : null;
+      var ouvrirChap = function(nom) { setChap(nom); setOuverte(null); };
       function puce(n) { return h("span", { style: { width: 22, height: 22, borderRadius: "50%", background: "rgba(129,140,248,0.18)", color: "#c7d2fe", fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, n); }
       function carteRendu(c) {
         var cle = c.chapitre + "|" + c.titre;
         var ouv = ouverte === cle;
+        var col = couleur(c.icone);
         return h("div", { key: cle, style: { background: ouv ? "rgba(36,40,60,0.95)" : "rgba(255,255,255,0.03)", border: "1px solid " + (ouv ? "rgba(129,140,248,0.40)" : "rgba(255,255,255,0.07)"), borderRadius: 12, marginBottom: 8, overflow: "hidden" } },
           h("div", { onClick: function() { setOuverte(ouv ? null : cle); }, style: { display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", cursor: "pointer" } },
-            h("div", { style: { width: 34, height: 34, borderRadius: 9, background: "rgba(99,102,241,0.16)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: c.icone || "book-open", size: 16, color: "#a5b4fc" })),
+            h("div", { style: { width: 34, height: 34, borderRadius: 9, background: "color-mix(in srgb, " + col + " 16%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: c.icone || "book-open", size: 16, color: col })),
             h("div", { style: { flex: 1, minWidth: 0 } },
               h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
                 h("span", { style: { fontWeight: 700, fontSize: 14, color: "#fafafa" } }, c.titre),
@@ -8933,27 +8941,59 @@
             (c.attention || []).length ? h("div", { style: { marginTop: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10, padding: "9px 12px" } },
               c.attention.map(function(a, ai) { return h("div", { key: ai, style: { display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.8, color: "#fde68a", lineHeight: 1.45, marginTop: ai ? 6 : 0 } }, h(Icon, { name: "alert-triangle", size: 13, color: "#fbbf24", style: { marginTop: 2 } }), a); })) : null) : null);
       }
+      // Accueil : une carte par theme, cliquable
+      function carteChapitre(c) {
+        var col = couleur(c.icone), n = (c.ecrans || []).length;
+        var apercu = (c.ecrans || []).slice(0, 3).map(function(e) { return e.titre; }).join(" · ") + (n > 3 ? " · ..." : "");
+        return h("button", { key: c.chapitre, type: "button", onClick: function() { ouvrirChap(c.chapitre); },
+          onMouseEnter: function(e) { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = col; },
+          onMouseLeave: function(e) { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; },
+          style: { textAlign: "left", padding: "16px 16px 14px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", background: "linear-gradient(160deg, color-mix(in srgb, " + col + " 15%, transparent), rgba(255,255,255,0.02) 70%)", cursor: "pointer", color: "#fafafa", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 10, minHeight: 168, transition: "transform 0.15s, border-color 0.15s", boxShadow: "0 12px 30px -22px rgba(0,0,0,0.8)" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, width: "100%" } },
+            h("div", { style: { width: 44, height: 44, borderRadius: 12, background: "color-mix(in srgb, " + col + " 22%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: c.icone || "book-open", size: 21, color: col })),
+            h("span", { style: { marginLeft: "auto", fontSize: 11.5, fontWeight: 700, color: "#cbd5e1", background: "rgba(255,255,255,0.06)", padding: "2px 9px", borderRadius: 999 } }, n + (n > 1 ? " fiches" : " fiche"))),
+          h("div", { style: { fontWeight: 800, fontSize: 15.5, lineHeight: 1.3 } }, c.chapitre),
+          h("div", { style: { fontSize: 12, color: "#94a3b8", lineHeight: 1.5 } }, apercu),
+          h("div", { style: { marginTop: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: col } }, "Voir les fiches", h(Icon, { name: "arrow-right", size: 14, color: col })));
+      }
+      var boutonNav = function(c, sens) {
+        return h("button", { key: sens, type: "button", onClick: function() { ouvrirChap(c.chapitre); }, style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 11px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", color: "#cbd5e1", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", maxWidth: 230 } },
+          sens === "prec" ? h(Icon, { name: "chevron-left", size: 13, color: "#a1a1aa" }) : null,
+          h("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, c.chapitre),
+          sens === "suiv" ? h(Icon, { name: "chevron-right", size: 13, color: "#a1a1aa" }) : null);
+      };
       var groupes = [];
       visibles.forEach(function(c) { var g = groupes[groupes.length - 1]; if (!g || g.chapitre !== c.chapitre) { g = { chapitre: c.chapitre, icone: c.icone, cartes: [] }; groupes.push(g); } g.cartes.push(c); });
       return h("div", null,
-        h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 12, lineHeight: 1.5 } }, "L'essentiel de chaque ecran : a quoi il sert, les gestes du quotidien et les pieges a eviter. Cliquez une fiche pour la deplier."),
-        h("div", { style: { position: "relative", marginBottom: 10 } },
+        h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 12, lineHeight: 1.5 } }, recherche ? "Résultats dans toutes les fiches. Cliquez une fiche pour la déplier." : (chapCourant ? "Cliquez une fiche pour la déplier : à quoi sert l'écran, les gestes du quotidien et les pièges à éviter." : "L'essentiel de chaque écran, rangé par thème. Choisissez un thème pour voir ses fiches.")),
+        h("div", { style: { position: "relative", marginBottom: 14 } },
           h(Icon, { name: "search", size: 14, color: "#a1a1aa", style: { position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" } }),
-          h("input", { value: q, onChange: function(e) { setQ(e.target.value); }, placeholder: "Chercher : facture, conge, vidange, prime...", style: { width: "100%", padding: "10px 12px 10px 36px", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 10, fontSize: 13.5, outline: "none", boxSizing: "border-box", background: "rgba(255,255,255,0.05)", color: "#fafafa", fontFamily: "inherit" } })),
-        toks.length === 0 ? h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 } }, chips.map(function(x) {
-          var actif = chap === x;
-          return h("button", { key: x, onClick: function() { setChap(x); }, style: { padding: "6px 12px", borderRadius: 999, border: "1px solid " + (actif ? "rgba(129,140,248,0.6)" : "rgba(255,255,255,0.10)"), background: actif ? "rgba(99,102,241,0.22)" : "rgba(255,255,255,0.04)", color: actif ? "#e0e7ff" : "#cbd5e1", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } }, x === "tous" ? "Tout" : x);
-        })) : h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 12 } }, visibles.length + " fiche(s) pour \u00ab " + q + " \u00bb"),
-        visibles.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontSize: 13 } }, "Rien trouve. Essayez un autre mot.") : null,
-        groupes.map(function(g) {
-          return h("div", { key: g.chapitre, style: { marginBottom: 16 } },
-            h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 0 8px" } }, h(Icon, { name: g.icone || "book-open", size: 13, color: "#818cf8" }), g.chapitre),
-            g.cartes.map(carteRendu));
-        }));
+          h("input", { value: q, onChange: function(e) { setQ(e.target.value); }, placeholder: "Chercher dans toutes les fiches : facture, congé, vidange, prime...", style: { width: "100%", padding: "10px 12px 10px 36px", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 10, fontSize: 13.5, outline: "none", boxSizing: "border-box", background: "rgba(255,255,255,0.05)", color: "#fafafa", fontFamily: "inherit" } })),
+        recherche ? h("div", null,
+          h("div", { style: { fontSize: 12.5, color: "#94a3b8", marginBottom: 12 } }, visibles.length + " fiche(s) pour « " + q + " »"),
+          visibles.length === 0 ? h("div", { style: { padding: 30, textAlign: "center", color: "#71717a", fontSize: 13 } }, "Rien trouvé. Essayez un autre mot.") : null,
+          groupes.map(function(g) {
+            return h("div", { key: g.chapitre, style: { marginBottom: 16 } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 0 8px" } }, h(Icon, { name: g.icone || "book-open", size: 13, color: couleur(g.icone) }), g.chapitre),
+              g.cartes.map(carteRendu));
+          }))
+        : !chapCourant ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 12 } }, chapitres.map(carteChapitre))
+        : h("div", null,
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 } },
+            h("button", { type: "button", onClick: function() { setChap(null); setOuverte(null); }, style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "#e0e7ff", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, h(Icon, { name: "layout-grid", size: 14, color: "#c7d2fe" }), "Tous les thèmes"),
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 } },
+              h("div", { style: { width: 34, height: 34, borderRadius: 10, background: "color-mix(in srgb, " + couleur(chapCourant.icone) + " 22%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: chapCourant.icone || "book-open", size: 17, color: couleur(chapCourant.icone) })),
+              h("span", { style: { fontWeight: 800, fontSize: 16, color: "#fafafa" } }, chapCourant.chapitre),
+              h("span", { style: { fontSize: 11.5, fontWeight: 700, color: "#cbd5e1", background: "rgba(255,255,255,0.06)", padding: "2px 9px", borderRadius: 999 } }, visibles.length + (visibles.length > 1 ? " fiches" : " fiche"))),
+            h("div", { style: { marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" } },
+              iChap > 0 ? boutonNav(chapitres[iChap - 1], "prec") : null,
+              iChap < chapitres.length - 1 ? boutonNav(chapitres[iChap + 1], "suiv") : null)),
+          visibles.map(carteRendu)));
     }
+
     // <<< AIDE_NOTICE
     function EcranParametres() {
-      const { parametres, addParametre, updateParametre, deleteParametre } = useAppData();
+      const { parametres, addParametre, updateParametre, deleteParametre, isAdmin } = useAppData();
       // Groupes : "employes" = listes utilisees dans l'app terrain (sondeurs)
       //           "admin"    = listes utilisees uniquement dans l'app admin
       const CATEGORY_GROUPS = [
@@ -8977,6 +9017,8 @@
         { key: "destinataires_emails", label: "Destinataires emails", lucide: "mail",          group: "admin" },
         { key: "portail_client",       label: "Acces portail client", lucide: "key",           group: "admin" },
       ];
+      // Raccourci vers Administration > Emails (boites Google du bureau et des machines)
+      if (isAdmin) categories.push({ key: "boites_mail", label: "Boites mail Google", lucide: "inbox", group: "admin" });
       const [selected, setSelected] = useState("aide_notice"); // la Notice s'ouvre en premier
       // Sommaire reduit aux icones (fleche), choix memorise sur ce navigateur
       const [sommaireReduit, setSommaireReduitBrut] = useState(function() {
@@ -9104,6 +9146,8 @@
             h("h3", { style: { margin: "0 0 16px", fontSize: 16, fontWeight: 700 } }, (categories.find((c) => c.key === selected) || {}).label),
             selected === "aide_notice"
               ? h(AideNotice, { data: AIDE_NOTICE })
+              : selected === "boites_mail"
+              ? h(EcranAdminEmails, null)
               : selected === "destinataires_emails"
               ? h(DestinatairesEmailsEditor, null)
               : selected === "portail_client"
@@ -40119,15 +40163,18 @@
       ".tk-anneau .centre{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}",
       ".tk-anneau .pct{font-family:'Fraunces',Georgia,serif;font-size:32px;font-weight:600;line-height:1}",
       ".tk-anneau .lib{font-size:11px;color:#969db1;font-weight:650;margin-top:4px}",
-      ".tk-grille{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) 300px;gap:18px;margin-top:18px;align-items:start}",
+      ".tk-grille{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) 270px;gap:18px;margin-top:18px;align-items:start}",
       ".tk-bas{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);gap:18px;margin-top:18px;align-items:stretch}",
       /* a faire */
-      ".tk-fi{display:flex;gap:12px;align-items:flex-start;padding:11px 10px;border-radius:13px;position:relative;transition:background .15s}",
+      ".tk-fi{display:flex;gap:10px;align-items:center;padding:7px 8px;border-radius:11px;position:relative;transition:background .15s}",
       ".tk-fi:hover{background:rgba(255,255,255,.04)}",
-      ".tk-fi-ico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;background:color-mix(in srgb,var(--c) 17%,transparent)}",
+      ".tk-fi-ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;background:color-mix(in srgb,var(--c) 17%,transparent)}",
       ".tk-fi-corps{flex:1;min-width:0;cursor:pointer}",
-      ".tk-fi-t{font-weight:620;font-size:13.5px;line-height:1.35}",
-      ".tk-fi-s{font-size:12px;color:#969db1;margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}",
+      ".tk-fi-t{font-weight:620;font-size:13px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".tk-fi-s{font-size:11.5px;color:#969db1;margin-top:2px;display:flex;gap:7px;flex-wrap:nowrap;align-items:center;white-space:nowrap;overflow:hidden}",
+      ".tk-fi-s>span{flex-shrink:0}",
+      ".tk-fi-s>span.tk-txt{flex-shrink:1;overflow:hidden;text-overflow:ellipsis;min-width:0}",
+      ".tk-fi .tk-ech{padding:2px 7px;font-size:11px}",
       ".tk-fi-actions{position:absolute;right:8px;top:50%;transform:translate(6px,-50%);display:flex;gap:5px;opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;padding:4px 4px 4px 22px;background:linear-gradient(90deg,transparent,#2b3050 26%);border-radius:10px}",
       ".tk-fi:hover .tk-fi-actions{opacity:1;transform:translate(0,-50%);pointer-events:auto}",
       ".tk-tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:rgba(129,140,248,.1);color:#c7d2fe;border:1px solid rgba(129,140,248,.35);white-space:nowrap}",
@@ -40844,6 +40891,7 @@
       var _co = useState({}); var coches = _co[0], setCoches = _co[1];
       var _ou = useState(null); var ouverteId = _ou[0], setOuverteId = _ou[1];
       var _mq = useState(0); var masquesV = _mq[0], setMasquesV = _mq[1];
+      var _taf = useState(false); var toutAF = _taf[0], setToutAF = _taf[1];
       var taches = ctx.dbTaches || [];
       var trouver = function(id) { for (var i = 0; i < taches.length; i++) { if (taches[i].id === id) return taches[i]; } return null; };
       var aujIso = localISODate();
@@ -40896,16 +40944,16 @@
               t.priorite === "urgente" ? h("span", { className: "tk-chip", style: { color: "#ffb4aa" } }, h(Icon, { name: "flag", size: 12 }), "Urgente") : null,
               t.lien ? h("span", { className: "tk-chip" }, h(Icon, { name: t.lien.type === "equipement" ? "truck" : "hard-hat", size: 12 }), t.lien.nom) : null,
               t.etapes.length ? h("span", { className: "tk-chip" }, h("span", { className: "tk-sousbar" }, h("i", { style: { width: Math.round(ok * 100 / t.etapes.length) + "%" } })), ok + "/" + t.etapes.length) : null,
-              t.par !== moi ? h("span", { className: "tk-par" }, "de " + A.nomCourt(t.par)) : null)),
+              t.par !== moi ? h("span", { className: "tk-par tk-txt" }, "de " + A.nomCourt(t.par)) : null)),
           h("div", { className: "tk-fi-actions" }, h("button", { type: "button", className: "tk-mini", title: "Reporter à demain", onClick: function() { A.reporter(t, tkJour(1)); } }, h(Icon, { name: "sunrise", size: 13 }), "Demain")));
       };
       var fiSignal = function(s) {
         var niv = s.niv === "retard" ? h("span", { className: "tk-ech retard" }, "En retard") : (s.niv === "auj" ? h("span", { className: "tk-ech auj" }, "À traiter") : h("span", { className: "tk-ech" }, "Cette semaine"));
-        return h("div", { key: s.cle, className: "tk-fi" },
-          h("div", { className: "tk-fi-ico", style: { "--c": s.c } }, h(Icon, { name: s.ico, size: 17, color: s.c })),
+        return h("div", { key: s.cle, className: "tk-fi", title: s.src + (s.sous ? " · " + s.sous : "") },
+          h("div", { className: "tk-fi-ico", style: { "--c": s.c } }, h(Icon, { name: s.ico, size: 15, color: s.c })),
           h("div", { className: "tk-fi-corps", onClick: function() { aller(s.page, s.data); } },
             h("div", { className: "tk-fi-t" }, s.titre),
-            h("div", { className: "tk-fi-s" }, niv, s.sous ? h("span", null, s.sous) : null, h("span", { className: "tk-tag" }, s.src))),
+            h("div", { className: "tk-fi-s" }, niv, s.sous ? h("span", { className: "tk-txt" }, s.sous) : null)),
           h("div", { className: "tk-fi-actions" },
             h("button", { type: "button", className: "tk-mini", onClick: function() { aller(s.page, s.data); } }, h(Icon, { name: "arrow-up-right", size: 13 }), "Ouvrir"),
             h("button", { type: "button", className: "tk-mini", title: "Masquer jusqu'à demain", onClick: function() {
@@ -40963,6 +41011,13 @@
       }).filter(function(l) { return l.tot > 0 || l.g.email === moi; }).sort(function(a, b) { return b.tot - a.tot; }).slice(0, 10);
       var mxC = Math.max.apply(null, charge.map(function(l) { return l.tot; }).concat([1]));
       var ouverte = ouverteId ? trouver(ouverteId) : null;
+      var aBoiteMail = (function() {
+        var row = (ctx.parametres || []).filter(function(p) { return p && p.categorie === "emails_bureau"; })[0];
+        if (!row) return true;
+        var fiche = (ctx.dbAppUsers || []).filter(function(u) { return String(u.email || "").toLowerCase() === moi; })[0];
+        var cle = "u:" + (fiche ? fiche.id : moi);
+        try { var l = JSON.parse(row.valeur || "[]"); return Array.isArray(l) && l.indexOf(cle) >= 0; } catch (e) { return false; }
+      })();
       var ong = function(v, lib, n) { return h("button", { key: v, type: "button", className: onglet === v ? "actif" : "", onClick: function() { setOnglet(v); } }, lib, " ", h("span", { className: "cpt" }, n)); };
 
       return h("div", { className: "tk" }, h(TkStyle),
@@ -40975,18 +41030,18 @@
             h("div", { className: "tk-puces" },
               h("button", { type: "button", className: "tk-puce", onClick: function() { aller("taches"); } }, h(Icon, { name: "list-todo", size: 14, color: "#f5a524" }), "Toutes mes tâches"),
               h("button", { type: "button", className: "tk-puce", onClick: function() { aller("taches", { pour: "tous" }); } }, h(Icon, { name: "users", size: 14, color: "#f5a524" }), "Les tâches de l'équipe"),
-              h("button", { type: "button", className: "tk-puce", onClick: function() { var c = document.getElementById("tk-carte-mails"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); } }, h(Icon, { name: "inbox", size: 14, color: "#f5a524" }), "Mes emails"))),
+              aBoiteMail ? h("button", { type: "button", className: "tk-puce", onClick: function() { var c = document.getElementById("tk-carte-mails"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); } }, h(Icon, { name: "inbox", size: 14, color: "#f5a524" }), "Mes emails") : null)),
           h("div", { className: "tk-anneau-bloc" }, h(TkAnneau, { pct: pct }), h("div", { style: { textAlign: "center", fontSize: 12, color: "#cdd1db", marginTop: 6, fontWeight: 600 } }, faitesAuj.length + " faite" + (faitesAuj.length > 1 ? "s" : "") + " sur " + total))),
-        h("div", { className: "tk-grille" },
+        h("div", { className: "tk-grille", style: aBoiteMail ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } },
           h("section", { className: "tk-carte" },
             h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "list-checks", size: 18, color: "#f5a524" }), "À faire"), h("div", { className: "tk-onglets" }, ong("tout", "Tout", items.length), ong("taches", "Mes tâches", nT), ong("signal", "L'app signale", nS))),
-            visibles.length ? visibles.slice(0, 12).map(function(x) { return x.type === "tache" ? fiTache(x.t) : fiSignal(x.s); })
+            visibles.length ? (toutAF ? visibles : visibles.slice(0, 10)).map(function(x) { return x.type === "tache" ? fiTache(x.t) : fiSignal(x.s); })
               : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "party-popper", size: 30, color: "#34d399" })), "Rien à faire ici. Tout est à jour."),
-            visibles.length > 12 ? h("div", { className: "tk-astuce", style: { marginTop: 4 } }, "+ " + (visibles.length - 12) + " autres") : null,
+            visibles.length > 10 ? h("button", { type: "button", className: "tk-lien", style: { margin: "4px 0 0 8px" }, onClick: function() { setToutAF(!toutAF); } }, toutAF ? "Réduire" : "Voir les " + (visibles.length - 10) + " autres", h(Icon, { name: toutAF ? "chevron-up" : "chevron-down", size: 14, color: "#fcd34d" })) : null,
             h(TkSaisie, { compact: true, opts: A.opts, placeholder: "Ajouter pour moi... ex. : rappeler le garage demain 9h", onCreer: function(r) { A.creer(r, { pour: moi }); } }),
             h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } }, h("button", { type: "button", className: "tk-lien", onClick: function() { aller("taches"); } }, "Toutes mes tâches", h(Icon, { name: "arrow-right", size: 14, color: "#fcd34d" })))),
-          h(TkCarteEmails, { A: A }),
-          h("div", { className: "tk-col-agenda" }, h(TkCarteAgenda, { A: A }))),
+          aBoiteMail ? h(TkCarteEmails, { A: A }) : null,
+          aBoiteMail ? h("div", { className: "tk-col-agenda" }, h(TkCarteAgenda, { A: A })) : null),
         h("div", { className: "tk-bas" },
             h("section", { className: "tk-carte" },
               h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "users", size: 18, color: "#f5a524" }), "Charge de l'équipe"), h("span", { className: "n" }, "tâches ouvertes")),
@@ -41173,11 +41228,12 @@
       var _tr = useState({}); var tri = _tr[0], setTri = _tr[1];
       var _ta = useState({}); var traites = _ta[0], setTraites = _ta[1];
       var _ia = useState(false); var iaEnCours = _ia[0], setIaEnCours = _ia[1];
-      var cleTri = "wl_mail_tri_" + (st.boite || ""), cleTraites = "wl_mail_traites_" + (st.boite || "");
+      var _vt = useState(false); var voirTout = _vt[0], setVoirTout = _vt[1];
+      var cleTri = "wl_mail_tri2_" + (st.boite || ""), cleTraites = "wl_mail_traites_" + (st.boite || "");
       var charger = function() {
         setSt(function(p) { return Object.assign({}, p, { etat: p.msgs.length ? "maj" : "chargement" }); });
         apiGmail("boite", { onglet: "tous", max: 25 }).then(function(d) {
-          var triL = tkLireLocal("wl_mail_tri_" + d.boite, {}), trL = tkLireLocal("wl_mail_traites_" + d.boite, {});
+          var triL = tkLireLocal("wl_mail_tri2_" + d.boite, {}), trL = tkLireLocal("wl_mail_traites_" + d.boite, {});
           setTri(triL); setTraites(trL);
           setSt({ etat: "ok", msgs: d.messages || [], boite: d.boite, erreur: "" });
           // Tri IA des emails pas encore tries (les plus recents d'abord)
@@ -41185,10 +41241,10 @@
           if (!aTrier.length) return;
           setIaEnCours(true);
           apiGmail("tri", { ids: aTrier }).then(function(r) {
-            var n = Object.assign({}, tkLireLocal("wl_mail_tri_" + d.boite, {}));
+            var n = Object.assign({}, tkLireLocal("wl_mail_tri2_" + d.boite, {}));
             (r.tri || []).forEach(function(x) { n[x.id] = { cat: x.cat, resume: x.resume, tache: x.tache, t: Date.now() }; });
             var ks = Object.keys(n); if (ks.length > 400) ks.sort(function(a, b) { return (n[a].t || 0) - (n[b].t || 0); }).slice(0, ks.length - 400).forEach(function(k) { delete n[k]; });
-            tkEcrireLocal("wl_mail_tri_" + d.boite, n); setTri(n);
+            tkEcrireLocal("wl_mail_tri2_" + d.boite, n); setTri(n);
           }).catch(function() {}).then(function() { setIaEnCours(false); });
         }).catch(function(e) {
           setSt({ etat: e.code === "sans_boite" || e.code === "boite_inconnue" ? e.code : "erreur", msgs: [], boite: "", erreur: e.message });
@@ -41200,14 +41256,13 @@
         var ks = Object.keys(n); if (ks.length > 500) ks.sort(function(a, b) { return n[a] - n[b]; }).slice(0, ks.length - 500).forEach(function(k) { delete n[k]; });
         setTraites(n); tkEcrireLocal(cleTraites, n);
       };
-      var aTraiter = function(m) { var x = tri[m.id]; return !traites[m.id] && (m.nonlu || !!(x && x.tache)); };
+      var aTraiter = function(m) { var x = tri[m.id]; if (traites[m.id]) return false; if (x && x.tache) return true; return m.nonlu && !(x && x.cat === "info"); };
       var base = st.msgs.filter(function(m) { return onglet === "tous" || aTraiter(m); });
       var parCat = {}; st.msgs.filter(aTraiter).forEach(function(m) { var x = tri[m.id]; if (x) parCat[x.cat] = (parCat[x.cat] || 0) + 1; });
       var liste = cat ? base.filter(function(m) { return tri[m.id] && tri[m.id].cat === cat; }) : base;
       var nATraiter = st.msgs.filter(aTraiter).length;
       var tete = h("div", { className: "tk-c-tete" },
         h("h2", null, h(Icon, { name: "inbox", size: 18, color: "#f5a524" }), "Mes emails"),
-        st.boite ? h("span", { className: "tk-chip", title: st.boite }, h(Icon, { name: "mail-check", size: 12 }), "Gmail") : null,
         st.etat === "ok" || st.etat === "maj" ? h("div", { className: "tk-onglets" },
           h("button", { type: "button", className: onglet === "a_traiter" ? "actif" : "", onClick: function() { setOnglet("a_traiter"); } }, "À traiter ", h("span", { className: "cpt" }, nATraiter)),
           h("button", { type: "button", className: onglet === "tous" ? "actif" : "", onClick: function() { setOnglet("tous"); } }, "Tous")) : null,
@@ -41230,30 +41285,30 @@
             return h("button", { key: k, type: "button", className: "tk-jeton", style: { "--c": c.c, cursor: "pointer", opacity: cat && cat !== k ? 0.45 : 1, padding: "3px 10px", boxShadow: cat === k ? "0 0 0 2px " + c.c : "none" }, onClick: function() { setCat(cat === k ? null : k); } }, c.lib + " · " + parCat[k]);
           }))) : null,
         iaEnCours ? h("div", { className: "tk-astuce", style: { margin: "0 2px 8px", color: "#fde7b8" } }, h(Icon, { name: "sparkles", size: 13 }), "Tri des nouveaux emails par l'IA...") : null,
-        liste.length ? liste.map(function(m) {
+        liste.length ? (voirTout ? liste : liste.slice(0, 10)).map(function(m) {
           var x = tri[m.id], c = x ? TK_CATS_MAIL[x.cat] : null, est = ouvert === m.id;
-          return h("div", { key: m.id, className: "tk-fi", style: { display: "block", background: est ? "rgba(255,255,255,.045)" : undefined, border: est ? "1px solid rgba(255,255,255,.13)" : "1px solid transparent", cursor: "pointer" }, onClick: function() { if (!est) setOuvert(m.id); } },
-            h("div", { style: { display: "grid", gridTemplateColumns: "36px minmax(0,1fr) auto", gap: "2px 11px", alignItems: "center" } },
-              h("span", { className: "tk-av", style: { width: 36, height: 36, fontSize: 12, background: tkCoulExp(m.de), position: "relative", boxShadow: m.nonlu ? "0 0 0 2px #232843, 0 0 0 4px #f5a524" : "none" } }, tkInitiales(m.de)),
-              h("div", { style: { minWidth: 0 } },
-                h("div", { style: { fontSize: 12.5, fontWeight: m.nonlu ? 800 : 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, m.de),
-                h("div", { style: { fontSize: 13.5, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: m.nonlu ? "#f5f4f0" : "#cdd1db", fontWeight: m.nonlu ? 700 : 500 } }, m.objet)),
-              h("div", { style: { fontSize: 11.5, color: "#969db1", textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 } }, tkDateMail(m.date), m.pj ? h(Icon, { name: "paperclip", size: 13, color: "#969db1" }) : null)),
-            h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", margin: "6px 0 0 47px" } },
-              c ? h("span", { className: "tk-jeton", style: { "--c": c.c, padding: "2px 9px", fontSize: 11 } }, c.lib) : null,
-              traites[m.id] ? h("span", { className: "tk-chip" }, h(Icon, { name: "check", size: 12 }), "Traité") : null,
-              x && x.tache && !traites[m.id] ? h("span", { style: { fontSize: 12, color: "#cdd1db", display: "inline-flex", gap: 5, alignItems: "center", minWidth: 0 } }, h(Icon, { name: "sparkles", size: 13, color: "#f5a524" }), x.tache.titre) : null),
-            est ? h("div", { style: { marginTop: 10, padding: "12px 14px", borderRadius: 12, background: "rgba(10,12,22,.4)", border: "1px dashed rgba(245,165,36,.32)" }, onClick: function(e) { e.stopPropagation(); } },
-              h("div", { style: { fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".7px", color: "#fcd34d", display: "flex", gap: 6, alignItems: "center" } }, h(Icon, { name: "sparkles", size: 13 }), x ? "Résumé par l'IA" : "Début de l'email"),
-              h("p", { style: { marginTop: 6, color: "#cdd1db", lineHeight: 1.55, fontSize: 13 } }, (x && x.resume) || m.extrait),
-              h("div", { style: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" } },
-                h("button", { type: "button", className: "tk-btn-prim", onClick: function() { setMailTache(m); } }, h(Icon, { name: "list-plus", size: 14, color: "#241505" }), "En faire une tâche"),
-                h("button", { type: "button", className: "tk-btn-sec", onClick: function() { setLecture(m); } }, h(Icon, { name: "book-open", size: 14 }), "Lire"),
-                traites[m.id] ? h("button", { type: "button", className: "tk-btn-sec", onClick: function() { marquerTraite(m, false); } }, h(Icon, { name: "rotate-ccw", size: 14 }), "À traiter")
-                  : h("button", { type: "button", className: "tk-btn-sec", onClick: function() { marquerTraite(m, true); setOuvert(null); A.toast("Email marqué traité", "check-check", "Annuler", function() { marquerTraite(m, false); }); } }, h(Icon, { name: "check-check", size: 14 }), "Traité"),
-                h("a", { className: "tk-btn-sec", href: tkLienGmail(st.boite, m.threadId), target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" } }, h(Icon, { name: "external-link", size: 14 }), "Gmail"),
-                h("button", { type: "button", className: "tk-btn-sec", style: { marginLeft: "auto" }, title: "Replier", onClick: function() { setOuvert(null); } }, h(Icon, { name: "chevron-up", size: 14 })))) : null);
-        }) : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "mail-check", size: 30, color: "#34d399" })), onglet === "a_traiter" ? "Rien à traiter. Bravo." : "Aucun email."),
+          // Ligne compacte : expediteur + objet sur UNE ligne, categorie en pastille, tache proposee en sous-ligne
+          return h("div", { key: m.id, style: { borderRadius: 10, padding: "7px 8px", marginBottom: 2, background: est ? "rgba(255,255,255,.045)" : "transparent", border: est ? "1px solid rgba(255,255,255,.13)" : "1px solid transparent", cursor: est ? "default" : "pointer" }, onClick: function() { if (!est) setOuvert(m.id); } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 9, minWidth: 0 } },
+              h("span", { title: c ? c.lib : "", style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: c ? c.c : "rgba(255,255,255,.18)" } }),
+              h("span", { style: { fontSize: 12.5, fontWeight: m.nonlu ? 800 : 600, color: m.nonlu ? "#f5f4f0" : "#cdd1db", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "38%", flexShrink: 0 } }, m.de),
+              h("span", { style: { fontSize: 12.5, color: m.nonlu ? "#f5f4f0" : "#969db1", fontWeight: m.nonlu ? 650 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 } }, m.objet),
+              m.pj ? h(Icon, { name: "paperclip", size: 12, color: "#969db1" }) : null,
+              traites[m.id] ? h(Icon, { name: "check", size: 13, color: "#34d399" }) : null,
+              h("span", { style: { fontSize: 11, color: "#697089", flexShrink: 0, minWidth: 34, textAlign: "right" } }, tkDateMail(m.date))),
+            x && x.tache && !traites[m.id] && !est ? h("div", { style: { fontSize: 11.5, color: "#969db1", margin: "3px 0 0 17px", display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, h(Icon, { name: "sparkles", size: 12, color: "#f5a524" }), h("span", { style: { overflow: "hidden", textOverflow: "ellipsis" } }, x.tache.titre)) : null,
+            est ? h("div", { style: { margin: "8px 0 2px 17px" }, onClick: function(e) { e.stopPropagation(); } },
+              h("p", { style: { margin: 0, color: "#cdd1db", lineHeight: 1.5, fontSize: 12.8 } }, h(Icon, { name: "sparkles", size: 12, color: "#fcd34d", style: { marginRight: 5 } }), (x && x.resume) || m.extrait),
+              x && x.tache ? h("div", { style: { fontSize: 12, color: "#fde7b8", marginTop: 6 } }, "Tâche proposée : " + x.tache.titre) : null,
+              h("div", { style: { display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap" } },
+                h("button", { type: "button", className: "tk-mini", style: { background: "rgba(245,165,36,.18)", borderColor: "rgba(245,165,36,.5)", color: "#fde7b8" }, onClick: function() { setMailTache(m); } }, h(Icon, { name: "list-plus", size: 13 }), "Tâche"),
+                h("button", { type: "button", className: "tk-mini", onClick: function() { setLecture(m); } }, h(Icon, { name: "book-open", size: 13 }), "Lire"),
+                traites[m.id] ? h("button", { type: "button", className: "tk-mini", onClick: function() { marquerTraite(m, false); } }, h(Icon, { name: "rotate-ccw", size: 13 }), "À traiter")
+                  : h("button", { type: "button", className: "tk-mini", onClick: function() { marquerTraite(m, true); setOuvert(null); A.toast("Email marqué traité", "check-check", "Annuler", function() { marquerTraite(m, false); }); } }, h(Icon, { name: "check-check", size: 13 }), "Traité"),
+                h("a", { className: "tk-mini", href: tkLienGmail(st.boite, m.threadId), target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" } }, h(Icon, { name: "external-link", size: 13 }), "Gmail"),
+                h("button", { type: "button", className: "tk-mini", style: { marginLeft: "auto" }, title: "Replier", onClick: function() { setOuvert(null); } }, h(Icon, { name: "chevron-up", size: 13 })))) : null);
+        }).concat(liste.length > 10 ? [h("button", { key: "voir", type: "button", className: "tk-lien", style: { margin: "6px 0 0 8px" }, onClick: function() { setVoirTout(!voirTout); } }, voirTout ? "Réduire" : "Voir les " + (liste.length - 10) + " autres", h(Icon, { name: voirTout ? "chevron-up" : "chevron-down", size: 14, color: "#fcd34d" }))] : [])
+        : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "mail-check", size: 30, color: "#34d399" })), onglet === "a_traiter" ? "Rien à traiter. Bravo." : "Aucun email."),
         h("div", { className: "tk-astuce", style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.07)" } }, h(Icon, { name: "shield-check", size: 13 }), "Lecture seule · seuls les nouveaux emails sont triés par l'IA (environ 0,2 F par email)"),
         lecture ? h(TkLectureEmail, { id: lecture.id, onFermer: function() { setLecture(null); }, onTache: function() { var m = lecture; setLecture(null); setMailTache(m); }, onTraite: function() { marquerTraite(lecture, true); setLecture(null); } }) : null,
         mailTache ? h(TkModaleMailTache, { A: A, mail: mailTache, tri: tri[mailTache.id], boite: st.boite, onFermer: function() { setMailTache(null); }, onCree: function(n) { marquerTraite(mailTache, true); setMailTache(null); setOuvert(null); A.toast("Tâche créée, email marqué traité", "list-plus"); } }) : null);
@@ -41292,6 +41347,9 @@
       if (grappe.length) placer();
       var d = new Date(maintenant), mNow = d.getHours() * 60 + d.getMinutes();
       var lignes = []; for (var x = H0; x < H1; x++) lignes.push(h("div", { key: "h" + x, style: { position: "absolute", left: 0, right: 0, top: (x - H0) * ph + 2, borderTop: "1px dashed rgba(255,255,255,.065)" } }, h("span", { style: { position: "absolute", top: -8, left: 0, fontSize: 10.5, color: "#697089", fontWeight: 600, background: "#232843", paddingRight: 6 } }, x + "h")));
+      if (!blocs.length && !journee.length && !horsGrille.length) {
+        return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide", style: { padding: "18px 10px" } }, h("div", { style: { marginBottom: 6 } }, h(Icon, { name: "coffee", size: 24, color: "#34d399" })), "Aucun rendez-vous aujourd'hui."));
+      }
       return h("section", { className: "tk-carte" }, tete,
         journee.length || horsGrille.length ? h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 } },
           journee.map(function(e, i) { return h("div", { key: "j" + i, className: "tk-chip", style: { justifyContent: "flex-start", padding: "4px 8px" } }, h(Icon, { name: "sun", size: 12 }), e.titre); }),
@@ -41314,20 +41372,36 @@
       var _st = useState({}); var statuts = _st[0], setStatuts = _st[1];
       var _sa = useState({}); var saisies = _sa[0], setSaisies = _sa[1];
       var domaineOk = function(a) { return /^[a-z0-9._%+-]+@wallislabel\.nc$/i.test(String(a || "").trim()); };
-      var gens = useMemo(function() {
-        var out = [], emailsBureau = {};
+      // Qui fait partie du bureau : choisi par l'administrateur (parametres
+      // "emails_bureau" = liste de cles u:<id>). Seuls ces comptes ont une boite
+      // personnelle dans l'app. null = pas encore choisi.
+      var rowBureau = (ctx.parametres || []).filter(function(p) { return p && p.categorie === "emails_bureau"; })[0] || null;
+      var membresBureau = (function() { if (!rowBureau) return null; try { var l = JSON.parse(rowBureau.valeur || "[]"); return Array.isArray(l) ? l : []; } catch (e) { return []; } })();
+      var _ch = useState(false); var choixOuvert = _ch[0], setChoixOuvert = _ch[1];
+      var comptes = useMemo(function() {
+        var out = [], vus = {};
         (ctx.dbAppUsers || []).filter(function(u) { return u.statut !== "Inactif"; }).forEach(function(u) {
-          var em = String(u.email || "").toLowerCase(); emailsBureau[em] = true;
-          out.push({ cle: "u:" + u.id, nom: u.nom || em, role: u.role || "Utilisateur", type: "Bureau", defaut: domaineOk(em) ? em : "" });
+          var em = String(u.email || "").toLowerCase(); vus[em] = true;
+          out.push({ cle: "u:" + u.id, nom: u.nom || em, email: em, role: u.role || "Utilisateur", type: "Bureau", defaut: domaineOk(em) ? em : "" });
         });
-        if (moi && !emailsBureau[moi]) { emailsBureau[moi] = true; out.unshift({ cle: "u:" + moi, nom: "Moi (" + moi + ")", role: "Administrateur", type: "Bureau", defaut: domaineOk(moi) ? moi : "" }); }
+        if (moi && !vus[moi]) out.unshift({ cle: "u:" + moi, nom: "Moi (" + moi + ")", email: moi, role: "Administrateur", type: "Bureau", defaut: domaineOk(moi) ? moi : "" });
+        return out;
+      }, [ctx.dbAppUsers, moi]);
+      var basculerMembre = function(cle) {
+        var l = (membresBureau || []).slice(), i = l.indexOf(cle);
+        if (i >= 0) l.splice(i, 1); else l.push(cle);
+        var v = JSON.stringify(l);
+        (rowBureau ? ctx.updateParametre(rowBureau.id, { valeur: v }) : ctx.addParametre("emails_bureau", v, 0)).catch(function() {});
+      };
+      var gens = useMemo(function() {
+        var out = comptes.filter(function(c) { return membresBureau && membresBureau.indexOf(c.cle) >= 0; });
         // Machines : celles que les employes choisissent dans l'APP Employes
         // (engins de type sondeuse) ; leurs equipes lisent la boite de la machine
         (ctx.equipements || []).filter(function(e) { return e && e.Categorie === "Engin" && /sondeuse/i.test(e.Type || ""); })
           .sort(function(a, b) { return String(a.Title || a.Nom).localeCompare(String(b.Title || b.Nom)); })
           .forEach(function(e) { out.push({ cle: "m:" + e.Id, nom: e.Title || e.Nom || "Machine", role: (e.Type || "Sondeuse") + (e.Localisation ? " · " + e.Localisation : ""), type: "Machine", defaut: "" }); });
         return out;
-      }, [ctx.dbAppUsers, ctx.equipements, moi]);
+      }, [comptes, ctx.equipements, rowBureau ? rowBureau.valeur : ""]);
       var adresse = function(g) { return (corr && corr[g.cle]) || g.defaut; };
       var tester = function(cle, a) {
         if (!domaineOk(a)) { setStatuts(function(p) { var n = Object.assign({}, p); n[cle] = a ? "hors" : "manquante"; return n; }); return Promise.resolve(); }
@@ -41344,7 +41418,7 @@
       useEffect(function() {
         if (!corr) return;
         // Test de toutes les boites, 3 a la fois (jeton seulement : aucun email lu)
-        var file = gens.slice(), actifs = 0, stop = false;
+        var file = gens.filter(function(g) { return !statuts[g.cle]; }), actifs = 0, stop = false;
         var suite = function() {
           while (!stop && actifs < 3 && file.length) {
             var g = file.shift(); actifs++;
@@ -41353,7 +41427,7 @@
         };
         suite();
         return function() { stop = true; };
-      }, [corr === null, gens.length]);
+      }, [corr === null, gens.map(function(g) { return g.cle; }).join(",")]);
       var enregistrer = function(g, valeur) {
         var v = String(valeur || "").trim().toLowerCase();
         var s = Object.assign({}, saisies); delete s[g.cle]; setSaisies(s);
@@ -41390,7 +41464,18 @@
           !tableOk ? h("div", { style: { padding: "10px 12px", borderRadius: 10, background: "rgba(245,165,36,.1)", border: "1px solid rgba(245,165,36,.35)", color: "#fde68a", fontSize: 12.5, marginBottom: 12 } }, "Pour pouvoir corriger une adresse, exécute d'abord le script « sql_emails_boites.sql » (base WALLIS-LABEL). En attendant, les adresses viennent des fiches.") : null,
           h("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
             h("span", { className: "tk-chip", style: { color: "#86efac", padding: "4px 10px" } }, nOk + " boîtes reliées"),
-            nA ? h("span", { className: "tk-chip", style: { color: "#fde68a", padding: "4px 10px" } }, nA + " à compléter ou vérifier") : null),
+            nA ? h("span", { className: "tk-chip", style: { color: "#fde68a", padding: "4px 10px" } }, nA + " à compléter ou vérifier") : null,
+            h("button", { type: "button", className: "tk-btn-sec", style: { marginLeft: "auto" }, onClick: function() { setChoixOuvert(!choixOuvert); } }, h(Icon, { name: "users", size: 14 }), "Choisir les personnes du bureau" + (membresBureau ? " (" + membresBureau.length + ")" : ""))),
+          (choixOuvert || membresBureau === null) ? h("div", { style: { padding: 12, borderRadius: 14, background: "rgba(10,12,22,.4)", border: "1px solid rgba(245,165,36,.35)", marginBottom: 14 } },
+            h("div", { style: { fontSize: 13.5, fontWeight: 700, marginBottom: 4 } }, "Qui fait partie du bureau ?"),
+            h("div", { style: { fontSize: 12, color: "#969db1", marginBottom: 10, lineHeight: 1.5 } }, "Coche les directeurs et le personnel du bureau : eux seuls ont une boîte mail personnelle dans l'app (Mon tableau de bord). Les autres comptes n'en ont pas."),
+            h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, comptes.map(function(c) {
+              var on = !!(membresBureau && membresBureau.indexOf(c.cle) >= 0);
+              return h("button", { key: c.cle, type: "button", title: c.email, onClick: function() { basculerMembre(c.cle); }, style: { display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 11px 5px 5px", borderRadius: 999, border: "1px solid " + (on ? "#34d399" : "rgba(255,255,255,.13)"), background: on ? "rgba(52,211,153,.14)" : "rgba(255,255,255,.03)", color: on ? "#f5f4f0" : "#cdd1db", fontSize: 12.5, fontWeight: 650, cursor: "pointer", fontFamily: "inherit" } },
+                h("span", { className: "tk-av", style: { width: 22, height: 22, fontSize: 9, background: tkCouleur(c.cle) } }, tkInitiales(c.nom)), c.nom, on ? h(Icon, { name: "check", size: 13, color: "#34d399" }) : null);
+            })),
+            h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 10 } }, h("button", { type: "button", className: "tk-btn-prim", onClick: function() { setChoixOuvert(false); } }, h(Icon, { name: "check", size: 14, color: "#241505" }), "Terminé"))) : null,
+          membresBureau && membresBureau.length === 0 && !choixOuvert ? h("div", { className: "tk-astuce", style: { margin: "0 2px 10px" } }, h(Icon, { name: "info", size: 13 }), "Aucune personne du bureau choisie : clique « Choisir les personnes du bureau ».") : null,
           corr === null ? h("div", { className: "tk-vide" }, "Chargement...") : gens.map(function(g, gi) {
             var val = saisies[g.cle] !== undefined ? saisies[g.cle] : adresse(g);
             var titreGroupe = (gi === 0 || gens[gi - 1].type !== g.type) ? h("div", { key: "g-" + g.type, style: { display: "flex", alignItems: "center", gap: 8, margin: gi === 0 ? "4px 0 4px" : "16px 0 4px", fontSize: 11.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".8px", color: g.type === "Machine" ? "#7dd3fc" : "#fde7b8" } }, h(Icon, { name: g.type === "Machine" ? "hard-hat" : "briefcase", size: 14 }), g.type === "Machine" ? "Machines · lues par leur équipe dans l'APP Employés" : "Bureau · boîte personnelle") : null;
@@ -45567,15 +45652,24 @@
             var rowP = (parametres || []).find(function(p) { return p && p.categorie === "personnel_data"; });
             var pers = rowP && rowP.valeur ? (JSON.parse(rowP.valeur) || []) : [];
             var a0 = new Date(); a0.setHours(0, 0, 0, 0);
+            var cdds = [];
             pers.forEach(function(emp) {
               if (!emp || emp.roleMecanicien || emp.typeContrat !== "CDD" || !emp.dateFinContrat) return;
               if (emp.dateEmbauche && tkLire(emp.dateEmbauche).getTime() > a0.getTime()) return; // pas encore embauche
               var reste = Math.round((tkLire(emp.dateFinContrat).getTime() - a0.getTime()) / 86400000);
               if (isNaN(reste) || reste < 0 || reste > 15) return;
               var nomE = ((emp.prenom || "") + " " + (emp.nom || "")).trim() || "un salarié";
-              add("cdd-" + (emp.code || emp.id) + "-" + String(emp.dateFinContrat).substring(0, 10), 1, "personnel", "calendar-clock", "#f5a524",
-                "CDD de " + nomE + " : fin " + (reste === 0 ? "aujourd'hui" : "dans " + tkPl(reste, "jour", "jours")), "Prolonger par avenant ou préparer la sortie", "Personnel", reste <= 7 ? "auj" : "semaine");
+              cdds.push({ nom: nomE, reste: reste, cle: (emp.code || emp.id) + "-" + String(emp.dateFinContrat).substring(0, 10) });
             });
+            // UNE seule ligne pour tous les CDD qui finissent (sinon la liste est noyee)
+            cdds.sort(function(a, b) { return a.reste - b.reste; });
+            if (cdds.length === 1) {
+              add("cdd-" + cdds[0].cle, 1, "personnel", "calendar-clock", "#f5a524", "CDD de " + cdds[0].nom + " : fin " + (cdds[0].reste === 0 ? "aujourd'hui" : "dans " + tkPl(cdds[0].reste, "jour", "jours")), "Prolonger par avenant ou préparer la sortie", "Personnel", cdds[0].reste <= 7 ? "auj" : "semaine");
+            } else if (cdds.length > 1) {
+              var tCourt = function(n) { var p = String(n).split(/\s+/); return p.length > 1 ? p[p.length - 1].charAt(0) + p[p.length - 1].slice(1).toLowerCase() : n; };
+              add("cdd-groupe-" + cdds.map(function(c) { return c.cle; }).join("_"), 1, "personnel", "calendar-clock", "#f5a524",
+                cdds.length + " CDD finissent dans les 15 jours", cdds.map(function(c) { return tCourt(c.nom) + " " + c.reste + " j"; }).join(", "), "Personnel", cdds[0].reste <= 7 ? "auj" : "semaine");
+            }
           } catch (e) {}
         }
         return out;

@@ -53,6 +53,13 @@ async function corrections(cles) {
   const m = {}; (rows || []).forEach((x) => { m[x.cle] = x.email_societe; });
   return m;
 }
+async function membresBureau() {
+  const r = await fetch(urlSupabase() + '/rest/v1/parametres?select=valeur&categorie=eq.emails_bureau', { headers: service() });
+  if (!r.ok) { const e = new Error('lecture du bureau impossible'); e.indispo = true; throw e; }
+  const rows = await r.json();
+  if (!Array.isArray(rows) || !rows.length) return null;
+  try { const l = JSON.parse(rows[0].valeur || '[]'); return Array.isArray(l) ? l.map(String) : []; } catch (e) { return []; }
+}
 async function emailsConnexionBureau() {
   const r = await fetch(urlSupabase() + '/rest/v1/app_users?select=id,email', { headers: service() });
   if (!r.ok) { const e = new Error('lecture des comptes impossible'); e.indispo = true; throw e; }
@@ -83,6 +90,10 @@ async function identite(req, body) {
   const a = await identiteAdmin(req);
   if (!a) return null;
   const cleU = 'u:' + (a.fiche ? a.fiche.id : a.email);
+  // Seules les personnes du BUREAU (liste choisie dans Administration > Emails)
+  // ont une boite personnelle. Liste pas encore choisie = tout le monde.
+  const membres = await membresBureau();
+  if (membres && membres.indexOf(cleU) < 0) return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, boite: null, horsBureau: true, estAdmin: a.estAdmin };
   const ov = await corrections([cleU]);
   const reliee = adresseDuDomaine(ov[cleU]);
   if (reliee && reliee !== a.email) {
@@ -167,6 +178,7 @@ module.exports = async function handler(req, res) {
     catch (e) { return res.status(200).json({ ok: false, etape: e.etape || 'inconnue', code: e.code || null, error: e.code === 'invalid_grant' ? 'Boite introuvable chez Google' : e.message }); }
   }
 
+  if (moi.horsBureau) return res.status(409).json({ ok: false, code: 'hors_bureau', error: 'Boîte mail réservée aux personnes du bureau (Administration › Emails)' });
   if (moi.conflit) return res.status(409).json({ ok: false, code: 'conflit', error: 'L\'adresse reliée à ton compte est celle d\'un autre compte : corrige-la dans Administration › Emails' });
   if (!moi.boite) return res.status(409).json({ ok: false, code: 'sans_boite', error: moi.type === 'employe' ? 'La boîte mail de cette machine n\'est pas encore renseignée' : 'Ton adresse @' + DOMAINE + ' n\'est pas encore renseignée' });
   let jeton;
@@ -236,6 +248,7 @@ module.exports = async function handler(req, res) {
       const consigne = 'Tu tries les emails professionnels recus par un employe de bureau d\'une entreprise de forage en Nouvelle-Caledonie (sondages miniers, ateliers, chantiers). '
         + 'Pour CHAQUE email, renvoie : cat parmi "client" (demande d\'un client ou prospect), "facture" (facture, paiement, devis fournisseur), "echeance" (date limite, contrat, declaration, rendez-vous administratif), "livraison" (expedition, reception), "rh" (personnel, paie, conges, recrutement), "info" (pour information, newsletter, notification automatique) ; '
         + 'resume : une phrase en francais (140 caracteres maximum) ; tache : null si rien a faire (newsletter, information, notification), sinon { "titre": action concrete commencant par un verbe (70 caracteres maximum), "ech": nombre de jours pour le faire (0 a 30), "prio": "normale", "haute" ou "urgente" }. '
+        + 'Les NOTIFICATIONS AUTOMATIQUES sont toujours cat "info" et tache null : expediteur noreply / no-reply / ne-pas-repondre, Mail Delivery Subsystem, avis de non-remise, alertes Google ou de securite, accuses de reception, rapports ou documents signes envoyes par une application, newsletters. '
         + 'Reponds UNIQUEMENT avec un objet JSON valide de la forme {"emails":[{"id":"...","cat":"...","resume":"...","tache":null}]} sans aucun autre texte.';
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
