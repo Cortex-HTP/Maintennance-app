@@ -39989,6 +39989,17 @@
     function tkCourt(nom) { var p = String(nom || "").trim().split(/\s+/); var w = p[0] || ""; return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ""; }
     function tkPersonneDe(email, nom) { var n = String(nom || "").trim() || String(email || "?").split("@")[0]; return { email: String(email || "").toLowerCase(), nom: n, court: tkCourt(n), ini: tkInitiales(n), c: tkCouleur(email) }; }
     // Comptes de l'app (app_users actifs) = les personnes a qui confier une tache
+    // Emails des personnes du bureau (Parametres > Boites mail > personnes du
+    // bureau, cles u:<id app_users> ou u:<email>). null = pas encore choisi.
+    function tkBureauEmails(parametres, appUsers) {
+      var row = (parametres || []).filter(function(p) { return p && p.categorie === "emails_bureau"; })[0];
+      if (!row) return null;
+      var l = []; try { l = JSON.parse(row.valeur || "[]"); } catch (e) { l = []; }
+      if (!Array.isArray(l)) l = [];
+      var parId = {}; (appUsers || []).forEach(function(u) { parId[String(u.id)] = String(u.email || "").toLowerCase(); });
+      var s = {}; l.forEach(function(c) { var k = String(c || "").replace(/^u:/, ""); var em = parId[k] || (k.indexOf("@") > 0 ? k.toLowerCase() : ""); if (em) s[em] = true; });
+      return s;
+    }
     function tkGens(appUsers, moi) {
       var out = [], vus = {};
       (appUsers || []).forEach(function(u) {
@@ -40398,7 +40409,7 @@
       if (t.description) out.push(h("span", { key: "d", className: "tk-chip", title: t.description }, h(Icon, { name: "align-left", size: 12 })));
       return out;
     }
-    function tkApercu(r, opts, retirer) {
+    function tkApercu(r, opts, retirer, sansMoi) {
       if (!r.titre && !r.jetons.length) return h("span", { className: "tk-aide" }, "Tape ta tâche en langage courant : la date, la personne et la priorité sont reconnues toutes seules.");
       var STYLE = { ech: ["calendar", "#f5a524"], heure: ["clock", "#f5a524"], pour: ["user", null], prio: ["flag", null], lien: ["link-2", "#2dd4bf"], recur: ["repeat", "#a78bfa"] };
       var out = [];
@@ -40408,7 +40419,7 @@
         out.push(h("span", { key: "j" + i, className: "tk-jeton", style: { "--c": c } }, h(Icon, { name: st[0], size: 13 }), j.lib,
           h("button", { type: "button", title: "Retirer", onClick: function(e) { e.preventDefault(); retirer(j); } }, h(Icon, { name: "x", size: 12 }))));
       });
-      if (!r.pour && opts.moiP) out.push(h("span", { key: "moi", className: "tk-jeton", style: { "--c": opts.moiP.c, opacity: 0.55 } }, h(Icon, { name: "user", size: 13 }), "Pour moi"));
+      if (!sansMoi && !r.pour && opts.moiP) out.push(h("span", { key: "moi", className: "tk-jeton", style: { "--c": opts.moiP.c, opacity: 0.55 } }, h(Icon, { name: "user", size: 13 }), "Pour moi"));
       return out;
     }
     // Saisie rapide avec apercu des elements reconnus
@@ -40420,13 +40431,52 @@
         if (!props.focusCle) return;
         if (inputRef.current) { inputRef.current.focus(); try { inputRef.current.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {} }
       }, [props.focusCle]);
+      // Pour qui : choisi dans la liste (clic sur "Pour moi") ; un @prenom tape
+      // dans le texte reste prioritaire. "__tous__" = une tache par personne du bureau.
+      var _pc = useState(null); var pourChoisi = _pc[0], setPourChoisi = _pc[1];
+      var _po = useState(false); var choixOuvert = _po[0], setChoixOuvert = _po[1];
+      var _ad = useState(false); var aDroite = _ad[0], setADroite = _ad[1];
+      var o = props.opts || {}, moi = o.moi;
+      var gensChoix = (o.gens || []).slice().sort(function(a, b) {
+        if (a.email === moi) return -1; if (b.email === moi) return 1;
+        var ba = o.bureau ? (o.bureau[a.email] ? 0 : 1) : 0, bb = o.bureau ? (o.bureau[b.email] ? 0 : 1) : 0;
+        return (ba - bb) || String(a.nom).localeCompare(String(b.nom));
+      });
+      var equipe = o.bureau ? gensChoix.filter(function(g) { return o.bureau[g.email] || g.email === moi; }) : gensChoix;
       var r = tkAnalyser(texte, props.opts);
       var valider = function() {
         var a = tkAnalyser(texte, props.opts);
         if (!a.titre) { setSecoue(true); setTimeout(function() { setSecoue(false); }, 400); return; }
-        props.onCreer(a); setTexte("");
+        if (!a.pour && pourChoisi === "__tous__") {
+          equipe.forEach(function(g) { props.onCreer(Object.assign({}, a, { pour: g.email, _lot: equipe.length })); });
+        } else {
+          if (!a.pour && pourChoisi) a.pour = pourChoisi;
+          props.onCreer(a);
+        }
+        setTexte(""); setPourChoisi(null); setChoixOuvert(false);
         setTimeout(function() { if (inputRef.current) inputRef.current.focus(); }, 0);
       };
+      var choisir = function(v) { setPourChoisi(v); setChoixOuvert(false); if (inputRef.current) inputRef.current.focus(); };
+      var pChoisi = pourChoisi && pourChoisi !== "__tous__" ? tkPersonne(o.gens || [], pourChoisi) : null;
+      var jetonPour = r.pour ? null : h("span", { key: "pour", style: { position: "relative", display: "inline-flex" } },
+        h("button", { type: "button", className: "tk-jeton", title: "Choisir pour qui est la tâche", style: { "--c": pChoisi ? pChoisi.c : (pourChoisi === "__tous__" ? "#2dd4bf" : (o.moiP ? o.moiP.c : "#f5a524")), cursor: "pointer", padding: "3px 8px 3px 9px", opacity: pourChoisi ? 1 : 0.8 }, onClick: function(e) { e.preventDefault(); var rc = e.currentTarget.getBoundingClientRect(); setADroite(rc.left + 260 > window.innerWidth - 12); setChoixOuvert(!choixOuvert); } },
+          h(Icon, { name: pourChoisi === "__tous__" ? "users" : "user", size: 13 }),
+          pChoisi ? "Pour " + (pChoisi.court || pChoisi.nom) : (pourChoisi === "__tous__" ? (o.bureau ? "Pour tout le bureau (" : "Pour toute l'équipe (") + equipe.length + ")" : "Pour moi"),
+          h(Icon, { name: "chevron-down", size: 12 })),
+        choixOuvert ? h("div", { style: { position: "fixed", inset: 0, zIndex: 60 }, onClick: function(e) { e.preventDefault(); setChoixOuvert(false); } }) : null,
+        choixOuvert ? h("div", { style: { position: "absolute", top: "calc(100% + 6px)", left: aDroite ? "auto" : 0, right: aDroite ? 0 : "auto", zIndex: 61, width: 250, maxHeight: 320, overflowY: "auto", background: "#1d2135", border: "1px solid rgba(255,255,255,.14)", borderRadius: 12, padding: 6, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }, onClick: function(e) { e.preventDefault(); } },
+          equipe.length > 1 ? h("button", { type: "button", onClick: function() { choisir("__tous__"); }, style: { display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 8px", border: "none", borderRadius: 8, background: pourChoisi === "__tous__" ? "rgba(45,212,191,.14)" : "transparent", color: "#f5f4f0", fontSize: 12.5, fontWeight: 650, cursor: "pointer", textAlign: "left" } },
+            h("span", { className: "tk-av", style: { width: 22, height: 22, background: "#2dd4bf" } }, h(Icon, { name: "users", size: 12, color: "#14131c" })),
+            h("span", { style: { flex: 1 } }, o.bureau ? "Tout le bureau" : "Toute l'équipe", h("span", { style: { display: "block", fontSize: 11, color: "#969db1", fontWeight: 500 } }, equipe.length + " personnes, une tâche chacun"))) : null,
+          gensChoix.map(function(g, i) {
+            var sel = g.email === moi ? !pourChoisi : pourChoisi === g.email;
+            var horsBureau = o.bureau && !o.bureau[g.email] && g.email !== moi;
+            var prevHors = i > 0 && o.bureau && !o.bureau[gensChoix[i - 1].email] && gensChoix[i - 1].email !== moi;
+            return [horsBureau && !prevHors ? h("div", { key: "sep", style: { fontSize: 10.5, color: "#697089", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".6px", padding: "8px 8px 3px" } }, "Autres comptes") : null,
+              h("button", { key: g.email, type: "button", onClick: function() { choisir(g.email === moi ? null : g.email); }, style: { display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "6px 8px", border: "none", borderRadius: 8, background: sel ? "rgba(245,165,36,.14)" : "transparent", color: "#f5f4f0", fontSize: 12.5, fontWeight: sel ? 700 : 550, cursor: "pointer", textAlign: "left" } },
+                h(TkAvatar, { p: g, taille: "sm" }), h("span", { style: { flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, g.email === moi ? "Moi" : g.nom),
+                sel ? h(Icon, { name: "check", size: 13, color: "#fcd34d" }) : null)];
+          })) : null);
       var retirer = function(j) {
         // brut peut contenir des espaces multiples (texte deja ampute des autres elements)
         var mots = String(j.brut || "").trim().split(/\s+/).filter(function(w) { return w; }).map(function(w) { return w.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&"); });
@@ -40443,7 +40493,7 @@
           h(Icon, { name: props.compact ? "plus" : "sparkles", size: props.compact ? 16 : 19, color: "#f5a524" }),
           h("input", { ref: inputRef, value: texte, placeholder: props.placeholder, autoComplete: "off", onChange: function(e) { setTexte(e.target.value); }, onKeyDown: function(e) { if (e.key === "Enter") { e.preventDefault(); valider(); } } }),
           props.compact ? null : h("button", { type: "button", className: "tk-btn-prim", onClick: valider }, h(Icon, { name: "plus", size: 14, color: "#241505" }), "Ajouter")),
-        (texte.trim() || !props.compact) ? h("div", { className: "tk-apercu" }, tkApercu(r, props.opts, retirer)) : null);
+        (texte.trim() || !props.compact) ? h("div", { className: "tk-apercu" }, tkApercu(r, props.opts, retirer, true), jetonPour) : null);
     }
 
     // Actions partagees (page Taches + Mon tableau de bord) : creation,
@@ -40459,7 +40509,8 @@
       var machines = useMemo(function() {
         return (ctx.equipements || []).map(function(e) { return { id: e.Id, nom: e.Title || e.Nom }; }).filter(function(m) { return m.nom; });
       }, [ctx.equipements]);
-      var opts = { gens: gens, moi: moi, moiP: moiP, chantiers: chantiers, machines: machines };
+      var bureau = useMemo(function() { return tkBureauEmails(ctx.parametres, ctx.dbAppUsers); }, [ctx.parametres, ctx.dbAppUsers]);
+      var opts = { gens: gens, moi: moi, moiP: moiP, chantiers: chantiers, machines: machines, bureau: bureau };
       var _t = useState(null); var toastU = _t[0], setToastU = _t[1];
       var _f = useState(null); var flashId = _f[0], setFlashId = _f[1];
       useEffect(function() { if (!toastU) return; var tm = setTimeout(function() { setToastU(null); }, 5500); return function() { clearTimeout(tm); }; }, [toastU]);
@@ -40470,7 +40521,7 @@
       var creer = function(r, defauts) {
         var t = tkNouvelle(r, defauts || {}, moi, nomCourt);
         return ctx.creerTache(t).then(function(n) {
-          if (n) { setFlashId(n.id); toast(n.pour === moi ? "Tâche ajoutée" : "Tâche créée pour " + nomCourt(n.pour), "list-plus"); }
+          if (n) { setFlashId(n.id); toast(r && r._lot > 1 ? "Tâche créée pour " + r._lot + " personnes (une chacun)" : (n.pour === moi ? "Tâche ajoutée" : "Tâche créée pour " + nomCourt(n.pour)), "list-plus"); }
           return n;
         });
       };
@@ -41006,15 +41057,7 @@
       // bureau (Parametres > Boites mail > personnes du bureau), meme a 0,
       // + toute personne qui a des taches ouvertes. Bureau pas encore choisi =
       // tous les comptes actifs.
-      var bureauEm = (function() {
-        var row = (ctx.parametres || []).filter(function(p) { return p && p.categorie === "emails_bureau"; })[0];
-        if (!row) return null;
-        var l = []; try { l = JSON.parse(row.valeur || "[]"); } catch (e) { l = []; }
-        if (!Array.isArray(l)) l = [];
-        var parId = {}; (ctx.dbAppUsers || []).forEach(function(u) { parId[String(u.id)] = String(u.email || "").toLowerCase(); });
-        var s = {}; l.forEach(function(c) { var k = String(c || "").replace(/^u:/, ""); var em = parId[k] || (k.indexOf("@") > 0 ? k.toLowerCase() : ""); if (em) s[em] = true; });
-        return s;
-      })();
+      var bureauEm = A.opts.bureau;
       var charge = gens.map(function(g) {
         var ts = ouvertesEq.filter(function(t) { return t.pour === g.email; });
         var r = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; }).length;
