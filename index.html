@@ -41532,29 +41532,51 @@
       var A = props.A;
       var _s = useState({ etat: "chargement", ev: [], erreur: "" }); var st = _s[0], setSt = _s[1];
       var _n = useState(Date.now()); var maintenant = _n[0], setMaintenant = _n[1];
+      // Jour affiche (fleches < > ; clic sur « Aujourd'hui » pour revenir)
+      var _j = useState(localISODate()); var jour = _j[0], setJour = _j[1];
+      var aujIso = localISODate(new Date(maintenant));
+      var estAuj = jour === aujIso;
       useEffect(function() {
-        apiGmail("agenda").then(function(d) { setSt({ etat: "ok", ev: d.evenements || [], erreur: "" }); })
-          .catch(function(e) { setSt({ etat: e.code === "sans_boite" ? "sans_boite" : "erreur", ev: [], erreur: e.message }); });
         var t = setInterval(function() { setMaintenant(Date.now()); }, 60000);
         return function() { clearInterval(t); };
       }, []);
+      useEffect(function() {
+        var stop = false;
+        setSt(function(prev) { return { etat: prev.etat === "ok" ? "ok" : "chargement", ev: prev.ev, erreur: "", charge: true }; });
+        apiGmail("agenda", { jour: jour }).then(function(d) { if (!stop) setSt({ etat: "ok", ev: d.evenements || [], erreur: "" }); })
+          .catch(function(e) { if (!stop) setSt({ etat: e.code === "sans_boite" ? "sans_boite" : "erreur", ev: [], erreur: e.message }); });
+        // Nouveau jour : on se recale tout seul (ligne « maintenant » ou 1er rendez-vous)
+        defilRef.current.premier = true; defilRef.current.manuel = 0;
+        return function() { stop = true; };
+      }, [jour]);
+      var changerJour = function(n) { var d = tkLire(jour); d.setDate(d.getDate() + n); setJour(localISODate(d)); };
       // La carte (hauteur fixe) suit l'heure reelle : la ligne rouge « maintenant »
       // est gardee au tiers haut, recalee chaque minute. Si on fait defiler a la
       // main, on laisse tranquille 2 minutes.
-      var carteRef = useRef(null), ligneRef = useRef(null), defilRef = useRef({ prog: 0, manuel: 0, premier: true });
+      // Un autre jour : on se place une fois sur le 1er rendez-vous.
+      var carteRef = useRef(null), ligneRef = useRef(null), premierRef = useRef(null), defilRef = useRef({ prog: 0, manuel: 0, premier: true });
       useEffect(function() {
-        var c = carteRef.current; if (!c || st.etat !== "ok") return;
+        var c = carteRef.current; if (!c || st.etat !== "ok" || st.charge) return;
+        if (!estAuj && !defilRef.current.premier) return;
         if (Date.now() - defilRef.current.manuel < 120000) return;
         if (c.scrollHeight <= c.clientHeight + 2) return;
         var cible;
-        if (ligneRef.current) cible = c.scrollTop + (ligneRef.current.getBoundingClientRect().top - c.getBoundingClientRect().top) - c.clientHeight * 0.33;
-        else cible = new Date().getHours() < 12 ? 0 : c.scrollHeight;
+        var ecartEl = function(el, part) { return c.scrollTop + (el.getBoundingClientRect().top - c.getBoundingClientRect().top) - c.clientHeight * part; };
+        if (ligneRef.current) cible = ecartEl(ligneRef.current, 0.33);
+        else if (premierRef.current) cible = ecartEl(premierRef.current, 0.15);
+        else cible = estAuj && new Date().getHours() >= 12 ? c.scrollHeight : 0;
         defilRef.current.prog = Date.now();
         try { c.scrollTo({ top: Math.max(0, cible), behavior: defilRef.current.premier ? "auto" : "smooth" }); } catch (e) { c.scrollTop = Math.max(0, cible); }
         defilRef.current.premier = false;
-      }, [maintenant, st.etat, st.ev.length]);
+      }, [maintenant, st, jour]);
       var surDefil = function() { if (Date.now() - defilRef.current.prog > 900) defilRef.current.manuel = Date.now(); };
-      var tete = h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "calendar-days", size: 18, color: "#f5a524" }), "Aujourd'hui"), st.etat === "ok" ? h("span", { className: "tk-chip" }, "Agenda") : null);
+      var btnJour = function(ico, titre, fn) { return h("button", { type: "button", className: "tk-btn-ico", title: titre, "aria-label": titre, onClick: fn, style: { width: 30, height: 30 } }, h(Icon, { name: ico, size: 15, color: "#cdd1db" })); };
+      var tete = h("div", { className: "tk-c-tete" },
+        h("h2", null, h(Icon, { name: "calendar-days", size: 18, color: "#f5a524" }), tkLibDate(jour)),
+        h("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 } },
+          btnJour("chevron-left", "Jour précédent", function() { changerJour(-1); }),
+          estAuj ? null : h("button", { type: "button", className: "tk-mini", title: "Revenir à aujourd'hui", onClick: function() { setJour(aujIso); } }, "Aujourd'hui"),
+          btnJour("chevron-right", "Jour suivant", function() { changerJour(1); })));
       if (st.etat !== "ok") return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide" }, st.etat === "chargement" ? "Lecture de l'agenda..." : (st.etat === "sans_boite" ? "Ton agenda s'affichera ici dès que ton adresse @wallislabel.nc sera renseignée." : "Agenda indisponible : " + st.erreur)));
       var H0 = 7, H1 = 19, ph = 42, blocs = [], journee = st.ev.filter(function(e) { return e.journee; });
       var mn = function(hhmm) { var p = String(hhmm).split(":"); return (+p[0]) * 60 + (+p[1]); };
@@ -41566,7 +41588,7 @@
         fin = Math.min(fin, H1 * 60);
         blocs.push({ top: top, ht: Math.max(28, (fin - mn(e.debut)) / 60 * ph - 3), c: "#818cf8", titre: e.titre, sous: e.debut.replace(":", "h") + (e.lieu ? " · " + e.lieu : ""), tache: false });
       });
-      (A.ctx.dbTaches || []).filter(function(t) { return t.pour === A.moi && tkOuverte(t) && t.echeance === localISODate() && t.heure; }).forEach(function(t) {
+      (A.ctx.dbTaches || []).filter(function(t) { return t.pour === A.moi && tkOuverte(t) && t.echeance === jour && t.heure; }).forEach(function(t) {
         blocs.push({ top: Math.max(2, (mn(t.heure) - H0 * 60) / 60 * ph + 2), ht: 28, c: t.priorite === "urgente" ? "#ff6b5b" : "#f5a524", titre: t.titre, sous: "", tache: true });
       });
       blocs.sort(function(a, b) { return a.top - b.top; });
@@ -41577,19 +41599,19 @@
       var d = new Date(maintenant), mNow = d.getHours() * 60 + d.getMinutes();
       var lignes = []; for (var x = H0; x < H1; x++) lignes.push(h("div", { key: "h" + x, style: { position: "absolute", left: 0, right: 0, top: (x - H0) * ph + 2, borderTop: "1px dashed rgba(255,255,255,.065)" } }, h("span", { style: { position: "absolute", top: -8, left: 0, fontSize: 10.5, color: "#697089", fontWeight: 600, background: "#232843", paddingRight: 6 } }, x + "h")));
       if (!blocs.length && !journee.length && !horsGrille.length) {
-        return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide", style: { padding: "18px 10px" } }, h("div", { style: { marginBottom: 6 } }, h(Icon, { name: "coffee", size: 24, color: "#34d399" })), "Aucun rendez-vous aujourd'hui."));
+        return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide", style: { padding: "18px 10px", opacity: st.charge ? 0.5 : 1 } }, h("div", { style: { marginBottom: 6 } }, h(Icon, { name: "coffee", size: 24, color: "#34d399" })), st.charge ? "Lecture de l'agenda..." : (estAuj ? "Aucun rendez-vous aujourd'hui." : "Aucun rendez-vous ce jour-là.")));
       }
       return h("section", { className: "tk-carte", ref: carteRef, onScroll: surDefil }, tete,
         journee.length || horsGrille.length ? h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 } },
           journee.map(function(e, i) { return h("div", { key: "j" + i, className: "tk-chip", style: { justifyContent: "flex-start", padding: "4px 8px" } }, h(Icon, { name: "sun", size: 12 }), e.titre); }),
           horsGrille.map(function(e, i) { return h("div", { key: "h" + i, className: "tk-chip", style: { justifyContent: "flex-start", padding: "4px 8px" } }, h(Icon, { name: "clock", size: 12 }), e.debut.replace(":", "h") + " · " + e.titre); })) : null,
-        h("div", { style: { position: "relative", height: (H1 - H0) * ph + 4 } }, lignes,
+        h("div", { style: { position: "relative", height: (H1 - H0) * ph + 4, opacity: st.charge ? 0.5 : 1, transition: "opacity .15s" } }, lignes,
           blocs.map(function(b, i) {
-            return h("div", { key: i, title: b.titre, style: { position: "absolute", top: b.top, height: b.ht, left: "calc(40px + (100% - 44px) * " + b.voie + " / " + b.n + ")", width: "calc((100% - 44px) / " + b.n + " - " + (b.n > 1 ? 3 : 0) + "px)", borderRadius: 10, padding: "5px 9px", overflow: "hidden", fontSize: 11, color: "#cdd1db", borderLeft: "3px solid " + b.c, background: b.tache ? "rgba(10,12,22,.5)" : "color-mix(in srgb, " + b.c + " 20%, #1f2338)", border: b.tache ? "1px dashed " + b.c : undefined } },
+            return h("div", { key: jour + "-" + i, ref: i === 0 ? premierRef : undefined, title: b.titre, style: { position: "absolute", top: b.top, height: b.ht, left: "calc(40px + (100% - 44px) * " + b.voie + " / " + b.n + ")", width: "calc((100% - 44px) / " + b.n + " - " + (b.n > 1 ? 3 : 0) + "px)", borderRadius: 10, padding: "5px 9px", overflow: "hidden", fontSize: 11, color: "#cdd1db", borderLeft: "3px solid " + b.c, background: b.tache ? "rgba(10,12,22,.5)" : "color-mix(in srgb, " + b.c + " 20%, #1f2338)", border: b.tache ? "1px dashed " + b.c : undefined } },
               h("b", { style: { display: "block", fontSize: 12, color: "#f5f4f0", fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, (b.tache ? "Tâche · " : "") + b.titre), b.sous);
           }),
-          mNow >= H0 * 60 && mNow <= H1 * 60 ? h("div", { ref: ligneRef, title: "Maintenant", style: { position: "absolute", left: 36, right: 0, top: (mNow - H0 * 60) / 60 * ph + 2, height: 2, background: "#f43f5e", boxShadow: "0 0 10px rgba(244,63,94,.8)", zIndex: 3 } }) : null),
-        !blocs.length && !journee.length && !horsGrille.length ? h("div", { className: "tk-astuce", style: { marginTop: 6 } }, h(Icon, { name: "coffee", size: 13 }), "Aucun rendez-vous aujourd'hui.") : null);
+          estAuj && mNow >= H0 * 60 && mNow <= H1 * 60 ? h("div", { ref: ligneRef, title: "Maintenant", style: { position: "absolute", left: 36, right: 0, top: (mNow - H0 * 60) / 60 * ph + 2, height: 2, background: "#f43f5e", boxShadow: "0 0 10px rgba(244,63,94,.8)", zIndex: 3 } }) : null),
+        !blocs.length && !journee.length && !horsGrille.length ? h("div", { className: "tk-astuce", style: { marginTop: 6 } }, h(Icon, { name: "coffee", size: 13 }), estAuj ? "Aucun rendez-vous aujourd'hui." : "Aucun rendez-vous ce jour-là.") : null);
     }
 
     // Administration > Emails : adresse @wallislabel.nc de chaque personne

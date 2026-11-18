@@ -15,7 +15,7 @@
 //   boite   { onglet, q, page }     -> { messages, suivant, nonlus }
 //   message { id }                  -> { texte, pieces, lienGmail, ... }
 //   piece   { id, piece }           -> { data (base64) }         (< 3,5 Mo)
-//   agenda                          -> { evenements }            (aujourd'hui)
+//   agenda { jour? AAAA-MM-JJ }     -> { jour, evenements }      (defaut : aujourd'hui)
 //   tri     { ids }                 -> { tri }  (bureau : categorie + tache proposee par l'IA)
 //   sante   { sujet }               -> { ok }   (administrateur : la boite repond ?)
 // =====================================================================
@@ -228,7 +228,14 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, data: String(p.data || '').replace(/-/g, '+').replace(/_/g, '/') });
     }
     if (action === 'agenda') {
-      const jour = new Date(Date.now() + 11 * 3600e3).toISOString().slice(0, 10); // date calendaire de Noumea (UTC+11, sans heure d'ete)
+      // Jour affiche : celui demande (fleches de la carte), sinon aujourd'hui a
+      // Noumea (UTC+11, sans heure d'ete). Borne a +/- 1 an.
+      const aujNC = new Date(Date.now() + 11 * 3600e3).toISOString().slice(0, 10);
+      let jour = aujNC;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.jour || ''))) {
+        const ecart = Math.abs(Date.parse(body.jour + 'T00:00:00Z') - Date.parse(aujNC + 'T00:00:00Z')) / 86400e3;
+        if (ecart <= 366) jour = body.jour;
+      }
       const url = AGENDA + '?singleEvents=true&orderBy=startTime&maxResults=25&timeMin=' + encodeURIComponent(jour + 'T00:00:00+11:00') + '&timeMax=' + encodeURIComponent(jour + 'T23:59:59+11:00');
       const d = await google(jeton, url);
       const ev = (d.items || []).filter((e) => e.status !== 'cancelled').map((e) => ({
