@@ -40032,7 +40032,16 @@
       out.sort(function(a, b) { if (a.email === moi) return -1; if (b.email === moi) return 1; return a.nom.localeCompare(b.nom); });
       return out;
     }
+    // Tache « pour tout le bureau » : UNE seule tache, visible par tous, que
+    // quelqu'un prend en charge (pour_email = cette valeur tant que personne ne
+    // l'a prise ; ensuite = la personne qui s'en occupe). Elle n'entre dans les
+    // « Mes taches » de personne avant d'etre prise. Le journal garde la marque
+    // { bureau: true } pour l'afficher encore comme tache du bureau ensuite.
+    var TK_BUREAU = "@bureau";
+    function tkDuBureau(t) { return !!t && (t.pour === TK_BUREAU || (t.journal || []).some(function(j) { return !!j && j.bureau === true; })); }
+    function tkEntreeBureau(txt, moi) { return { d: localISODate(), t: txt, par: moi, bureau: true }; }
     function tkPersonne(gens, email) {
+      if (email === TK_BUREAU) return { email: TK_BUREAU, nom: "Tout le bureau", court: "Bureau", ini: "", c: "#2dd4bf", bureau: true };
       for (var i = 0; i < gens.length; i++) { if (gens[i].email === email) return gens[i]; }
       return tkPersonneDe(email, "");
     }
@@ -40138,7 +40147,8 @@
       var aujIso = localISODate();
       var pour = r.pour || defauts.pour || moi;
       var j = [{ d: aujIso, t: "Créée par " + nomCourt(moi), par: moi }];
-      if (pour !== moi) j.push({ d: aujIso, t: "Confiée à " + nomCourt(pour), par: moi });
+      if (pour === TK_BUREAU) j.push(tkEntreeBureau("Pour tout le bureau", moi));
+      else if (pour !== moi) j.push({ d: aujIso, t: "Confiée à " + nomCourt(pour), par: moi });
       var ech = r.echeance || defauts.echeance || ((r.heure || r.recurrence) ? aujIso : null);
       return { titre: r.titre, description: defauts.description || "", echeance: ech, heure: r.heure || null, pour: pour, par: moi, priorite: r.priorite || defauts.priorite || "normale", statut: "a_faire", etapes: [], lien: r.lien || defauts.lien || null, recurrence: r.recurrence || null, rappel: true, privee: false, agenda: false, journal: j };
     }
@@ -40194,8 +40204,16 @@
       ".tk-anneau .centre{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}",
       ".tk-anneau .pct{font-family:'Fraunces',Georgia,serif;font-size:32px;font-weight:600;line-height:1}",
       ".tk-anneau .lib{font-size:11px;color:#969db1;font-weight:650;margin-top:4px}",
-      ".tk-grille{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) 270px;gap:18px;margin-top:18px;align-items:start}",
-      ".tk-bas{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);gap:18px;margin-top:18px;align-items:stretch}",
+      ".tk-grille{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px;align-items:stretch}",
+      ".tk-bas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px;align-items:stretch}",
+      /* Toutes les cartes du tableau de bord a la MEME taille (demande 2026-11-18) :
+         hauteur fixe, le contenu defile dans la carte, l'en-tete reste visible */
+      ".tk-col-agenda{display:flex;flex-direction:column;min-width:0}.tk-col-agenda>.tk-carte{flex:1}",
+      "@media (min-width:1101px){.tk-grille>.tk-carte,.tk-col-agenda>.tk-carte,.tk-bas>.tk-carte{height:470px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}",
+      ".tk-grille .tk-carte>.tk-c-tete,.tk-bas .tk-carte>.tk-c-tete{position:sticky;top:-16px;z-index:5;margin:-16px -18px 12px;padding:16px 18px 10px;background:#272b46;border-radius:18px 18px 0 0}",
+      /* A faire : seule la liste defile, la saisie reste visible en bas */
+      ".tk-grille>.tk-carte.tk-af{display:flex;flex-direction:column;overflow:hidden}.tk-af>.tk-defile{flex:1;min-height:0;overflow-y:auto;margin-right:-8px;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}",
+      ".tk-bas>.tk-carte{display:flex;flex-direction:column}.tk-bas .tk-kpis{flex:1;grid-auto-rows:1fr}.tk-bas .tk-g7{flex:1;min-height:0;height:100%!important}}",
       /* a faire */
       ".tk-fi{display:flex;gap:10px;align-items:center;padding:7px 8px;border-radius:11px;position:relative;transition:background .15s}",
       ".tk-fi:hover{background:rgba(255,255,255,.04)}",
@@ -40411,6 +40429,7 @@
     function TkAvatar(props) {
       var p = props.p; if (!p) return null;
       var t = props.taille === "sm" ? 22 : (props.taille === "lg" ? 36 : 28);
+      if (p.bureau) return h("span", { className: "tk-av", title: "Tout le bureau · personne ne s'en occupe encore", style: { width: t, height: t, background: p.c, "--c": p.c } }, h(Icon, { name: "users", size: t < 24 ? 12 : 15, color: "#14131c" }));
       return h("span", { className: "tk-av", title: p.nom, style: { width: t, height: t, fontSize: t < 24 ? 9 : (t > 30 ? 12.5 : 10.5), background: p.c, "--c": p.c } }, p.ini);
     }
     function TkCase(props) {
@@ -40420,8 +40439,13 @@
       return h("button", { type: "button", className: "tk-case " + (props.petit ? "sm " : "") + t.priorite + ((coche || !ouverte) ? " ok" : ""), title: ouverte ? "Marquer comme faite" : "Rouvrir", onClick: function(e) { e.stopPropagation(); props.onClick(); } },
         coche ? h("span", { className: "tk-eclat" }, eclats) : null);
     }
-    function tkChips(t) {
+    function tkChips(t, nomCourt) {
       var out = [], ok = t.etapes.filter(function(s) { return s.ok; }).length;
+      if (tkDuBureau(t)) {
+        var qui = t.pour === TK_BUREAU ? (tkOuverte(t) ? "personne pour l'instant" : "")
+          : (nomCourt ? (tkOuverte(t) ? nomCourt(t.pour) + " s'en occupe" : "faite par " + nomCourt(t.faitPar || t.pour)) : "");
+        out.push(h("span", { key: "b", className: "tk-chip", title: "Tâche pour tout le bureau : une seule, visible par tous", style: { color: "#5eead4", borderColor: "rgba(45,212,191,.35)" } }, h(Icon, { name: "users", size: 12 }), "Bureau" + (qui ? " · " + qui : "")));
+      }
       if (t.lien) out.push(h("span", { key: "l", className: "tk-chip" }, h(Icon, { name: t.lien.type === "equipement" ? "truck" : (t.lien.type === "email" ? "mail" : "hard-hat"), size: 12 }), t.lien.nom));
       if (t.etapes.length) out.push(h("span", { key: "e", className: "tk-chip" }, h("span", { className: "tk-sousbar" }, h("i", { style: { width: Math.round(ok * 100 / t.etapes.length) + "%" } })), ok + "/" + t.etapes.length));
       if (t.recurrence) out.push(h("span", { key: "r", className: "tk-chip", title: "Tâche répétée" }, h(Icon, { name: "repeat", size: 12 }), t.recurrence === "semaine" ? "Chaque semaine" : "Chaque mois"));
@@ -40452,10 +40476,12 @@
         if (inputRef.current) { inputRef.current.focus(); try { inputRef.current.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {} }
       }, [props.focusCle]);
       // Pour qui : choisi dans la liste (clic sur "Pour moi") ; un @prenom tape
-      // dans le texte reste prioritaire. "__tous__" = une tache par personne du bureau.
+      // dans le texte reste prioritaire. "__tous__" = UNE tache pour tout le bureau
+      // (visible par tous, prise en charge par une personne).
       var _pc = useState(null); var pourChoisi = _pc[0], setPourChoisi = _pc[1];
       var _po = useState(false); var choixOuvert = _po[0], setChoixOuvert = _po[1];
-      var _ad = useState(false); var aDroite = _ad[0], setADroite = _ad[1];
+      // Position du menu (fixe a l'ecran : il n'est plus coupe par une carte qui defile)
+      var _ad = useState(null); var posMenu = _ad[0], setPosMenu = _ad[1];
       var o = props.opts || {}, moi = o.moi;
       var gensChoix = (o.gens || []).slice().sort(function(a, b) {
         if (a.email === moi) return -1; if (b.email === moi) return 1;
@@ -40468,7 +40494,7 @@
         var a = tkAnalyser(texte, props.opts);
         if (!a.titre) { setSecoue(true); setTimeout(function() { setSecoue(false); }, 400); return; }
         if (!a.pour && pourChoisi === "__tous__") {
-          equipe.forEach(function(g) { props.onCreer(Object.assign({}, a, { pour: g.email, _lot: equipe.length })); });
+          props.onCreer(Object.assign({}, a, { pour: TK_BUREAU }));
         } else {
           if (!a.pour && pourChoisi) a.pour = pourChoisi;
           props.onCreer(a);
@@ -40479,15 +40505,22 @@
       var choisir = function(v) { setPourChoisi(v); setChoixOuvert(false); if (inputRef.current) inputRef.current.focus(); };
       var pChoisi = pourChoisi && pourChoisi !== "__tous__" ? tkPersonne(o.gens || [], pourChoisi) : null;
       var jetonPour = r.pour ? null : h("span", { key: "pour", style: { position: "relative", display: "inline-flex" } },
-        h("button", { type: "button", className: "tk-jeton", title: "Choisir pour qui est la tâche", style: { "--c": pChoisi ? pChoisi.c : (pourChoisi === "__tous__" ? "#2dd4bf" : (o.moiP ? o.moiP.c : "#f5a524")), cursor: "pointer", padding: "3px 8px 3px 9px", opacity: pourChoisi ? 1 : 0.8 }, onClick: function(e) { e.preventDefault(); var rc = e.currentTarget.getBoundingClientRect(); setADroite(rc.left + 260 > window.innerWidth - 12); setChoixOuvert(!choixOuvert); } },
+        h("button", { type: "button", className: "tk-jeton", title: "Choisir pour qui est la tâche", style: { "--c": pChoisi ? pChoisi.c : (pourChoisi === "__tous__" ? "#2dd4bf" : (o.moiP ? o.moiP.c : "#f5a524")), cursor: "pointer", padding: "3px 8px 3px 9px", opacity: pourChoisi ? 1 : 0.8 }, onClick: function(e) {
+          e.preventDefault();
+          var rc = e.currentTarget.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, p = {};
+          if (rc.left + 260 > W - 12) p.right = Math.max(8, W - rc.right); else p.left = rc.left;
+          if (rc.bottom + 330 > H && rc.top > H - rc.bottom) { p.bottom = H - rc.top + 6; p.maxHeight = Math.min(320, rc.top - 16); }
+          else { p.top = rc.bottom + 6; p.maxHeight = Math.min(320, H - rc.bottom - 16); }
+          setPosMenu(p); setChoixOuvert(!choixOuvert);
+        } },
           h(Icon, { name: pourChoisi === "__tous__" ? "users" : "user", size: 13 }),
-          pChoisi ? "Pour " + (pChoisi.court || pChoisi.nom) : (pourChoisi === "__tous__" ? (o.bureau ? "Pour tout le bureau (" : "Pour toute l'équipe (") + equipe.length + ")" : "Pour moi"),
+          pChoisi ? "Pour " + (pChoisi.court || pChoisi.nom) : (pourChoisi === "__tous__" ? (o.bureau ? "Pour tout le bureau" : "Pour toute l'équipe") : "Pour moi"),
           h(Icon, { name: "chevron-down", size: 12 })),
         choixOuvert ? h("div", { style: { position: "fixed", inset: 0, zIndex: 60 }, onClick: function(e) { e.preventDefault(); setChoixOuvert(false); } }) : null,
-        choixOuvert ? h("div", { style: { position: "absolute", top: "calc(100% + 6px)", left: aDroite ? "auto" : 0, right: aDroite ? 0 : "auto", zIndex: 61, width: 250, maxHeight: 320, overflowY: "auto", background: "#1d2135", border: "1px solid rgba(255,255,255,.14)", borderRadius: 12, padding: 6, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }, onClick: function(e) { e.preventDefault(); } },
+        choixOuvert && posMenu ? h("div", { style: { position: "fixed", top: posMenu.top != null ? posMenu.top : "auto", bottom: posMenu.bottom != null ? posMenu.bottom : "auto", left: posMenu.left != null ? posMenu.left : "auto", right: posMenu.right != null ? posMenu.right : "auto", zIndex: 61, width: 250, maxHeight: Math.max(160, posMenu.maxHeight || 320), overflowY: "auto", background: "#1d2135", border: "1px solid rgba(255,255,255,.14)", borderRadius: 12, padding: 6, boxShadow: "0 14px 40px rgba(0,0,0,.5)" }, onClick: function(e) { e.preventDefault(); } },
           equipe.length > 1 ? h("button", { type: "button", onClick: function() { choisir("__tous__"); }, style: { display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 8px", border: "none", borderRadius: 8, background: pourChoisi === "__tous__" ? "rgba(45,212,191,.14)" : "transparent", color: "#f5f4f0", fontSize: 12.5, fontWeight: 650, cursor: "pointer", textAlign: "left" } },
             h("span", { className: "tk-av", style: { width: 22, height: 22, background: "#2dd4bf" } }, h(Icon, { name: "users", size: 12, color: "#14131c" })),
-            h("span", { style: { flex: 1 } }, o.bureau ? "Tout le bureau" : "Toute l'équipe", h("span", { style: { display: "block", fontSize: 11, color: "#969db1", fontWeight: 500 } }, equipe.length + " personnes, une tâche chacun"))) : null,
+            h("span", { style: { flex: 1 } }, o.bureau ? "Tout le bureau" : "Toute l'équipe", h("span", { style: { display: "block", fontSize: 11, color: "#969db1", fontWeight: 500 } }, "Une seule tâche, visible par tous : quelqu'un la prend"))) : null,
           gensChoix.map(function(g, i) {
             var sel = g.email === moi ? !pourChoisi : pourChoisi === g.email;
             var horsBureau = o.bureau && !o.bureau[g.email] && g.email !== moi;
@@ -40541,7 +40574,7 @@
       var creer = function(r, defauts) {
         var t = tkNouvelle(r, defauts || {}, moi, nomCourt);
         return ctx.creerTache(t).then(function(n) {
-          if (n) { setFlashId(n.id); toast(r && r._lot > 1 ? "Tâche créée pour " + r._lot + " personnes (une chacun)" : (n.pour === moi ? "Tâche ajoutée" : "Tâche créée pour " + nomCourt(n.pour)), "list-plus"); }
+          if (n) { setFlashId(n.id); toast(n.pour === TK_BUREAU ? "Tâche créée pour tout le bureau : visible par tous, quelqu'un la prend" : (n.pour === moi ? "Tâche ajoutée" : "Tâche créée pour " + nomCourt(n.pour)), "list-plus"); }
           return n;
         });
       };
@@ -40551,8 +40584,11 @@
         if (enFinRef.current[t.id]) return;
         enFinRef.current[t.id] = true;
         setTimeout(function() { delete enFinRef.current[t.id]; }, 3000);
-        var avant = { statut: t.statut, faitLe: t.faitLe, faitPar: t.faitPar, journal: t.journal };
-        ctx.majTache(t.id, { statut: "fait", faitLe: localISODate(), faitPar: moi, journal: t.journal.concat([entree("Faite par " + nomCourt(moi))]) });
+        var avant = { statut: t.statut, faitLe: t.faitLe, faitPar: t.faitPar, journal: t.journal, pour: t.pour };
+        var pFin = { statut: "fait", faitLe: localISODate(), faitPar: moi, journal: t.journal.concat([entree("Faite par " + nomCourt(moi))]) };
+        var libre = t.pour === TK_BUREAU;
+        // Tache du bureau cochee sans avoir ete prise : c'est moi qui l'ai traitee
+        if (libre) pFin.pour = moi;
         var pNouvelle = null, suivante = null;
         if (t.recurrence) {
           // jour d'ancrage mensuel = 1re tache de la serie (si encore presente)
@@ -40560,14 +40596,58 @@
           (ctx.dbTaches || []).forEach(function(x) { if (x.id === idR) racine = x; });
           var ancre = racine && racine.echeance ? tkLire(racine.echeance).getDate() : null;
           suivante = tkProchaine(t, t.recurrence === "mois" ? ancre : null);
+        }
+        var creerSuivante = function() {
           // Creee COTE SERVEUR (RPC) : garde l'auteur d'origine de la serie et
           // refuse un doublon (meme serie, meme date) - double clic, rouvrir/refaire
-          pNouvelle = ctx.creerOccurrenceSuivante(t.id, suivante);
+          var p = ctx.creerOccurrenceSuivante(t.id, suivante);
+          // Serie du bureau : la suivante revient a TOUT LE BUREAU (la base
+          // recopie la personne qui a fait celle-ci, selon l'ordre d'arrivee)
+          if (!tkDuBureau(t)) return p;
+          return p.then(function(n) {
+            if (!n) return n;
+            var dejaMarque = (n.journal || []).some(function(j) { return !!j && j.bureau === true; });
+            if (n.pour !== TK_BUREAU || !dejaMarque || n.privee) ctx.majTache(n.id, { pour: TK_BUREAU, privee: false, journal: dejaMarque ? n.journal : (n.journal || []).concat([tkEntreeBureau("Pour tout le bureau", moi)]) });
+            return n;
+          });
+        };
+        if (libre) {
+          // Tache du bureau encore libre : ecriture CONDITIONNELLE (si quelqu'un
+          // l'a prise ou finie entre-temps, on n'ecrase rien)
+          pNouvelle = ctx.majTacheSi(t.id, pFin, { pour_email: TK_BUREAU, statut: t.statut }).then(function(r) {
+            if (r === false) { delete enFinRef.current[t.id]; toast("Quelqu'un l'a déjà prise ou faite : la liste est à jour", "info"); return null; }
+            if (!r) return null;
+            return t.recurrence ? creerSuivante() : null;
+          });
+        } else {
+          ctx.majTache(t.id, pFin);
+          if (t.recurrence) pNouvelle = creerSuivante();
         }
         toast(suivante ? "Faite. La suivante est prévue " + tkLibDate(suivante).toLowerCase() : "Bravo, une de moins.", "circle-check", "Annuler", function() {
           ctx.majTache(t.id, avant);
-          if (pNouvelle) pNouvelle.then(function(n) { if (n) ctx.supprimerTache(n.id); });
+          // Suppression permise a l'auteur ou a un administrateur seulement ;
+          // sinon on la laisse (refaire la tache ne cree pas de doublon)
+          if (pNouvelle) pNouvelle.then(function(n) { if (n && (n.par === moi || ctx.isAdmin)) ctx.supprimerTache(n.id); });
         });
+      };
+      // Tache du bureau : « Je m'en occupe » (elle passe dans MES taches, en
+      // cours, tout le monde voit que c'est moi) / la remettre a tout le bureau
+      var prendre = function(t) {
+        if (t.pour !== TK_BUREAU) return;
+        var avant = { pour: t.pour, statut: t.statut, journal: t.journal };
+        // Ecriture CONDITIONNELLE : si quelqu'un l'a prise (ou finie) juste avant,
+        // on ne l'ecrase pas
+        ctx.majTacheSi(t.id, { pour: moi, statut: t.statut === "a_faire" ? "en_cours" : t.statut, journal: t.journal.concat([entree("Prise en charge par " + nomCourt(moi))]) }, { pour_email: TK_BUREAU, statut: t.statut }).then(function(r) {
+          if (r === false) toast("Quelqu'un l'a déjà prise : la liste est à jour", "info");
+        });
+        setFlashId(t.id);
+        toast("C'est noté : tu t'en occupes (visible par tout le bureau)", "hand", "Annuler", function() { ctx.majTache(t.id, avant); });
+      };
+      var remettreBureau = function(t) {
+        if (t.pour === TK_BUREAU) return;
+        var avant = { pour: t.pour, statut: t.statut, journal: t.journal, privee: t.privee };
+        ctx.majTache(t.id, { pour: TK_BUREAU, privee: false, statut: t.statut === "en_cours" ? "a_faire" : t.statut, journal: t.journal.concat([tkEntreeBureau("Remise à tout le bureau par " + nomCourt(moi), moi)]) });
+        toast("Remise à tout le bureau : quelqu'un d'autre peut la prendre", "users", "Annuler", function() { ctx.majTache(t.id, avant); });
       };
       var rouvrir = function(t) {
         delete enFinRef.current[t.id];
@@ -40584,7 +40664,7 @@
       var toastEl = toastU ? h("div", { className: "tk-toast", key: toastU.k },
         h(Icon, { name: toastU.ico, size: 16, color: "#34d399" }), h("span", null, toastU.msg),
         toastU.lib ? h("button", { type: "button", onClick: function() { if (toastU.fn) toastU.fn(); setToastU(null); } }, toastU.lib) : null) : null;
-      return { ctx: ctx, moi: moi, gens: gens, moiP: moiP, opts: opts, toast: toast, toastEl: toastEl, creer: creer, terminer: terminer, rouvrir: rouvrir, reporter: reporter, flashId: flashId, nomCourt: nomCourt, entree: entree };
+      return { ctx: ctx, moi: moi, gens: gens, moiP: moiP, opts: opts, toast: toast, toastEl: toastEl, creer: creer, terminer: terminer, rouvrir: rouvrir, reporter: reporter, prendre: prendre, remettreBureau: remettreBureau, flashId: flashId, nomCourt: nomCourt, entree: entree };
     }
     function tkDateRapide(v) { if (v === "auj") return tkJour(0); if (v === "demain") return tkJour(1); if (v === "lundi") return tkProchainJour(1, false); return null; }
 
@@ -40616,12 +40696,18 @@
         h("div", { className: "tk-tiroir-fond", onClick: props.onFermer }),
         h("aside", { className: "tk-tiroir" },
           h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
-            h("span", { style: { marginRight: "auto" } }, t.privee ? h("span", { className: "tk-chip prive" }, h(Icon, { name: "lock", size: 12 }), "Privée") : h("span", { className: "tk-chip" }, h(Icon, { name: "users", size: 12 }), "Visible par l'équipe")),
+            h("span", { style: { marginRight: "auto" } }, t.privee ? h("span", { className: "tk-chip prive" }, h(Icon, { name: "lock", size: 12 }), "Privée") : (tkDuBureau(t) ? h("span", { className: "tk-chip", style: { color: "#5eead4", borderColor: "rgba(45,212,191,.35)" } }, h(Icon, { name: "users", size: 12 }), "Tâche du bureau · visible par tous") : h("span", { className: "tk-chip" }, h(Icon, { name: "users", size: 12 }), "Visible par l'équipe"))),
             h("button", { type: "button", className: "tk-btn-ico", title: "Fermer (Échap)", onClick: props.onFermer }, h(Icon, { name: "x", size: 16, color: "#cdd1db" }))),
+          tkDuBureau(t) && tkOuverte(t) ? h("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 10, borderRadius: 12, background: "rgba(45,212,191,.08)", border: "1px solid rgba(45,212,191,.28)" } },
+            t.pour === TK_BUREAU ? h(TkAvatar, { p: tkPersonne(A.gens, TK_BUREAU), taille: "sm" }) : h(TkAvatar, { p: tkPersonne(A.gens, t.pour), taille: "sm" }),
+            h("span", { style: { flex: 1, fontSize: 13, color: "#cdd1db", fontWeight: 600 } }, t.pour === TK_BUREAU ? "Personne ne s'en occupe encore" : (t.pour === A.moi ? "Tu t'en occupes" : A.nomCourt(t.pour) + " s'en occupe")),
+            t.pour === TK_BUREAU ? h("button", { type: "button", className: "tk-btn-prim", onClick: function() { A.prendre(t); } }, h(Icon, { name: "hand", size: 14, color: "#241505" }), "Je m'en occupe")
+              : h("button", { type: "button", className: "tk-btn-sec", onClick: function() { A.remettreBureau(t); } }, h(Icon, { name: "undo-2", size: 14 }), "Remettre au bureau")) : null,
           h("input", { className: "tk-titre-inp", value: titre, onChange: function(e) { setTitre(e.target.value); }, onBlur: function() { var v = titre.trim(); if (v && v !== t.titre) maj({ titre: v }); else setTitre(t.titre); }, onKeyDown: function(e) { if (e.key === "Enter") e.target.blur(); } }),
           champ("circle-dot", "État", seg(t.statut, [["a_faire", "À faire"], ["en_cours", "En cours"], ["fait", "Faite"]], function(v) {
             if (v === t.statut) return;
             if (v === "fait") { A.terminer(t); return; }
+            if (v === "en_cours" && t.pour === TK_BUREAU) { A.prendre(t); return; }
             if (t.statut === "fait") maj({ statut: v, faitLe: null, faitPar: null }, "Rouverte par " + A.nomCourt(A.moi));
             else maj({ statut: v }, v === "en_cours" ? "Passée en cours" : "Remise à faire");
           })),
@@ -40631,8 +40717,10 @@
             [["auj", "Auj."], ["demain", "Demain"], ["lundi", "Lundi"], ["aucune", "Aucune"]].map(function(o) {
               return h("button", { key: o[0], type: "button", className: "tk-mini", onClick: function() { var d = tkDateRapide(o[0]); var p = { echeance: d }; if (!d) p.heure = null; maj(p, d ? "Échéance : " + tkLibDate(d).toLowerCase() : "Échéance retirée"); } }, o[1]);
             }))),
-          champ("user", "Pour", h("div", { className: "tk-choix-gens" }, A.gens.map(function(g) {
-            return h("button", { key: g.email, type: "button", className: t.pour === g.email ? "actif" : "", style: { "--c": g.c }, onClick: function() { if (t.pour === g.email) return; maj({ pour: g.email }, "Confiée à " + (g.court || g.nom)); } }, h(TkAvatar, { p: g, taille: "sm" }), g.court || g.nom);
+          champ("user", "Pour", h("div", { className: "tk-choix-gens" },
+            h("button", { key: TK_BUREAU, type: "button", className: t.pour === TK_BUREAU ? "actif" : "", style: { "--c": "#2dd4bf" }, title: "Une seule tâche visible par tous : quelqu'un la prend", onClick: function() { if (t.pour === TK_BUREAU) return; A.remettreBureau(t); } }, h(TkAvatar, { p: tkPersonne(A.gens, TK_BUREAU), taille: "sm" }), "Tout le bureau"),
+            A.gens.map(function(g) {
+            return h("button", { key: g.email, type: "button", className: t.pour === g.email ? "actif" : "", style: { "--c": g.c }, onClick: function() { if (t.pour === g.email) return; maj({ pour: g.email }, t.pour === TK_BUREAU && g.email === A.moi ? "Prise en charge par " + (g.court || g.nom) : "Confiée à " + (g.court || g.nom)); } }, h(TkAvatar, { p: g, taille: "sm" }), g.court || g.nom);
           }))),
           champ("flag", "Priorité", seg(t.priorite, [["normale", "Normale"], ["haute", "Haute", "hte"], ["urgente", "Urgente", "urg"]], function(v) { maj({ priorite: v }); })),
           champ("list-checks", "Étapes", h("div", null,
@@ -40667,7 +40755,7 @@
             h("div", { className: "tk-opt" }, h(Icon, { name: "bell-ring", size: 18, color: "#f5a524" }),
               h("div", { className: "txt" }, h("b", null, "Rappel le matin"), h("span", null, "Email et notification le jour de l'échéance (mise en service très bientôt)")),
               h("button", { type: "button", className: "tk-sw" + (t.rappel ? " on" : ""), onClick: function() { maj({ rappel: !t.rappel }); } })),
-            h("div", { className: "tk-opt" }, h(Icon, { name: "lock", size: 18, color: "#f5a524" }),
+            tkDuBureau(t) ? null : h("div", { className: "tk-opt" }, h(Icon, { name: "lock", size: 18, color: "#f5a524" }),
               h("div", { className: "txt" }, h("b", null, "Privée"), h("span", null, "Visible seulement par toi et la personne concernée")),
               h("button", { type: "button", className: "tk-sw" + (t.privee ? " on" : ""), onClick: function() { maj({ privee: !t.privee }, t.privee ? "Rendue visible à l'équipe" : "Rendue privée"); } })))),
           champ("history", "Historique", h("ul", { className: "tk-journal" }, t.journal.slice().reverse().map(function(j, i) {
@@ -40723,7 +40811,8 @@
       var taches = ctx.dbTaches || [];
       var trouver = function(id) { for (var i = 0; i < taches.length; i++) { if (taches[i].id === id) return taches[i]; } return null; };
       var visible = function(t) { return !t.privee || t.par === moi || t.pour === moi; };
-      var okPour = function(t) { if (filtrePour === "moi") return t.pour === moi; if (filtrePour === "tous") return true; return t.pour === filtrePour; };
+      var okPour = function(t) { if (filtrePour === "moi") return t.pour === moi; if (filtrePour === "tous") return true; if (filtrePour === "bureau") return tkDuBureau(t); return t.pour === filtrePour; };
+      var nAPrendre = taches.filter(function(t) { return visible(t) && t.pour === TK_BUREAU && tkOuverte(t); }).length;
       var okRech = function(t) {
         if (!recherche.trim()) return true;
         var q = tkSansAcc(recherche.trim());
@@ -40776,10 +40865,11 @@
           h(TkCase, { t: t, coche: coche, onClick: function() { cliquerCase(t); } }),
           h("div", { className: "tk-l-corps", onClick: function() { ouvrirTache(t.id); } },
             h("div", { className: "tk-l-titre" }, t.titre),
-            h("div", { className: "tk-l-meta" }, tkChips(t), t.par !== t.pour ? h("span", { className: "tk-par" }, "de " + A.nomCourt(t.par)) : null)),
+            h("div", { className: "tk-l-meta" }, tkChips(t, A.nomCourt), t.par !== t.pour ? h("span", { className: "tk-par" }, "de " + A.nomCourt(t.par)) : null)),
           ouverte ? h("div", { className: "tk-rapides" }, [["auj", "Auj."], ["demain", "Demain"], ["lundi", "Lundi"]].map(function(o) {
             return h("button", { key: o[0], type: "button", className: "tk-mini", onClick: function() { A.reporter(t, tkDateRapide(o[0])); } }, o[1]);
           })) : null,
+          ouverte && t.pour === TK_BUREAU ? h("button", { type: "button", className: "tk-mini", title: "Prendre cette tâche : elle passe dans tes tâches, tout le monde voit que tu t'en occupes", style: { color: "#5eead4", borderColor: "rgba(45,212,191,.45)", fontWeight: 700, flexShrink: 0 }, onClick: function() { A.prendre(t); } }, h(Icon, { name: "hand", size: 13 }), "Je m'en occupe") : null,
           h("span", { className: "tk-ech " + le.cls }, le.lib),
           h(TkAvatar, { p: tkPersonne(gens, t.pour), taille: "sm" }));
       };
@@ -40816,6 +40906,7 @@
           return function(t) {
             if (t.statut === colK) return;
             if (colK === "fait") { A.terminer(t); return; }
+            if (colK === "en_cours" && t.pour === TK_BUREAU) { A.prendre(t); return; }
             var avant = { statut: t.statut, faitLe: t.faitLe, faitPar: t.faitPar, journal: t.journal };
             var p = { statut: colK, journal: t.journal.concat([A.entree(t.statut === "fait" ? "Rouverte par " + A.nomCourt(moi) : (colK === "en_cours" ? "Passée en cours" : "Remise à faire"))]) };
             if (t.statut === "fait") { p.faitLe = null; p.faitPar = null; }
@@ -40832,7 +40923,7 @@
                 var le = tkLibEch(t);
                 return h("div", Object.assign({ key: t.id, className: "tk-carte-k p-" + t.priorite + flash(t), onClick: function() { ouvrirTache(t.id); } }, dragProps(t)),
                   h("div", { className: "tk-k-titre" }, t.titre),
-                  h("div", { className: "tk-k-meta" }, tkChips(t)),
+                  h("div", { className: "tk-k-meta" }, tkChips(t, A.nomCourt)),
                   h("div", { className: "tk-k-pied" }, h("span", { className: "tk-ech " + le.cls }, le.lib), h(TkAvatar, { p: tkPersonne(gens, t.pour), taille: "sm" })));
               }) : h("div", { className: "tk-col-vide" }, "Glisse une carte ici"));
           })));
@@ -40896,7 +40987,8 @@
           setDateNouvelle(null);
           cree.then(function(n) {
             if (!n) return;
-            if (filtrePour !== "tous" && !(filtrePour === "moi" ? n.pour === moi : n.pour === filtrePour)) setFiltrePour("tous");
+            if (n.pour === TK_BUREAU) { if (filtrePour !== "tous" && filtrePour !== "bureau") setFiltrePour("bureau"); }
+            else if (filtrePour !== "tous" && !(filtrePour === "moi" ? n.pour === moi : n.pour === filtrePour)) setFiltrePour("tous");
             if (filtreStat) setFiltreStat(null);
             if (statut === "faites") setStatut("a_faire");
           });
@@ -40905,6 +40997,8 @@
         h("div", { className: "tk-outils" },
           h("div", { className: "tk-seg" },
             h("button", { type: "button", className: filtrePour === "moi" ? "actif" : "", onClick: function() { setFiltrePour("moi"); } }, h(Icon, { name: "user", size: 14 }), "Mes tâches"),
+            h("button", { type: "button", className: filtrePour === "bureau" ? "actif" : "", title: "Tâches pour tout le bureau : une seule par tâche, avec qui s'en occupe", onClick: function() { setFiltrePour("bureau"); } }, h(Icon, { name: "hand", size: 14 }), "Bureau",
+              nAPrendre ? h("span", { title: nAPrendre + " à prendre", style: { marginLeft: 4, background: "#2dd4bf", color: "#14131c", fontSize: 10.5, fontWeight: 800, padding: "1px 6px", borderRadius: 999 } }, nAPrendre) : null),
             h("button", { type: "button", className: filtrePour === "tous" ? "actif" : "", onClick: function() { setFiltrePour("tous"); } }, h(Icon, { name: "users", size: 14 }), "Tout le monde")),
           h("div", { className: "tk-gens" }, gens.map(function(g) {
             return h("button", { key: g.email, type: "button", className: filtrePour === g.email ? "actif" : "", title: "Tâches de " + g.nom, onClick: function() { setFiltrePour(filtrePour === g.email ? "tous" : g.email); } }, h(TkAvatar, { p: g, taille: "sm" }));
@@ -41015,6 +41109,7 @@
               t.priorite === "urgente" ? h("span", { className: "tk-chip", style: { color: "#ffb4aa" } }, h(Icon, { name: "flag", size: 12 }), "Urgente") : null,
               t.lien ? h("span", { className: "tk-chip" }, h(Icon, { name: t.lien.type === "equipement" ? "truck" : "hard-hat", size: 12 }), t.lien.nom) : null,
               t.etapes.length ? h("span", { className: "tk-chip" }, h("span", { className: "tk-sousbar" }, h("i", { style: { width: Math.round(ok * 100 / t.etapes.length) + "%" } })), ok + "/" + t.etapes.length) : null,
+              tkDuBureau(t) ? h("span", { className: "tk-chip", title: "Tâche du bureau que tu as prise", style: { color: "#5eead4", borderColor: "rgba(45,212,191,.35)" } }, h(Icon, { name: "users", size: 12 }), "Bureau") : null,
               t.par !== moi ? h("span", { className: "tk-par tk-txt" }, "de " + A.nomCourt(t.par)) : null)),
           h("div", { className: "tk-fi-actions" }, h("button", { type: "button", className: "tk-mini", title: "Reporter à demain", onClick: function() { A.reporter(t, tkJour(1)); } }, h(Icon, { name: "sunrise", size: 13 }), "Demain")));
       };
@@ -41084,6 +41179,13 @@
         var s = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) >= 0 && tkEcart(t.echeance) <= 7; }).length;
         return { g: g, r: r, s: s, p: ts.length - r - s, tot: ts.length };
       }).filter(function(l) { return l.tot > 0 || l.g.email === moi || !bureauEm || bureauEm[l.g.email]; }).sort(function(a, b) { return (b.tot - a.tot) || (a.g.email === moi ? -1 : (b.g.email === moi ? 1 : String(a.g.nom).localeCompare(String(b.g.nom)))); }).slice(0, 12);
+      // Taches du bureau que personne n'a encore prises : une ligne a part en tete
+      var aPrendre = ouvertesEq.filter(function(t) { return t.pour === TK_BUREAU; });
+      if (aPrendre.length) {
+        var rB = aPrendre.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; }).length;
+        var sB = aPrendre.filter(function(t) { return t.echeance && tkEcart(t.echeance) >= 0 && tkEcart(t.echeance) <= 7; }).length;
+        charge.unshift({ g: tkPersonne(gens, TK_BUREAU), r: rB, s: sB, p: aPrendre.length - rB - sB, tot: aPrendre.length, bureau: true });
+      }
       var mxC = Math.max.apply(null, charge.map(function(l) { return l.tot; }).concat([1]));
       var ouverte = ouverteId ? trouver(ouverteId) : null;
       var aBoiteMail = (function() {
@@ -41108,11 +41210,13 @@
               aBoiteMail ? h("button", { type: "button", className: "tk-puce", onClick: function() { var c = document.getElementById("tk-carte-mails"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); } }, h(Icon, { name: "inbox", size: 14, color: "#f5a524" }), "Mes emails") : null)),
           h("div", { className: "tk-anneau-bloc" }, h(TkAnneau, { pct: pct }), h("div", { style: { textAlign: "center", fontSize: 12, color: "#cdd1db", marginTop: 6, fontWeight: 600 } }, faitesAuj.length + " faite" + (faitesAuj.length > 1 ? "s" : "") + " sur " + total))),
         h("div", { className: "tk-grille", style: aBoiteMail ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } },
-          h("section", { className: "tk-carte" },
+          h("section", { className: "tk-carte tk-af" },
             h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "list-checks", size: 18, color: "#f5a524" }), "À faire"), h("div", { className: "tk-onglets" }, ong("tout", "Tout", items.length), ong("taches", "Mes tâches", nT), ong("signal", "L'app signale", nS))),
+            h("div", { className: "tk-defile" },
             visibles.length ? (toutAF ? visibles : visibles.slice(0, 10)).map(function(x) { return x.type === "tache" ? fiTache(x.t) : fiSignal(x.s); })
               : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "party-popper", size: 30, color: "#34d399" })), "Rien à faire ici. Tout est à jour."),
             visibles.length > 10 ? h("button", { type: "button", className: "tk-lien", style: { margin: "4px 0 0 8px" }, onClick: function() { setToutAF(!toutAF); } }, toutAF ? "Réduire" : "Voir les " + (visibles.length - 10) + " autres", h(Icon, { name: toutAF ? "chevron-up" : "chevron-down", size: 14, color: "#fcd34d" })) : null,
+            aPrendre.length ? h("button", { type: "button", className: "tk-lien", style: { margin: "6px 0 0 8px", color: "#5eead4" }, onClick: function() { aller("taches", { pour: "bureau" }); } }, h(Icon, { name: "hand", size: 14, color: "#5eead4" }), tkPl(aPrendre.length, "tâche du bureau attend quelqu'un", "tâches du bureau attendent quelqu'un") + " : voir", h(Icon, { name: "arrow-right", size: 14, color: "#5eead4" })) : null),
             h(TkSaisie, { compact: true, opts: A.opts, placeholder: "Ajouter pour moi... ex. : rappeler le garage demain 9h", onCreer: function(r) { A.creer(r, { pour: moi }); } }),
             h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } }, h("button", { type: "button", className: "tk-lien", onClick: function() { aller("taches"); } }, "Toutes mes tâches", h(Icon, { name: "arrow-right", size: 14, color: "#fcd34d" })))),
           aBoiteMail ? h(TkCarteEmails, { A: A }) : null,
@@ -41122,8 +41226,8 @@
               h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "users", size: 18, color: "#f5a524" }), "Charge de l'équipe"), h("span", { className: "n" }, "tâches ouvertes")),
               h("div", { className: "tk-legende" }, h("span", null, h("i", { style: { background: TK_COUL_CHARGE.r } }), "En retard"), h("span", null, h("i", { style: { background: TK_COUL_CHARGE.s } }), "7 prochains jours"), h("span", null, h("i", { style: { background: TK_COUL_CHARGE.p } }), "Plus tard / sans date")),
               charge.map(function(l) {
-                return h("div", { key: l.g.email, className: "tk-charge", title: "Voir les tâches de " + l.g.nom, onClick: function() { aller("taches", { pour: l.g.email }); } },
-                  h(TkAvatar, { p: l.g, taille: "sm" }), h("span", { className: "nom" }, l.g.court || l.g.nom),
+                return h("div", { key: l.g.email, className: "tk-charge", title: l.bureau ? "Tâches du bureau que personne n'a encore prises" : "Voir les tâches de " + l.g.nom, onClick: function() { aller("taches", { pour: l.bureau ? "bureau" : l.g.email }); } },
+                  h(TkAvatar, { p: l.g, taille: "sm" }), h("span", { className: "nom", style: l.bureau ? { color: "#5eead4" } : undefined }, l.bureau ? "À prendre" : (l.g.court || l.g.nom)),
                   h("div", { className: "pile" }, ["r", "s", "p"].filter(function(kk) { return l[kk] > 0; }).map(function(kk) {
                     var lib = kk === "r" ? "en retard" : (kk === "s" ? "dans les 7 jours" : "plus tard ou sans date");
                     return h("span", { key: kk, title: (l.g.court || l.g.nom) + " : " + l[kk] + " " + lib, style: { width: (l[kk] / mxC * 100) + "%", background: TK_COUL_CHARGE[kk] } });
@@ -45232,6 +45336,27 @@
           return n;
         });
       };
+      // Mise a jour CONDITIONNELLE : n'ecrit que si la ligne est encore dans
+      // l'etat attendu (ex. tache du bureau encore libre). Renvoie false si
+      // quelqu'un l'a modifiee entre-temps (la liste est alors rechargee).
+      var majTacheSi = function(id, patch, cond) {
+        var v = (tachesVersionRef.current[id] || 0) + 1;
+        tachesVersionRef.current[id] = v;
+        tachesEnVolRef.current[id] = (tachesEnVolRef.current[id] || 0) + 1;
+        var finVol = function() { var c = (tachesEnVolRef.current[id] || 1) - 1; if (c > 0) tachesEnVolRef.current[id] = c; else delete tachesEnVolRef.current[id]; };
+        setDbTaches(function(prev) { return prev.map(function(x) { return x.id === id ? Object.assign({}, x, patch) : x; }); });
+        var q = supabase.from("taches").update(tachePatchToDb(patch)).eq("id", id);
+        Object.keys(cond || {}).forEach(function(k) { q = q.eq(k, cond[k]); });
+        return q.select().then(function(res) {
+          finVol();
+          if (res.error) { showToast("Modification non enregistrée : " + res.error.message, "error"); recharger(); return null; }
+          if (!res.data || !res.data.length) { recharger(); return false; }
+          if (tachesVersionRef.current[id] !== v) return null;
+          var n = tacheFromDb(res.data[0]);
+          setDbTaches(function(prev) { return prev.map(function(x) { return x.id === id ? n : x; }); });
+          return n;
+        });
+      };
       var supprimerTache = function(id) {
         setDbTaches(function(prev) { return prev.filter(function(x) { return x.id !== id; }); });
         return supabase.from("taches").delete().eq("id", id).then(function(res) {
@@ -45683,7 +45808,7 @@
         linkPieceEquipement, unlinkPieceEquipement,
         addParametre, updateParametre, deleteParametre,
         approvePending, rejectPending, updatePendingItem, deletePendingItem,
-        dbTaches, tachesEtat, creerTache, majTache, supprimerTache, restaurerTache, creerOccurrenceSuivante,
+        dbTaches, tachesEtat, creerTache, majTache, majTacheSi, supprimerTache, restaurerTache, creerOccurrenceSuivante,
       };
 
       // ── Hooks responsive : DOIVENT etre appeles avant tout early return (Rules of Hooks) ──
