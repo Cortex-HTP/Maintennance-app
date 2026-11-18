@@ -236,9 +236,25 @@ module.exports = async function handler(req, res) {
         const ecart = Math.abs(Date.parse(body.jour + 'T00:00:00Z') - Date.parse(aujNC + 'T00:00:00Z')) / 86400e3;
         if (ecart <= 366) jour = body.jour;
       }
-      const url = AGENDA + '?singleEvents=true&orderBy=startTime&maxResults=25&timeMin=' + encodeURIComponent(jour + 'T00:00:00+11:00') + '&timeMax=' + encodeURIComponent(jour + 'T23:59:59+11:00');
-      const d = await google(jeton, url);
-      const ev = (d.items || []).filter((e) => e.status !== 'cancelled').map((e) => ({
+      // TOUS les agendas affiches (coches) dans Google Agenda, pas seulement le
+      // principal : un rendez-vous cree dans « Travail » ou un agenda partage
+      // apparait aussi. Max 10 agendas ; si la liste echoue, agenda principal.
+      let agendas = ['primary'];
+      try {
+        const l = await google(jeton, 'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader&maxResults=50');
+        const ids = (l.items || []).filter((c) => c.selected === true && !c.hidden && !c.deleted).map((c) => c.id).slice(0, 10);
+        if (ids.length) agendas = ids;
+      } catch (e) { /* repli : agenda principal */ }
+      const plage = '?singleEvents=true&orderBy=startTime&maxResults=25&timeMin=' + encodeURIComponent(jour + 'T00:00:00+11:00') + '&timeMax=' + encodeURIComponent(jour + 'T23:59:59+11:00');
+      const listes = await Promise.all(agendas.map((id) => google(jeton, (id === 'primary' ? AGENDA : 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(id) + '/events') + plage)
+        .then((d) => d.items || []).catch(() => (id === 'primary' ? null : []))));
+      if (listes.every((x) => x === null)) throw new Error('agenda illisible');
+      const vus = {};
+      const items = [].concat.apply([], listes.map((x) => x || [])).filter((e) => {
+        const cle = (e.iCalUID || e.id) + '|' + ((e.start && (e.start.dateTime || e.start.date)) || '');
+        if (vus[cle]) return false; vus[cle] = true; return true;
+      }).sort((a, b) => String((a.start && (a.start.dateTime || a.start.date)) || '').localeCompare(String((b.start && (b.start.dateTime || b.start.date)) || '')));
+      const ev = items.filter((e) => e.status !== 'cancelled').map((e) => ({
         titre: e.summary || '(sans titre)', lieu: e.location || '', journee: !!(e.start && e.start.date),
         debut: e.start && e.start.dateTime ? heureNC(e.start.dateTime) : null, fin: e.end && e.end.dateTime ? heureNC(e.end.dateTime) : null
       }));

@@ -41541,13 +41541,24 @@
         return function() { clearInterval(t); };
       }, []);
       useEffect(function() {
-        var stop = false;
-        setSt(function(prev) { return { etat: prev.etat === "ok" ? "ok" : "chargement", ev: prev.ev, erreur: "", charge: true }; });
-        apiGmail("agenda", { jour: jour }).then(function(d) { if (!stop) setSt({ etat: "ok", ev: d.evenements || [], erreur: "" }); })
-          .catch(function(e) { if (!stop) setSt({ etat: e.code === "sans_boite" ? "sans_boite" : "erreur", ev: [], erreur: e.message }); });
+        var stop = false, dernier = 0;
+        // silencieux = rafraichissement de fond : garde l'affichage, ignore les erreurs passageres
+        var charger = function(silencieux) {
+          dernier = Date.now();
+          if (!silencieux) setSt(function(prev) { return { etat: prev.etat === "ok" ? "ok" : "chargement", ev: prev.ev, erreur: "", charge: true }; });
+          apiGmail("agenda", { jour: jour }).then(function(d) { if (!stop) setSt({ etat: "ok", ev: d.evenements || [], erreur: "" }); })
+            .catch(function(e) { if (!stop && !silencieux) setSt({ etat: e.code === "sans_boite" ? "sans_boite" : "erreur", ev: [], erreur: e.message }); });
+        };
+        charger(false);
         // Nouveau jour : on se recale tout seul (ligne « maintenant » ou 1er rendez-vous)
         defilRef.current.premier = true; defilRef.current.manuel = 0;
-        return function() { stop = true; };
+        // Un rendez-vous ajoute dans Google Agenda apparait sans recharger la
+        // page : toutes les 5 min, et au retour sur l'onglet (30 s mini entre 2)
+        var t = setInterval(function() { if (!document.hidden) charger(true); }, 5 * 60000);
+        var auRetour = function() { if (!document.hidden && Date.now() - dernier > 30000) charger(true); };
+        document.addEventListener("visibilitychange", auRetour);
+        window.addEventListener("focus", auRetour);
+        return function() { stop = true; clearInterval(t); document.removeEventListener("visibilitychange", auRetour); window.removeEventListener("focus", auRetour); };
       }, [jour]);
       var changerJour = function(n) { var d = tkLire(jour); d.setDate(d.getDate() + n); setJour(localISODate(d)); };
       // La carte (hauteur fixe) suit l'heure reelle : la ligne rouge « maintenant »
