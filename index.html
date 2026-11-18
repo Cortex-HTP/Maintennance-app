@@ -25035,7 +25035,11 @@
         { key: "envoi-validation-client",   label: "Envoi validation client (email)", icon: "send" },
         // Renvoi d'un rapport de forage au client (email + nouveau lien de
         // signature) par un NON-admin : verifie aussi cote serveur (send-rapport)
-        { key: "envoi-rapport-client",      label: "Renvoi rapport au client (email)", icon: "mail" }
+        { key: "envoi-rapport-client",      label: "Renvoi rapport au client (email)", icon: "mail" },
+        // Renvoi d'un rapport DEJA SIGNE pour une nouvelle signature (retire la
+        // signature du client, archivee dans audit_logs) : coche deliberee
+        // uniquement, verifiee cote serveur (send-rapport, resignature)
+        { key: "renvoi-rapport-signe",      label: "Renvoi rapport deja signe (nouvelle signature)", icon: "pen-line" }
       ];
 
       var allPageKeys = ALL_PAGES.map(function(p) { return p.key; });
@@ -25274,13 +25278,14 @@
         // Inclure aussi toutes les sous-pages de soumissions - SAUF l'envoi
         // validation client (emails aux clients avec chiffres de facturation :
         // jamais accorde en masse, uniquement par coche deliberee)
-        var all = pages.concat(subKeys.filter(function(k) { return k !== "envoi-validation-client" && k !== "envoi-rapport-client"; }));
+        var all = pages.concat(subKeys.filter(function(k) { return k !== "envoi-validation-client" && k !== "envoi-rapport-client" && k !== "renvoi-rapport-signe"; }));
         // "Tout cocher" preserve l'etat actuel des passerelles Cortex
         if ((editing.pagesAutorisees || []).indexOf("facturation-ext") >= 0) all.push("facturation-ext");
         if ((editing.pagesAutorisees || []).indexOf("stock-ext") >= 0) all.push("stock-ext");
         // ... et de l'envoi validation client
         if ((editing.pagesAutorisees || []).indexOf("envoi-validation-client") >= 0) all.push("envoi-validation-client");
         if ((editing.pagesAutorisees || []).indexOf("envoi-rapport-client") >= 0) all.push("envoi-rapport-client");
+        if ((editing.pagesAutorisees || []).indexOf("renvoi-rapport-signe") >= 0) all.push("renvoi-rapport-signe");
         setEditing(Object.assign({}, editing, { pagesAutorisees: all }));
       };
 
@@ -30553,7 +30558,7 @@
         rapport.statut === "signe_client" || rapport.signature_client_png
           ? h("div", { style: { background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.30)", borderRadius: 10, padding: "12px 14px", fontSize: 12, color: "#fcd34d", display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 18 } },
               h(Icon, { name: "alert-triangle", size: 14, color: "#fcd34d" }),
-              h("div", null, "Ce rapport est deja signe par le client. Modifier les donnees ne supprime pas automatiquement la signature - a faire manuellement si la modification est materielle (passe par 'Re-mettre soumis' ensuite).")
+              h("div", null, "Ce rapport est deja signe par le client. Si tu le modifies, il te sera propose a l'enregistrement de le renvoyer pour une nouvelle signature (l'ancienne signature est retiree et gardee dans l'historique). Bouton aussi disponible dans le detail du rapport : « Renvoyer pour nouvelle signature ».")
             )
           : null,
 
@@ -31351,6 +31356,8 @@
       // ("Envoi validation client"). Le serveur send-validation-recap applique
       // EXACTEMENT la meme regle (le front ne fait que masquer le bouton).
       var canEnvoyerValidationCli = isAdmin || (allowedPages && allowedPages.indexOf("envoi-validation-client") >= 0);
+      // Renvoi d'un rapport DEJA SIGNE pour nouvelle signature (case dediee)
+      var canRenvoyerSigne = isAdmin || (allowedPages && allowedPages.indexOf("renvoi-rapport-signe") >= 0);
       var _loading = useState(true);
       var loading = _loading[0]; var setLoading = _loading[1];
       var _rels = useState([]);       var rels = _rels[0];         var setRels = _rels[1];
@@ -33546,8 +33553,10 @@
                 r.statut !== "valide_admin" && r.statut !== "demande_modification" ? actionBtn({ label: "Valider", icon: "check", color: "green", onClick: function() { updateRapportStatut(r.id, "valide_admin"); setExpanded(null); } }) : null,
                 r.statut === "valide_admin" ? actionBtn({ label: "Re-mettre soumis", icon: "rotate-ccw", color: "neutral", onClick: function() { updateRapportStatut(r.id, "soumis"); } }) : null,
                 actionBtn({ label: "Edition complete", icon: "edit-3", color: "indigo", onClick: function() { setEditingRapportId(r.id); } }),
-                // Pas de renvoi pour signature d'un rapport deja signe (signature definitive)
+                // Rapport non signe : renvoi simple. Rapport DEJA SIGNE : renvoi pour
+                // nouvelle signature (case dediee), l'ancienne est archivee.
                 canEditSoumissions && !r.signed_client_at ? actionBtn({ label: "Renvoyer au client", icon: "send", color: "neutral", onClick: function() { renvoyerRapportManuel(r); } }) : null,
+                canRenvoyerSigne && r.signed_client_at ? actionBtn({ label: "Renvoyer pour nouvelle signature", icon: "pen-line", color: "neutral", onClick: function() { renvoyerPourNouvelleSignature(r); } }) : null,
                 canEditSoumissions ? actionBtn({ label: "Supprimer", icon: "trash-2", color: "red", onClick: function() { deleteRapport(r); } }) : null
               )
             ]) : null
@@ -34604,21 +34613,41 @@
       // Envoi effectif via send-rapport (JWT admin). correction=true ajoute le
       // bandeau "RAPPORT CORRIGE" dans l'email ; nouveau lien de signature dans
       // les deux cas.
-      var envoyerRapportAuClient = function(rapport, correction) {
+      var envoyerRapportAuClient = function(rapport, correction, resignature) {
         supabase.auth.getSession().then(function(s) {
           var tkn = s && s.data && s.data.session ? s.data.session.access_token : null;
           if (!tkn) { alert("Session expiree, reconnecte-toi."); return; }
           fetch(EMPLOYES_API_BASE + "/api/send-rapport", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + tkn },
-            body: JSON.stringify({ rapportId: rapport.id, correction: !!correction })
-          }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })
+            body: JSON.stringify({ rapportId: rapport.id, correction: !!correction, resignature: !!resignature })
+          }).then(function(r) { return r.json().catch(function() { return {}; }).then(function(j) { return { ok: r.ok, j: j }; }); })
             .then(function(out) {
               if (!out.ok || !out.j || !out.j.ok) { alert("Renvoi impossible : " + ((out.j && out.j.error) || "erreur serveur")); return; }
-              if (showToast) showToast((correction ? "Rapport corrige renvoye" : "Rapport renvoye") + " au client (" + (out.j.destinataires || 0) + " destinataire(s))", "success");
+              // Nouvelle signature demandee : l'ancienne est retiree (archivee
+              // cote serveur) -> l'ecran ne doit plus afficher le rapport signe
+              if (resignature) {
+                var maj = { signature_client_png: null, client_signataire_nom: null, client_signataire_email: null, signed_client_at: null, statut: "envoye" };
+                setRaps(function(prev) { return prev.map(function(x) { return x.id === rapport.id ? Object.assign({}, x, maj) : x; }); });
+                if (ctx.setDbRapportsForage && ctx.dbRapportsForage) ctx.setDbRapportsForage(ctx.dbRapportsForage.map(function(x) { return x.id === rapport.id ? Object.assign({}, x, maj) : x; }));
+                auditLog("resignature_rapport", { actor: ctx.userEmail, role: isAdmin ? "admin" : "user", targetType: "rapport_forage", targetId: rapport.id, details: { date: rapport.date_rapport, machine: rapport.sondeuse_code } });
+              }
+              if (showToast) showToast((resignature ? "Nouvelle signature demandee au client" : (correction ? "Rapport corrige renvoye" : "Rapport renvoye") + " au client") + " (" + (out.j.destinataires || 0) + " destinataire(s))", "success");
             })
             .catch(function(e) { alert("Erreur reseau : " + (e && e.message)); });
         });
+      };
+      // Rapport DEJA SIGNE que l'on a du modifier : retire la signature du
+      // client (gardee dans l'historique) et lui renvoie le rapport corrige
+      var renvoyerPourNouvelleSignature = function(rapport) {
+        if (!canRenvoyerSigne) { alert("Tu n'as pas le droit de renvoyer un rapport deja signe (case « Renvoi rapport deja signe » dans Administration > Utilisateurs)."); return; }
+        var dSig = rapport.signed_client_at ? String(rapport.signed_client_at).substring(0, 10).split("-").reverse().join("/") : "?";
+        var dateR = String(rapport.date_rapport || "").substring(0, 10).split("-").reverse().join("/");
+        if (!confirm("Le rapport " + (rapport.sondeuse_code || "") + " du " + dateR + " a ete signe par " + (rapport.client_signataire_nom || "le client") + " le " + dSig + ".\n\n"
+          + "Renvoyer pour une NOUVELLE signature ?\n\n"
+          + "- la signature actuelle est retiree du rapport (elle reste gardee dans l'historique) ;\n"
+          + "- le client recoit le rapport marque RAPPORT CORRIGE avec un nouveau lien de signature.")) return;
+        envoyerRapportAuClient(rapport, true, true);
       };
       // Apres modification d'un rapport : proposition AUTOMATIQUE de renvoi si
       // la journee est visee par une correction client.
@@ -35873,6 +35902,8 @@
           onSaved: function(updated) {
             setRaps(raps.map(function(x) { return x.id === updated.id ? updated : x; }));
             setEditingRapportId(null);
+            // Rapport DEJA SIGNE modifie -> proposer la nouvelle signature
+            if (updated && updated.signed_client_at) { if (canRenvoyerSigne) renvoyerPourNouvelleSignature(updated); return; }
             // Journee visee par une correction client ? -> proposer le renvoi
             proposerRenvoiRapportCorrige(updated);
           }
