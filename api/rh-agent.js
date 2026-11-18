@@ -68,7 +68,10 @@ OUTIL proposer_contrat - FORMATS EXACTS (gabarit PDF verrouille, tu ne rediges Q
 - poursuite / anciennete_depuis / clause_permis : CDI uniquement (voir REGLES CDI).
 - remuneration : texte COMPLET (modeles ci-dessus, adapter les montants si salaire au-dessus du SMG : calculer taux horaire = mensuel / 169, arrondi au centieme).
 - motif : phrase du motif d'usage (modele renfort ci-dessus) - uniquement pour le CDD d'usage.
-- remplace : {nom, qualif, fin_contrat} + duree_min ("une (1) semaine") + fin_min (date longue) - uniquement pour un remplacement ; debut requis, pas de fin/duree.
+- remplace : {nom, qualif, fin_contrat} - uniquement pour un remplacement ; debut toujours requis. DEUX FORMES (jamais les deux a la fois) :
+  (A) remplacement a DATE FIXE (terme precis, "du 18 au 19 novembre") : debut + fin + duree (+ fin_iso), PAS de duree_min ni fin_min.
+  (B) remplacement SANS TERME PRECIS (jusqu'au retour de l'absent) : debut + duree_min + fin_min, PAS de fin ni duree (fin_iso vide). duree_min et fin_min se mettent au MEME niveau que debut (jamais a l'interieur de remplace) : duree_min en lettres + chiffres ("une (1) semaine", "deux (2) jours"), fin_min = date longue du dernier jour de cette duree minimale (debut + duree - 1 jour, jour de semaine verifie). Si Tom ne donne pas de duree minimale, pose-lui la question OU mets "[[duree minimale]]" / "[[date de fin minimale]]" et ajoute-le a a_verifier.
+  Si Tom hesite, explique en une phrase la difference et laisse-le choisir.
 - regularisation : true + preambule : tableau de 3 paragraphes honnetes (contrat precedent, poursuite du travail, signature a date reelle).
 - date_signature : date longue du jour (Pacific/Noumea) sauf indication contraire.
 - debut_iso / fin_iso : les memes dates en AAAA-MM-JJ (fin_iso vide pour un remplacement sans terme precis et pour un CDI) - elles servent au classement du document au Coffre RH.
@@ -247,8 +250,8 @@ const TOOL_CONTRAT = {
           nom: { type: 'string' }, qualif: { type: 'string' }, fin_contrat: { type: 'string' }
         }
       },
-      duree_min: { type: 'string' },
-      fin_min: { type: 'string' },
+      duree_min: { type: 'string', description: 'REMPLACEMENT : duree minimale, ex. "une (1) semaine" (obligatoire pour un remplacement, au meme niveau que debut)' },
+      fin_min: { type: 'string', description: 'REMPLACEMENT : date longue de fin de la duree minimale, ex. "vendredi 27 novembre 2026"' },
       regularisation: { type: 'boolean' },
       preambule: { type: 'array', items: { type: 'string' } },
       lieu_texte: { type: 'string', description: 'redaction particuliere du lieu de travail (rare)' },

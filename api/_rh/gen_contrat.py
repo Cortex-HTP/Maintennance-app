@@ -290,7 +290,7 @@ def preambule_regularisation(nom, contrat_precedent, reprise):
 
 
 def _motif(s):
-    """CDD de remplacement d'un salarié absent (Lp. 123-2, 1°) sans terme précis (Lp. 123-3)."""
+    """CDD de remplacement d'un salarié absent (Lp. 123-2, 1°), à terme précis ou sans terme précis (Lp. 123-3)."""
     r = s["remplace"]
     return [
         "Le présent contrat est conclu pour une durée déterminée, en application des articles Lp. 123-1 et "
@@ -303,7 +303,26 @@ def _motif(s):
     ]
 
 
+def _remplacement_terme_precis(s):
+    """Remplacement a DATE FIXE (du ... au ...) : terme precis, pas de duree minimale."""
+    return bool(s.get("remplace")) and bool(str(s.get("fin") or "").strip()) \
+        and bool(str(s.get("duree") or "").strip()) and not str(s.get("duree_min") or "").strip()
+
+
+def _duree_terme_precis(s):
+    return [
+        "Le présent contrat est conclu à terme précis. Le Salarié est engagé à compter du <b>%s</b> pour se "
+        "terminer de plein droit le <b>%s inclus</b>, soit une durée de <b>%s</b>, sans qu’il soit besoin "
+        "de délivrer un quelconque congé ou préavis." % (s["debut"], s["fin"], s["duree"]),
+        "Le contrat cessant à l’arrivée de son terme, les relations contractuelles prendront fin "
+        "automatiquement à cette date. Toute poursuite de la relation de travail au-delà du terme ne pourra "
+        "résulter que d’un nouvel accord écrit entre les parties.",
+    ]
+
+
 def _duree_remplacement(s):
+    if _remplacement_terme_precis(s):
+        return _duree_terme_precis(s)
     r = s["remplace"]
     return [
         "Le présent contrat est conclu <b>sans terme précis</b>, en application de l’article Lp. 123-3 du "
@@ -429,14 +448,7 @@ def articles_cdd(s):
             "conditions prévues par le Code du travail de Nouvelle-Calédonie.",
         ]),
         _art_fonction(s),
-        ("DURÉE DE L’ENGAGEMENT", _duree_remplacement(s) if s.get("remplace") else [
-            "Le présent contrat est conclu à terme précis. Le Salarié est engagé à compter du <b>%s</b> pour se "
-            "terminer de plein droit le <b>%s inclus</b>, soit une durée de <b>%s</b>, sans qu’il soit besoin "
-            "de délivrer un quelconque congé ou préavis." % (s["debut"], s["fin"], s["duree"]),
-            "Le contrat cessant à l’arrivée de son terme, les relations contractuelles prendront fin "
-            "automatiquement à cette date. Toute poursuite de la relation de travail au-delà du terme ne pourra "
-            "résulter que d’un nouvel accord écrit entre les parties.",
-        ]),
+        ("DURÉE DE L’ENGAGEMENT", _duree_remplacement(s) if s.get("remplace") else _duree_terme_precis(s)),
         ("PÉRIODE D’ESSAI", [s["essai_texte"]] if s.get("essai_texte") else [ESSAI_AUCUN] if s.get("essai", "x") is None else [
             "Le Salarié aura une période d’essai de <b>%s</b>, calculée conformément aux dispositions du Code "
             "du travail de Nouvelle-Calédonie et de la Convention Collective applicable. Au cours de cette "

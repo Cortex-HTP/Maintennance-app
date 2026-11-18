@@ -183,12 +183,28 @@ class handler(BaseHTTPRequestHandler):
                     data.pop(champ, None)
             elif data.get("remplace"):
                 r = data["remplace"] if isinstance(data["remplace"], dict) else {}
+                # L'agent range parfois duree_min / fin_min DANS « remplace » : on les remonte
+                for champ in ("duree_min", "fin_min"):
+                    if not str(data.get(champ) or "").strip() and str(r.get(champ) or "").strip():
+                        data[champ] = str(r.get(champ)).strip()
                 for champ in ("nom", "qualif"):
                     if not str(r.get(champ) or "").strip():
                         return self._repondre(400, {"error": "remplacement : champ remplace." + champ + " manquant"})
-                for champ in ("debut", "duree_min", "fin_min"):
-                    if not str(data.get(champ) or "").strip():
-                        return self._repondre(400, {"error": "remplacement : champ " + champ + " manquant"})
+                if not str(data.get("debut") or "").strip():
+                    return self._repondre(400, {"error": "remplacement : champ debut manquant"})
+                terme_precis = bool(str(data.get("fin") or "").strip()) and bool(str(data.get("duree") or "").strip()) \
+                    and not str(data.get("duree_min") or "").strip()
+                if terme_precis:
+                    # Remplacement a DATE FIXE (du ... au ...) : pas de duree minimale
+                    data.pop("fin_min", None)
+                else:
+                    # Sans terme precis : duree minimale non precisee -> le contrat
+                    # sort quand meme, la mention a completer apparait EN ROUGE
+                    # (jamais de valeur inventee)
+                    if not str(data.get("duree_min") or "").strip():
+                        data["duree_min"] = "[[durée minimale à préciser]]"
+                    if not str(data.get("fin_min") or "").strip():
+                        data["fin_min"] = "[[date de fin de la durée minimale]]"
             else:
                 if not (data.get("debut") and data.get("fin") and data.get("duree")):
                     return self._repondre(400, {"error": "debut/fin/duree obligatoires (hors remplacement)"})
