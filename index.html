@@ -41002,13 +41002,25 @@
         });
         return { svg: h("svg", { className: "tk-g7", viewBox: "0 0 " + W + " " + H, style: { width: "100%", height: "auto", display: "block" } }, el), tot: tot };
       })();
-      // Charge de l'equipe (taches ouvertes visibles)
+      // Charge de l'equipe (taches ouvertes visibles) : toujours les gens du
+      // bureau (Parametres > Boites mail > personnes du bureau), meme a 0,
+      // + toute personne qui a des taches ouvertes. Bureau pas encore choisi =
+      // tous les comptes actifs.
+      var bureauEm = (function() {
+        var row = (ctx.parametres || []).filter(function(p) { return p && p.categorie === "emails_bureau"; })[0];
+        if (!row) return null;
+        var l = []; try { l = JSON.parse(row.valeur || "[]"); } catch (e) { l = []; }
+        if (!Array.isArray(l)) l = [];
+        var parId = {}; (ctx.dbAppUsers || []).forEach(function(u) { parId[String(u.id)] = String(u.email || "").toLowerCase(); });
+        var s = {}; l.forEach(function(c) { var k = String(c || "").replace(/^u:/, ""); var em = parId[k] || (k.indexOf("@") > 0 ? k.toLowerCase() : ""); if (em) s[em] = true; });
+        return s;
+      })();
       var charge = gens.map(function(g) {
         var ts = ouvertesEq.filter(function(t) { return t.pour === g.email; });
         var r = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) < 0; }).length;
         var s = ts.filter(function(t) { return t.echeance && tkEcart(t.echeance) >= 0 && tkEcart(t.echeance) <= 7; }).length;
         return { g: g, r: r, s: s, p: ts.length - r - s, tot: ts.length };
-      }).filter(function(l) { return l.tot > 0 || l.g.email === moi; }).sort(function(a, b) { return b.tot - a.tot; }).slice(0, 10);
+      }).filter(function(l) { return l.tot > 0 || l.g.email === moi || !bureauEm || bureauEm[l.g.email]; }).sort(function(a, b) { return (b.tot - a.tot) || (a.g.email === moi ? -1 : (b.g.email === moi ? 1 : String(a.g.nom).localeCompare(String(b.g.nom)))); }).slice(0, 12);
       var mxC = Math.max.apply(null, charge.map(function(l) { return l.tot; }).concat([1]));
       var ouverte = ouverteId ? trouver(ouverteId) : null;
       var aBoiteMail = (function() {
@@ -41309,7 +41321,9 @@
                 h("button", { type: "button", className: "tk-mini", style: { marginLeft: "auto" }, title: "Replier", onClick: function() { setOuvert(null); } }, h(Icon, { name: "chevron-up", size: 13 })))) : null);
         }).concat(liste.length > 10 ? [h("button", { key: "voir", type: "button", className: "tk-lien", style: { margin: "6px 0 0 8px" }, onClick: function() { setVoirTout(!voirTout); } }, voirTout ? "Réduire" : "Voir les " + (liste.length - 10) + " autres", h(Icon, { name: voirTout ? "chevron-up" : "chevron-down", size: 14, color: "#fcd34d" }))] : [])
         : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "mail-check", size: 30, color: "#34d399" })), onglet === "a_traiter" ? "Rien à traiter. Bravo." : "Aucun email."),
-        h("div", { className: "tk-astuce", style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.07)" } }, h(Icon, { name: "shield-check", size: 13 }), "Lecture seule · seuls les nouveaux emails sont triés par l'IA (environ 0,2 F par email)"),
+        // "A traiter" ne montre que ce qui demande une action : on dit clairement ou sont les autres
+        onglet === "a_traiter" && !cat && st.msgs.length > nATraiter ? h("button", { type: "button", className: "tk-lien", style: { margin: "6px 0 0 8px" }, onClick: function() { setOnglet("tous"); setVoirTout(false); } }, "+ " + (st.msgs.length - nATraiter) + " autre" + (st.msgs.length - nATraiter > 1 ? "s" : "") + " (pour info, déjà lu" + (st.msgs.length - nATraiter > 1 ? "s" : "") + " ou traité" + (st.msgs.length - nATraiter > 1 ? "s" : "") + ") : voir Tous", h(Icon, { name: "arrow-right", size: 14, color: "#fcd34d" })) : null,
+        h("div", { className: "tk-astuce", style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.07)" } }, h(Icon, { name: "shield-check", size: 13 }), "Lecture seule · « À traiter » = ce qui demande une action · les 25 derniers emails"),
         lecture ? h(TkLectureEmail, { id: lecture.id, onFermer: function() { setLecture(null); }, onTache: function() { var m = lecture; setLecture(null); setMailTache(m); }, onTraite: function() { marquerTraite(lecture, true); setLecture(null); } }) : null,
         mailTache ? h(TkModaleMailTache, { A: A, mail: mailTache, tri: tri[mailTache.id], boite: st.boite, onFermer: function() { setMailTache(null); }, onCree: function(n) { marquerTraite(mailTache, true); setMailTache(null); setOuvert(null); A.toast("Tâche créée, email marqué traité", "list-plus"); } }) : null);
     }
