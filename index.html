@@ -25152,7 +25152,27 @@
             headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok },
             body: JSON.stringify({ email: u.email, newPassword: newPwd })
           });
-          var data = await resp.json();
+          var data = await resp.json().catch(function() { return {}; });
+          // Aucun compte de connexion a cette adresse (adresse changee ici, ou
+          // compte jamais cree) : proposer de le creer avec ce mot de passe.
+          if (resp.status === 404 && data && data.code === "sans_compte") {
+            var okCreer = window.confirm("Aucun compte de connexion n'existe a l'adresse " + u.email + ".\n\n"
+              + "C'est normal si tu viens de changer son adresse ici : l'ancien compte garde l'ancienne adresse.\n\n"
+              + "Creer maintenant le compte de connexion " + u.email + " avec ce mot de passe ?");
+            if (!okCreer) return;
+            resp = await fetch("https://employes-psi.vercel.app/api/admin-reset-password", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok },
+              body: JSON.stringify({ email: u.email, newPassword: newPwd, creer: true })
+            });
+            data = await resp.json().catch(function() { return {}; });
+            if (resp.ok && data.ok && data.cree) {
+              auditLog("create_login", { actor: ctxAu.userEmail, role: "admin", targetType: "user", targetId: u.email, details: { user_nom: u.nom } });
+              alert("Compte de connexion cree pour " + u.email + ".\n\nCommunique le mot de passe a l'utilisateur :\n\n" + newPwd
+                + "\n\nPense a supprimer l'ancien compte de connexion (ancienne adresse) dans Supabase > Authentication > Users.");
+              return;
+            }
+          }
           if (!resp.ok || !data.ok) {
             var errMsg = (data && data.error) || ("HTTP " + resp.status);
             if (errMsg.indexOf("invalid token") >= 0 || errMsg.indexOf("missing bearer") >= 0) {
