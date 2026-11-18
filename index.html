@@ -40206,14 +40206,15 @@
       ".tk-anneau .lib{font-size:11px;color:#969db1;font-weight:650;margin-top:4px}",
       ".tk-grille{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px;align-items:stretch}",
       ".tk-bas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px;align-items:stretch}",
-      /* Toutes les cartes du tableau de bord a la MEME taille (demande 2026-11-18) :
-         hauteur fixe, le contenu defile dans la carte, l'en-tete reste visible */
-      ".tk-col-agenda{display:flex;flex-direction:column;min-width:0}.tk-col-agenda>.tk-carte{flex:1}",
-      "@media (min-width:1101px){.tk-grille>.tk-carte,.tk-col-agenda>.tk-carte,.tk-bas>.tk-carte{height:470px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}",
-      ".tk-grille .tk-carte>.tk-c-tete,.tk-bas .tk-carte>.tk-c-tete{position:sticky;top:-16px;z-index:5;margin:-16px -18px 12px;padding:16px 18px 10px;background:#272b46;border-radius:18px 18px 0 0}",
+      /* Cartes d'une MEME LIGNE identiques (demande 2026-11-18) : ligne 1 (A faire,
+         Mes emails, Aujourd'hui) a hauteur fixe, le contenu defile dans la carte et
+         l'en-tete reste visible ; ligne 2 = hauteur de la plus haute des 3 */
+      ".tk-col-agenda{min-width:0}",
+      "@media (min-width:1101px){.tk-grille>.tk-carte,.tk-col-agenda>.tk-carte{height:470px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}",
+      ".tk-grille .tk-carte>.tk-c-tete{position:sticky;top:-16px;z-index:5;margin:-16px -18px 12px;padding:16px 18px 10px;background:#272b46;border-radius:18px 18px 0 0}",
       /* A faire : seule la liste defile, la saisie reste visible en bas */
       ".tk-grille>.tk-carte.tk-af{display:flex;flex-direction:column;overflow:hidden}.tk-af>.tk-defile{flex:1;min-height:0;overflow-y:auto;margin-right:-8px;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}",
-      ".tk-bas>.tk-carte{display:flex;flex-direction:column}.tk-bas .tk-kpis{flex:1;grid-auto-rows:1fr}.tk-bas .tk-g7{flex:1;min-height:0;height:100%!important}}",
+      ".tk-bas>.tk-carte{display:flex;flex-direction:column}.tk-bas .tk-kpis{flex:1;grid-auto-rows:1fr}.tk-bas .tk-g7{flex:1 1 auto}}",
       /* a faire */
       ".tk-fi{display:flex;gap:10px;align-items:center;padding:7px 8px;border-radius:11px;position:relative;transition:background .15s}",
       ".tk-fi:hover{background:rgba(255,255,255,.04)}",
@@ -41506,6 +41507,22 @@
         var t = setInterval(function() { setMaintenant(Date.now()); }, 60000);
         return function() { clearInterval(t); };
       }, []);
+      // La carte (hauteur fixe) suit l'heure reelle : la ligne rouge « maintenant »
+      // est gardee au tiers haut, recalee chaque minute. Si on fait defiler a la
+      // main, on laisse tranquille 2 minutes.
+      var carteRef = useRef(null), ligneRef = useRef(null), defilRef = useRef({ prog: 0, manuel: 0, premier: true });
+      useEffect(function() {
+        var c = carteRef.current; if (!c || st.etat !== "ok") return;
+        if (Date.now() - defilRef.current.manuel < 120000) return;
+        if (c.scrollHeight <= c.clientHeight + 2) return;
+        var cible;
+        if (ligneRef.current) cible = c.scrollTop + (ligneRef.current.getBoundingClientRect().top - c.getBoundingClientRect().top) - c.clientHeight * 0.33;
+        else cible = new Date().getHours() < 12 ? 0 : c.scrollHeight;
+        defilRef.current.prog = Date.now();
+        try { c.scrollTo({ top: Math.max(0, cible), behavior: defilRef.current.premier ? "auto" : "smooth" }); } catch (e) { c.scrollTop = Math.max(0, cible); }
+        defilRef.current.premier = false;
+      }, [maintenant, st.etat, st.ev.length]);
+      var surDefil = function() { if (Date.now() - defilRef.current.prog > 900) defilRef.current.manuel = Date.now(); };
       var tete = h("div", { className: "tk-c-tete" }, h("h2", null, h(Icon, { name: "calendar-days", size: 18, color: "#f5a524" }), "Aujourd'hui"), st.etat === "ok" ? h("span", { className: "tk-chip" }, "Agenda") : null);
       if (st.etat !== "ok") return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide" }, st.etat === "chargement" ? "Lecture de l'agenda..." : (st.etat === "sans_boite" ? "Ton agenda s'affichera ici dès que ton adresse @wallislabel.nc sera renseignée." : "Agenda indisponible : " + st.erreur)));
       var H0 = 7, H1 = 19, ph = 42, blocs = [], journee = st.ev.filter(function(e) { return e.journee; });
@@ -41531,7 +41548,7 @@
       if (!blocs.length && !journee.length && !horsGrille.length) {
         return h("section", { className: "tk-carte" }, tete, h("div", { className: "tk-vide", style: { padding: "18px 10px" } }, h("div", { style: { marginBottom: 6 } }, h(Icon, { name: "coffee", size: 24, color: "#34d399" })), "Aucun rendez-vous aujourd'hui."));
       }
-      return h("section", { className: "tk-carte" }, tete,
+      return h("section", { className: "tk-carte", ref: carteRef, onScroll: surDefil }, tete,
         journee.length || horsGrille.length ? h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 } },
           journee.map(function(e, i) { return h("div", { key: "j" + i, className: "tk-chip", style: { justifyContent: "flex-start", padding: "4px 8px" } }, h(Icon, { name: "sun", size: 12 }), e.titre); }),
           horsGrille.map(function(e, i) { return h("div", { key: "h" + i, className: "tk-chip", style: { justifyContent: "flex-start", padding: "4px 8px" } }, h(Icon, { name: "clock", size: 12 }), e.debut.replace(":", "h") + " · " + e.titre); })) : null,
@@ -41540,7 +41557,7 @@
             return h("div", { key: i, title: b.titre, style: { position: "absolute", top: b.top, height: b.ht, left: "calc(40px + (100% - 44px) * " + b.voie + " / " + b.n + ")", width: "calc((100% - 44px) / " + b.n + " - " + (b.n > 1 ? 3 : 0) + "px)", borderRadius: 10, padding: "5px 9px", overflow: "hidden", fontSize: 11, color: "#cdd1db", borderLeft: "3px solid " + b.c, background: b.tache ? "rgba(10,12,22,.5)" : "color-mix(in srgb, " + b.c + " 20%, #1f2338)", border: b.tache ? "1px dashed " + b.c : undefined } },
               h("b", { style: { display: "block", fontSize: 12, color: "#f5f4f0", fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, (b.tache ? "Tâche · " : "") + b.titre), b.sous);
           }),
-          mNow >= H0 * 60 && mNow <= H1 * 60 ? h("div", { style: { position: "absolute", left: 36, right: 0, top: (mNow - H0 * 60) / 60 * ph + 2, height: 2, background: "#f43f5e", boxShadow: "0 0 10px rgba(244,63,94,.8)", zIndex: 3 } }) : null),
+          mNow >= H0 * 60 && mNow <= H1 * 60 ? h("div", { ref: ligneRef, title: "Maintenant", style: { position: "absolute", left: 36, right: 0, top: (mNow - H0 * 60) / 60 * ph + 2, height: 2, background: "#f43f5e", boxShadow: "0 0 10px rgba(244,63,94,.8)", zIndex: 3 } }) : null),
         !blocs.length && !journee.length && !horsGrille.length ? h("div", { className: "tk-astuce", style: { marginTop: 6 } }, h(Icon, { name: "coffee", size: 13 }), "Aucun rendez-vous aujourd'hui.") : null);
     }
 
