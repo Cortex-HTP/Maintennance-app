@@ -8075,6 +8075,112 @@
       return res;
     }
 
+    // ── Conso carburant des MACHINES par chantier (Avancement + Carburant > Par chantier) ──
+    // Rattachement d'un plein a un chantier :
+    //   1. rapport lie (rapport_id), sinon rapport de la MEME machine le MEME jour
+    //      -> chantier du rapport (meme logique que les couts machine) ;
+    //   2. sinon planning (chantier_equipements) : chantier ou la machine est
+    //      prevue ce jour-la (signale "via planning") ;
+    //   3. sinon "non rattache".
+    // Metres et jours = rapports de forage de la machine sur ce chantier.
+    // Vehicules exclus (onglet Vehicules). debut / fin : AAAA-MM-JJ ou null.
+    function carbMachinesChantiers(o) {
+      var equipements = o.equipements || [], chantiers = o.chantiers || [];
+      var debut = o.debut || null, fin = o.fin || null;
+      function dansP(d) { return (!debut || d >= debut) && (!fin || d <= fin); }
+      function codeEq(eq) { return String(eq.Title || eq.Nom || ("#" + eq.Id)).toUpperCase().trim(); }
+      var parCode = {};
+      equipements.forEach(function(eq) { var k = codeEq(eq); if (k && !parCode[k]) parCode[k] = eq; });
+      equipements.forEach(function(eq) { var k = String(eq.Title || "").toUpperCase().trim(); if (k && !parCode[k]) parCode[k] = eq; });
+      equipements.forEach(function(eq) { var k = String(eq.Nom || "").toUpperCase().trim(); if (k && !parCode[k]) parCode[k] = eq; });
+      function resoudre(code) { return parCode[String(code || "").toUpperCase().trim()] || null; }
+      function canon(code) { var eq = resoudre(code); return eq ? codeEq(eq) : String(code || "").toUpperCase().trim(); }
+      function estVehicule(eq) { return !!eq && (eq.Categorie === "Vehicule" || /vehicule|vl|camion/i.test(eq.Type || "")); }
+      // Chantier d'un rapport : chantier_id connu, sinon lieu = site (convention), sinon titre contenant le lieu
+      var chIds = {}, parSite = {};
+      chantiers.forEach(function(c) { chIds[String(c.id)] = c; var s = String(c.site || "").toUpperCase().trim(); if (s && !parSite[s]) parSite[s] = String(c.id); });
+      function chantierDuRapport(r) {
+        if (r.chantier_id != null) return chIds[String(r.chantier_id)] ? String(r.chantier_id) : null;
+        var lieu = String(r.lieu || "").toUpperCase().trim();
+        if (!lieu) return null;
+        if (parSite[lieu]) return parSite[lieu];
+        var c = chantiers.filter(function(x) { var t = String(x.titre || "").toUpperCase(); return t && t.indexOf(lieu) >= 0; })[0];
+        return c ? String(c.id) : null;
+      }
+      var paires = {}, rapParId = {}, rapParMachineDate = {};
+      function paire(m, ch) { var k = m + "|" + ch; if (!paires[k]) paires[k] = { machine: m, chantierId: ch, jours: {}, joursCarb: {}, litres: 0, metres: 0, plan: 0, du: "", au: "" }; return paires[k]; }
+      function borne(p, d) { if (!p.du || d < p.du) p.du = d; if (!p.au || d > p.au) p.au = d; }
+      (o.rapports || []).forEach(function(r) {
+        if (!r || !r.sondeuse_code || !r.date_rapport) return;
+        var d = String(r.date_rapport).substring(0, 10), m = canon(r.sondeuse_code), ch = chantierDuRapport(r);
+        rapParId[String(r.id)] = ch;
+        if (ch && !rapParMachineDate[m + "|" + d]) rapParMachineDate[m + "|" + d] = ch;
+        if (!ch || !dansP(d) || estVehicule(resoudre(r.sondeuse_code))) return;
+        var p = paire(m, ch);
+        p.jours[d] = true; p.metres += parseFloat(r.total_metres) || 0; borne(p, d);
+      });
+      var plans = (o.chantierEquipements || []).filter(function(ce) { return ce && ce.chantierId != null && chIds[String(ce.chantierId)]; });
+      function chantierPlanning(eq, d) {
+        if (!eq) return null;
+        for (var i = 0; i < plans.length; i++) {
+          var ce = plans[i];
+          if (String(ce.equipementId) !== String(eq.Id)) continue;
+          var a = ce.dateDebut ? String(ce.dateDebut).substring(0, 10) : null, b = ce.dateFin ? String(ce.dateFin).substring(0, 10) : null;
+          if ((!a || d >= a) && (!b || d <= b)) return String(ce.chantierId);
+        }
+        return null;
+      }
+      var nonRattache = {};
+      (o.carburants || []).forEach(function(c) {
+        var l = parseFloat(c.quantite_l) || 0, d = String(c.date_consommation || "").substring(0, 10);
+        if (l <= 0 || d.length !== 10 || !dansP(d)) return;
+        var eq = resoudre(c.sondeuse_code);
+        if (estVehicule(eq)) return;
+        var m = canon(c.sondeuse_code);
+        if (!m) return;
+        var ch = null, viaPlan = false;
+        if (c.rapport_id != null && rapParId[String(c.rapport_id)]) ch = rapParId[String(c.rapport_id)];
+        if (!ch) ch = rapParMachineDate[m + "|" + d] || null;
+        if (!ch) { ch = chantierPlanning(eq, d); viaPlan = !!ch; }
+        if (!ch) { nonRattache[m] = (nonRattache[m] || 0) + l; return; }
+        var p = paire(m, ch);
+        p.litres += l; p.joursCarb[d] = true; if (viaPlan) p.plan += l; borne(p, d);
+      });
+      var lignes = Object.keys(paires).map(function(k) {
+        var p = paires[k], nj = Object.keys(p.jours).length;
+        return { machine: p.machine, chantierId: p.chantierId, jours: nj || Object.keys(p.joursCarb).length, litres: p.litres, metres: p.metres, plan: p.plan, du: p.du, au: p.au };
+      }).filter(function(x) { return x.litres > 0 || x.metres > 0; });
+      var tl = 0, tm = 0;
+      lignes.forEach(function(x) { if (x.metres > 0 && x.litres > 0) { tl += x.litres; tm += x.metres; } });
+      return { lignes: lignes, nonRattache: nonRattache, moyenneLm: tm > 0 ? tl / tm : 0 };
+    }
+    // Prix du litre de gazole (meme ordre que l'ecran Carburant) : parametre, piece "mazout", 175
+    function carbPrixLitre(parametres, pieces) {
+      var pm = (parametres || []).filter(function(p) { return p && (p.cle === "prix_mazout_litre" || p.categorie === "prix_mazout_litre"); })[0];
+      if (pm && parseFloat(pm.valeur) > 0) return parseFloat(pm.valeur);
+      var pc = (pieces || []).filter(function(p) { return /mazout/i.test(String(p.Designation || "") + " " + String(p.Reference || "")); })[0];
+      if (pc && parseFloat(pc.PrixUnitaire) > 0) return parseFloat(pc.PrixUnitaire);
+      return 175;
+    }
+    function carbCouleurLm(v, moy) { if (!(v > 0) || !(moy > 0)) return "#a1a1aa"; return v <= moy ? "#86efac" : v <= moy * 1.2 ? "#fde68a" : "#fda4af"; }
+    function carbDateCourte(iso) { var p = String(iso || "").split("-"); return p.length === 3 ? p[2] + "/" + p[1] : "-"; }
+    function carbSomme(list) { return list.reduce(function(s, x) { s.jours += x.jours; s.litres += x.litres; s.metres += x.metres; s.plan += x.plan; return s; }, { jours: 0, litres: 0, metres: 0, plan: 0 }); }
+    // Cellules communes (jours, litres, cout, metres, L/m, cout/m, L/jour)
+    function carbCellulesConso(x, prix, moy, gras) {
+      var lm = x.metres > 0 && x.litres > 0 ? x.litres / x.metres : 0, col = carbCouleurLm(lm, moy);
+      var td = function(contenu, st) { return h("td", { style: Object.assign({ padding: "8px 12px", borderTop: "1px solid rgba(255,255,255,0.04)", whiteSpace: "nowrap", fontFamily: "monospace" }, st || {}) }, contenu); };
+      return [
+        td(x.jours + " j", { key: "j" }),
+        td(fmtNum(x.litres) + " L", { key: "l", color: "#86efac", fontWeight: gras ? 800 : 700 }),
+        td(fmtMoney(x.litres * prix), { key: "c", fontFamily: "inherit", color: "#cbd5e1" }),
+        td(fmtNum(x.metres) + " m", { key: "m" }),
+        td(lm ? lm.toFixed(2).replace(".", ",") + " L/m" : "-", { key: "lm", color: col, fontWeight: gras ? 800 : 700 }),
+        td(lm ? fmtMoney(Math.round(lm * prix)) + "/m" : "-", { key: "cm", color: col }),
+        td(fmtNum(x.jours ? x.litres / x.jours : 0) + " L/j", { key: "lj", color: "#cbd5e1" })
+      ];
+    }
+    var CARB_ENTETES_CONSO = ["Jours", "Litres", "Cout", "Metres", "L/m", "Cout/m", "L/jour"];
+
     function EcranCarburant() {
       const ctx = useAppData();
       const equipements = ctx.equipements || [];
@@ -8092,6 +8198,9 @@
       const [kmModal, setKmModal] = useState(null);
       const [enregKm, setEnregKm] = useState(false);
       const [enregCarb, setEnregCarb] = useState(false);
+      // Onglet "Par chantier" : sens du regroupement + groupes replies
+      const [sensCh, setSensCh] = useState("machine"); // machine | chantier
+      const [grpFermes, setGrpFermes] = useState({});
       // Verrou anti double-clic (enregistrement / suppression) : un 2e clic
       // pendant l'attente du serveur creait un doublon
       const verrouCarbRef = useRef(false);
@@ -8676,6 +8785,67 @@
         );
       }
 
+      // ═══ Onglet PAR CHANTIER : machine -> ses chantiers / chantier -> ses machines ═══
+      function rendreParChantier() {
+        var res = carbMachinesChantiers({ carburants: carburants, rapports: ctx.dbRapportsForage || [], chantiers: ctx.dbChantiers || [], chantierEquipements: ctx.dbChantierEquipements || [], equipements: equipements, debut: debutIso, fin: finIso });
+        var lignes = res.lignes, moy = res.moyenneLm;
+        var chParId = {};
+        (ctx.dbChantiers || []).forEach(function(c) { chParId[String(c.id)] = c; });
+        var nomCh = function(id) { var c = chParId[id]; return c ? (c.titre || c.site || ("Chantier " + id)) : ("Chantier " + id); };
+        var T = carbSomme(lignes);
+        var totNonRatt = Object.keys(res.nonRattache).reduce(function(s, k) { return s + res.nonRattache[k]; }, 0);
+        var groupes = {};
+        lignes.forEach(function(x) { var g = sensCh === "machine" ? x.machine : x.chantierId; (groupes[g] = groupes[g] || []).push(x); });
+        var cles = Object.keys(groupes).sort(function(a, b) { return carbSomme(groupes[b]).litres - carbSomme(groupes[a]).litres; });
+        var thS = { padding: "9px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, textAlign: "left", background: "rgba(36,40,60,0.95)", whiteSpace: "nowrap" };
+        var lignesTable = [];
+        cles.forEach(function(g) {
+          var list = groupes[g].slice().sort(function(a, b) { return b.litres - a.litres; });
+          var t = carbSomme(list), k = sensCh + "|" + g, ouvert = !grpFermes[k];
+          lignesTable.push(h("tr", { key: "g" + k, onClick: function() { var n = Object.assign({}, grpFermes); n[k] = ouvert; setGrpFermes(n); }, style: { cursor: "pointer", background: "rgba(99,102,241,0.08)" } },
+            h("td", { style: { padding: "8px 12px", fontWeight: 700, borderTop: "1px solid rgba(255,255,255,0.06)", whiteSpace: "nowrap" } },
+              h(Icon, { name: ouvert ? "chevron-down" : "chevron-right", size: 14, color: "#a1a1aa" }), " ",
+              sensCh === "machine" ? h("span", { style: { fontFamily: "monospace", color: "#a78bfa" } }, g) : nomCh(g),
+              h("span", { style: { fontSize: 11.5, color: "#94a3b8", fontWeight: 500, marginLeft: 6 } }, "· " + list.length + (sensCh === "machine" ? " chantier" : " machine") + (list.length > 1 ? "s" : ""))),
+            carbCellulesConso(t, prixMazout, moy, true)));
+          if (!ouvert) return;
+          list.forEach(function(x) {
+            lignesTable.push(h("tr", { key: "l" + k + x.machine + x.chantierId },
+              h("td", { style: { padding: "8px 12px 8px 34px", borderTop: "1px solid rgba(255,255,255,0.04)", whiteSpace: "nowrap" } },
+                sensCh === "machine" ? nomCh(x.chantierId) : h("span", { style: { fontFamily: "monospace", color: "#a78bfa", fontWeight: 700 } }, x.machine),
+                h("span", { style: { fontSize: 11.5, color: "#94a3b8", marginLeft: 6 } }, "du " + carbDateCourte(x.du) + " au " + carbDateCourte(x.au)),
+                x.plan > 0 ? h("span", { title: "Pleins sans rapport ce jour-là : rattachés au chantier du planning", style: { marginLeft: 6, padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 700, background: "rgba(245,158,11,0.14)", color: "#fcd34d", border: "1px solid rgba(245,158,11,0.35)" } }, fmtNum(x.plan) + " L via planning") : null),
+              carbCellulesConso(x, prixMazout, moy, false)));
+          });
+          if (sensCh === "machine" && res.nonRattache[g] > 0) {
+            lignesTable.push(h("tr", { key: "nr" + k }, h("td", { colSpan: 8, style: { padding: "6px 12px 8px 34px", color: "#71717a", fontSize: 12, borderTop: "1px solid rgba(255,255,255,0.04)" } }, h(Icon, { name: "circle-help", size: 13, color: "#71717a" }), " " + fmtNum(res.nonRattache[g]) + " L non rattachés (ni rapport ni planning ce jour-là)")));
+          }
+        });
+        return h("div", null,
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
+            h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Litres rattachés à un chantier", value: fmtNum(T.litres) + " L", color: "#86efac" }),
+            h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout", value: fmtMoney(T.litres * prixMazout), color: "#22c55e" }),
+            h(KPICard, { icon: h(Icon, { name: "ruler", size: 22, color: "#ffffff" }), label: "Metres fores", value: fmtNum(T.metres) + " m", color: "#818cf8" }),
+            h(KPICard, { icon: h(Icon, { name: "gauge", size: 22, color: "#ffffff" }), label: totNonRatt > 0 ? "Moyenne parc (" + fmtNum(totNonRatt) + " L non rattachés)" : "Moyenne parc", value: moy > 0 ? moy.toFixed(2).replace(".", ",") + " L/m" : "-", color: "#38bdf8" })),
+          h("div", { style: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 16 } },
+            h("span", { style: lblStyle }, "Regrouper par"),
+            h("div", { style: { display: "inline-flex", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 9, overflow: "hidden" } },
+              [["machine", "hard-hat", "Machine → ses chantiers"], ["chantier", "map-pin", "Chantier → ses machines"]].map(function(o) {
+                var actif = sensCh === o[0];
+                return h("button", { key: o[0], onClick: function() { setSensCh(o[0]); }, style: { border: "none", background: actif ? "rgba(99,102,241,0.25)" : "transparent", color: actif ? "#e0e7ff" : "#a1a1aa", padding: "7px 12px", fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: o[1], size: 13, color: actif ? "#e0e7ff" : "#a1a1aa" }), o[2]);
+              }))),
+          lignes.length === 0 ? h(Card, null, h("div", { style: { padding: 30, textAlign: "center", color: "#71717a" } }, "Aucune consommation de machine rattachée à un chantier sur cette période")) :
+          h(Card, { style: { padding: 0, overflow: "hidden" } },
+            h("h3", { style: titreCarteStyle }, h(IconText, { icon: "table-2", size: 14, color: "#86efac" }, sensCh === "machine" ? "Chaque machine, sur chacun de ses chantiers" : "Chaque chantier, avec chacune de ses machines")),
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", null, [sensCh === "machine" ? "Machine / chantier" : "Chantier / machine"].concat(CARB_ENTETES_CONSO).map(function(x, i) { return h("th", { key: i, style: thS }, x); }))),
+                h("tbody", null, lignesTable,
+                  h("tr", { key: "total", style: { background: "rgba(255,255,255,0.03)" } }, h("td", { style: { padding: "8px 12px", fontWeight: 800, borderTop: "1px solid rgba(255,255,255,0.08)" } }, "Total"), carbCellulesConso(T, prixMazout, moy, true))))),
+            h("div", { style: { padding: "10px 18px", fontSize: 11.5, color: "#71717a", borderTop: "1px solid rgba(255,255,255,0.05)", lineHeight: 1.55 } },
+              "Un plein est rattaché au chantier du rapport de forage de la machine ce jour-là ; sans rapport, au chantier où le planning place la machine (badge orange) ; sinon « non rattaché ». Mètres et jours = rapports de la machine sur ce chantier. L/m : vert = sous la moyenne du parc, jaune = jusqu'à +20 %, rouge = au-delà.")));
+      }
+
       if (loading) return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant") }),
         h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...")
@@ -8697,11 +8867,11 @@
         h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les equipes ou ajoutees ici", action: actions }),
         // Onglets Machines / Vehicules
         h("div", { style: { display: "inline-flex", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 4, gap: 4, marginBottom: 18, flexWrap: "wrap" } },
-          [["machines", "hard-hat", "Machines", nbSaisiesMach], ["vehicules", "truck", "Vehicules", nbSaisiesVeh]].map(function(o) {
+          [["machines", "hard-hat", "Machines", nbSaisiesMach], ["vehicules", "truck", "Vehicules", nbSaisiesVeh], ["chantier", "map-pin", "Par chantier", null]].map(function(o) {
             var actif = onglet === o[0];
             return h("button", { key: o[0], onClick: function() { if (onglet !== o[0]) { setOnglet(o[0]); setFilterMachine("all"); } }, style: { border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, background: actif ? "linear-gradient(135deg,#6366f1,#8b5cf6)" : "transparent", color: actif ? "#fff" : "#a1a1aa", display: "inline-flex", alignItems: "center", gap: 8 } },
               h(Icon, { name: o[1], size: 15, color: actif ? "#ffffff" : "#a1a1aa" }), o[2],
-              h("span", { style: { fontSize: 11, padding: "1px 7px", borderRadius: 999, background: actif ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.07)" } }, o[3]));
+              o[3] != null ? h("span", { style: { fontSize: 11, padding: "1px 7px", borderRadius: 999, background: actif ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.07)" } }, o[3]) : null);
           })
         ),
         // Filtres
@@ -8715,13 +8885,13 @@
             h("option", { value: "1an" }, "1 an"),
             h("option", { value: "all" }, "Tout l'historique")
           ),
-          h("span", { style: lblStyle }, onglet === "vehicules" ? "Vehicule" : "Machine"),
-          h("select", { value: filterMachine, onChange: function(e) { setFilterMachine(e.target.value); }, style: ddStyle },
+          onglet !== "chantier" ? h("span", { style: lblStyle }, onglet === "vehicules" ? "Vehicule" : "Machine") : null,
+          onglet !== "chantier" ? h("select", { value: filterMachine, onChange: function(e) { setFilterMachine(e.target.value); }, style: ddStyle },
             h("option", { value: "all" }, "Tous"),
             codesFiltre.map(function(m) { var eq = resoudreEq(m); return h("option", { key: m, value: m }, m + (eq && eq.Nom && String(eq.Nom).toUpperCase() !== m ? " - " + eq.Nom : "")); })
-          )
+          ) : null
         ),
-        onglet === "vehicules" ? rendreVehicules() : rendreMachines(),
+        onglet === "vehicules" ? rendreVehicules() : onglet === "chantier" ? rendreParChantier() : rendreMachines(),
         // Modal edition / creation carburant
         editing ? h(Modal, { title: editing.id ? "Modifier consommation carburant" : (editing._vehicule ? "Nouveau plein vehicule" : "Nouvelle saisie carburant (machine)"), onClose: function() { setEditing(null); }, size: 460 },
           h("div", { style: { display: "grid", gap: 12 } },
@@ -18030,6 +18200,8 @@
       var vitPopover = _vp[0]; var setVitPopover = _vp[1];
       // Analyse des arrets : null (fermee), "tous" ou id du chantier
       var _aa = useState(null); var analyseArrets = _aa[0]; var setAnalyseArrets = _aa[1];
+      // Bloc "Carburant par machine" : detail deplie par chantier { id: true }
+      var _cdet = useState({}); var carbDetail = _cdet[0]; var setCarbDetail = _cdet[1];
       // ─ Cache meteo par chantier : { chantierId: { "YYYY-MM-DD": {code, prec, wind} } } ─
       var _mb = useState({}); var meteoByChantier = _mb[0]; var setMeteoByChantier = _mb[1];
       // Helper de fetch meteo pour 1 chantier (idempotent : skip si deja en cache)
@@ -18208,6 +18380,9 @@
       var chantiers = ctxAv.dbChantiers;
       var idsChantiersAv = {};
       (chantiers || []).forEach(function(c) { idsChantiersAv[String(c.id)] = true; });
+      // Carburant des machines par chantier (toutes dates) : bloc "Carburant par machine"
+      var consoMachinesCh = carbMachinesChantiers({ carburants: ctxAv.dbCarburants || [], rapports: ctxAv.dbRapportsForage || [], chantiers: chantiers || [], chantierEquipements: ctxAv.dbChantierEquipements || [], equipements: ctxAv.equipements || [] });
+      var prixLitreAv = carbPrixLitre(ctxAv.parametres, ctxAv.pieces);
       var setChantiers = ctxAv.setDbChantiers;
       var saisies = ctxAv.dbSaisies;
 
@@ -19761,6 +19936,45 @@
                           h("button", { onClick: function(e) { e.stopPropagation(); setAnalyseArrets(String(chantier.id)); }, title: "Repartition des pannes, maintenances et attentes (par cause, machine, semaine)", style: { background: "none", border: "none", color: "#a5b4fc", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, padding: 0 } }, "Voir le detail des arrets", h(Icon, { name: "chevron-right", size: 13, color: "#a5b4fc" })))
                       )
                     );
+                  })(),
+                  // ── Bloc CARBURANT PAR MACHINE (toutes les dates du chantier) ──
+                  // Meme calcul que Carburant > Par chantier (carbMachinesChantiers).
+                  (function() {
+                    var lignesCh = consoMachinesCh.lignes.filter(function(x) { return x.chantierId === String(chantier.id); }).sort(function(a, b) { return b.litres - a.litres; });
+                    if (!lignesCh.length) return null;
+                    var t = carbSomme(lignesCh), moy = consoMachinesCh.moyenneLm;
+                    var lmT = t.metres > 0 && t.litres > 0 ? t.litres / t.metres : 0;
+                    var detail = !!carbDetail[chantier.id];
+                    var fmtLm = function(v) { return v > 0 ? v.toFixed(2).replace(".", ",") + " L/m" : "-"; };
+                    return h("div", { onClick: function(e) { e.stopPropagation(); }, style: { marginBottom: 16, padding: "12px 14px", background: "rgba(0,0,0,0.18)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.05)" } },
+                      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" } },
+                        h("div", { style: { fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: 0.3, display: "inline-flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "fuel", size: 13, color: "#86efac" }), "Carburant par machine"),
+                        h("div", { style: { display: "flex", alignItems: "baseline", gap: 12 } },
+                          h("span", { style: { fontSize: 12, color: "#64748b", fontFamily: "monospace" } }, fmtNum(t.litres) + " L · " + lignesCh.length + " machine" + (lignesCh.length > 1 ? "s" : "")),
+                          h("span", { title: "Moyenne du parc : " + fmtLm(moy), style: { fontSize: 20, fontWeight: 600, color: carbCouleurLm(lmT, moy), fontFamily: "monospace", lineHeight: 1 } }, fmtLm(lmT)))),
+                      h("div", { style: { marginTop: 10, display: "grid", gap: 6 } }, lignesCh.map(function(x) {
+                        var part = t.litres > 0 ? x.litres / t.litres * 100 : 0, lm = x.metres > 0 && x.litres > 0 ? x.litres / x.metres : 0;
+                        return h("div", { key: x.machine, title: x.jours + " j du " + carbDateCourte(x.du) + " au " + carbDateCourte(x.au) + " · " + fmtNum(x.metres) + " m" + (x.plan > 0 ? " · " + fmtNum(x.plan) + " L rattachés via le planning" : ""), style: { display: "grid", gridTemplateColumns: "56px minmax(0,1fr) 92px 78px", gap: 10, alignItems: "center", fontSize: 12 } },
+                          h("span", { style: { fontFamily: "monospace", color: "#a78bfa", fontWeight: 700 } }, x.machine),
+                          h("span", { style: { height: 6, borderRadius: 3, background: "rgba(255,255,255,0.05)", position: "relative" } }, h("span", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: part + "%", borderRadius: 3, background: "#86efac", opacity: 0.8 } })),
+                          h("span", { style: { fontFamily: "monospace", textAlign: "right", color: "#cbd5e1" } }, fmtNum(x.litres) + " L"),
+                          h("span", { style: { fontFamily: "monospace", textAlign: "right", fontWeight: 700, color: carbCouleurLm(lm, moy) } }, fmtLm(lm)));
+                      })),
+                      h("button", { onClick: function() { var n = Object.assign({}, carbDetail); n[chantier.id] = !detail; setCarbDetail(n); }, style: { marginTop: 10, background: "none", border: "none", color: "#a5b4fc", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4, padding: 0 } },
+                        h(Icon, { name: detail ? "chevron-up" : "table-2", size: 13, color: "#a5b4fc" }), detail ? "Masquer le detail" : "Voir le detail (jours, cout, metres, L/jour)"),
+                      detail ? h("div", { style: { overflowX: "auto", marginTop: 10, borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)" } },
+                        h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+                          h("thead", null, h("tr", null, ["Machine"].concat(CARB_ENTETES_CONSO).map(function(x, i) { return h("th", { key: i, style: { padding: "8px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5, textAlign: "left", background: "rgba(255,255,255,0.03)", whiteSpace: "nowrap" } }, x); }))),
+                          h("tbody", null,
+                            lignesCh.map(function(x) {
+                              return h("tr", { key: x.machine },
+                                h("td", { style: { padding: "8px 12px", borderTop: "1px solid rgba(255,255,255,0.04)", whiteSpace: "nowrap" } },
+                                  h("span", { style: { fontFamily: "monospace", color: "#a78bfa", fontWeight: 700 } }, x.machine),
+                                  h("span", { style: { fontSize: 11, color: "#94a3b8", marginLeft: 6 } }, "du " + carbDateCourte(x.du) + " au " + carbDateCourte(x.au)),
+                                  x.plan > 0 ? h("span", { title: "Pleins sans rapport ce jour-là : rattachés au chantier du planning", style: { marginLeft: 6, padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 700, background: "rgba(245,158,11,0.14)", color: "#fcd34d", border: "1px solid rgba(245,158,11,0.35)" } }, fmtNum(x.plan) + " L via planning") : null),
+                                carbCellulesConso(x, prixLitreAv, moy, false));
+                            }),
+                            h("tr", { key: "tot", style: { background: "rgba(255,255,255,0.03)" } }, h("td", { style: { padding: "8px 12px", fontWeight: 800, borderTop: "1px solid rgba(255,255,255,0.08)" } }, "Total chantier"), carbCellulesConso(t, prixLitreAv, moy, true))))) : null);
                   })(),
                   // ── Bloc PREVISIONNEL CHANTIER ──
                   // Projection basee sur :
@@ -41994,7 +42208,7 @@
         st.etat === "ok" || st.etat === "maj" ? h("div", { className: "tk-onglets" },
           h("button", { type: "button", className: onglet === "a_traiter" ? "actif" : "", onClick: function() { setOnglet("a_traiter"); } }, "À traiter ", h("span", { className: "cpt" }, nATraiter)),
           h("button", { type: "button", className: onglet === "tous" ? "actif" : "", onClick: function() { setOnglet("tous"); } }, "Tous")) : null,
-        st.etat === "ok" || st.etat === "maj" ? h("button", { type: "button", className: "tk-btn-ico", style: { width: 30, height: 30 }, title: "Écrire un email", onClick: function() { setNouvelEmail(true); } }, h(Icon, { name: "pen-line", size: 14, color: "#f5a524" })) : null,
+        st.etat === "ok" || st.etat === "maj" ? h("button", { type: "button", className: "tk-mini", title: "Écrire un nouvel email", style: { background: "rgba(245,165,36,.18)", borderColor: "rgba(245,165,36,.5)", color: "#fde7b8", fontWeight: 700 }, onClick: function() { setNouvelEmail(true); } }, h(Icon, { name: "pen-line", size: 13, color: "#fde7b8" }), "Nouvel email") : null,
         h("button", { type: "button", className: "tk-btn-ico", style: { width: 30, height: 30 }, title: "Actualiser", onClick: charger }, h(Icon, { name: "refresh-cw", size: 14, color: "#cdd1db" })));
       if (st.etat === "chargement") return h("section", { className: "tk-carte", id: "tk-carte-mails" }, tete, h("div", { className: "tk-vide" }, "Lecture de ta boîte..."));
       if (st.etat === "sans_boite" || st.etat === "boite_inconnue" || st.etat === "erreur") {
