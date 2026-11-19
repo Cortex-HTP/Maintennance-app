@@ -41683,27 +41683,188 @@
       }).catch(function(e) { if (fen) { try { fen.close(); } catch (x) {} } throw e; });
     }
 
+    // ── Ecrire / Repondre / Transferer depuis la boite du bureau ──
+    // Envoi par /api/gmail (action envoyer) : la signature au nom de la personne
+    // connectee est ajoutee AU SERVEUR. Pieces jointes : photos (allegees) ou
+    // PDF, 5 max, 2,5 Mo au total.
+    var TK_MAX_PJ = 5, TK_MAX_PJ_B64 = 3300000;
+    function tkDateLongueMail(ms) { if (!ms) return ""; var d = new Date(ms); return tkPad(d.getDate()) + "/" + tkPad(d.getMonth() + 1) + "/" + d.getFullYear() + " à " + tkPad(d.getHours()) + ":" + tkPad(d.getMinutes()); }
+    function tkFichierB64(f) {
+      return new Promise(function(res, rej) { var r = new FileReader(); r.onload = function() { res(String(r.result || "").split(",")[1] || ""); }; r.onerror = function() { rej(new Error("fichier illisible")); }; r.readAsDataURL(f); });
+    }
+    function tkPhotoAllegee(f) {
+      return new Promise(function(res, rej) {
+        var url = URL.createObjectURL(f), img = new Image();
+        img.onload = function() {
+          try {
+            var paliers = [[1600, 0.8], [1280, 0.72], [1120, 0.62], [960, 0.55], [800, 0.5]], data = "";
+            for (var i = 0; i < paliers.length; i++) {
+              var w = img.naturalWidth || img.width, hh = img.naturalHeight || img.height, ratio = Math.min(1, paliers[i][0] / w);
+              var cv = document.createElement("canvas"); cv.width = Math.max(1, Math.round(w * ratio)); cv.height = Math.max(1, Math.round(hh * ratio));
+              cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+              data = cv.toDataURL("image/jpeg", paliers[i][1]);
+              if (data.length <= 600000) break;
+            }
+            URL.revokeObjectURL(url); res(data.split(",")[1] || "");
+          } catch (e) { URL.revokeObjectURL(url); rej(e); }
+        };
+        img.onerror = function() { URL.revokeObjectURL(url); rej(new Error("photo illisible")); };
+        img.src = url;
+      });
+    }
+    function TkEcrireEmail(props) {
+      var m = props.msg || null, mode = props.mode || "nouveau";
+      var init = (function() {
+        if (!m || mode === "nouveau") return { a: "", objet: "", cite: "" };
+        var orig = String(m.texte || "").slice(0, 15000);
+        if (mode === "repondre") return {
+          a: m.deEmail || "", objet: /^re\s*:/i.test(m.objet || "") ? m.objet : "Re: " + (m.objet || ""),
+          cite: "Le " + tkDateLongueMail(m.date) + ", " + (m.de || "") + " <" + (m.deEmail || "") + "> a écrit :\n" + orig.split("\n").map(function(l) { return "> " + l; }).join("\n")
+        };
+        return { a: "", objet: /^(tr|fwd?)\s*:/i.test(m.objet || "") ? m.objet : "Tr: " + (m.objet || ""),
+          cite: "---------- Message transféré ----------\nDe : " + (m.de || "") + " <" + (m.deEmail || "") + ">\nDate : " + tkDateLongueMail(m.date) + "\nObjet : " + (m.objet || "") + (m.a ? "\nÀ : " + m.a : "") + "\n\n" + orig };
+      })();
+      var _a = useState(init.a); var a = _a[0], setA = _a[1];
+      var _cc = useState(""); var cc = _cc[0], setCc = _cc[1];
+      var _ob = useState(init.objet); var objet = _ob[0], setObjet = _ob[1];
+      var _tx = useState(""); var texte = _tx[0], setTexte = _tx[1];
+      var _pj = useState([]); var pjs = _pj[0], setPjs = _pj[1];
+      var _en = useState(false); var envoi = _en[0], setEnvoi = _en[1];
+      var _aj = useState(false); var ajout = _aj[0], setAjout = _aj[1];
+      var fichierRef = useRef(null);
+      var poids = pjs.reduce(function(s, p) { return s + p.data.length; }, 0);
+      var aDuContenu = !!(texte.trim() || pjs.length || (mode === "nouveau" && (a.trim() || objet.trim())));
+      if (props.etatRef) props.etatRef.current = { contenu: aDuContenu, envoi: envoi };
+      var annuler = function() {
+        if (envoi) return;
+        if (aDuContenu && !confirm("Abandonner cet email ? Ce que tu as écrit sera perdu.")) return;
+        props.onAnnuler();
+      };
+      var ajouter = function(files) {
+        var liste = Array.prototype.slice.call(files || []);
+        if (!liste.length) return;
+        var place = TK_MAX_PJ - pjs.length;
+        if (liste.length > place) alert(TK_MAX_PJ + " pièces jointes maximum : seules les " + Math.max(0, place) + " premières sont ajoutées.");
+        liste = liste.slice(0, Math.max(0, place));
+        setAjout(true);
+        var nouvelles = [], refus = [];
+        liste.reduce(function(p, f) {
+          return p.then(function() {
+            var estPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+            var estImg = /^image\//.test(f.type || "");
+            if (!estPdf && !estImg) { refus.push(f.name + " (photo ou PDF uniquement)"); return; }
+            if (estPdf && f.size > 2.5 * 1024 * 1024) { refus.push(f.name + " (PDF de plus de 2,5 Mo)"); return; }
+            return (estPdf ? tkFichierB64(f) : tkPhotoAllegee(f)).then(function(data) {
+              nouvelles.push({ nom: estPdf ? (f.name || "document.pdf") : String(f.name || "photo").replace(/\.[^.]+$/, "") + ".jpg", type: estPdf ? "application/pdf" : "image/jpeg", data: data });
+            }).catch(function() { refus.push(f.name + " (illisible)"); });
+          });
+        }, Promise.resolve()).then(function() {
+          setAjout(false);
+          setPjs(function(prev) { return prev.concat(nouvelles); });
+          if (refus.length) alert("Non ajouté(s) :\n" + refus.join("\n"));
+        });
+      };
+      var envoyer = function() {
+        if (envoi) return;
+        var reA = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/;
+        var dest = a.split(/[,;\s]+/).filter(Boolean), copies = cc.split(/[,;\s]+/).filter(Boolean);
+        if (!dest.length) { alert("Indique au moins un destinataire."); return; }
+        var mauvaise = dest.concat(copies).filter(function(x) { return !reA.test(x); })[0];
+        if (mauvaise) { alert("Adresse invalide : " + mauvaise); return; }
+        if (!objet.trim()) { alert("Ajoute un objet."); return; }
+        if (!texte.trim() && !pjs.length && !init.cite) { alert("Le message est vide."); return; }
+        if (poids > TK_MAX_PJ_B64) { alert("Pièces jointes trop lourdes (2,5 Mo au total) : retire-en une."); return; }
+        setEnvoi(true);
+        apiGmail("envoyer", {
+          a: dest.join(", "), cc: copies.join(", "), objet: objet.trim(), repondreA: mode === "repondre" && m ? m.id : null,
+          texte: texte.replace(/\s+$/, "") + (init.cite ? "\n\n" + init.cite : ""),
+          photos: pjs.map(function(p) { return { nom: p.nom, type: p.type, data: p.data }; })
+        }).then(function() {
+          setEnvoi(false);
+          props.onEnvoye({ mode: mode, a: dest.join(", "), pj: pjs.length });
+        }).catch(function(e) {
+          setEnvoi(false);
+          if (e.code === "envoi_non_autorise") alert("L'envoi d'emails n'est pas encore autorisé chez Google (console Google Admin > délégation : ajouter gmail.send). Ton email est gardé.");
+          else alert("Envoi impossible : " + e.message + "\nTon email est gardé.");
+        });
+      };
+      var titre = mode === "repondre" ? "Répondre" : mode === "transferer" ? "Transférer" : "Nouvel email";
+      return h("div", null,
+        h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
+          h("button", { type: "button", className: "tk-btn-ico", title: "Annuler", onClick: annuler }, h(Icon, { name: mode === "nouveau" ? "x" : "arrow-left", size: 16, color: "#cdd1db" })),
+          h("h2", { className: "tk-serif", style: { fontSize: 20, fontWeight: 600, margin: 0, marginRight: "auto" } }, titre),
+          h("button", { type: "button", className: "tk-btn-prim", disabled: envoi || ajout, onClick: envoyer }, h(Icon, { name: envoi ? "loader-circle" : "send", size: 14, color: "#241505" }), envoi ? "Envoi..." : "Envoyer")),
+        h("div", { style: { fontSize: 11.5, color: "#697089", marginBottom: 4 } }, "De : " + (props.boite || "ta boîte")),
+        h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: "at-sign", size: 13 }), "À"),
+          h("input", { className: "tk-inp", type: "text", value: a, autoFocus: !a, placeholder: "adresse@exemple.nc (plusieurs : séparer par une virgule)", onChange: function(e) { setA(e.target.value); } })),
+        h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: "users", size: 13 }), "Cc (facultatif)"),
+          h("input", { className: "tk-inp", type: "text", value: cc, onChange: function(e) { setCc(e.target.value); } })),
+        h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: "type", size: 13 }), "Objet"),
+          h("input", { className: "tk-inp", type: "text", value: objet, onChange: function(e) { setObjet(e.target.value); } })),
+        h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: "message-square", size: 13 }), "Message"),
+          h("textarea", { className: "tk-inp", value: texte, autoFocus: !!a, rows: 9, placeholder: "Ton message...", style: { resize: "vertical", minHeight: 170, lineHeight: 1.55, fontFamily: "inherit" }, onChange: function(e) { setTexte(e.target.value); } })),
+        h("div", { style: { fontSize: 12, color: "#969db1", padding: "8px 10px", borderLeft: "2px solid rgba(245,165,36,.5)", background: "rgba(245,165,36,.05)", borderRadius: "0 8px 8px 0", marginTop: 10, whiteSpace: "pre-wrap" } }, "-- \n" + (props.nomSignature || "") + "\nWallis-Label\n" + (props.boite || "")),
+        init.cite ? h("div", { style: { fontSize: 12, color: "#697089", padding: "8px 10px", borderLeft: "2px solid rgba(255,255,255,.15)", marginTop: 10, whiteSpace: "pre-wrap", maxHeight: 130, overflow: "hidden", wordBreak: "break-word" } }, init.cite.slice(0, 700) + (init.cite.length > 700 ? "\n..." : "")) : null,
+        mode === "transferer" ? h("div", { className: "tk-astuce", style: { marginTop: 8, color: "#fcd34d" } }, h(Icon, { name: "info", size: 13 }), "Les pièces jointes de l'email d'origine ne sont pas transférées : ajoute-les si besoin.") : null,
+        h("div", { className: "tk-champ" }, h("label", null, h(Icon, { name: "paperclip", size: 13 }), "Pièces jointes (" + pjs.length + "/" + TK_MAX_PJ + ") · photos ou PDF"),
+          h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } },
+            pjs.map(function(p, i) {
+              return h("div", { key: i, style: { position: "relative", width: 76, height: 76, borderRadius: 12, overflow: "hidden", background: "rgba(10,12,22,.5)", border: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", justifyContent: "center" }, title: p.nom },
+                p.type === "application/pdf" ? h("div", { style: { textAlign: "center", fontSize: 10, color: "#cdd1db", padding: 4, overflow: "hidden" } }, h(Icon, { name: "file-text", size: 22, color: "#7dd3fc" }), h("div", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 66 } }, p.nom))
+                : h("img", { src: "data:" + p.type + ";base64," + p.data, alt: p.nom, style: { width: "100%", height: "100%", objectFit: "cover" } }),
+                h("button", { type: "button", title: "Retirer", onClick: function() { setPjs(function(prev) { return prev.filter(function(x, j) { return j !== i; }); }); }, style: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: "50%", border: "none", background: "#e11d48", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer", lineHeight: 1 } }, "×"));
+            }),
+            pjs.length < TK_MAX_PJ ? h("button", { type: "button", className: "tk-btn-sec", disabled: ajout, style: { width: 76, height: 76, flexDirection: "column", justifyContent: "center", fontSize: 11 }, onClick: function() { if (fichierRef.current) fichierRef.current.click(); } }, h(Icon, { name: ajout ? "loader-circle" : "plus", size: 18 }), ajout ? "..." : "Ajouter") : null),
+          h("input", { ref: fichierRef, type: "file", accept: "image/*,application/pdf", multiple: true, style: { display: "none" }, onChange: function(e) { ajouter(e.target.files); e.target.value = ""; } })),
+        h("div", { className: "tk-astuce", style: { marginTop: 12 } }, h(Icon, { name: "shield-check", size: 13 }), "Part de " + (props.boite || "ta boîte") + ", signé de ton nom, et se range dans « Envoyés » de Gmail."));
+    }
+
     // Lecture d'un email (modale)
     function TkLectureEmail(props) {
       var _d = useState(null); var msg = _d[0], setMsg = _d[1];
       var _e = useState(null); var err = _e[0], setErr = _e[1];
       var _p = useState(null); var pieceEnCours = _p[0], setPieceEnCours = _p[1];
+      // ecriture en cours dans le tiroir : null | "repondre" | "transferer" | "nouveau"
+      var _ec = useState(props.ecrire || null); var ecrire = _ec[0], setEcrire = _ec[1];
+      var etatEcrireRef = useRef(null), ecrireRef = useRef(null);
+      ecrireRef.current = ecrire;
       useEffect(function() {
         var stop = false;
+        if (!props.id) return function() {};
         apiGmail("message", { id: props.id }).then(function(d) { if (!stop) setMsg(d); }).catch(function(e) { if (!stop) setErr(e.message); });
         return function() { stop = true; };
       }, [props.id]);
+      // Fermer (Echap / fond / croix) : jamais en silence pendant l'ecriture d'un email
+      var fermer = function() {
+        var et = etatEcrireRef.current;
+        if (ecrireRef.current && et) {
+          if (et.envoi) return;
+          if (et.contenu && !confirm("Abandonner l'email en cours ? Ce que tu as écrit sera perdu.")) return;
+        }
+        props.onFermer();
+      };
       useEffect(function() {
-        var onKey = function(e) { if (e.key === "Escape") props.onFermer(); };
+        var onKey = function(e) { if (e.key === "Escape") fermer(); };
         document.addEventListener("keydown", onKey);
         return function() { document.removeEventListener("keydown", onKey); };
       }, []);
+      var envoye = function(r) {
+        if (props.onEnvoye) props.onEnvoye(r, msg); else props.onFermer();
+      };
+      if (ecrire) {
+        return h("div", null,
+          h("div", { className: "tk-tiroir-fond", onClick: fermer }),
+          h("aside", { className: "tk-tiroir", style: { width: 620 } },
+            ecrire !== "nouveau" && !msg ? h("div", { className: "tk-vide" }, err ? "Impossible d'ouvrir cet email : " + err : "Ouverture de l'email...")
+            : h(TkEcrireEmail, { mode: ecrire, msg: msg, boite: props.boite, nomSignature: props.nomSignature, etatRef: etatEcrireRef,
+                onAnnuler: function() { if (ecrire === "nouveau" || props.ecrire) props.onFermer(); else setEcrire(null); }, onEnvoye: envoye })));
+      }
       return h("div", null,
-        h("div", { className: "tk-tiroir-fond", onClick: props.onFermer }),
+        h("div", { className: "tk-tiroir-fond", onClick: fermer }),
         h("aside", { className: "tk-tiroir", style: { width: 620 } },
           h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
-            h("span", { className: "tk-chip", style: { marginRight: "auto" } }, h(Icon, { name: "mail", size: 12 }), "Lecture seule"),
-            h("button", { type: "button", className: "tk-btn-ico", title: "Fermer (Échap)", onClick: props.onFermer }, h(Icon, { name: "x", size: 16, color: "#cdd1db" }))),
+            h("span", { className: "tk-chip", style: { marginRight: "auto" } }, h(Icon, { name: "mail", size: 12 }), props.boite || "Email"),
+            h("button", { type: "button", className: "tk-btn-ico", title: "Fermer (Échap)", onClick: fermer }, h(Icon, { name: "x", size: 16, color: "#cdd1db" }))),
           err ? h("div", { className: "tk-vide" }, "Impossible d'ouvrir cet email : " + err)
           : !msg ? h("div", { className: "tk-vide" }, "Ouverture de l'email...")
           : h("div", null,
@@ -41721,8 +41882,11 @@
                   tkOuvrirPiece(apiGmail, msg.id, p).catch(function(e) { alert(e.message); }).then(function() { setPieceEnCours(null); });
                 } }, h(Icon, { name: pieceEnCours === p.id ? "loader-circle" : "file-text", size: 16, color: "#7dd3fc" }), p.nom, h("span", { style: { marginLeft: "auto", fontSize: 11, color: "#969db1" } }, Math.max(1, Math.round((p.taille || 0) / 1024)) + " Ko"));
               })) : null,
-            h("div", { className: "tk-d-pied" },
-              h("a", { className: "tk-btn-sec", href: msg.lienGmail, target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" } }, h(Icon, { name: "reply", size: 14 }), "Répondre dans Gmail"),
+            h("div", { className: "tk-d-pied", style: { flexWrap: "wrap" } },
+              h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
+                h("button", { type: "button", className: "tk-btn-prim", onClick: function() { setEcrire("repondre"); } }, h(Icon, { name: "reply", size: 14, color: "#241505" }), "Répondre"),
+                h("button", { type: "button", className: "tk-btn-sec", onClick: function() { setEcrire("transferer"); } }, h(Icon, { name: "forward", size: 14 }), "Transférer"),
+                h("a", { className: "tk-mini", href: msg.lienGmail, target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" }, title: "Ouvrir dans Gmail" }, h(Icon, { name: "external-link", size: 13 }), "Gmail")),
               h("div", { style: { display: "flex", gap: 8 } },
                 props.onTache ? h("button", { type: "button", className: "tk-btn-sec", onClick: function() { props.onTache(); } }, h(Icon, { name: "list-plus", size: 14 }), "En faire une tâche") : null,
                 props.onTraite ? h("button", { type: "button", className: "tk-btn-prim", onClick: function() { props.onTraite(); } }, h(Icon, { name: "check-check", size: 14, color: "#241505" }), "Traité") : null)))));
@@ -41784,7 +41948,16 @@
       var _ta = useState({}); var traites = _ta[0], setTraites = _ta[1];
       var _ia = useState(false); var iaEnCours = _ia[0], setIaEnCours = _ia[1];
       var _vt = useState(false); var voirTout = _vt[0], setVoirTout = _vt[1];
+      var _nv = useState(false); var nouvelEmail = _nv[0], setNouvelEmail = _nv[1];
       var cleTri = "wl_mail_tri2_" + (st.boite || ""), cleTraites = "wl_mail_traites_" + (st.boite || "");
+      // Nom affiche dans l'apercu de la signature (le serveur signe avec la fiche du compte)
+      var nomSignature = (function() { var g = (A.gens || []).filter(function(x) { return x.email === A.moi; })[0]; return (g && g.nom) || A.moi || ""; })();
+      var apresEnvoi = function(r, original) {
+        setLecture(null); setNouvelEmail(false);
+        // Repondre a un email = il est traite
+        if (r && r.mode === "repondre" && original) marquerTraite(original, true);
+        A.toast("Email envoyé à " + r.a + (r.pj ? " (" + r.pj + " pièce" + (r.pj > 1 ? "s" : "") + " jointe" + (r.pj > 1 ? "s" : "") + ")" : ""), "send");
+      };
       var charger = function() {
         setSt(function(p) { return Object.assign({}, p, { etat: p.msgs.length ? "maj" : "chargement" }); });
         apiGmail("boite", { onglet: "tous", max: 25 }).then(function(d) {
@@ -41821,6 +41994,7 @@
         st.etat === "ok" || st.etat === "maj" ? h("div", { className: "tk-onglets" },
           h("button", { type: "button", className: onglet === "a_traiter" ? "actif" : "", onClick: function() { setOnglet("a_traiter"); } }, "À traiter ", h("span", { className: "cpt" }, nATraiter)),
           h("button", { type: "button", className: onglet === "tous" ? "actif" : "", onClick: function() { setOnglet("tous"); } }, "Tous")) : null,
+        st.etat === "ok" || st.etat === "maj" ? h("button", { type: "button", className: "tk-btn-ico", style: { width: 30, height: 30 }, title: "Écrire un email", onClick: function() { setNouvelEmail(true); } }, h(Icon, { name: "pen-line", size: 14, color: "#f5a524" })) : null,
         h("button", { type: "button", className: "tk-btn-ico", style: { width: 30, height: 30 }, title: "Actualiser", onClick: charger }, h(Icon, { name: "refresh-cw", size: 14, color: "#cdd1db" })));
       if (st.etat === "chargement") return h("section", { className: "tk-carte", id: "tk-carte-mails" }, tete, h("div", { className: "tk-vide" }, "Lecture de ta boîte..."));
       if (st.etat === "sans_boite" || st.etat === "boite_inconnue" || st.etat === "erreur") {
@@ -41866,8 +42040,9 @@
         : h("div", { className: "tk-vide" }, h("div", { style: { marginBottom: 8 } }, h(Icon, { name: "mail-check", size: 30, color: "#34d399" })), onglet === "a_traiter" ? "Rien à traiter. Bravo." : "Aucun email."),
         // "A traiter" ne montre que ce qui demande une action : on dit clairement ou sont les autres
         onglet === "a_traiter" && !cat && st.msgs.length > nATraiter ? h("button", { type: "button", className: "tk-lien", style: { margin: "6px 0 0 8px" }, onClick: function() { setOnglet("tous"); setVoirTout(false); } }, "+ " + (st.msgs.length - nATraiter) + " autre" + (st.msgs.length - nATraiter > 1 ? "s" : "") + " (pour info, déjà lu" + (st.msgs.length - nATraiter > 1 ? "s" : "") + " ou traité" + (st.msgs.length - nATraiter > 1 ? "s" : "") + ") : voir Tous", h(Icon, { name: "arrow-right", size: 14, color: "#fcd34d" })) : null,
-        h("div", { className: "tk-astuce", style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.07)" } }, h(Icon, { name: "shield-check", size: 13 }), "Lecture seule · « À traiter » = ce qui demande une action · les 25 derniers emails"),
-        lecture ? h(TkLectureEmail, { id: lecture.id, onFermer: function() { setLecture(null); }, onTache: function() { var m = lecture; setLecture(null); setMailTache(m); }, onTraite: function() { marquerTraite(lecture, true); setLecture(null); } }) : null,
+        h("div", { className: "tk-astuce", style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.07)" } }, h(Icon, { name: "shield-check", size: 13 }), "« À traiter » = ce qui demande une action · les 25 derniers emails · tes réponses partent de " + (st.boite || "ta boîte")),
+        lecture ? h(TkLectureEmail, { id: lecture.id, boite: st.boite, nomSignature: nomSignature, onEnvoye: apresEnvoi, onFermer: function() { setLecture(null); }, onTache: function() { var m = lecture; setLecture(null); setMailTache(m); }, onTraite: function() { marquerTraite(lecture, true); setLecture(null); } }) : null,
+        nouvelEmail ? h(TkLectureEmail, { id: null, ecrire: "nouveau", boite: st.boite, nomSignature: nomSignature, onEnvoye: apresEnvoi, onFermer: function() { setNouvelEmail(false); } }) : null,
         mailTache ? h(TkModaleMailTache, { A: A, mail: mailTache, tri: tri[mailTache.id], boite: st.boite, onFermer: function() { setMailTache(null); }, onCree: function(n) { marquerTraite(mailTache, true); setMailTache(null); setOuvert(null); A.toast("Tâche créée, email marqué traité", "list-plus"); } }) : null);
     }
 

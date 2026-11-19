@@ -136,10 +136,10 @@ function adresses(v, max, nomChamp) {
   return out;
 }
 function nomFichier(n, i, type) {
-  const ext = type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg';
+  const ext = type === 'application/pdf' ? 'pdf' : type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg';
   let s = String(n || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(0, 60);
   if (!s) s = 'photo-' + (i + 1);
-  if (!/\.(jpe?g|png|webp)$/i.test(s)) s += '.' + ext;
+  if (!/\.(jpe?g|png|webp|pdf)$/i.test(s)) s += '.' + ext;
   return s;
 }
 // Signature ajoutee AU SERVEUR (la boite d'une machine est partagee : le
@@ -213,18 +213,40 @@ function resumeMessage(m) {
   if (par) r.par = decoderMots(par).slice(0, 80);
   return r;
 }
+// Entites nommees les plus courantes dans les emails (francais + symboles)
+const ENTITES = {
+  rarr: '→', larr: '←', harr: '↔', rArr: '⇒', hellip: '…', mdash: '—', ndash: '–', euro: '€', laquo: '«', raquo: '»', deg: '°',
+  eacute: 'é', egrave: 'è', ecirc: 'ê', euml: 'ë', agrave: 'à', acirc: 'â', ccedil: 'ç', ocirc: 'ô', ouml: 'ö', ucirc: 'û', ugrave: 'ù', uuml: 'ü', icirc: 'î', iuml: 'ï',
+  Eacute: 'É', Egrave: 'È', Agrave: 'À', Ccedil: 'Ç', rsquo: '’', lsquo: '‘', ldquo: '“', rdquo: '”', bull: '•', middot: '·', times: '×', copy: '©', reg: '®', trade: '™',
+  check: '✓', checkmark: '✓', sup2: '²', frac12: '½', shy: '', zwnj: '', thinsp: ' ', ensp: ' ', emsp: ' '
+};
 function decoderEntites(s) {
-  return String(s || '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, (x, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (x, n) => String.fromCodePoint(parseInt(n, 16)));
+  return String(s || '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (x, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (x, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([A-Za-z][A-Za-z0-9]{1,10});/g, (x, n) => (Object.prototype.hasOwnProperty.call(ENTITES, n) ? ENTITES[n] : x))
+    .replace(/&amp;/g, '&'); // en dernier : "&amp;rarr;" reste "&rarr;" ecrit en clair
 }
+// HTML -> texte lisible. Les TABLEAUX gardent leur structure : une ligne par
+// ligne de tableau, cellules separees par " · " (avant, les cellules etaient
+// collees : "NomRoleHeuresBRYAN STUARTSondeur11:30...").
+const SEP_CELLULE = '\u0001';
 function htmlVersTexte(html) {
   let s = String(html || '');
+  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
   s = s.replace(/<(script|style|head|title)[\s\S]*?<\/\1>/gi, ' ');
-  s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|h[1-6]|table|blockquote)>/gi, '\n').replace(/<li[^>]*>/gi, '\n- ');
+  s = s.replace(/[\r\n]+/g, ' '); // les retours a la ligne du code HTML ne comptent pas
+  s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<hr[^>]*>/gi, '\n');
+  s = s.replace(/<tr[^>]*>/gi, '\n').replace(/<\/t[dh]>/gi, SEP_CELLULE);
+  // (pas </tr> : le <tr> suivant ouvre deja une ligne -> pas de ligne vide entre deux lignes du tableau)
+  s = s.replace(/<\/(p|div|h[1-6]|table|blockquote|section|article|header|footer|ul|ol|li|center)>/gi, '\n').replace(/<li[^>]*>/gi, '\n- ');
+  s = s.replace(/<h[1-6][^>]*>/gi, '\n\n');
   s = s.replace(/<a [^>]*href="(https?:[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (x, href, txt) => { const t = txt.replace(/<[^>]+>/g, '').trim(); return t && t !== href ? t + ' (' + href + ')' : href; });
   s = s.replace(/<[^>]+>/g, '');
   s = decoderEntites(s);
-  return s.split('\n').map((l) => l.replace(/[ \t]+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return s.split('\n').map((l) => {
+    if (l.indexOf(SEP_CELLULE) < 0) return l.replace(/[ \t ]+/g, ' ').trim();
+    return l.split(SEP_CELLULE).map((c) => c.replace(/[ \t ]+/g, ' ').trim()).filter(Boolean).join('  ·  ');
+  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 function decoderPartie(part) {
   const buf = Buffer.from(String(part.body.data || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64');
@@ -318,18 +340,18 @@ module.exports = async function handler(req, res) {
       if (!objet) return res.status(400).json({ ok: false, error: 'Ajoute un objet' });
       const texte = String(body.texte || '').slice(0, 30000);
       const photosBrutes = Array.isArray(body.photos) ? body.photos : [];
-      if (photosBrutes.length > MAX_PHOTOS) return res.status(400).json({ ok: false, error: MAX_PHOTOS + ' photos maximum' });
+      if (photosBrutes.length > MAX_PHOTOS) return res.status(400).json({ ok: false, error: MAX_PHOTOS + ' pièces jointes maximum' });
       let poids = 0;
       const photos = [];
       for (let i = 0; i < photosBrutes.length; i++) {
         const p = photosBrutes[i] || {};
-        const type = /^image\/(jpeg|png|webp)$/.test(String(p.type || '')) ? p.type : null;
+        const type = /^(image\/(jpeg|png|webp)|application\/pdf)$/.test(String(p.type || '')) ? p.type : null; // photos ou PDF
         const data = String(p.data || '');
-        if (!type || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return res.status(400).json({ ok: false, error: 'Photo ' + (i + 1) + ' illisible' });
+        if (!type || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return res.status(400).json({ ok: false, error: 'Pièce jointe ' + (i + 1) + ' illisible (photo ou PDF uniquement)' });
         poids += data.length;
         photos.push({ type: type, data: data, nom: nomFichier(p.nom, i, type) });
       }
-      if (poids > MAX_PHOTOS_B64) return res.status(413).json({ ok: false, error: 'Photos trop lourdes : retire-en une' });
+      if (poids > MAX_PHOTOS_B64) return res.status(413).json({ ok: false, error: 'Pièces jointes trop lourdes (2,5 Mo au total) : retire-en une' });
       if (!texte.trim() && !photos.length) return res.status(400).json({ ok: false, error: 'Le message est vide' });
       // 2. Limite d'envois du jour (boite partagee par une equipe : pas d'envoi en boucle)
       const recents = await google(jeton, GMAIL + '/messages?maxResults=' + (MAX_ENVOIS_JOUR + 1) + '&q=' + encodeURIComponent('in:sent newer_than:1d'));
