@@ -8,18 +8,23 @@
 //  - employe (APP Employes) : jeton PIN (X-Pin-Token) valide par l'APP Employes
 //    (/api/pin-identite, acces actif) -> boite de la MACHINE sur laquelle il est
 //    connecte (m:<id equipement>, reliee par un administrateur)
-// Aucun email n'est stocke : tout est lu en direct, en lecture seule.
+// Aucun email n'est stocke : tout est lu en direct. Seule ecriture possible :
+// l'ENVOI d'un email depuis la boite de l'utilisateur (action envoyer, droit
+// gmail.send seul : l'app ne peut toujours ni supprimer ni modifier un email).
 //
 // POST { action, ... }
 //   compte                          -> { nonlus }                (pastille)
-//   boite   { onglet, q, page }     -> { messages, suivant, nonlus }
+//   boite   { onglet, q, page }     -> { messages, suivant, nonlus }   (onglet envoyes = in:sent)
+//   envoyer { a, cc, objet, texte, repondreA?, photos? } -> { id, threadId }
+//            signature au nom de l'employe ajoutee ici, 40 envois / jour / boite,
+//            trace dans audit_logs (sans le contenu)
 //   message { id }                  -> { texte, pieces, lienGmail, ... }
 //   piece   { id, piece }           -> { data (base64) }         (< 3,5 Mo)
 //   agenda { jour? AAAA-MM-JJ }     -> { jour, evenements }      (defaut : aujourd'hui)
 //   tri     { ids }                 -> { tri }  (bureau : categorie + tache proposee par l'IA)
 //   sante   { sujet }               -> { ok }   (administrateur : la boite repond ?)
 // =====================================================================
-const { jetonGoogle, cleCompteService, adresseDuDomaine, SCOPE_GMAIL, SCOPE_AGENDA, DOMAINE } = require('./_google.js');
+const { jetonGoogle, cleCompteService, adresseDuDomaine, SCOPE_GMAIL, SCOPE_AGENDA, SCOPE_ENVOI, DOMAINE } = require('./_google.js');
 const { identiteAdmin, urlSupabase } = require('./_identite.js');
 
 const ORIGINES = ['https://employes-psi.vercel.app', 'https://app.wallislabel.nc', 'https://maintennance-app.vercel.app'];
@@ -83,9 +88,9 @@ async function identite(req, body) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok || !d.code) return null;
     const machine = String(body.machine || '').trim();
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(machine)) return { type: 'employe', nom: d.nom, boite: null, estAdmin: false };
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(machine)) return { type: 'employe', nom: d.nom, code: d.code, boite: null, estAdmin: false };
     const ov = await corrections(['m:' + machine]);
-    return { type: 'employe', nom: d.nom, boite: adresseDuDomaine(ov['m:' + machine]), estAdmin: false, machine: machine };
+    return { type: 'employe', nom: d.nom, code: d.code, boite: adresseDuDomaine(ov['m:' + machine]), estAdmin: false, machine: machine };
   }
   const a = await identiteAdmin(req);
   if (!a) return null;
@@ -93,14 +98,89 @@ async function identite(req, body) {
   // Seules les personnes du BUREAU (liste choisie dans Administration > Emails)
   // ont une boite personnelle. Liste pas encore choisie = tout le monde.
   const membres = await membresBureau();
-  if (membres && membres.indexOf(cleU) < 0) return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, boite: null, horsBureau: true, estAdmin: a.estAdmin };
+  if (membres && membres.indexOf(cleU) < 0) return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, email: a.email, boite: null, horsBureau: true, estAdmin: a.estAdmin };
   const ov = await corrections([cleU]);
   const reliee = adresseDuDomaine(ov[cleU]);
   if (reliee && reliee !== a.email) {
     const autres = (await emailsConnexionBureau()).filter((u) => u.email === reliee && u.email !== a.email);
-    if (autres.length) return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, boite: null, conflit: true, estAdmin: a.estAdmin };
+    if (autres.length) return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, email: a.email, boite: null, conflit: true, estAdmin: a.estAdmin };
   }
-  return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, boite: reliee || adresseDuDomaine(a.email), estAdmin: a.estAdmin };
+  return { type: 'bureau', nom: (a.fiche && a.fiche.nom) || a.email, email: a.email, boite: reliee || adresseDuDomaine(a.email), estAdmin: a.estAdmin };
+}
+
+// ── Envoi (MIME construit ici : en-tetes encodes, aucune injection possible) ──
+const RE_EMAIL = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}$/;
+const MAX_ENVOIS_JOUR = 40;
+const MAX_PHOTOS = 5;
+const MAX_PHOTOS_B64 = 3400000; // corps de requete Vercel <= 4,5 Mo
+// Mot d'en-tete : ASCII tel quel, sinon RFC 2047 (=?UTF-8?B?...?=)
+function motEntete(s) {
+  const t = String(s || '').replace(/[\r\n]+/g, ' ').trim();
+  return /^[\x20-\x7e]*$/.test(t) ? t : '=?UTF-8?B?' + Buffer.from(t, 'utf8').toString('base64') + '?=';
+}
+function decoderMots(v) {
+  return String(v || '').replace(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/gi, (x, b) => { try { return Buffer.from(b, 'base64').toString('utf8'); } catch (e) { return x; } });
+}
+function base64Lignes(buf) { return buf.toString('base64').replace(/(.{76})/g, '$1\r\n'); }
+// "a@b.nc, c@d.nc" ou ["a@b.nc"] -> liste validee (max n, sans doublon)
+function adresses(v, max, nomChamp) {
+  const brut = Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/);
+  const out = [];
+  brut.forEach((x) => {
+    const s = String(x || '').trim();
+    if (!s) return;
+    if (!RE_EMAIL.test(s)) { const e = new Error('Adresse invalide (' + nomChamp + ') : ' + s.slice(0, 80)); e.statut = 400; throw e; }
+    if (out.map((y) => y.toLowerCase()).indexOf(s.toLowerCase()) < 0) out.push(s);
+  });
+  if (out.length > max) { const e = new Error('Trop de destinataires (' + nomChamp + ', ' + max + ' max)'); e.statut = 400; throw e; }
+  return out;
+}
+function nomFichier(n, i, type) {
+  const ext = type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg';
+  let s = String(n || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(0, 60);
+  if (!s) s = 'photo-' + (i + 1);
+  if (!/\.(jpe?g|png|webp)$/i.test(s)) s += '.' + ext;
+  return s;
+}
+// Signature ajoutee AU SERVEUR (la boite d'une machine est partagee : le
+// destinataire doit savoir qui a ecrit)
+function signature(moi) {
+  const lib = String(moi.boite || '').split('@')[0].toUpperCase();
+  if (moi.type === 'employe') return moi.nom + '\nWallis-Label - équipe ' + lib + '\n' + moi.boite;
+  return moi.nom + '\nWallis-Label\n' + moi.boite;
+}
+function construireMime(o) {
+  const frontiere = 'wl_' + require('crypto').randomBytes(12).toString('hex');
+  const crlf = (s) => String(s).replace(/\r?\n/g, '\r\n');
+  const h = [];
+  h.push('From: ' + motEntete(o.nomExpediteur) + ' <' + o.de + '>');
+  h.push('To: ' + o.a.join(', '));
+  if (o.cc.length) h.push('Cc: ' + o.cc.join(', '));
+  h.push('Subject: ' + motEntete(o.objet));
+  if (o.inReplyTo) h.push('In-Reply-To: ' + o.inReplyTo);
+  if (o.references) h.push('References: ' + o.references);
+  h.push('X-Wallis-Employe: ' + motEntete(o.par));
+  h.push('MIME-Version: 1.0');
+  const corps = base64Lignes(Buffer.from(crlf(o.texte), 'utf8'));
+  if (!o.photos.length) {
+    h.push('Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64');
+    return h.join('\r\n') + '\r\n\r\n' + corps + '\r\n';
+  }
+  h.push('Content-Type: multipart/mixed; boundary="' + frontiere + '"');
+  let m = h.join('\r\n') + '\r\n\r\n';
+  m += '--' + frontiere + '\r\nContent-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + corps + '\r\n';
+  o.photos.forEach((p) => {
+    m += '--' + frontiere + '\r\nContent-Type: ' + p.type + '; name="' + p.nom + '"\r\nContent-Disposition: attachment; filename="' + p.nom + '"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + base64Lignes(Buffer.from(p.data, 'base64')) + '\r\n';
+  });
+  return m + '--' + frontiere + '--\r\n';
+}
+async function tracerEnvoi(moi, details) {
+  try {
+    await fetch(urlSupabase() + '/rest/v1/audit_logs', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json', Prefer: 'return=minimal' }, service()),
+      body: JSON.stringify({ actor_email: moi.type === 'employe' ? 'employe:' + moi.code : moi.email, actor_role: moi.type, action: 'email_envoye', target_type: 'email', target_id: details.id || null, details: details })
+    });
+  } catch (e) { /* la trace ne doit jamais bloquer un envoi deja parti */ }
 }
 
 async function google(jeton, url) {
@@ -122,11 +202,16 @@ function resumeMessage(m) {
   const h = (m.payload && m.payload.headers) || [];
   const de = expediteur(entete(h, 'From'));
   const labels = m.labelIds || [];
-  return {
+  const r = {
     id: m.id, threadId: m.threadId, de: de.nom, deEmail: de.email, objet: entete(h, 'Subject') || '(sans objet)',
     extrait: decoderEntites(m.snippet || ''), date: Number(m.internalDate) || null,
     nonlu: labels.indexOf('UNREAD') >= 0, pj: !!(m.payload && /multipart\/mixed/i.test(m.payload.mimeType || ''))
   };
+  const to = entete(h, 'To');
+  if (to) r.a = to.split(',').map((x) => expediteur(x).nom).filter(Boolean).join(', ').slice(0, 200);
+  const par = entete(h, 'X-Wallis-Employe');
+  if (par) r.par = decoderMots(par).slice(0, 80);
+  return r;
 }
 function decoderEntites(s) {
   return String(s || '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
@@ -194,7 +279,8 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, boite: moi.boite, nonlus: l.messagesUnread || 0 });
     }
     if (action === 'boite') {
-      let q = 'in:inbox';
+      const envoyes = body.onglet === 'envoyes';
+      let q = envoyes ? 'in:sent' : 'in:inbox';
       if (body.onglet === 'nonlus') q += ' is:unread';
       if (body.onglet === 'pj') q += ' has:attachment';
       const rech = String(body.q || '').replace(/[\r\n]/g, ' ').trim().slice(0, 120);
@@ -204,7 +290,8 @@ module.exports = async function handler(req, res) {
       if (body.page && RE_ID.test(String(body.page))) url += '&pageToken=' + encodeURIComponent(body.page);
       const [liste, inbox] = await Promise.all([google(jeton, url), google(jeton, GMAIL + '/labels/INBOX')]);
       const ids = (liste.messages || []).map((m) => m.id);
-      const metas = await Promise.all(ids.map((id) => google(jeton, GMAIL + '/messages/' + id + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date').catch(() => null)));
+      const entetes = '&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date' + (envoyes ? '&metadataHeaders=To&metadataHeaders=X-Wallis-Employe' : '');
+      const metas = await Promise.all(ids.map((id) => google(jeton, GMAIL + '/messages/' + id + '?format=metadata' + entetes).catch(() => null)));
       return res.status(200).json({ ok: true, boite: moi.boite, nonlus: inbox.messagesUnread || 0, messages: metas.filter(Boolean).map(resumeMessage), suivant: liste.nextPageToken || null });
     }
     if (action === 'message') {
@@ -220,6 +307,67 @@ module.exports = async function handler(req, res) {
         a: entete(h, 'To'), cc: entete(h, 'Cc'), texte: texte, pieces: acc.pieces,
         lienGmail: 'https://mail.google.com/mail/u/' + encodeURIComponent(moi.boite) + '/#all/' + m.threadId
       }));
+    }
+    if (action === 'envoyer') {
+      // 1. Contenu valide (rien d'invalide ne part)
+      let a, cc;
+      try { a = adresses(body.a, 10, 'À'); cc = adresses(body.cc, 10, 'Cc'); }
+      catch (e) { return res.status(400).json({ ok: false, code: 'adresse', error: e.message }); }
+      if (!a.length) return res.status(400).json({ ok: false, code: 'adresse', error: 'Indique au moins un destinataire' });
+      const objet = String(body.objet || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 200);
+      if (!objet) return res.status(400).json({ ok: false, error: 'Ajoute un objet' });
+      const texte = String(body.texte || '').slice(0, 30000);
+      const photosBrutes = Array.isArray(body.photos) ? body.photos : [];
+      if (photosBrutes.length > MAX_PHOTOS) return res.status(400).json({ ok: false, error: MAX_PHOTOS + ' photos maximum' });
+      let poids = 0;
+      const photos = [];
+      for (let i = 0; i < photosBrutes.length; i++) {
+        const p = photosBrutes[i] || {};
+        const type = /^image\/(jpeg|png|webp)$/.test(String(p.type || '')) ? p.type : null;
+        const data = String(p.data || '');
+        if (!type || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return res.status(400).json({ ok: false, error: 'Photo ' + (i + 1) + ' illisible' });
+        poids += data.length;
+        photos.push({ type: type, data: data, nom: nomFichier(p.nom, i, type) });
+      }
+      if (poids > MAX_PHOTOS_B64) return res.status(413).json({ ok: false, error: 'Photos trop lourdes : retire-en une' });
+      if (!texte.trim() && !photos.length) return res.status(400).json({ ok: false, error: 'Le message est vide' });
+      // 2. Limite d'envois du jour (boite partagee par une equipe : pas d'envoi en boucle)
+      const recents = await google(jeton, GMAIL + '/messages?maxResults=' + (MAX_ENVOIS_JOUR + 1) + '&q=' + encodeURIComponent('in:sent newer_than:1d'));
+      if ((recents.messages || []).length >= MAX_ENVOIS_JOUR) return res.status(429).json({ ok: false, code: 'limite', error: 'Limite de ' + MAX_ENVOIS_JOUR + ' emails par jour atteinte pour cette boîte' });
+      // 3. Reponse : meme conversation (threadId + In-Reply-To / References)
+      let threadId = null, inReplyTo = null, references = null;
+      if (body.repondreA) {
+        if (!RE_ID.test(String(body.repondreA))) return res.status(400).json({ ok: false, error: 'Email d\'origine invalide' });
+        const o = await google(jeton, GMAIL + '/messages/' + body.repondreA + '?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References');
+        const hh = (o.payload && o.payload.headers) || [];
+        const mid = entete(hh, 'Message-ID').replace(/[\r\n]/g, '').trim();
+        threadId = o.threadId || null;
+        if (/^<[^<>\s]{3,300}>$/.test(mid)) {
+          inReplyTo = mid;
+          const refs = entete(hh, 'References').replace(/[\r\n]+/g, ' ').trim().slice(0, 1800);
+          references = (refs ? refs + ' ' : '') + mid;
+        }
+      }
+      // 4. Message : texte + signature, photos en pieces jointes
+      const corps = (texte.replace(/\s+$/, '') + '\n\n-- \n' + signature(moi)).replace(/^\n+/, '');
+      // nom affiche : sans les caracteres speciaux d'une adresse (guillemets, virgules...)
+      const nomPropre = String(moi.nom || '').replace(/["<>(),;:\\@[\]]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Wallis-Label';
+      const nomExp = moi.type === 'employe' ? nomPropre + ' - Wallis-Label ' + String(moi.boite).split('@')[0].toUpperCase() : nomPropre + ' - Wallis-Label';
+      const mime = construireMime({ de: moi.boite, nomExpediteur: nomExp, a: a, cc: cc, objet: objet, texte: corps, photos: photos, inReplyTo: inReplyTo, references: references, par: moi.nom });
+      // 5. Envoi avec le SEUL droit d'envoi
+      let jetonEnvoi;
+      try { jetonEnvoi = await jetonGoogle(moi.boite, [SCOPE_ENVOI]); }
+      catch (e) {
+        if (e.code === 'unauthorized_client' || e.code === 'access_denied') return res.status(409).json({ ok: false, code: 'envoi_non_autorise', error: 'L\'envoi d\'emails n\'est pas encore autorisé chez Google : le bureau doit l\'activer (console Google Admin)' });
+        return res.status(502).json({ ok: false, code: 'google', error: 'Connexion Google impossible : ' + e.message });
+      }
+      const envoi = { raw: Buffer.from(mime, 'utf8').toString('base64url') };
+      if (threadId) envoi.threadId = threadId;
+      const r = await fetch(GMAIL + '/messages/send', { method: 'POST', headers: { Authorization: 'Bearer ' + jetonEnvoi, 'Content-Type': 'application/json' }, body: JSON.stringify(envoi) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return res.status(502).json({ ok: false, code: 'google', error: 'Envoi refusé par Google : ' + ((d.error && d.error.message) || ('HTTP ' + r.status)) });
+      await tracerEnvoi(moi, { id: d.id || null, boite: moi.boite, par: moi.nom, a: a, cc: cc, objet: objet, photos: photos.length, reponse: !!threadId });
+      return res.status(200).json({ ok: true, id: d.id || null, threadId: d.threadId || null });
     }
     if (action === 'piece') {
       if (!RE_ID.test(String(body.id || '')) || !/^[A-Za-z0-9_-]{10,2000}$/.test(String(body.piece || ''))) return res.status(400).json({ ok: false, error: 'pièce invalide' });

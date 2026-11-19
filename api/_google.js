@@ -5,7 +5,8 @@
 // (contenu JSON complet), posee par l'administrateur. Elle n'est JAMAIS
 // renvoyee au client ni ecrite ailleurs.
 // Un jeton d'acces est demande POUR UNE BOITE PRECISE (champ "sub") et pour
-// des droits en LECTURE SEULE. L'appelant doit toujours deduire cette boite
+// des droits en LECTURE SEULE (sauf gmail.send, reserve a l'action "envoyer"
+// de /api/gmail). L'appelant doit toujours deduire cette boite
 // de l'identite verifiee de l'utilisateur (jamais d'un parametre libre).
 // =====================================================================
 const crypto = require('crypto');
@@ -13,6 +14,9 @@ const crypto = require('crypto');
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE_GMAIL = 'https://www.googleapis.com/auth/gmail.readonly';
 const SCOPE_AGENDA = 'https://www.googleapis.com/auth/calendar.readonly';
+// Envoi seul (ne permet ni de lire ni de supprimer) : utilise UNIQUEMENT par
+// l'action "envoyer". A autoriser une fois dans la delegation du domaine.
+const SCOPE_ENVOI = 'https://www.googleapis.com/auth/gmail.send';
 const DOMAINE = 'wallislabel.nc';
 
 let cle = null;
@@ -61,4 +65,4 @@ async function jetonGoogle(sujet, scopes) {
   return d.access_token;
 }
 
-module.exports = { jetonGoogle, cleCompteService, adresseDuDomaine, SCOPE_GMAIL, SCOPE_AGENDA, DOMAINE };
+module.exports = { jetonGoogle, cleCompteService, adresseDuDomaine, SCOPE_GMAIL, SCOPE_AGENDA, SCOPE_ENVOI, DOMAINE };
