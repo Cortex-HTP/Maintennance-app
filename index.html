@@ -8007,12 +8007,74 @@
       );
     }
 
-    // ─── Ecran Carburant : vue dediee avec ventilation engin / VL ──────
-    // Affiche toutes les saisies consommations_carburant (sondeurs) avec :
-    // - KPIs : total L, total cout, ventilation engins (sondeuses) vs VL (vehicules)
-    // - Tableau recap par machine
-    // - Liste detaillee des entrees
-    // - Filtres : periode + categorie + machine
+    // ─── Ecran Carburant : 2 onglets Machines / Vehicules ──────────────
+    // Machines : consommations des engins (litres, metres fores, cout au metre).
+    // Vehicules : pleins + releves kilometriques (APP Employes : table
+    // releves_km ; admin : releves_horametre.km) -> km parcourus et conso
+    // L/100 km calculee PLEIN A PLEIN (carbConsoVehicule).
+    function carbDateFr(iso) { var p = String(iso || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "-"; }
+    function carbJoursEntre(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
+    // Releves d'un vehicule -> un point par jour (le plus grand du jour), tries
+    function carbRelevesParJour(releves) {
+      var parJour = {};
+      (releves || []).forEach(function(r) {
+        var km = parseFloat(r.km); var d = String(r.date || "").substring(0, 10);
+        if (km > 0 && d.length === 10 && (!parJour[d] || km > parJour[d])) parJour[d] = km;
+      });
+      return Object.keys(parJour).sort().map(function(d) { return { date: d, km: parJour[d] }; });
+    }
+    // Compteur estime a une date : interpolation entre les 2 releves qui
+    // l'encadrent ; null hors de la plage des releves (jamais d'extrapolation)
+    function carbCompteurA(rs, d) {
+      if (!rs.length || d < rs[0].date || d > rs[rs.length - 1].date) return null;
+      for (var i = 0; i < rs.length; i++) {
+        if (rs[i].date === d) return rs[i].km;
+        if (rs[i].date > d) {
+          var a = rs[i - 1], b = rs[i]; var tot = carbJoursEntre(a.date, b.date);
+          return tot > 0 ? a.km + (b.km - a.km) * carbJoursEntre(a.date, d) / tot : a.km;
+        }
+      }
+      return null;
+    }
+    // Km parcourus + conso d'un vehicule sur [debut, fin] (AAAA-MM-JJ, null = ouvert).
+    // Km = compteur(fin) - compteur(debut), bornes aux releves disponibles.
+    // Conso PLEIN A PLEIN : compteur estime au jour de chaque plein ; chaque plein
+    // de la periode "ferme" l'intervalle ouvert par le plein precedent (meme s'il
+    // date d'avant la periode) ; L/100 = litres de ces pleins / km entre eux x 100.
+    function carbConsoVehicule(releves, pleins, debut, fin) {
+      var rs = carbRelevesParJour(releves);
+      var res = { kmDebut: null, kmFin: null, dDebut: null, dFin: null, km: null, kmConso: null, litresConso: 0, l100: null, motif: "", motifConso: "" };
+      if (rs.length < 2) { res.motif = rs.length ? "Un seul relevé km : il en faut 2" : "Aucun relevé km"; res.motifConso = res.motif; return res; }
+      var premier = rs[0].date, dernier = rs[rs.length - 1].date;
+      var d1 = debut && debut > premier ? debut : premier;
+      var d2 = fin && fin < dernier ? fin : dernier;
+      if (d1 >= d2) {
+        res.motif = debut && dernier < debut ? "Aucun relevé km depuis le " + carbDateFr(dernier) : "Pas assez de relevés km sur la période";
+      } else {
+        res.dDebut = d1; res.dFin = d2; res.kmDebut = carbCompteurA(rs, d1); res.kmFin = carbCompteurA(rs, d2);
+        res.km = res.kmFin - res.kmDebut;
+        if (!(res.km > 0)) { res.km = null; res.motif = "Relevés incohérents (compteur qui recule)"; }
+      }
+      var parJour = {};
+      (pleins || []).forEach(function(p) {
+        var d = String(p.date || "").substring(0, 10); var l = parseFloat(p.litres) || 0;
+        if (d.length === 10 && l > 0) parJour[d] = (parJour[d] || 0) + l;
+      });
+      var ancres = Object.keys(parJour).sort().map(function(d) { return { date: d, litres: parJour[d], km: carbCompteurA(rs, d) }; })
+        .filter(function(a) { return a.km !== null; });
+      var iPremier = -1, iDernier = -1;
+      ancres.forEach(function(a, i) { if ((!debut || a.date >= debut) && (!fin || a.date <= fin)) { if (iPremier < 0) iPremier = i; iDernier = i; } });
+      if (iPremier < 0) { res.motifConso = res.motif || "Aucun plein entre 2 relevés km"; return res; }
+      var iDepart = iPremier > 0 ? iPremier - 1 : iPremier;
+      if (iDepart === iDernier) { res.motifConso = "Un seul plein entre 2 relevés km"; return res; }
+      var kmConso = ancres[iDernier].km - ancres[iDepart].km;
+      if (!(kmConso > 0)) { res.motifConso = "Relevés incohérents (compteur qui recule)"; return res; }
+      res.kmConso = kmConso;
+      for (var j = iDepart + 1; j <= iDernier; j++) res.litresConso += ancres[j].litres;
+      res.l100 = res.litresConso / kmConso * 100;
+      return res;
+    }
+
     function EcranCarburant() {
       const ctx = useAppData();
       const equipements = ctx.equipements || [];
@@ -8022,10 +8084,17 @@
       const [carburants, setCarburants] = useState([]);
       const [loading, setLoading] = useState(true);
       const [period, setPeriod] = useState("mois"); // mois, moisdernier, 3mois, 6mois, 1an, all
-      const [filterCat, setFilterCat] = useState("all"); // all, engin, vl
+      const [onglet, setOnglet] = useState("machines"); // machines | vehicules
       const [filterMachine, setFilterMachine] = useState("all");
       const [editing, setEditing] = useState(null);
       const [toDelete, setToDelete] = useState(null);
+      const [relevesKm, setRelevesKm] = useState([]);
+      const [kmModal, setKmModal] = useState(null);
+      const [enregKm, setEnregKm] = useState(false);
+      const [enregCarb, setEnregCarb] = useState(false);
+      // Verrou anti double-clic (enregistrement / suppression) : un 2e clic
+      // pendant l'attente du serveur creait un doublon
+      const verrouCarbRef = useRef(false);
 
       useEffect(function() {
         fetchAllRows(function() { return supabase.from("consommations_carburant").select("id,sondeuse_code,date_consommation,quantite_l,rapport_id,sondeur_id,created_at").order("date_consommation", { ascending: false }).order("id"); }).then(function(res) {
@@ -8034,6 +8103,45 @@
           setCarburants(res.data || []);
         });
       }, []);
+      // Releves km saisis par les equipes (APP Employes, rubrique "Kilometrage vehicule")
+      useEffect(function() {
+        var annule = false;
+        fetchAllRows(function() { return supabase.from("releves_km").select("id,vehicule_code,date_releve,kilometrage,sondeur_nom").order("date_releve", { ascending: false }).order("id"); }).then(function(res) {
+          if (annule) return;
+          if (res.error) { console.warn("[carburant] releves_km:", res.error.message); return; }
+          setRelevesKm(res.data || []);
+        });
+        return function() { annule = true; };
+      }, []);
+
+      // ── Equipements : code saisi -> fiche (immatriculation, puis nom, puis #id,
+      //    comme le code machine de l'APP Employes) ──
+      function codeEq(eq) { return String(eq.Title || eq.Nom || ("#" + eq.Id)).toUpperCase().trim(); }
+      // Priorite au code PROPRE de chaque fiche (celui de l'APP Employes) : un
+      // vehicule sans immatriculation dont le nom = immatriculation/nom d'un
+      // autre n'est jamais confondu avec lui. Puis immatriculation, nom, #id.
+      var eqParCode = {}, eqParId = {};
+      equipements.forEach(function(eq) { eqParId[eq.Id] = eq; var k = codeEq(eq); if (k && !eqParCode[k]) eqParCode[k] = eq; });
+      equipements.forEach(function(eq) { var k = String(eq.Title || "").toUpperCase().trim(); if (k && !eqParCode[k]) eqParCode[k] = eq; });
+      equipements.forEach(function(eq) { var k = String(eq.Nom || "").toUpperCase().trim(); if (k && !eqParCode[k]) eqParCode[k] = eq; });
+      equipements.forEach(function(eq) { var k = ("#" + eq.Id).toUpperCase(); if (!eqParCode[k]) eqParCode[k] = eq; });
+      function resoudreEq(code) { return eqParCode[String(code || "").toUpperCase().trim()] || null; }
+      function codeCanon(code) { var eq = resoudreEq(code); return eq ? codeEq(eq) : String(code || "").toUpperCase().trim(); }
+      // Vehicule = MEME regle que l'APP Employes (compteur en km) : categorie
+      // Vehicule, ou type vehicule / VL / camion
+      function estVehicule(eq) {
+        if (!eq) return false;
+        if (eq.Categorie === "Vehicule") return true;
+        return /vehicule|vl|camion/i.test(eq.Type || "");
+      }
+      var codesKmTerrain = {};
+      relevesKm.forEach(function(r) { var k = codeCanon(r.vehicule_code); if (k) codesKmTerrain[k] = true; });
+      // Categorie d'une saisie : vl / engin / autre (code inconnu)
+      function getCategorie(code) {
+        var eq = resoudreEq(code);
+        if (!eq) return codesKmTerrain[codeCanon(code)] ? "vl" : "autre";
+        return estVehicule(eq) ? "vl" : "engin";
+      }
 
       // Sauvegarde edition ou creation (selon presence de c.id)
       function saveCarburant(c) {
@@ -8042,50 +8150,70 @@
           date_consommation: c.date_consommation,
           quantite_l: parseFloat(c.quantite_l) || 0
         };
-        if (!payload.sondeuse_code) { alert("Code machine requis."); return; }
+        if (!payload.sondeuse_code) { alert(c._vehicule ? "Vehicule requis." : "Code machine requis."); return; }
         if (!payload.date_consommation) { alert("Date requise."); return; }
         if (payload.quantite_l <= 0) { alert("Quantite doit etre > 0."); return; }
-        if (c.id) {
-          // Mode edition
-          supabase.from("consommations_carburant").update(payload).eq("id", c.id).select().single().then(function(res) {
-            if (res.error) { alert("Erreur : " + res.error.message); return; }
-            setCarburants(carburants.map(function(x) { return x.id === c.id ? res.data : x; }));
-            setEditing(null);
+        var kmPlein = parseFloat(c._kmPlein);
+        var eqPlein = resoudreEq(payload.sondeuse_code);
+        if (!c.id && kmPlein > 0 && !estVehicule(eqPlein)) { alert("Le compteur km ne s'enregistre que pour un vehicule de la liste."); return; }
+        // Compteur du plein : memes controles que le releve km (recul, chiffre en trop)
+        if (!c.id && kmPlein > 0 && !confirmerCompteur(eqPlein, payload.date_consommation, kmPlein)) return;
+        if (verrouCarbRef.current) return;
+        verrouCarbRef.current = true; setEnregCarb(true);
+        function fin() { verrouCarbRef.current = false; setEnregCarb(false); }
+        // Ne ferme la fenetre que si c'est toujours CELLE de cet enregistrement
+        function fermer() { setEditing(function(cur) { return cur === c ? null : cur; }); }
+        var req = c.id
+          ? supabase.from("consommations_carburant").update(payload).eq("id", c.id).select().single()
+          : supabase.from("consommations_carburant").insert(payload).select().single(); // saisie admin : ni sondeur_id ni rapport_id
+        Promise.resolve(req).then(function(res) {
+          fin();
+          if (res.error) { alert((c.id ? "Erreur : " : "Erreur creation : ") + res.error.message); return; }
+          if (c.id) {
+            setCarburants(function(prev) { return prev.map(function(x) { return x.id === c.id ? res.data : x; }); });
+            fermer();
             if (ctx.showToast) ctx.showToast("Carburant modifie", "success");
-          });
-        } else {
-          // Mode creation : on n'envoie pas sondeur_id ni rapport_id (saisie admin)
-          supabase.from("consommations_carburant").insert(payload).select().single().then(function(res) {
-            if (res.error) { alert("Erreur creation : " + res.error.message); return; }
-            setCarburants([res.data].concat(carburants));
-            setEditing(null);
-            if (ctx.showToast) ctx.showToast("Saisie carburant ajoutee", "success");
-          });
-        }
+            return;
+          }
+          setCarburants(function(prev) { return [res.data].concat(prev); });
+          fermer();
+          if (ctx.showToast) ctx.showToast("Saisie carburant ajoutee", "success");
+          // Compteur note au moment du plein -> releve km (fiche vehicule + conso)
+          if (kmPlein > 0 && eqPlein && ctx.addReleve) {
+            Promise.resolve(ctx.addReleve({ Date: payload.date_consommation, Horametre: "", KM: String(kmPlein), Technicien: nomSaisieKm(), Equipement: eqPlein.Title, EquipementId: eqPlein.Id })).catch(function() {});
+          }
+        }).catch(function(e) { fin(); alert("Erreur reseau : " + (e && e.message ? e.message : e) + "\nRien n'a ete enregistre, reessaie."); });
       }
+      // Controle d'un compteur km saisi : inferieur au releve precedent, ou
+      // saut enorme (chiffre en trop ?) -> confirmation
+      function confirmerCompteur(eq, date, km) {
+        var rel = (relParCode[codeEq(eq)] || []).slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.km - b.km; });
+        var prec = null;
+        rel.forEach(function(r) { if (r.date <= date) prec = r; });
+        if (!prec) return true;
+        if (km < prec.km) return confirm("Le kilometrage saisi (" + nbFr(km) + " km) est INFERIEUR au releve du " + fmtFr(prec.date) + " (" + nbFr(prec.km) + " km).\n\nEnregistrer quand meme ?");
+        var jours = Math.max(1, carbJoursEntre(prec.date, date));
+        if (km - prec.km > Math.max(3000, jours * 800)) return confirm("Le kilometrage saisi (" + nbFr(km) + " km) fait " + nbFr(km - prec.km) + " km de plus que le releve du " + fmtFr(prec.date) + ".\n\nVerifie qu'il n'y a pas un chiffre en trop. Enregistrer quand meme ?");
+        return true;
+      }
+      function nomSaisieKm() { return String(ctx.userEmail || "Admin").split("@")[0]; }
       // Ouvre le modal en mode creation avec valeurs par defaut
-      function openCreate() {
-        var today = new Date();
-        var iso = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
-        setEditing({ date_consommation: iso, sondeuse_code: "", quantite_l: "" });
+      function openCreate(vehicule) {
+        setEditing({ date_consommation: localISODate(), sondeuse_code: "", quantite_l: "", _vehicule: !!vehicule, _machine: !vehicule, _kmPlein: "" });
       }
       function deleteCarburant(id) {
         var row = carburants.find(function(x) { return x.id === id; });
         if (!row) return;
+        if (verrouCarbRef.current) return; // double-clic sur Supprimer
+        verrouCarbRef.current = true;
         var libelle = "Carburant " + (row.sondeuse_code || "?") + " du " + (row.date_consommation || "?") + " (" + (parseFloat(row.quantite_l) || 0).toFixed(1) + " L)";
         softDeleteRow("consommations_carburant", row, libelle, ctx.userEmail).then(function() {
-          setCarburants(carburants.filter(function(x) { return x.id !== id; }));
+          verrouCarbRef.current = false;
+          setCarburants(function(prev) { return prev.filter(function(x) { return x.id !== id; }); });
           setToDelete(null);
           if (ctx.showToast) ctx.showToast("Deplace dans la corbeille (30j)", "success");
-        }).catch(function(e) { alert("Erreur : " + e.message); });
+        }).catch(function(e) { verrouCarbRef.current = false; alert("Erreur : " + e.message); });
       }
-
-      // Map equipement par immatriculation (uppercase) pour categorie/nom
-      var equipByImmat = {};
-      equipements.forEach(function(eq) {
-        var imm = String(eq.Title || "").toUpperCase().trim();
-        if (imm) equipByImmat[imm] = eq;
-      });
 
       // Periode
       var now = new Date();
@@ -8099,16 +8227,10 @@
       } else if (period === "3mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
       else if (period === "6mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
       else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-
-      // Categorie d'une saisie : engin / vl / autre, base sur l'equipement de l'immat
-      function getCategorie(sondeuseCode) {
-        var eq = equipByImmat[String(sondeuseCode || "").toUpperCase().trim()];
-        if (!eq) return "autre";
-        var cat = String(eq.Categorie || "").toLowerCase();
-        if (cat === "engin" || /sondeuse|engin/i.test(eq.Type || "")) return "engin";
-        if (cat === "vehicule" || cat === "vl" || /vehicule|vl|camion/i.test(eq.Type || "")) return "vl";
-        return "autre";
-      }
+      // Bornes en dates calendaires LOCALES (jamais toISOString : veille UTC)
+      var debutIso = periodStart ? localISODate(periodStart) : null;
+      var finIso = periodEnd ? localISODate(periodEnd) : null;
+      function dansPeriode(d) { var x = String(d || "").substring(0, 10); return (!debutIso || x >= debutIso) && (!finIso || x <= finIso); }
 
       // Prix unitaire mazout - 3 sources par priorite :
       //  1. parametres.prix_mazout_litre (configure dans Parametres)
@@ -8154,98 +8276,433 @@
         return rid ? { id: rid, auto: true } : null;
       }
 
-      // Filtre + enrichissement
-      var filtered = (carburants || []).filter(function(c) {
-        var d = new Date(String(c.date_consommation || "").substring(0, 10));
-        if (periodStart && d < periodStart) return false;
-        if (periodEnd && d > periodEnd) return false;
-        var cat = getCategorie(c.sondeuse_code);
-        if (filterCat !== "all" && cat !== filterCat) return false;
-        if (filterMachine !== "all" && c.sondeuse_code !== filterMachine) return false;
-        return true;
-      }).map(function(c) {
+      // Saisies de la periode, enrichies
+      var tousPeriode = (carburants || []).filter(function(c) { return dansPeriode(c.date_consommation); }).map(function(c) {
         return Object.assign({}, c, {
           categorie: getCategorie(c.sondeuse_code),
+          code: codeCanon(c.sondeuse_code),
           cout: (parseFloat(c.quantite_l) || 0) * prixMazout,
-          equipement: equipByImmat[String(c.sondeuse_code || "").toUpperCase().trim()] || null,
+          equipement: resoudreEq(c.sondeuse_code),
           rapportLien: resolveCarbRapportId(c)
         });
       });
+      var nbSaisiesVeh = tousPeriode.filter(function(c) { return c.categorie === "vl"; }).length;
+      var nbSaisiesMach = tousPeriode.length - nbSaisiesVeh;
+      function dansOnglet(c) { return onglet === "vehicules" ? c.categorie === "vl" : c.categorie !== "vl"; }
+      var ongletPeriode = tousPeriode.filter(dansOnglet);
+      var filtered = ongletPeriode.filter(function(c) { return filterMachine === "all" || c.code === filterMachine; });
 
-      // KPIs
-      var totalL = filtered.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
-      var totalCout = filtered.reduce(function(s, c) { return s + c.cout; }, 0);
-      var engins = filtered.filter(function(c) { return c.categorie === "engin"; });
-      var vls = filtered.filter(function(c) { return c.categorie === "vl"; });
-      var totalEnginsL = engins.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
-      var totalVLsL = vls.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
-
-      // Recap par machine + agregation metres (depuis rapports_forage du ctx)
-      var rapportsCtx = ctx.dbRapportsForage || [];
-      var metresParMachine = {};
-      rapportsCtx.forEach(function(r) {
-        if (!r.sondeuse_code) return;
-        var d = String(r.date_rapport || "").substring(0, 10);
-        // localISODate : periodStart est un minuit LOCAL ; toISOString le
-        // renvoyait a la veille (UTC) et comptait le 31 du mois precedent.
-        if (periodStart && d < localISODate(periodStart)) return;
-        if (periodEnd && d > localISODate(periodEnd)) return;
-        var k = String(r.sondeuse_code).toUpperCase().trim();
-        metresParMachine[k] = (metresParMachine[k] || 0) + (parseFloat(r.total_metres) || 0);
-      });
-      var byMachine = {};
-      filtered.forEach(function(c) {
-        var code = c.sondeuse_code || "?";
-        if (!byMachine[code]) byMachine[code] = { code: code, categorie: c.categorie, nom: c.equipement ? c.equipement.Nom : "", quantite: 0, cout: 0, nbEntries: 0, lastDate: "" };
-        byMachine[code].quantite += parseFloat(c.quantite_l) || 0;
-        byMachine[code].cout += c.cout;
-        byMachine[code].nbEntries += 1;
-        if (!byMachine[code].lastDate || c.date_consommation > byMachine[code].lastDate) byMachine[code].lastDate = c.date_consommation;
-      });
-      // Calcule coutParMetre + ratio L/m pour chaque machine
-      Object.keys(byMachine).forEach(function(code) {
-        var m = byMachine[code];
-        var metres = metresParMachine[String(code).toUpperCase().trim()] || 0;
-        m.metres = metres;
-        m.coutParMetre = metres > 0 ? m.cout / metres : 0;
-        m.lParMetre = metres > 0 ? m.quantite / metres : 0;
-      });
-      var machinesList = Object.keys(byMachine).map(function(k) { return byMachine[k]; }).sort(function(a, b) { return b.quantite - a.quantite; });
-      // Moyenne globale (engins uniquement, pour comparaison)
-      var moyEnginsCoutParMetre = (function() {
-        var ms = machinesList.filter(function(m) { return m.categorie === "engin" && m.metres > 0; });
-        if (ms.length === 0) return 0;
-        var tot = ms.reduce(function(s, m) { return s + m.cout; }, 0);
-        var tom = ms.reduce(function(s, m) { return s + m.metres; }, 0);
-        return tom > 0 ? tot / tom : 0;
-      })();
-
-      // Machines distinctes (pour filtre)
-      var allMachines = Array.from(new Set((carburants || []).map(function(c) { return c.sondeuse_code; }).filter(Boolean))).sort();
-
-      var fmtFr = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "-"; };
-      var catBadge = function(cat) {
-        var col = cat === "engin" ? "#fcd34d" : cat === "vl" ? "#86efac" : "#a1a1aa";
-        var bg = cat === "engin" ? "rgba(245,158,11,0.15)" : cat === "vl" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.15)";
-        var label = cat === "engin" ? "ENGIN" : cat === "vl" ? "VL" : "AUTRE";
-        return h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700, background: bg, color: col, border: "1px solid " + col + "44" } }, label);
-      };
+      var fmtFr = carbDateFr;
+      var fmtCourt = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] : "-"; };
+      var nbFr = function(n, dec) { return Number(n || 0).toLocaleString("fr-FR", { minimumFractionDigits: dec || 0, maximumFractionDigits: dec || 0 }); };
       var ddStyle = { background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 6, padding: "6px 10px", color: "#fafafa", fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
       var lblStyle = { fontSize: 11, color: "#a1a1aa", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+      var thStyle = { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, background: "rgba(36,40,60,0.95)", position: "sticky", top: 0, whiteSpace: "nowrap", textAlign: "left" };
+      var titreCarteStyle = { margin: 0, padding: "14px 18px", fontSize: 14, fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.06)" };
+      var autreBadge = h("span", { style: { marginLeft: 6, padding: "1px 6px", borderRadius: 999, fontSize: 9.5, fontWeight: 700, background: "rgba(148,163,184,0.15)", color: "#a1a1aa", border: "1px solid rgba(148,163,184,0.3)" }, title: "Code absent de la liste des equipements" }, "AUTRE");
+
+      // Codes proposes dans le filtre de l'onglet
+      var codesFiltre = Array.from(new Set((carburants || []).filter(function(c) { var cat = getCategorie(c.sondeuse_code); return onglet === "vehicules" ? cat === "vl" : cat !== "vl"; }).map(function(c) { return codeCanon(c.sondeuse_code); }).filter(Boolean)));
+      if (onglet === "vehicules") Object.keys(codesKmTerrain).forEach(function(k) { if (codesFiltre.indexOf(k) < 0) codesFiltre.push(k); });
+      codesFiltre.sort();
+
+      // ═══ Onglet MACHINES ═══
+      function rendreMachines() {
+        var totalL = filtered.reduce(function(s, c) { return s + (parseFloat(c.quantite_l) || 0); }, 0);
+        var totalCout = filtered.reduce(function(s, c) { return s + c.cout; }, 0);
+        // Metres fores par machine (rapports_forage du ctx) sur la periode
+        var metresParMachine = {};
+        (ctx.dbRapportsForage || []).forEach(function(r) {
+          if (!r.sondeuse_code) return;
+          if (!dansPeriode(r.date_rapport)) return;
+          var k = codeCanon(r.sondeuse_code); // meme code que les saisies carburant
+          metresParMachine[k] = (metresParMachine[k] || 0) + (parseFloat(r.total_metres) || 0);
+        });
+        var byMachine = {};
+        filtered.forEach(function(c) {
+          var code = c.code || "?";
+          if (!byMachine[code]) byMachine[code] = { code: code, categorie: c.categorie, nom: c.equipement ? c.equipement.Nom : "", quantite: 0, cout: 0, nbEntries: 0, lastDate: "" };
+          byMachine[code].quantite += parseFloat(c.quantite_l) || 0;
+          byMachine[code].cout += c.cout;
+          byMachine[code].nbEntries += 1;
+          if (!byMachine[code].lastDate || c.date_consommation > byMachine[code].lastDate) byMachine[code].lastDate = c.date_consommation;
+        });
+        Object.keys(byMachine).forEach(function(code) {
+          var m = byMachine[code];
+          var metres = metresParMachine[code] || 0;
+          m.metres = metres;
+          m.coutParMetre = metres > 0 ? m.cout / metres : 0;
+          m.lParMetre = metres > 0 ? m.quantite / metres : 0;
+        });
+        var machinesList = Object.keys(byMachine).map(function(k) { return byMachine[k]; }).sort(function(a, b) { return b.quantite - a.quantite; });
+        var totMetres = machinesList.reduce(function(s, m) { return s + (m.categorie === "engin" ? m.metres : 0); }, 0);
+        var moyEnginsCoutParMetre = (function() {
+          var ms = machinesList.filter(function(m) { return m.categorie === "engin" && m.metres > 0; });
+          if (ms.length === 0) return 0;
+          var tot = ms.reduce(function(s, m) { return s + m.cout; }, 0);
+          var tom = ms.reduce(function(s, m) { return s + m.metres; }, 0);
+          return tom > 0 ? tot / tom : 0;
+        })();
+
+        return h("div", null,
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
+            h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Litres machines", value: fmtNum(totalL) + " L", color: "#fbbf24" }),
+            h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout", value: fmtMoney(totalCout), color: "#22c55e" }),
+            h(KPICard, { icon: h(Icon, { name: "ruler", size: 22, color: "#ffffff" }), label: "Metres fores", value: fmtNum(totMetres) + " m", color: "#818cf8" }),
+            h(KPICard, { icon: h(Icon, { name: "gauge", size: 22, color: "#ffffff" }), label: "Cout moyen au metre", value: moyEnginsCoutParMetre > 0 ? fmtMoney(Math.round(moyEnginsCoutParMetre)) + "/m" : "-", color: "#38bdf8" })
+          ),
+          // ── Graphique evolution journaliere + moyennes ──
+          (function() {
+            var startD = periodStart || new Date(now.getFullYear(), now.getMonth(), 1);
+            var endD = periodEnd || now;
+            var days = [];
+            var cursor = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate());
+            var endCap = new Date(endD.getFullYear(), endD.getMonth(), endD.getDate());
+            var maxLoop = 0;
+            while (cursor.getTime() <= endCap.getTime() && maxLoop < 366) {
+              days.push(new Date(cursor.getTime()));
+              cursor.setDate(cursor.getDate() + 1);
+              maxLoop++;
+            }
+            var byDay = {};
+            filtered.forEach(function(c) {
+              var k = String(c.date_consommation || "").substring(0, 10);
+              byDay[k] = (byDay[k] || 0) + (parseFloat(c.quantite_l) || 0);
+            });
+            var allDays = days.map(function(d) {
+              var iso = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+              return { date: d, iso: iso, value: byDay[iso] || 0 };
+            });
+            var seriesG = allDays.filter(function(p) { return p.value > 0; });
+            if (seriesG.length === 0) return null;
+            var maxV = Math.max.apply(null, seriesG.map(function(p) { return p.value; }).concat(1));
+            var moyenneGlobale = seriesG.reduce(function(s, p) { return s + p.value; }, 0) / seriesG.length;
+            var moyenneGlobaleAllDays = allDays.length > 0 ? allDays.reduce(function(s, p) { return s + p.value; }, 0) / allDays.length : 0;
+            var W = 720, H = 200, pad = { t: 18, r: 14, b: 32, l: 44 };
+            var iW = W - pad.l - pad.r;
+            var iH = H - pad.t - pad.b;
+            var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
+            var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
+            var linePts = seriesG.map(function(p, i) { return xFor(i) + ',' + yFor(p.value); }).join(' ');
+            var yMoy = yFor(moyenneGlobale);
+            var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function(t) { return { v: t * maxV, y: pad.t + iH - t * iH }; });
+            var xLabelEvery = Math.max(1, Math.ceil(seriesG.length / 12));
+            return h(Card, { style: { padding: 16, marginBottom: 20 } },
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 12 } },
+                h("h3", { style: { margin: 0, fontSize: 14, fontWeight: 700 } }, h(IconText, { icon: "trending-up", size: 14, color: "#86efac" }, "Evolution journaliere")),
+                h("div", { style: { display: "flex", gap: 16, fontSize: 11, color: "#a1a1aa", flexWrap: "wrap" } },
+                  h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#86efac", verticalAlign: "middle", marginRight: 6 } }), "Consommation"),
+                  h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Moyenne jours actifs : " + moyenneGlobale.toFixed(1) + " L"),
+                  h("span", { style: { color: "#71717a" } }, "Moyenne periode : " + moyenneGlobaleAllDays.toFixed(1) + " L/jour")
+                )
+              ),
+              h("div", { style: { overflowX: "auto" } },
+                h("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, style: { maxWidth: "100%", display: "block" } },
+                  yTicks.map(function(t, i) { return h("g", { key: "g" + i },
+                    h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
+                    h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, Math.round(t.v) + " L")
+                  ); }),
+                  seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z", fill: "url(#carb-grad)" }) : null,
+                  h("defs", null, h("linearGradient", { id: "carb-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
+                    h("stop", { offset: "0%", "stop-color": "rgba(134,239,172,0.30)" }),
+                    h("stop", { offset: "100%", "stop-color": "rgba(134,239,172,0)" })
+                  )),
+                  moyenneGlobale > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
+                  seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
+                  seriesG.map(function(p, i) { return h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }); }),
+                  seriesG.map(function(p, i) {
+                    if (i % xLabelEvery !== 0 && i !== seriesG.length - 1) return null;
+                    return h("text", { key: "x" + i, x: xFor(i), y: H - 8, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, p.date.getDate() + "/" + (p.date.getMonth() + 1));
+                  })
+                )
+              )
+            );
+          }()),
+          // Recap par machine
+          machinesList.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune saisie de carburant machine sur cette periode")) :
+          h(Card, { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
+            h("h3", { style: titreCarteStyle }, "Recap par machine (" + machinesList.length + ")"),
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", null,
+                  ["Machine", "Entrees", "Litres", "Cout", "Metres", "L/m", "Cout/m", "Dernier"].map(function(x, i) { return h("th", { key: i, style: thStyle }, x); })
+                )),
+                h("tbody", null, machinesList.map(function(r) {
+                  // Couleur du cout/m : compare a la moyenne engins. Vert si <= moyenne, rouge si > moyenne x1.2
+                  var coutColor = "#a1a1aa";
+                  if (r.categorie === "engin" && r.coutParMetre > 0 && moyEnginsCoutParMetre > 0) {
+                    if (r.coutParMetre <= moyEnginsCoutParMetre) coutColor = "#86efac";
+                    else if (r.coutParMetre <= moyEnginsCoutParMetre * 1.20) coutColor = "#fde68a";
+                    else coutColor = "#fda4af";
+                  }
+                  return h("tr", { key: r.code, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" } },
+                      h("div", { style: { fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code, r.categorie === "autre" ? autreBadge : null),
+                      r.nom ? h("div", { style: { fontSize: 11, color: "#94a3b8" } }, r.nom) : null),
+                    h("td", { style: { padding: "10px 12px", textAlign: "center" } }, r.nbEntries),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace", whiteSpace: "nowrap" } }, r.quantite.toFixed(1) + " L"),
+                    h("td", { style: { padding: "10px 12px", color: "#22c55e", whiteSpace: "nowrap" } }, fmtMoney(r.cout)),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: r.metres > 0 ? "#fafafa" : "#52525b", whiteSpace: "nowrap" } }, r.metres > 0 ? Math.round(r.metres) + " m" : "-"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: coutColor, whiteSpace: "nowrap" } }, r.lParMetre > 0 ? r.lParMetre.toFixed(2) + " L/m" : "-"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontWeight: 700, color: coutColor, whiteSpace: "nowrap" } }, r.coutParMetre > 0 ? fmtMoney(Math.round(r.coutParMetre)) + "/m" : "-"),
+                    h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 11 } }, fmtFr(r.lastDate))
+                  );
+                }))
+              )
+            )
+          ),
+          // Liste detaillee
+          filtered.length > 0 && h(Card, { style: { padding: 0, overflow: "hidden" } },
+            h("h3", { style: titreCarteStyle }, "Detail des saisies (" + filtered.length + ")"),
+            h("div", { style: { overflowX: "auto", maxHeight: 500 } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+                h("thead", null, h("tr", null,
+                  ["Date", "Machine", "Litres", "Cout", "Lien rapport", isAdmin ? "Actions" : ""].map(function(x, i) { return h("th", { key: i, style: Object.assign({}, thStyle, { padding: "8px 12px" }) }, x); })
+                )),
+                h("tbody", null, filtered.slice().sort(function(a, b) { return (b.date_consommation || "") > (a.date_consommation || "") ? 1 : -1; }).map(function(c) {
+                  return h("tr", { key: c.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                    h("td", { style: { padding: "7px 12px", fontFamily: "monospace" } }, fmtFr(c.date_consommation)),
+                    h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, c.sondeuse_code || "-", c.categorie === "autre" ? autreBadge : null),
+                    h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, (parseFloat(c.quantite_l) || 0).toFixed(1) + " L"),
+                    h("td", { style: { padding: "7px 12px", color: "#22c55e" } }, fmtMoney(c.cout)),
+                    h("td", { style: { padding: "7px 12px", color: c.rapportLien ? "#a5b4fc" : "#71717a" }, title: c.rapportLien && c.rapportLien.auto ? "Rapproché automatiquement par machine + date (saisie manuelle)" : "" },
+                      c.rapportLien ? h("span", null, "Rapport #" + c.rapportLien.id, c.rapportLien.auto ? h("span", { style: { color: "#71717a", fontSize: 10, marginLeft: 4 } }, "· auto") : null) : "(aucun)"),
+                    isAdmin ? h("td", { style: { padding: "7px 12px", whiteSpace: "nowrap" } },
+                      h("button", { onClick: function() { setEditing(Object.assign({}, c)); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#a1a1aa", padding: 4, marginRight: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 14 })),
+                      h("button", { onClick: function() { setToDelete(c); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14 }))
+                    ) : null
+                  );
+                }))
+              )
+            )
+          )
+        );
+      }
+
+      // ═══ Releves km de TOUS les vehicules (toutes dates : le calcul a besoin
+      //     des releves d'avant la periode) — terrain + admin, sans doublon ═══
+      var relevesVeh = [], vusRel = {};
+      function ajouterRel(r) {
+        if (!(r.km > 0) || String(r.date).length !== 10) return;
+        var k = r.code + "|" + r.date + "|" + Math.round(r.km);
+        if (vusRel[k]) return; vusRel[k] = true; relevesVeh.push(r);
+      }
+      relevesKm.forEach(function(r) {
+        ajouterRel({ id: "t" + r.id, code: codeCanon(r.vehicule_code), date: String(r.date_releve || "").substring(0, 10), km: parseFloat(r.kilometrage), par: r.sondeur_nom || "", source: "terrain" });
+      });
+      (ctx.releves || []).forEach(function(r) {
+        var eq = eqParId[r.EquipementId];
+        if (!eq || !estVehicule(eq)) return;
+        ajouterRel({ id: "a" + r.Id, code: codeEq(eq), date: String(r.Date || "").substring(0, 10), km: parseFloat(r.KM), par: r.Technicien || "", source: "admin" });
+      });
+      var relParCode = {};
+      relevesVeh.forEach(function(r) { (relParCode[r.code] = relParCode[r.code] || []).push(r); });
+      // Filtre de l'onglet Vehicules : aussi les vehicules qui n'ont QUE des releves admin
+      if (onglet === "vehicules") {
+        Object.keys(relParCode).forEach(function(k) { if (k && codesFiltre.indexOf(k) < 0) codesFiltre.push(k); });
+        codesFiltre.sort();
+      }
+
+      // Releve km saisi depuis cette page (admin) -> releves_horametre via addReleve
+      async function enregistrerReleveKm(m) {
+        var eq = eqParId[m.eqId] || null;
+        var km = parseFloat(m.km);
+        if (!eq || !estVehicule(eq)) { alert("Choisis un vehicule de la liste."); return; }
+        if (!m.date) { alert("Date requise."); return; }
+        if (!(km > 0)) { alert("Kilometrage invalide."); return; }
+        if (enregKm) return;
+        if (!confirmerCompteur(eq, m.date, km)) return;
+        if (!ctx.addReleve) { alert("Enregistrement indisponible."); return; }
+        setEnregKm(true);
+        try {
+          await ctx.addReleve({ Date: m.date, Horametre: "", KM: String(km), Technicien: nomSaisieKm(), Equipement: eq.Title, EquipementId: eq.Id });
+          setKmModal(null);
+          if (ctx.showToast) ctx.showToast("Releve km enregistre", "success");
+        } catch (e) { /* addReleve a deja affiche l'erreur */ }
+        finally { setEnregKm(false); }
+      }
+
+      // ═══ Onglet VEHICULES ═══
+      function rendreVehicules() {
+        var pleinsParCode = {};
+        (carburants || []).forEach(function(c) {
+          if (getCategorie(c.sondeuse_code) !== "vl") return;
+          var k = codeCanon(c.sondeuse_code);
+          (pleinsParCode[k] = pleinsParCode[k] || []).push({ date: String(c.date_consommation || "").substring(0, 10), litres: parseFloat(c.quantite_l) || 0 });
+        });
+        var codes = {};
+        Object.keys(pleinsParCode).forEach(function(k) { codes[k] = true; });
+        Object.keys(relParCode).forEach(function(k) { codes[k] = true; });
+        var stats = Object.keys(codes).map(function(code) {
+          var pl = pleinsParCode[code] || [];
+          var rel = relParCode[code] || [];
+          var plPer = pl.filter(function(p) { return dansPeriode(p.date); });
+          var dernier = null;
+          rel.forEach(function(r) { if (!dernier || r.date > dernier.date || (r.date === dernier.date && r.km > dernier.km)) dernier = r; });
+          return {
+            code: code, eq: resoudreEq(code),
+            per: carbConsoVehicule(rel, pl, debutIso, finIso),
+            hab: carbConsoVehicule(rel, pl, null, null),
+            nbPleins: plPer.length,
+            litres: plPer.reduce(function(s, p) { return s + p.litres; }, 0),
+            nbRel: rel.filter(function(r) { return dansPeriode(r.date); }).length,
+            dernier: dernier
+          };
+        }).filter(function(s) { return s.nbPleins > 0 || s.nbRel > 0 || s.per.km; })
+          .sort(function(a, b) { return b.litres - a.litres || (a.code < b.code ? -1 : 1); });
+
+        var totL = stats.reduce(function(s, x) { return s + x.litres; }, 0);
+        var nbPleinsTot = stats.reduce(function(s, x) { return s + x.nbPleins; }, 0);
+        var totKm = stats.reduce(function(s, x) { return s + (x.per.km || 0); }, 0);
+        var calc = stats.filter(function(x) { return x.per.l100 !== null; });
+        var kmCalc = calc.reduce(function(s, x) { return s + x.per.kmConso; }, 0);
+        var lCalc = calc.reduce(function(s, x) { return s + x.per.litresConso; }, 0);
+        var moyFlotte = kmCalc > 0 ? lCalc / kmCalc * 100 : null;
+        var maxBar = Math.max.apply(null, stats.map(function(s) { return Math.max(s.per.l100 || 0, s.hab.l100 || 0); }).concat([1]));
+        function couleurL100(s) {
+          if (s.per.l100 === null || s.hab.l100 === null) return { c: "#e2e8f0", alerte: false };
+          var r = s.per.l100 / s.hab.l100;
+          if (r <= 1.05) return { c: "#86efac", alerte: false };
+          if (r <= 1.15) return { c: "#fde68a", alerte: false };
+          return { c: "#fda4af", alerte: true };
+        }
+
+        // Releves affiches (periode + vehicule choisi), avec l'ecart au releve precedent
+        var tri = relevesVeh.slice().sort(function(a, b) { return a.code < b.code ? -1 : a.code > b.code ? 1 : a.date < b.date ? -1 : a.date > b.date ? 1 : a.km - b.km; });
+        var precedent = {}, relAff = [];
+        tri.forEach(function(r) {
+          var prev = precedent[r.code];
+          precedent[r.code] = r;
+          if (!dansPeriode(r.date) || (filterMachine !== "all" && r.code !== filterMachine)) return;
+          relAff.push(Object.assign({ ecart: prev ? r.km - prev.km : null, jours: prev ? carbJoursEntre(prev.date, r.date) : null }, r));
+        });
+        relAff.sort(function(a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+        var pleinsAff = filtered.slice().sort(function(a, b) { return (b.date_consommation || "") > (a.date_consommation || "") ? 1 : -1; });
+        var tdS = { padding: "8px 12px" };
+
+        return h("div", null,
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
+            h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Litres vehicules (" + nbPleinsTot + " pleins)", value: fmtNum(totL) + " L", color: "#86efac" }),
+            h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout", value: fmtMoney(totL * prixMazout), color: "#22c55e" }),
+            h(KPICard, { icon: h(Icon, { name: "route", size: 22, color: "#ffffff" }), label: "Km parcourus (releves)", value: nbFr(totKm) + " km", color: "#818cf8" }),
+            h(KPICard, { icon: h(Icon, { name: "gauge", size: 22, color: "#ffffff" }), label: moyFlotte !== null ? "Conso moyenne (" + fmtMoney(Math.round(lCalc * prixMazout / kmCalc)) + "/km)" : "Conso moyenne", value: moyFlotte !== null ? nbFr(moyFlotte, 1) + " L/100" : "-", color: "#38bdf8" })
+          ),
+          stats.length === 0 ? h(Card, { style: { marginBottom: 20 } }, h("div", { style: { padding: 30, textAlign: "center", color: "#71717a" } }, "Aucun plein ni releve km de vehicule sur cette periode")) :
+          h(Card, { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", flexWrap: "wrap" } },
+              h("h3", { style: { margin: 0, fontSize: 14, fontWeight: 700, marginRight: "auto" } }, "Recap par vehicule (" + stats.length + ")"),
+              filterMachine !== "all" ? h("button", { onClick: function() { setFilterMachine("all"); }, style: { background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.4)", color: "#c7d2fe", borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "Voir tous les vehicules") : null
+            ),
+            h("div", { style: { overflowX: "auto" } },
+              h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
+                h("thead", null, h("tr", null, ["Vehicule", "Pleins", "Litres", "Cout", "Km parcourus", "L/100 km", "Cout/km", "Dernier releve"].map(function(x, i) { return h("th", { key: i, style: thStyle }, x); }))),
+                h("tbody", null, stats.map(function(s) {
+                  var col = couleurL100(s);
+                  var choisi = filterMachine === s.code;
+                  var sous = s.eq ? [s.eq.Nom, [s.eq.Marque, s.eq.Modele].filter(Boolean).join(" ")].filter(Boolean).join(" - ") : "";
+                  return h("tr", { key: s.code, onClick: function() { setFilterMachine(choisi ? "all" : s.code); }, title: "Cliquer pour filtrer les releves et les pleins", style: { borderTop: "1px solid rgba(255,255,255,0.04)", cursor: "pointer", background: choisi ? "rgba(99,102,241,0.12)" : "transparent" } },
+                    h("td", { style: Object.assign({}, tdS, { whiteSpace: "nowrap" }) },
+                      h("div", { style: { fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, s.code),
+                      sous ? h("div", { style: { fontSize: 11, color: "#94a3b8" } }, sous) : null),
+                    h("td", { style: tdS }, s.nbPleins),
+                    h("td", { style: Object.assign({}, tdS, { fontWeight: 700, color: "#86efac", fontFamily: "monospace", whiteSpace: "nowrap" }) }, s.litres.toFixed(1) + " L"),
+                    h("td", { style: Object.assign({}, tdS, { color: "#22c55e", whiteSpace: "nowrap" }) }, fmtMoney(s.litres * prixMazout)),
+                    h("td", { style: Object.assign({}, tdS, { whiteSpace: "nowrap" }) }, s.per.km !== null
+                      ? [h("div", { key: "a", style: { fontFamily: "monospace" } }, nbFr(s.per.km) + " km"), h("div", { key: "b", style: { fontSize: 10.5, color: "#71717a" } }, "du " + fmtCourt(s.per.dDebut) + " au " + fmtCourt(s.per.dFin))]
+                      : h("span", { style: { fontSize: 11.5, color: "#fcd34d", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "normal" } }, h(Icon, { name: "triangle-alert", size: 12, color: "#fcd34d" }), s.per.motif)),
+                    h("td", { style: Object.assign({}, tdS, { minWidth: 150 }), title: s.per.l100 === null ? s.per.motifConso : nbFr(s.per.l100, 1) + " L/100 sur " + nbFr(s.per.kmConso) + " km (habituel " + (s.hab.l100 !== null ? nbFr(s.hab.l100, 1) : "-") + ")" }, s.per.l100 !== null
+                      ? [h("div", { key: "a", style: { display: "flex", alignItems: "baseline", gap: 8 } },
+                          h("span", { style: { fontFamily: "monospace", fontWeight: 800, fontSize: 14, color: col.c } }, nbFr(s.per.l100, 1)),
+                          col.alerte ? h("span", { style: { fontSize: 10.5, fontWeight: 700, color: "#fda4af", display: "inline-flex", alignItems: "center", gap: 3 } }, h(Icon, { name: "trending-up", size: 12, color: "#fda4af" }), "+" + Math.round((s.per.l100 / s.hab.l100 - 1) * 100) + " %") : null,
+                          h("span", { style: { fontSize: 10.5, color: "#71717a", marginLeft: "auto" } }, s.hab.l100 !== null ? "hab. " + nbFr(s.hab.l100, 1) : "")),
+                        h("div", { key: "b", style: { position: "relative", height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, marginTop: 5 } },
+                          h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: Math.min(100, s.per.l100 / maxBar * 100) + "%", background: col.c, borderRadius: 3, opacity: 0.8 } }),
+                          s.hab.l100 !== null ? h("div", { style: { position: "absolute", top: -3, bottom: -3, width: 2, left: "calc(" + Math.min(100, s.hab.l100 / maxBar * 100) + "% - 1px)", background: "#fafafa", borderRadius: 1 } }) : null)]
+                      : h("span", { style: { color: "#71717a", fontSize: 11.5 } }, s.per.motifConso || "-")),
+                    h("td", { style: Object.assign({}, tdS, { fontFamily: "monospace", color: "#cbd5e1", whiteSpace: "nowrap" }) }, s.per.l100 !== null ? fmtMoney(Math.round(s.per.litresConso * prixMazout / s.per.kmConso)) : "-"),
+                    h("td", { style: Object.assign({}, tdS, { whiteSpace: "nowrap" }) }, s.dernier
+                      ? [h("div", { key: "a", style: { fontFamily: "monospace", color: "#7dd3fc", fontWeight: 700 } }, nbFr(s.dernier.km) + " km"), h("div", { key: "b", style: { fontSize: 10.5, color: "#71717a" } }, "le " + fmtFr(s.dernier.date))]
+                      : "-")
+                  );
+                }))
+              )
+            ),
+            h("div", { style: { padding: "10px 18px", fontSize: 11.5, color: "#71717a", borderTop: "1px solid rgba(255,255,255,0.05)", lineHeight: 1.5 } },
+              "Conso calculee plein a plein : litres des pleins / km parcourus entre ces pleins (compteur estime a la date de chaque plein d'apres les releves km). Barre = periode, trait blanc = habitude du vehicule. Vert = normal, jaune = +5 a 15 %, rouge = plus de 15 % au-dessus de son habitude.")
+          ),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: 16 } },
+            h(Card, { style: { padding: 0, overflow: "hidden" } },
+              h("h3", { style: titreCarteStyle }, h(IconText, { icon: "gauge", size: 14, color: "#7dd3fc" }, "Releves kilometriques (" + relAff.length + ")")),
+              h("div", { style: { overflowX: "auto", maxHeight: 460 } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+                  h("thead", null, h("tr", null, ["Date", "Vehicule", "Compteur", "Ecart", "Saisi par"].map(function(x, i) { return h("th", { key: i, style: Object.assign({}, thStyle, { padding: "8px 12px" }) }, x); }))),
+                  h("tbody", null, relAff.length === 0
+                    ? h("tr", null, h("td", { colSpan: 5, style: { textAlign: "center", color: "#71717a", padding: 24, fontStyle: "italic" } }, "Aucun releve km sur cette periode"))
+                    : relAff.map(function(r) {
+                      return h("tr", { key: r.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                        h("td", { style: Object.assign({}, tdS, { fontFamily: "monospace" }) }, fmtFr(r.date)),
+                        h("td", { style: Object.assign({}, tdS, { fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" }) }, r.code),
+                        h("td", { style: Object.assign({}, tdS, { fontWeight: 700, color: "#7dd3fc", fontFamily: "monospace", whiteSpace: "nowrap" }) }, nbFr(r.km) + " km"),
+                        h("td", { style: Object.assign({}, tdS, { fontFamily: "monospace", whiteSpace: "nowrap", color: r.ecart === null ? "#52525b" : r.ecart < 0 ? "#fda4af" : "#86efac" }) },
+                          r.ecart === null ? "-" : (r.ecart >= 0 ? "+" : "") + nbFr(r.ecart) + " km",
+                          r.jours ? h("span", { style: { color: "#71717a", fontSize: 10.5, marginLeft: 6 } }, "en " + r.jours + " j") : null),
+                        h("td", { style: tdS }, h("div", null, r.par || "-"), h("div", { style: { fontSize: 10.5, color: "#71717a" } }, r.source === "terrain" ? "APP Employes" : "Saisie admin")));
+                    }))
+                )
+              )
+            ),
+            h(Card, { style: { padding: 0, overflow: "hidden" } },
+              h("h3", { style: titreCarteStyle }, h(IconText, { icon: "fuel", size: 14, color: "#86efac" }, "Pleins (" + pleinsAff.length + ")")),
+              h("div", { style: { overflowX: "auto", maxHeight: 460 } },
+                h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+                  h("thead", null, h("tr", null, ["Date", "Vehicule", "Litres", "Cout", isAdmin ? "Actions" : ""].map(function(x, i) { return h("th", { key: i, style: Object.assign({}, thStyle, { padding: "8px 12px" }) }, x); }))),
+                  h("tbody", null, pleinsAff.length === 0
+                    ? h("tr", null, h("td", { colSpan: 5, style: { textAlign: "center", color: "#71717a", padding: 24, fontStyle: "italic" } }, "Aucun plein sur cette periode"))
+                    : pleinsAff.map(function(c) {
+                      return h("tr", { key: c.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
+                        h("td", { style: Object.assign({}, tdS, { fontFamily: "monospace" }) }, fmtFr(c.date_consommation)),
+                        h("td", { style: Object.assign({}, tdS, { fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" }) }, c.sondeuse_code || "-"),
+                        h("td", { style: Object.assign({}, tdS, { fontWeight: 700, color: "#86efac", fontFamily: "monospace", whiteSpace: "nowrap" }) }, (parseFloat(c.quantite_l) || 0).toFixed(1) + " L"),
+                        h("td", { style: Object.assign({}, tdS, { color: "#22c55e", whiteSpace: "nowrap" }) }, fmtMoney(c.cout)),
+                        isAdmin ? h("td", { style: Object.assign({}, tdS, { whiteSpace: "nowrap" }) },
+                          h("button", { onClick: function() { setEditing(Object.assign({}, c)); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#a1a1aa", padding: 4, marginRight: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 14 })),
+                          h("button", { onClick: function() { setToDelete(c); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14 }))
+                        ) : h("td", null));
+                    }))
+                )
+              )
+            )
+          )
+        );
+      }
 
       if (loading) return h("div", null,
         h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant") }),
         h("div", { style: { padding: 40, textAlign: "center", color: "#a1a1aa" } }, "Chargement...")
       );
 
+      var actions = onglet === "vehicules"
+        ? h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            h(Button, { onClick: function() { openCreate(true); } }, h(IconText, { icon: "fuel", size: 14 }, "Nouveau plein")),
+            h(Button, { variant: "secondary", onClick: function() { var eqF = filterMachine !== "all" ? resoudreEq(filterMachine) : null; setKmModal({ date: localISODate(), eqId: eqF && estVehicule(eqF) ? eqF.Id : "", km: "" }); } }, h(IconText, { icon: "gauge", size: 14 }, "Releve km")))
+        : h(Button, { onClick: function() { openCreate(false); } }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle saisie"));
+      var listeEqModal = equipements.filter(function(eq) {
+        if (editing && editing._vehicule) return estVehicule(eq);
+        if (editing && editing._machine) return !estVehicule(eq);
+        return true;
+      }).slice().sort(function(a, b) { return String(a.Title || "").localeCompare(String(b.Title || "")); });
+      var labelModal = { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+
       return h("div", null,
-        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les sondeurs ou ajoutees ici (engins + vehicules)", action: h(Button, { onClick: openCreate }, h(IconText, { icon: "plus", size: 14 }, "Nouvelle saisie")) }),
-        // KPIs
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 14, marginBottom: 20 } },
-          h(KPICard, { icon: h(Icon, { name: "fuel", size: 22, color: "#ffffff" }), label: "Total litres", value: fmtNum(totalL.toFixed(1)) + " L", color: "#86efac" }),
-          h(KPICard, { icon: h(Icon, { name: "coins", size: 22, color: "#ffffff" }), label: "Cout total", value: fmtMoney(totalCout), color: "#22c55e" }),
-          h(KPICard, { icon: h(Icon, { name: "hard-hat", size: 22, color: "#ffffff" }), label: "Engins (sondeuses)", value: fmtNum(totalEnginsL.toFixed(1)) + " L", color: "#fbbf24" }),
-          h(KPICard, { icon: h(Icon, { name: "truck", size: 22, color: "#ffffff" }), label: "Vehicules", value: fmtNum(totalVLsL.toFixed(1)) + " L", color: "#818cf8" })
+        h(PageHeader, { title: h(IconText, { icon: "fuel", size: 20 }, "Carburant"), subtitle: "Consommations saisies par les equipes ou ajoutees ici", action: actions }),
+        // Onglets Machines / Vehicules
+        h("div", { style: { display: "inline-flex", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 4, gap: 4, marginBottom: 18, flexWrap: "wrap" } },
+          [["machines", "hard-hat", "Machines", nbSaisiesMach], ["vehicules", "truck", "Vehicules", nbSaisiesVeh]].map(function(o) {
+            var actif = onglet === o[0];
+            return h("button", { key: o[0], onClick: function() { if (onglet !== o[0]) { setOnglet(o[0]); setFilterMachine("all"); } }, style: { border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, background: actif ? "linear-gradient(135deg,#6366f1,#8b5cf6)" : "transparent", color: actif ? "#fff" : "#a1a1aa", display: "inline-flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: o[1], size: 15, color: actif ? "#ffffff" : "#a1a1aa" }), o[2],
+              h("span", { style: { fontSize: 11, padding: "1px 7px", borderRadius: 999, background: actif ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.07)" } }, o[3]));
+          })
         ),
         // Filtres
         h("div", { style: { display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap", alignItems: "center" } },
@@ -8258,172 +8715,22 @@
             h("option", { value: "1an" }, "1 an"),
             h("option", { value: "all" }, "Tout l'historique")
           ),
-          h("span", { style: lblStyle }, "Categorie"),
-          h("select", { value: filterCat, onChange: function(e) { setFilterCat(e.target.value); }, style: ddStyle },
-            h("option", { value: "all" }, "Toutes"),
-            h("option", { value: "engin" }, "Engins"),
-            h("option", { value: "vl" }, "Vehicules")
-          ),
-          h("span", { style: lblStyle }, "Machine"),
+          h("span", { style: lblStyle }, onglet === "vehicules" ? "Vehicule" : "Machine"),
           h("select", { value: filterMachine, onChange: function(e) { setFilterMachine(e.target.value); }, style: ddStyle },
-            h("option", { value: "all" }, "Toutes"),
-            allMachines.map(function(m) { return h("option", { key: m, value: m }, m); })
+            h("option", { value: "all" }, "Tous"),
+            codesFiltre.map(function(m) { var eq = resoudreEq(m); return h("option", { key: m, value: m }, m + (eq && eq.Nom && String(eq.Nom).toUpperCase() !== m ? " - " + eq.Nom : "")); })
           )
         ),
-        // ── Graphique evolution journaliere + moyennes ──
-        (function() {
-          // Determine la plage de jours selon la periode (defaut mois en cours)
-          var startD = periodStart || new Date(now.getFullYear(), now.getMonth(), 1);
-          var endD = periodEnd || now;
-          var days = [];
-          var cursor = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate());
-          var endCap = new Date(endD.getFullYear(), endD.getMonth(), endD.getDate());
-          // Borne max 90 jours pour eviter explosion graphique
-          var maxLoop = 0;
-          while (cursor.getTime() <= endCap.getTime() && maxLoop < 366) {
-            days.push(new Date(cursor.getTime()));
-            cursor.setDate(cursor.getDate() + 1);
-            maxLoop++;
-          }
-          // Aggregation par jour
-          var byDay = {};
-          filtered.forEach(function(c) {
-            var k = String(c.date_consommation || "").substring(0, 10);
-            byDay[k] = (byDay[k] || 0) + (parseFloat(c.quantite_l) || 0);
-          });
-          // On garde UNIQUEMENT les jours avec une saisie (skip dates vides pour chart compact)
-          var allDays = days.map(function(d) {
-            var iso = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
-            return { date: d, iso: iso, value: byDay[iso] || 0 };
-          });
-          var seriesG = allDays.filter(function(p) { return p.value > 0; });
-          if (seriesG.length === 0) return null;
-          var maxV = Math.max.apply(null, seriesG.map(function(p) { return p.value; }).concat(1));
-          var moyenneGlobale = seriesG.reduce(function(s, p) { return s + p.value; }, 0) / seriesG.length;
-          var moyenneGlobaleAllDays = allDays.length > 0 ? allDays.reduce(function(s, p) { return s + p.value; }, 0) / allDays.length : 0;
-          // SVG line chart
-          var W = 720, H = 200, pad = { t: 18, r: 14, b: 32, l: 44 };
-          var iW = W - pad.l - pad.r;
-          var iH = H - pad.t - pad.b;
-          var xFor = function(i) { return pad.l + (seriesG.length > 1 ? (i / (seriesG.length - 1)) * iW : iW / 2); };
-          var yFor = function(v) { return pad.t + iH - (v / maxV) * iH; };
-          var linePts = seriesG.map(function(p, i) { return xFor(i) + ',' + yFor(p.value); }).join(' ');
-          // Ligne moyenne (basee sur jours actifs)
-          var yMoy = yFor(moyenneGlobale);
-          // Ticks Y (4 graduations)
-          var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function(t) { return { v: t * maxV, y: pad.t + iH - t * iH }; });
-          // Labels X : 1 sur N pour pas surcharger
-          var xLabelEvery = Math.max(1, Math.ceil(seriesG.length / 12));
-          return h(Card, { style: { padding: 16, marginBottom: 20 } },
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 12 } },
-              h("h3", { style: { margin: 0, fontSize: 14, fontWeight: 700 } }, h(IconText, { icon: "trending-up", size: 14, color: "#86efac" }, "Evolution journaliere")),
-              h("div", { style: { display: "flex", gap: 16, fontSize: 11, color: "#a1a1aa" } },
-                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 2, background: "#86efac", verticalAlign: "middle", marginRight: 6 } }), "Consommation"),
-                h("span", null, h("span", { style: { display: "inline-block", width: 12, height: 0, borderTop: "2px dashed #fbbf24", verticalAlign: "middle", marginRight: 6 } }), "Moyenne jours actifs : " + moyenneGlobale.toFixed(1) + " L"),
-                h("span", { style: { color: "#71717a" } }, "Moyenne periode : " + moyenneGlobaleAllDays.toFixed(1) + " L/jour")
-              )
-            ),
-            h("div", { style: { overflowX: "auto" } },
-              h("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, style: { maxWidth: "100%", display: "block" } },
-                // Grid lignes horizontales
-                yTicks.map(function(t, i) { return h("g", { key: "g" + i },
-                  h("line", { x1: pad.l, y1: t.y, x2: pad.l + iW, y2: t.y, stroke: "rgba(255,255,255,0.05)", strokeWidth: 1 }),
-                  h("text", { x: pad.l - 8, y: t.y + 3, textAnchor: "end", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, Math.round(t.v) + " L")
-                ); }),
-                // Aire sous courbe
-                seriesG.length > 1 ? h("path", { d: "M " + xFor(0) + "," + yFor(0) + " L " + linePts + " L " + xFor(seriesG.length - 1) + "," + yFor(0) + " Z",
-                  fill: "url(#carb-grad)" }) : null,
-                h("defs", null, h("linearGradient", { id: "carb-grad", x1: "0", x2: "0", y1: "0", y2: "1" },
-                  h("stop", { offset: "0%", "stop-color": "rgba(134,239,172,0.30)" }),
-                  h("stop", { offset: "100%", "stop-color": "rgba(134,239,172,0)" })
-                )),
-                // Ligne moyenne
-                moyenneGlobale > 0 ? h("line", { x1: pad.l, y1: yMoy, x2: pad.l + iW, y2: yMoy, stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "4 4", opacity: 0.7 }) : null,
-                // Polyline (uniquement jours avec saisie, axe X compressed)
-                seriesG.length > 1 ? h("polyline", { points: linePts, fill: "none", stroke: "#86efac", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }) : null,
-                // Points
-                seriesG.map(function(p, i) { return h("circle", { key: "p" + i, cx: xFor(i), cy: yFor(p.value), r: 3, fill: "#86efac", stroke: "rgba(0,0,0,0.30)", strokeWidth: 1 }); }),
-                // Labels X (uniquement les dates avec saisie)
-                seriesG.map(function(p, i) {
-                  if (i % xLabelEvery !== 0 && i !== seriesG.length - 1) return null;
-                  return h("text", { key: "x" + i, x: xFor(i), y: H - 8, textAnchor: "middle", fontSize: 9, fill: "#71717a", fontFamily: "monospace" }, p.date.getDate() + "/" + (p.date.getMonth() + 1));
-                })
-              )
-            )
-          );
-        }()),
-        // Recap par machine
-        machinesList.length === 0 ? h(Card, null, h("div", { style: { padding: 40, textAlign: "center", color: "#71717a" } }, "Aucune saisie de carburant sur cette periode")) :
-        h(Card, { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
-          h("h3", { style: { margin: 0, padding: "16px 18px", fontSize: 14, fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.06)" } }, "Recap par machine (" + machinesList.length + ")"),
-          h("div", { style: { overflowX: "auto" } },
-            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } },
-              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left" } },
-                ["Machine", "Cat.", "Nom", "Entrees", "Total L", "Cout", "Metres", "L/m", "Cout/m", "Dernier"].map(function(x, i) {
-                  return h("th", { key: i, style: { padding: "10px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 } }, x);
-                })
-              )),
-              h("tbody", null, machinesList.map(function(r) {
-                // Couleur du cout/m : compare a la moyenne engins. Vert si <= moyenne, rouge si > moyenne x1.2
-                var coutColor = "#a1a1aa";
-                if (r.categorie === "engin" && r.coutParMetre > 0 && moyEnginsCoutParMetre > 0) {
-                  if (r.coutParMetre <= moyEnginsCoutParMetre) coutColor = "#86efac";
-                  else if (r.coutParMetre <= moyEnginsCoutParMetre * 1.20) coutColor = "#fde68a";
-                  else coutColor = "#fda4af";
-                }
-                return h("tr", { key: r.code, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
-                  h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, r.code),
-                  h("td", { style: { padding: "10px 12px" } }, catBadge(r.categorie)),
-                  h("td", { style: { padding: "10px 12px", color: "#cbd5e1" } }, r.nom || "-"),
-                  h("td", { style: { padding: "10px 12px", textAlign: "center" } }, r.nbEntries),
-                  h("td", { style: { padding: "10px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, r.quantite.toFixed(1) + " L"),
-                  h("td", { style: { padding: "10px 12px", color: "#22c55e" } }, fmtMoney(r.cout)),
-                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: r.metres > 0 ? "#fafafa" : "#52525b" } }, r.metres > 0 ? Math.round(r.metres) + " m" : "-"),
-                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", color: coutColor } }, r.lParMetre > 0 ? r.lParMetre.toFixed(2) + " L/m" : "-"),
-                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontWeight: 700, color: coutColor } }, r.coutParMetre > 0 ? fmtMoney(Math.round(r.coutParMetre)) + "/m" : "-"),
-                  h("td", { style: { padding: "10px 12px", fontFamily: "monospace", fontSize: 11 } }, fmtFr(r.lastDate))
-                );
-              }))
-            )
-          )
-        ),
-        // Liste detaillee
-        filtered.length > 0 && h(Card, { style: { padding: 0, overflow: "hidden" } },
-          h("h3", { style: { margin: 0, padding: "16px 18px", fontSize: 14, fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.06)" } }, "Detail des saisies (" + filtered.length + ")"),
-          h("div", { style: { overflowX: "auto", maxHeight: 500 } },
-            h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
-              h("thead", null, h("tr", { style: { background: "rgba(255,255,255,0.03)", textAlign: "left", position: "sticky", top: 0 } },
-                ["Date", "Machine", "Cat", "Litres", "Cout", "Lien rapport", isAdmin ? "Actions" : ""].map(function(x, i) {
-                  return h("th", { key: i, style: { padding: "8px 12px", fontWeight: 600, color: "#a1a1aa", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, background: "rgba(36,40,60,0.95)" } }, x);
-                })
-              )),
-              h("tbody", null, filtered.sort(function(a, b) { return (b.date_consommation || "") > (a.date_consommation || "") ? 1 : -1; }).map(function(c) {
-                return h("tr", { key: c.id, style: { borderTop: "1px solid rgba(255,255,255,0.04)" } },
-                  h("td", { style: { padding: "7px 12px", fontFamily: "monospace" } }, fmtFr(c.date_consommation)),
-                  h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#a78bfa", fontFamily: "monospace" } }, c.sondeuse_code || "-"),
-                  h("td", { style: { padding: "7px 12px" } }, catBadge(c.categorie)),
-                  h("td", { style: { padding: "7px 12px", fontWeight: 700, color: "#86efac", fontFamily: "monospace" } }, (parseFloat(c.quantite_l) || 0).toFixed(1) + " L"),
-                  h("td", { style: { padding: "7px 12px", color: "#22c55e" } }, fmtMoney(c.cout)),
-                  h("td", { style: { padding: "7px 12px", color: c.rapportLien ? "#a5b4fc" : "#71717a" }, title: c.rapportLien && c.rapportLien.auto ? "Rapproché automatiquement par machine + date (saisie manuelle)" : "" },
-                    c.rapportLien ? h("span", null, "Rapport #" + c.rapportLien.id, c.rapportLien.auto ? h("span", { style: { color: "#71717a", fontSize: 10, marginLeft: 4 } }, "· auto") : null) : "(aucun)"),
-                  isAdmin ? h("td", { style: { padding: "7px 12px", whiteSpace: "nowrap" } },
-                    h("button", { onClick: function() { setEditing(Object.assign({}, c)); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#a1a1aa", padding: 4, marginRight: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 14 })),
-                    h("button", { onClick: function() { setToDelete(c); }, style: { background: "transparent", border: "none", cursor: "pointer", color: "#f43f5e", padding: 4 }, title: "Supprimer" }, h(Icon, { name: "trash-2", size: 14 }))
-                  ) : null
-                );
-              }))
-            )
-          )
-        ),
-        // Modal edition
-        editing ? h(Modal, { title: editing.id ? "Modifier consommation carburant" : "Nouvelle saisie carburant", onClose: function() { setEditing(null); }, size: 460 },
+        onglet === "vehicules" ? rendreVehicules() : rendreMachines(),
+        // Modal edition / creation carburant
+        editing ? h(Modal, { title: editing.id ? "Modifier consommation carburant" : (editing._vehicule ? "Nouveau plein vehicule" : "Nouvelle saisie carburant (machine)"), onClose: function() { setEditing(null); }, size: 460 },
           h("div", { style: { display: "grid", gap: 12 } },
             h("div", null,
-              h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Date"),
+              h("label", { style: labelModal }, "Date"),
               h("input", { type: "date", value: String(editing.date_consommation || "").substring(0, 10), onChange: function(e) { setEditing(Object.assign({}, editing, { date_consommation: e.target.value })); }, style: inputStyle })
             ),
             h("div", null,
-              h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Machine (code immatriculation)"),
+              h("label", { style: labelModal }, editing._vehicule ? "Vehicule (immatriculation)" : "Machine (code immatriculation)"),
               h("input", {
                 type: "search",
                 list: "carburant-equipements-list",
@@ -8435,34 +8742,71 @@
                   if (dashIdx > 0) v = v.substring(0, dashIdx);
                   setEditing(Object.assign({}, editing, { sondeuse_code: v.toUpperCase() }));
                 },
-                placeholder: "Tape pour chercher : D37, FS1, VL12...",
+                placeholder: editing._vehicule ? "Tape pour chercher : immatriculation, Hilux..." : "Tape pour chercher : D37, FS1...",
                 style: inputStyle,
                 autoComplete: "off"
               }),
               h("datalist", { id: "carburant-equipements-list" },
-                (equipements || []).slice().sort(function(a, b) {
-                  return String(a.Title || "").localeCompare(String(b.Title || ""));
-                }).map(function(eq) {
-                  var label = (eq.Title || "") + (eq.Nom ? " - " + eq.Nom : (eq.Type ? " - " + eq.Type : ""));
+                listeEqModal.map(function(eq) {
+                  var label = (eq.Title || eq.Nom || ("#" + eq.Id)) + (eq.Title && eq.Nom ? " - " + eq.Nom : (eq.Type ? " - " + eq.Type : ""));
                   return h("option", { key: eq.Id, value: label });
                 })
               )
             ),
             h("div", null,
-              h("label", { style: { fontSize: 11, color: "#a1a1aa", display: "block", marginBottom: 4, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 } }, "Quantite (litres)"),
-              h("input", { type: "number", step: "0.1", min: "0", value: editing.quantite_l || 0, onChange: function(e) { setEditing(Object.assign({}, editing, { quantite_l: e.target.value })); }, style: inputStyle })
+              h("label", { style: labelModal }, "Quantite (litres)"),
+              h("input", { type: "number", step: "0.1", min: "0", value: editing.quantite_l || "", onChange: function(e) { setEditing(Object.assign({}, editing, { quantite_l: e.target.value })); }, placeholder: "Ex : 65", style: inputStyle })
             ),
+            editing._vehicule && !editing.id ? h("div", null,
+              h("label", { style: labelModal }, "Compteur km au moment du plein (conseille)"),
+              h("input", { type: "number", step: "1", min: "0", value: editing._kmPlein || "", onChange: function(e) { setEditing(Object.assign({}, editing, { _kmPlein: e.target.value })); }, placeholder: "Ex : 84650", style: inputStyle }),
+              h("div", { style: { fontSize: 11.5, color: "#71717a", marginTop: 6 } }, "Noter le compteur a chaque plein donne la conso la plus juste (enregistre aussi sur la fiche du vehicule).")
+            ) : null,
             editing.rapport_id ? h("div", { style: { fontSize: 11, color: "#a1a1aa", padding: "8px 12px", background: "rgba(99,102,241,0.08)", borderRadius: 6, border: "1px solid rgba(99,102,241,0.20)" } }, "Lie au rapport #" + editing.rapport_id + " (lien preserve)") : null,
             h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 } },
               h(Button, { variant: "secondary", onClick: function() { setEditing(null); } }, "Annuler"),
-              h(Button, { onClick: function() { saveCarburant(editing); } }, h(IconText, { icon: "save", size: 14 }, "Enregistrer"))
+              h(Button, { onClick: function() { saveCarburant(editing); }, disabled: enregCarb }, h(IconText, { icon: "save", size: 14 }, enregCarb ? "Enregistrement..." : "Enregistrer"))
+            )
+          )
+        ) : null,
+        // Modal releve km (admin)
+        kmModal ? h(Modal, { title: "Nouveau releve kilometrique", onClose: function() { if (!enregKm) setKmModal(null); }, size: 440 },
+          h("div", { style: { display: "grid", gap: 12 } },
+            h("div", null,
+              h("label", { style: labelModal }, "Date"),
+              h("input", { type: "date", value: kmModal.date, onChange: function(e) { setKmModal(Object.assign({}, kmModal, { date: e.target.value })); }, style: inputStyle })
+            ),
+            h("div", null,
+              h("label", { style: labelModal }, "Vehicule"),
+              h("select", { value: kmModal.eqId, onChange: function(e) { setKmModal(Object.assign({}, kmModal, { eqId: e.target.value })); }, style: inputStyle },
+                h("option", { value: "" }, "Choisir..."),
+                equipements.filter(estVehicule).slice().sort(function(a, b) { return codeEq(a).localeCompare(codeEq(b)); }).map(function(eq) {
+                  return h("option", { key: eq.Id, value: String(eq.Id) }, codeEq(eq) + (eq.Nom && String(eq.Nom).toUpperCase() !== codeEq(eq) ? " - " + eq.Nom : ""));
+                })
+              ),
+              (function() {
+                var eqK = kmModal.eqId ? (eqParId[kmModal.eqId] || null) : null;
+                if (!eqK) return null;
+                var rel = relParCode[codeEq(eqK)] || [];
+                var der = null;
+                rel.forEach(function(r) { if (!der || r.date > der.date || (r.date === der.date && r.km > der.km)) der = r; });
+                return der ? h("div", { style: { fontSize: 11.5, color: "#7dd3fc", marginTop: 6 } }, "Dernier releve : " + nbFr(der.km) + " km le " + fmtFr(der.date)) : h("div", { style: { fontSize: 11.5, color: "#71717a", marginTop: 6 } }, "Aucun releve pour ce vehicule");
+              })()
+            ),
+            h("div", null,
+              h("label", { style: labelModal }, "Kilometrage au compteur"),
+              h("input", { type: "number", step: "1", min: "0", value: kmModal.km, onChange: function(e) { setKmModal(Object.assign({}, kmModal, { km: e.target.value })); }, placeholder: "Ex : 84650", style: inputStyle })
+            ),
+            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 } },
+              h(Button, { variant: "secondary", onClick: function() { setKmModal(null); }, disabled: enregKm }, "Annuler"),
+              h(Button, { onClick: function() { enregistrerReleveKm(kmModal); }, disabled: enregKm }, h(IconText, { icon: "save", size: 14 }, enregKm ? "Enregistrement..." : "Enregistrer"))
             )
           )
         ) : null,
         // Modal suppression
         toDelete ? h(ConfirmDialog, {
           title: "Supprimer cette saisie ?",
-          message: "Saisie du " + fmtFr(toDelete.date_consommation) + " - " + (toDelete.sondeuse_code || "?") + " - " + (parseFloat(toDelete.quantite_l) || 0).toFixed(1) + " L. Cette action est irreversible.",
+          message: "Saisie du " + fmtFr(toDelete.date_consommation) + " - " + (toDelete.sondeuse_code || "?") + " - " + (parseFloat(toDelete.quantite_l) || 0).toFixed(1) + " L. Elle part dans la corbeille (30 jours).",
           onConfirm: function() { deleteCarburant(toDelete.id); },
           onCancel: function() { setToDelete(null); }
         }) : null
