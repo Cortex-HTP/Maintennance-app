@@ -42664,6 +42664,402 @@
     // Modal de recherche unifie : equipements, personnel, chantiers, pieces,
     // soumissions (rapports / releves / conges / commandes / interventions).
     // Ouverture : Ctrl+K ou Cmd+K depuis n'importe quelle page.
+    // ═══ JARVIS : assistant voix + texte (administrateur) ═══
+    // Bouton rond en bas a droite (a gauche de la loupe) -> panneau lateral.
+    // Le serveur /api/jarvis LIT la base et la boite mail ; il ne fait AUCUNE
+    // action : il renvoie des PROPOSITIONS (cartes orange). Seul le clic
+    // « Confirmer » execute, ici, avec la session de l'utilisateur :
+    // creerTache, addIntervention, apiGmail("envoyer"), validation de releves
+    // (seulement s'ils sont encore en attente), renvoi des rapports au client
+    // (send-rapport de l'APP Employes). Jamais de suppression.
+    var JV_EMPLOYES_API = "https://employes-psi.vercel.app";
+    var JV_SUGGESTIONS = ["Mon point du matin", "Les relevés d'heures à valider", "Les rapports pas encore signés", "Mes emails non lus", "Le carburant du mois", "Où en sont les chantiers ?"];
+    var JV_CSS = [
+      ".jv-fab{position:fixed;bottom:calc(14px + env(safe-area-inset-bottom));right:calc(72px + env(safe-area-inset-right));z-index:90;width:50px;height:50px;border-radius:50%;border:none;cursor:pointer;color:#fff;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 35% 30%,#a5f3fc,#6366f1 55%,#312e81);box-shadow:0 0 0 5px rgba(99,102,241,0.18),0 10px 26px rgba(49,46,129,0.6);transition:transform .2s}",
+      ".jv-fab:hover{transform:scale(1.06)}",
+      ".jv-pan{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;z-index:1001;background:#161a2c;border-left:1px solid rgba(255,255,255,0.10);box-shadow:-30px 0 60px -20px rgba(0,0,0,0.8);display:flex;flex-direction:column;color:#fafafa;font-size:14px;padding-bottom:env(safe-area-inset-bottom)}",
+      "@media (max-width:640px){.jv-pan{width:100vw;left:0;border-left:none;padding-top:env(safe-area-inset-top)}}",
+      ".jv-tete{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.08)}",
+      ".jv-orbe{width:40px;height:40px;border-radius:50%;flex-shrink:0;position:relative;background:radial-gradient(circle at 35% 30%,#a5f3fc,#6366f1 55%,#312e81)}",
+      ".jv-orbe:after{content:'';position:absolute;top:-5px;left:-5px;right:-5px;bottom:-5px;border-radius:50%;border:2px solid transparent}",
+      ".jv-orbe.ecoute:after{border-color:rgba(165,243,252,0.7);animation:jvPulse 1.1s ease-out infinite}",
+      ".jv-orbe.parle:after{border-color:rgba(134,239,172,0.7);animation:jvPulse .7s ease-out infinite}",
+      ".jv-orbe.pense{animation:jvTourne 1.4s linear infinite;background:conic-gradient(from 0deg,#a5f3fc,#6366f1,#312e81,#a5f3fc)}",
+      "@keyframes jvPulse{from{transform:scale(1);opacity:1}to{transform:scale(1.45);opacity:0}}",
+      "@keyframes jvTourne{to{transform:rotate(360deg)}}",
+      ".jv-ico{width:34px;height:34px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}",
+      ".jv-ico.on{background:rgba(134,239,172,0.12);border-color:rgba(134,239,172,0.4);color:#bbf7d0}",
+      ".jv-fil{flex:1;overflow-y:auto;padding:14px 14px 6px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}",
+      ".jv-moi{align-self:flex-end;max-width:88%;background:linear-gradient(135deg,#4f46e5,#6366f1);padding:9px 12px;border-radius:14px 4px 14px 14px;line-height:1.5;white-space:pre-wrap}",
+      ".jv-lui{align-self:flex-start;max-width:96%;width:96%}",
+      ".jv-bulle{display:inline-block;background:rgba(40,44,66,0.95);border:1px solid rgba(255,255,255,0.07);padding:10px 12px;border-radius:4px 14px 14px 14px;line-height:1.55;white-space:pre-wrap}",
+      ".jv-carte{margin-top:8px;background:rgba(10,12,22,0.55);border:1px solid rgba(255,255,255,0.09);border-radius:12px;padding:10px 12px}",
+      ".jv-carte.act{border-color:rgba(245,165,36,0.5);background:rgba(245,165,36,0.06)}",
+      ".jv-carte.fait{border-color:rgba(134,239,172,0.45);background:rgba(134,239,172,0.06)}",
+      ".jv-carte.annule{opacity:.5}",
+      ".jv-carte h4{margin:0 0 8px;font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:#94a3b8;display:flex;gap:6px;align-items:center}",
+      ".jv-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12.5px}",
+      ".jv-kv span{color:#94a3b8}",
+      ".jv-tab{width:100%;border-collapse:collapse;font-size:12.5px}",
+      ".jv-tab th{text-align:left;color:#94a3b8;font-weight:600;font-size:11px;padding:3px 4px}",
+      ".jv-tab td{padding:5px 4px;border-top:1px solid rgba(255,255,255,0.05);vertical-align:top}",
+      ".jv-champ{display:block;margin-top:7px;font-size:11.5px;color:#94a3b8}",
+      ".jv-champ input,.jv-champ select,.jv-champ textarea{display:block;width:100%;box-sizing:border-box;margin-top:3px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.14);border-radius:8px;color:#f4f4f5;font-size:13px;padding:7px 9px;font-family:inherit}",
+      ".jv-champ textarea{min-height:110px;resize:vertical;line-height:1.45}",
+      ".jv-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center}",
+      ".jv-b{border:none;border-radius:9px;padding:7px 12px;font-weight:700;font-size:12.5px;cursor:pointer;font-family:inherit;display:inline-flex;gap:6px;align-items:center}",
+      ".jv-b:disabled{opacity:.55;cursor:default}",
+      ".jv-b.prim{background:#f5a524;color:#241505}",
+      ".jv-b.sec{background:rgba(255,255,255,0.07);color:#e5e7eb;border:1px solid rgba(255,255,255,0.12)}",
+      ".jv-b.lien{background:rgba(99,102,241,0.15);color:#c7d2fe;border:1px solid rgba(99,102,241,0.35)}",
+      ".jv-sugg{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px 8px}",
+      ".jv-sugg button{border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#cbd5e1;border-radius:999px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit}",
+      ".jv-saisie{display:flex;gap:8px;align-items:center;padding:10px 12px 12px;border-top:1px solid rgba(255,255,255,0.08)}",
+      ".jv-micro{width:46px;height:46px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0}",
+      ".jv-micro.actif{background:linear-gradient(135deg,#ef4444,#f97316);box-shadow:0 0 0 6px rgba(239,68,68,0.2)}",
+      ".jv-saisie input{flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:12px;color:#fafafa;font-size:16px;padding:10px 12px;font-family:inherit;outline:none}",
+      ".jv-badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:4px}",
+      ".jv-badge.alert{background:rgba(244,63,94,0.18);color:#fda4af}.jv-badge.review{background:rgba(251,191,36,0.16);color:#fde68a}.jv-badge.ok{background:rgba(134,239,172,0.14);color:#bbf7d0}"
+    ].join("\n");
+
+    function jvJeton() {
+      return supabase.auth.getSession().then(function(s) { return s && s.data && s.data.session ? s.data.session.access_token : ""; });
+    }
+    function jvDateFr(iso) { var s = String(iso || ""); return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.substring(8, 10) + "/" + s.substring(5, 7) : s; }
+    // Voix la plus naturelle de l'appareil (Edge : voix « naturelles », Chrome : Google, Apple : Premium)
+    function jvScoreVoix(v) {
+      var n = v.name || "";
+      return (/natural|naturel|neural|online|premium|enhanced|améliorée|siri/i.test(n) ? 100 : 0) + (/google/i.test(n) ? 40 : 0) +
+        (/denise|henri|vivienne|remy|rémy|eloise|éloise|amelie|amélie|thomas|audrey|aurelie|aurélie/i.test(n) ? 10 : 0) + (v.lang === "fr-FR" ? 5 : 0) + (v.localService ? 0 : 3);
+    }
+    function jvVoixFr() {
+      try { return window.speechSynthesis.getVoices().filter(function(v) { return /^fr/i.test(v.lang); }).sort(function(a, b) { return jvScoreVoix(b) - jvScoreVoix(a); }); } catch (e) { return []; }
+    }
+    // Texte pour l'oral : sans les symboles que la voix lit mal
+    function jvPourOral(t) { return String(t || "").replace(/[*_#`>|]/g, " ").replace(/\s+/g, " ").trim(); }
+    // Resume d'une proposition, renvoye a Jarvis dans l'historique (il sait ce qui a ete confirme)
+    function jvResumeProp(p, e) {
+      var st = e && e.statut === "fait" ? "CONFIRMEE et executee" : (e && e.statut === "annule" ? "annulee par Tomy" : (e && e.statut === "erreur" ? "echec : " + (e.info || "") : "en attente de confirmation"));
+      var quoi = p.type === "tache" ? "tache « " + p.titre + " »" : p.type === "intervention" ? "intervention " + p.machine + " « " + p.titre + " »" : p.type === "email" ? "email a " + (p.a || []).join(", ") + " « " + p.objet + " »" : p.type === "releves" ? (p.releves || []).length + " releve(s) a valider" : p.type === "relance" ? (p.rapports || []).length + " rapport(s) a renvoyer au client" : "bouton " + (p.libelle || "");
+      return quoi + " : " + st;
+    }
+
+    function JvCarteDonnees(props) {
+      var c = props.carte;
+      var lignes = Array.isArray(c.lignes) ? c.lignes : [];
+      var corps;
+      if (c.colonnes && c.colonnes.length) {
+        corps = h("table", { className: "jv-tab" },
+          h("thead", null, h("tr", null, c.colonnes.map(function(x, i) { return h("th", { key: i }, x); }))),
+          h("tbody", null, lignes.map(function(l, i) { return h("tr", { key: i }, (l || []).map(function(x, j) { return h("td", { key: j, style: j === 0 ? { fontWeight: 600 } : null }, String(x == null ? "" : x)); })); })));
+      } else {
+        corps = h("div", { className: "jv-kv" }, lignes.map(function(l, i) { return [h("span", { key: "k" + i }, String(l[0] || "")), h("b", { key: "v" + i, style: { fontWeight: 600 } }, String(l[1] == null ? "" : l[1]))]; }));
+      }
+      return h("div", { className: "jv-carte" },
+        h("h4", null, h(Icon, { name: c.icone || "info", size: 13 }), c.titre),
+        lignes.length ? corps : h("div", { style: { fontSize: 12.5, color: "#94a3b8" } }, "Rien à signaler."),
+        c.lien && c.lien.page ? h("div", { className: "jv-actions" }, h("button", { type: "button", className: "jv-b lien", onClick: function() { props.onNavigate(c.lien.page); } }, h(Icon, { name: "arrow-right", size: 13 }), c.lien.libelle || "Ouvrir")) : null);
+    }
+
+    // Une proposition d'action : champs modifiables + Confirmer / Annuler
+    function JvProposition(props) {
+      var ctx = useAppData();
+      var p = props.p, etat = props.etat || { statut: "attente" };
+      var moi = String(ctx.userEmail || "").toLowerCase();
+      var _v = useState(function() {
+        if (p.type === "tache") return { titre: p.titre, description: p.description || "", echeance: p.echeance || "", pour: p.pour, priorite: p.priorite || "normale" };
+        if (p.type === "intervention") return { titre: p.titre, description: p.description || "", typeInt: p.typeInt || "Curative", date: p.date, technicien: p.technicien || "" };
+        if (p.type === "email") return { a: (p.a || []).join(", "), cc: (p.cc || []).join(", "), objet: p.objet, texte: p.texte, okExterne: false };
+        // Pre-coches : SEULEMENT les releves sans anomalie (« a revoir », alerte ou non analyse = a cocher a la main)
+        if (p.type === "releves") { var r = {}; (p.releves || []).forEach(function(x) { r[x.id] = x.verdict === "ok"; }); return { coches: r }; }
+        if (p.type === "relance") { var q = {}; (p.rapports || []).forEach(function(x) { q[x.id] = true; }); return { coches: q }; }
+        return {};
+      }); var v = _v[0], setV = _v[1];
+      var _enCours = useState(false); var enCours = _enCours[0], setEnCours = _enCours[1];
+      var verrou = useRef(false);
+      var maj = function(k, val) { setV(function(o) { var n = Object.assign({}, o); n[k] = val; return n; }); };
+      var coche = function(id) { setV(function(o) { var c = Object.assign({}, o.coches); c[id] = !c[id]; return Object.assign({}, o, { coches: c }); }); };
+      var fini = etat.statut === "fait" || etat.statut === "annule";
+      var champ = function(lib, k, type, opts) {
+        var attrs = { value: v[k] == null ? "" : v[k], disabled: fini || enCours, onChange: function(e) { maj(k, e.target.value); } };
+        var el = type === "textarea" ? h("textarea", attrs) : type === "select" ? h("select", attrs, (opts || []).map(function(o) { return h("option", { key: o[0], value: o[0] }, o[1]); })) : h("input", Object.assign({ type: type || "text" }, attrs));
+        return h("label", { key: k, className: "jv-champ" }, lib, el);
+      };
+      // Adresses hors entreprise (recalculees a chaque frappe : une adresse ajoutee a la main compte aussi)
+      var externesEmail = function() {
+        if (p.type !== "email") return [];
+        var internes = {};
+        (ctx.dbAppUsers || []).forEach(function(u) { if (u && u.email) internes[String(u.email).toLowerCase()] = true; });
+        var origine = p.enReponseA && p.enReponseA.email ? String(p.enReponseA.email).toLowerCase() : "";
+        return (String(v.a || "") + "," + String(v.cc || "")).split(/[,;]/).map(function(x) { return x.trim(); }).filter(function(x) {
+          var l = x.toLowerCase();
+          return x && !internes[l] && !/@wallislabel\.nc$/.test(l) && l !== origine;
+        });
+      };
+      var executer = async function() {
+        if (verrou.current || fini) return;
+        verrou.current = true; setEnCours(true);
+        try {
+          var info = "";
+          if (p.type === "tache") {
+            if (!String(v.titre || "").trim()) throw new Error("Le titre est vide");
+            var aujIso = localISODate();
+            var j = [{ d: aujIso, t: "Créée avec Jarvis", par: moi }];
+            var n = await ctx.creerTache({ titre: String(v.titre).trim(), description: v.description || "", echeance: v.echeance || null, heure: null, pour: v.pour || moi, par: moi, priorite: v.priorite || "normale", statut: "a_faire", etapes: [], lien: null, recurrence: null, rappel: true, privee: false, agenda: false, journal: j });
+            if (!n) throw new Error("Tâche non enregistrée");
+            info = "Tâche créée";
+          } else if (p.type === "intervention") {
+            if (!String(v.titre || "").trim()) throw new Error("Le titre est vide");
+            if (!String(v.technicien || "").trim()) throw new Error("Indique le technicien");
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.date || ""))) throw new Error("Date invalide");
+            await ctx.addIntervention({ Title: String(v.titre).trim(), Equipement: p.machine, EquipementId: p.equipementId, Date_Intervention: v.date, Statut_Intervention: "Planifiee", Type: v.typeInt === "Preventive" ? "Preventive" : "Curative", Technicien: String(v.technicien).trim(), DescriptionProbleme: v.description || "", Travaux_Effectues: "", Gamme: [], Horametre: "", KM: "", DureeHeures: "", Cout: 0, Plan: "", Source: "admin" }, { creePar: moi });
+            info = "Intervention créée";
+          } else if (p.type === "email") {
+            var dest = String(v.a || "").split(/[,;]/).map(function(x) { return x.trim(); }).filter(function(x) { return x; });
+            if (!dest.length) throw new Error("Ajoute un destinataire");
+            if (!String(v.objet || "").trim() || !String(v.texte || "").trim()) throw new Error("Objet ou message vide");
+            if (externesEmail().length && !v.okExterne) throw new Error("Adresse extérieure à l'entreprise : coche la case de vérification avant d'envoyer");
+            await apiGmail("envoyer", { a: dest.join(", "), cc: String(v.cc || ""), objet: String(v.objet).trim(), texte: String(v.texte).replace(/\s+$/, ""), repondreA: p.repondreA || null, photos: [] });
+            info = "Email envoyé";
+          } else if (p.type === "releves") {
+            var ids = (p.releves || []).filter(function(x) { return v.coches[x.id]; }).map(function(x) { return x.id; });
+            if (!ids.length) throw new Error("Aucun relevé coché");
+            // .eq("statut","en_attente") : un releve traite entre-temps (refuse, valide) n'est pas touche
+            var res = await supabase.from("releves_heures").update({ statut: "valide_admin", valide_at: new Date().toISOString() }).in("id", ids).eq("statut", "en_attente").select("id");
+            if (res.error) throw new Error(res.error.message);
+            var nOk = (res.data || []).length;
+            info = nOk + " relevé" + (nOk > 1 ? "s" : "") + " validé" + (nOk > 1 ? "s" : "") + (nOk < ids.length ? " (" + (ids.length - nOk) + " déjà traité" + (ids.length - nOk > 1 ? "s" : "") + " entre-temps)" : "");
+          } else if (p.type === "relance") {
+            var choisis = (p.rapports || []).filter(function(x) { return v.coches[x.id]; });
+            if (!choisis.length) throw new Error("Aucun rapport coché");
+            var tok = await jvJeton();
+            if (!tok) throw new Error("Session expirée, reconnecte-toi");
+            var reussis = 0, echecs = [];
+            for (var i = 0; i < choisis.length; i++) {
+              var rr = choisis[i];
+              try {
+                var rep = await fetch(JV_EMPLOYES_API + "/api/send-rapport", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok }, body: JSON.stringify({ rapportId: rr.id, correction: rr.correction === true, resignature: false }) });
+                var jj = await rep.json().catch(function() { return {}; });
+                if (rep.ok && jj && jj.ok) reussis++; else echecs.push(rr.machine + " du " + jvDateFr(rr.date) + " : " + ((jj && jj.error) || ("erreur " + rep.status)));
+              } catch (e2) { echecs.push(rr.machine + " du " + jvDateFr(rr.date) + " : réseau"); }
+            }
+            info = reussis + " rapport" + (reussis > 1 ? "s" : "") + " renvoyé" + (reussis > 1 ? "s" : "") + " au client" + (echecs.length ? " ; échec : " + echecs.join(" ; ") : "");
+            if (!reussis) throw new Error(info);
+          }
+          props.onEtat(p.cle, { statut: "fait", info: info });
+          if (ctx.showToast) ctx.showToast(info, "success");
+        } catch (e) {
+          var msg = (e && e.code === "envoi_non_autorise") ? "L'envoi d'emails n'est pas encore autorisé côté Google" : ((e && e.message) || "Erreur");
+          props.onEtat(p.cle, { statut: "erreur", info: msg });
+        } finally {
+          verrou.current = false; setEnCours(false);
+        }
+      };
+
+      if (p.type === "page") {
+        return h("div", { className: "jv-actions" }, h("button", { type: "button", className: "jv-b lien", onClick: function() { props.onNavigate(p.page); } }, h(Icon, { name: "arrow-right", size: 13 }), p.libelle));
+      }
+      var titres = { tache: ["list-checks", "Tâche à créer"], intervention: ["wrench", "Intervention à créer"], email: ["send", p.repondreA ? "Réponse à envoyer" : "Email à envoyer"], releves: ["clock", "Relevés d'heures à valider"], relance: ["pen-line", "Rapports à renvoyer au client"] };
+      var ti = titres[p.type] || ["sparkles", "Action"];
+      var comptes = (ctx.dbAppUsers || []).filter(function(u) { return u.statut !== "Inactif" && u.email; });
+      var optsPour = [[moi, "Moi"], ["@bureau", "Tout le bureau"]].concat(comptes.filter(function(u) { return String(u.email).toLowerCase() !== moi; }).map(function(u) { return [String(u.email).toLowerCase(), u.nom || u.email]; }));
+      if (p.type === "tache" && v.pour && !optsPour.some(function(o) { return o[0] === v.pour; })) optsPour.push([v.pour, p.pourNom || v.pour]);
+      var corps = null;
+      if (p.type === "tache") corps = [champ("Titre", "titre"), champ("Pour", "pour", "select", optsPour), champ("Échéance", "echeance", "date"), champ("Priorité", "priorite", "select", [["normale", "Normale"], ["haute", "Haute"], ["urgente", "Urgente"]]), champ("Détail", "description", "textarea")];
+      else if (p.type === "intervention") corps = [h("div", { key: "m", className: "jv-kv" }, h("span", null, "Machine"), h("b", null, p.machine + (p.machineNom && p.machineNom !== p.machine ? " · " + p.machineNom : ""))), champ("Titre", "titre"), champ("Technicien", "technicien"), champ("Date", "date", "date"), champ("Type", "typeInt", "select", [["Curative", "Curative (panne)"], ["Preventive", "Préventive (entretien)"]]), champ("Problème", "description", "textarea")];
+      else if (p.type === "email") {
+        var ext = externesEmail();
+        var nbL = String(v.texte || "").split("\n").length;
+        corps = [
+          p.enReponseA ? h("div", { key: "rep", className: "jv-kv", style: { marginBottom: 4 } }, h("span", null, "En réponse à"), h("b", { style: { fontWeight: 600 } }, (p.enReponseA.de ? p.enReponseA.de + " · " : "") + p.enReponseA.email + (p.enReponseA.objet ? " — « " + p.enReponseA.objet + " »" : ""))) : null,
+          champ("À", "a"), champ("Cc", "cc"), champ("Objet", "objet"),
+          h("label", { key: "txt", className: "jv-champ" }, "Message (la signature est ajoutée) · " + String(v.texte || "").length + " caractères",
+            h("textarea", { value: v.texte || "", rows: Math.min(Math.max(nbL + 1, 6), 22), disabled: fini || enCours, onChange: function(e) { maj("texte", e.target.value); }, style: { minHeight: 0 } })),
+          ext.length ? h("div", { key: "ext", style: { marginTop: 8, padding: "8px 10px", borderRadius: 9, background: "rgba(244,63,94,0.12)", border: "1px solid rgba(244,63,94,0.45)", color: "#fecdd3", fontSize: 12.5, lineHeight: 1.45 } },
+            h("div", { style: { fontWeight: 700, display: "flex", gap: 6, alignItems: "center" } }, h(Icon, { name: "alert-triangle", size: 14, color: "#fda4af" }), "Adresse extérieure à l'entreprise"),
+            h("div", null, ext.join(", ") + (p.enReponseA && p.enReponseA.email ? " (n'est pas l'expéditeur de l'email d'origine)" : "")),
+            h("label", { style: { display: "flex", gap: 6, alignItems: "center", marginTop: 6, cursor: "pointer", color: "#fff" } },
+              h("input", { type: "checkbox", checked: !!v.okExterne, disabled: fini || enCours, onChange: function() { maj("okExterne", !v.okExterne); } }),
+              "J'ai vérifié l'adresse et le contenu du message")) : null
+        ];
+      }
+      else if (p.type === "releves") corps = h("table", { className: "jv-tab" }, h("tbody", null, (p.releves || []).map(function(x) {
+        return h("tr", { key: x.id },
+          h("td", { style: { width: 22 } }, h("input", { type: "checkbox", checked: !!v.coches[x.id], disabled: fini || enCours, onChange: function() { coche(x.id); } })),
+          h("td", null, h("b", null, x.employe), x.verdict ? h("span", { className: "jv-badge " + x.verdict }, x.verdict === "alert" ? "Alerte" : x.verdict === "review" ? "À revoir" : "OK") : null,
+            h("div", { style: { color: "#94a3b8", fontSize: 11.5 } }, jvDateFr(x.date) + (x.machine ? " · " + x.machine : "") + (x.heures != null ? " · " + String(x.heures).replace(".", ",") + " h" : "") + (x.absence ? " · " + x.absence : "")),
+            x.resume ? h("div", { style: { color: "#cbd5e1", fontSize: 11.5, marginTop: 2 } }, x.resume) : null));
+      })));
+      else if (p.type === "relance") corps = h("table", { className: "jv-tab" }, h("tbody", null, (p.rapports || []).map(function(x) {
+        return h("tr", { key: x.id },
+          h("td", { style: { width: 22 } }, h("input", { type: "checkbox", checked: !!v.coches[x.id], disabled: fini || enCours, onChange: function() { coche(x.id); } })),
+          h("td", null, h("b", null, x.machine + " du " + jvDateFr(x.date)), x.correction ? h("span", { className: "jv-badge review", title: "Le client a demandé une correction pour cette journée : l'email partira marqué RAPPORT CORRIGÉ" }, "Corrigé") : null, h("div", { style: { color: "#94a3b8", fontSize: 11.5 } }, [x.lieu, x.client].filter(function(s) { return s; }).join(" · "))));
+      })));
+      var classe = "jv-carte act" + (etat.statut === "fait" ? " fait" : "") + (etat.statut === "annule" ? " annule" : "");
+      return h("div", { className: classe },
+        h("h4", null, h(Icon, { name: ti[0], size: 13 }), ti[1]),
+        corps,
+        etat.statut === "fait" ? h("div", { style: { marginTop: 8, color: "#bbf7d0", fontWeight: 700, fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" } }, h(Icon, { name: "check-circle", size: 14, color: "#86efac" }), etat.info || "Fait") : null,
+        etat.statut === "erreur" ? h("div", { style: { marginTop: 8, color: "#fda4af", fontSize: 12.5 } }, etat.info) : null,
+        etat.statut === "annule" ? h("div", { style: { marginTop: 8, color: "#94a3b8", fontSize: 12.5 } }, "Annulé, rien n'a été fait.") : null,
+        !fini ? h("div", { className: "jv-actions" },
+          h("button", { type: "button", className: "jv-b prim", disabled: enCours, onClick: executer }, h(Icon, { name: enCours ? "loader" : "check", size: 13 }), enCours ? "En cours..." : (p.type === "email" ? "Envoyer" : "Confirmer")),
+          h("button", { type: "button", className: "jv-b sec", disabled: enCours, onClick: function() { props.onEtat(p.cle, { statut: "annule" }); } }, "Annuler")) : null);
+    }
+
+    function JarvisBulle(props) {
+      var ctx = useAppData();
+      var _o = useState(false); var ouvert = _o[0], setOuvert = _o[1];
+      var _m = useState([]); var msgs = _m[0], setMsgs = _m[1];
+      var _s = useState(""); var saisie = _s[0], setSaisie = _s[1];
+      var _p = useState(false); var pense = _p[0], setPense = _p[1];
+      var _e = useState(false); var ecoute = _e[0], setEcoute = _e[1];
+      var _pa = useState(false); var parle = _pa[0], setParle = _pa[1];
+      var _et = useState({}); var etats = _et[0], setEtats = _et[1];
+      var _vo = useState(function() { return tkLireLocal("wl_jarvis_voix", true) !== false; }); var voixOn = _vo[0], setVoixOn = _vo[1];
+      var _vn = useState(function() { return tkLireLocal("wl_jarvis_voix_nom", ""); }); var voixNom = _vn[0], setVoixNom = _vn[1];
+      var _vl = useState([]); var voixListe = _vl[0], setVoixListe = _vl[1];
+      var filRef = useRef(null), recoRef = useRef(null), envolRef = useRef(0), msgsRef = useRef([]), etatsRef = useRef({});
+      var voixOnRef = useRef(voixOn);
+      var penseRef = useRef(false);
+      msgsRef.current = msgs; etatsRef.current = etats; voixOnRef.current = voixOn;
+      var micro = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+      useEffect(function() {
+        if (!window.speechSynthesis) return;
+        var charger = function() { setVoixListe(jvVoixFr()); };
+        charger();
+        try { window.speechSynthesis.addEventListener("voiceschanged", charger); } catch (e) {}
+        return function() { try { window.speechSynthesis.removeEventListener("voiceschanged", charger); window.speechSynthesis.cancel(); } catch (e) {} };
+      }, []);
+      useEffect(function() { if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight; }, [msgs, pense, etats]);
+      useEffect(function() {
+        if (!ouvert) return;
+        // Echap ferme le panneau, sauf pendant une saisie (un brouillon d'email ne se perd pas par megarde)
+        var touche = function(e) {
+          if (e.key !== "Escape") return;
+          var t = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : "";
+          if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") return;
+          fermer();
+        };
+        window.addEventListener("keydown", touche);
+        return function() { window.removeEventListener("keydown", touche); };
+      }, [ouvert]);
+      var voixChoisie = function() { var l = voixListe; for (var i = 0; i < l.length; i++) if (l[i].name === voixNom) return l[i]; return l[0] || null; };
+      var taire = function() { try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {} setParle(false); };
+      var dire = function(texte, force) {
+        if ((!voixOnRef.current && !force) || !window.speechSynthesis) return;
+        try {
+          window.speechSynthesis.cancel();
+          var phrases = jvPourOral(texte).match(/[^.!?;:]+[.!?;:]*/g) || [jvPourOral(texte)];
+          var vx = voixChoisie();
+          setParle(true);
+          phrases.forEach(function(ph, i) {
+            var u = new SpeechSynthesisUtterance(ph.trim());
+            u.lang = "fr-FR"; u.rate = 1.03; if (vx) u.voice = vx;
+            if (i === phrases.length - 1) { u.onend = function() { setParle(false); }; u.onerror = function() { setParle(false); }; }
+            window.speechSynthesis.speak(u);
+          });
+        } catch (e) { setParle(false); }
+      };
+      var arreterMicro = function() { try { if (recoRef.current) recoRef.current.abort(); } catch (e) {} recoRef.current = null; setEcoute(false); };
+      var fermer = function() { arreterMicro(); taire(); setOuvert(false); };
+      var onEtat = function(cle, e) { setEtats(function(o) { var n = Object.assign({}, o); n[cle] = e; return n; }); };
+      var aller = function(page) { props.onNavigate(page); if (window.innerWidth <= 640) fermer(); };
+
+      var envoyer = async function(q) {
+        var texte = String(q || "").trim();
+        // penseRef (et pas pense) : envoyer est aussi appele par la dictee, creee a un rendu plus ancien
+        if (!texte || penseRef.current) return;
+        penseRef.current = true;
+        taire();
+        var avant = msgsRef.current;
+        var apres = avant.concat([{ role: "user", texte: texte }]);
+        setMsgs(apres); setSaisie(""); setPense(true);
+        var epoque = ++envolRef.current;
+        // Historique envoye : textes + etat des propositions (Jarvis sait ce qui a ete confirme)
+        var hist = apres.slice(-14).map(function(m) {
+          if (m.role === "user") return { role: "user", content: m.texte };
+          var c = m.texte || "";
+          if (m.propositions && m.propositions.length) c += "\n[Propositions affichees : " + m.propositions.map(function(p) { return jvResumeProp(p, etatsRef.current[p.cle]); }).join(" ; ") + "]";
+          return { role: "assistant", content: c };
+        });
+        var rep;
+        try {
+          var tok = await jvJeton();
+          var r = await fetch("/api/jarvis", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok }, body: JSON.stringify({ messages: hist, page: props.page }) });
+          var d = await r.json().catch(function() { return {}; });
+          if (r.status === 401) rep = { role: "assistant", texte: "Jarvis est réservé à l'administrateur.", erreur: true };
+          else if (!r.ok || !d.ok) rep = { role: "assistant", texte: (d && d.error) || ("Jarvis ne répond pas (erreur " + r.status + "). Réessaie dans un instant."), erreur: true };
+          else rep = { role: "assistant", texte: d.texte || "", cartes: d.cartes || [], propositions: d.propositions || [] };
+        } catch (e) {
+          rep = { role: "assistant", texte: "Pas de connexion avec Jarvis. Vérifie le réseau et réessaie.", erreur: true };
+        }
+        if (epoque !== envolRef.current) return; // conversation effacee entre-temps
+        penseRef.current = false;
+        setMsgs(function(m) { return m.concat([rep]); });
+        setPense(false);
+        if (!rep.erreur) dire(rep.texte);
+      };
+      var ecouter = function() {
+        if (ecoute) { arreterMicro(); return; }
+        if (!micro) { setMsgs(function(m) { return m.concat([{ role: "assistant", texte: "La dictée n'est pas disponible dans ce navigateur (Chrome ou Edge conseillés) : écris ta demande.", erreur: true }]); }); return; }
+        taire();
+        try {
+          var R = window.SpeechRecognition || window.webkitSpeechRecognition;
+          var reco = new R();
+          reco.lang = "fr-FR"; reco.interimResults = true; reco.continuous = false;
+          var dicte = "";
+          reco.onstart = function() { setEcoute(true); };
+          reco.onresult = function(e) {
+            var txt = "";
+            for (var i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+            setSaisie(txt);
+            if (e.results[e.results.length - 1].isFinal) dicte = txt;
+          };
+          reco.onerror = function(e) {
+            if (e.error === "not-allowed" || e.error === "service-not-allowed") setMsgs(function(m) { return m.concat([{ role: "assistant", texte: "Le micro est bloqué : autorise-le dans le navigateur (icône à gauche de l'adresse), ou écris ta demande.", erreur: true }]); });
+          };
+          reco.onend = function() { setEcoute(false); recoRef.current = null; if (dicte.trim()) envoyer(dicte); };
+          recoRef.current = reco;
+          reco.start();
+        } catch (e) { setEcoute(false); }
+      };
+      var nouvelle = function() { envolRef.current++; penseRef.current = false; arreterMicro(); taire(); setMsgs([]); setEtats({}); setPense(false); setSaisie(""); };
+
+      var etatTxt = ecoute ? "J'écoute..." : pense ? "Je regarde dans l'app..." : parle ? "Je parle..." : "Prêt";
+      // Panneau ferme = MASQUE, pas demonte : les cartes gardent leurs modifications
+      // et leur verrou anti-double-clic (un envoi en cours n'est jamais repropose)
+      return h(React.Fragment, null, h("style", null, JV_CSS),
+        !ouvert ? h("button", { type: "button", className: "jv-fab", title: "Jarvis, ton assistant", "aria-label": "Ouvrir Jarvis", onClick: function() { setOuvert(true); } }, h(Icon, { name: "sparkles", size: 22, color: "#fff" })) : null,
+        h("div", { className: "jv-pan", role: "dialog", "aria-label": "Jarvis", "aria-hidden": !ouvert, style: ouvert ? null : { display: "none" } },
+          h("div", { className: "jv-tete" },
+            h("div", { className: "jv-orbe" + (ecoute ? " ecoute" : pense ? " pense" : parle ? " parle" : "") }),
+            h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { fontWeight: 800, fontSize: 17 } }, "Jarvis"), h("div", { style: { fontSize: 11.5, color: "#94a3b8" } }, etatTxt)),
+            msgs.length ? h("button", { type: "button", className: "jv-ico", title: "Nouvelle conversation", onClick: nouvelle }, h(Icon, { name: "rotate-ccw", size: 15 })) : null,
+            window.speechSynthesis ? h("button", { type: "button", className: "jv-ico" + (voixOn ? " on" : ""), title: voixOn ? "Réponse à voix haute : activée" : "Réponse à voix haute : coupée", onClick: function() { var n = !voixOn; setVoixOn(n); tkEcrireLocal("wl_jarvis_voix", n); if (!n) taire(); } }, h(Icon, { name: voixOn ? "volume-2" : "volume-x", size: 15 })) : null,
+            h("button", { type: "button", className: "jv-ico", title: "Fermer (Échap)", onClick: fermer }, h(Icon, { name: "x", size: 15 }))),
+          voixOn && voixListe.length ? h("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "#94a3b8" } },
+            h("span", null, "Voix"),
+            h("select", { value: (voixChoisie() || {}).name || "", onChange: function(e) { setVoixNom(e.target.value); tkEcrireLocal("wl_jarvis_voix_nom", e.target.value); }, style: { flex: 1, minWidth: 0, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e5e7eb", fontSize: 12, padding: "5px 8px", fontFamily: "inherit" } },
+              voixListe.map(function(vx) { return h("option", { key: vx.name, value: vx.name }, vx.name.replace(/Microsoft |Online |\(Natural\) - /g, "").replace(/\s*-\s*French.*$/i, "") + (jvScoreVoix(vx) >= 100 ? " · naturelle" : "")); })),
+            h("button", { type: "button", className: "jv-b sec", style: { padding: "5px 10px", fontSize: 12 }, onClick: function() { dire("Bonjour Tomy. Voici ma voix pour les réponses de Jarvis.", true); } }, "Écouter")) : null,
+          h("div", { className: "jv-fil", ref: filRef },
+            !msgs.length ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle" }, "Bonjour. Parle-moi avec le micro ou écris ta demande. Je lis l'app pour toi (chantiers, machines, carburant, relevés, rapports, tâches, emails) et je te prépare les actions : tu confirmes toujours avant que je fasse quoi que ce soit.")) : null,
+            msgs.map(function(m, i) {
+              if (m.role === "user") return h("div", { key: i, className: "jv-moi" }, m.texte);
+              return h("div", { key: i, className: "jv-lui" },
+                m.texte ? h("div", { className: "jv-bulle", style: m.erreur ? { borderColor: "rgba(244,63,94,0.4)", color: "#fecdd3" } : null }, m.texte) : null,
+                (m.cartes || []).map(function(c, k) { return h(JvCarteDonnees, { key: "c" + k, carte: c, onNavigate: aller }); }),
+                (m.propositions || []).map(function(p) { return h(JvProposition, { key: p.cle, p: p, etat: etats[p.cle], onEtat: onEtat, onNavigate: aller }); }));
+            }),
+            pense ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle", style: { color: "#94a3b8" } }, "Je regarde...")) : null),
+          !msgs.length ? h("div", { className: "jv-sugg" }, JV_SUGGESTIONS.map(function(s) { return h("button", { key: s, type: "button", onClick: function() { envoyer(s); } }, s); })) : null,
+          h("div", { className: "jv-saisie" },
+            h("button", { type: "button", className: "jv-micro" + (ecoute ? " actif" : ""), title: ecoute ? "Arrêter" : "Parler à Jarvis", onClick: ecouter }, h(Icon, { name: ecoute ? "square" : "mic", size: 20, color: "#fff" })),
+            h("input", { value: saisie, placeholder: ecoute ? "J'écoute..." : "Ta demande...", onChange: function(e) { setSaisie(e.target.value); }, onKeyDown: function(e) { if (e.key === "Enter") envoyer(saisie); } }),
+            h("button", { type: "button", className: "jv-ico", title: "Envoyer", disabled: pense || !saisie.trim(), onClick: function() { envoyer(saisie); } }, h(Icon, { name: "send", size: 15 })))));
+    }
+
     // ═══ CHAT EQUIPE (bulle type Messenger, panneau flottant) ═══
     // Tout passe par l'endpoint /api/chat de l'app Employes (Bearer JWT) :
     // l'Administrateur voit TOUTES les conversations (y compris les privees
@@ -46748,6 +47144,8 @@
         // Publication automatique du paquet paie Cortex-Paies (admin uniquement, invisible)
         h(PaiesAutoPublisher, { dataLoading: dataLoading, loadError: loadError }),
         h(ChatBulleAdmin, null),
+        // Jarvis : assistant voix + texte (administrateur ; le serveur verifie aussi la liste JARVIS_EMAILS)
+        isAdmin ? h(JarvisBulle, { onNavigate: navigate, page: currentPage }) : null,
         // FAB envoi rapide facture vers compta (bouton flottant + modal)
         h(QuickEnvoiFactureFab, null),
         // FAB support : signaler un bug / faire une demande (visible pour tout user connecte)
