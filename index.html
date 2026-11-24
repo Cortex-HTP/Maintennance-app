@@ -29101,6 +29101,12 @@
             //   emprunts - factures fournisseurs 401 non lettrees a echeance J+30)
             var nbMoisRestants = 12; // annee complete
             var caChantiersParMois = new Array(12).fill(0);
+            // Recap banque : le MEME CA ventile par chantier (provenance des
+            // encaissements attendus). Tableaux additifs, rien d'autre ne les lit.
+            var nomChTr = function(c) { return String((c && (c.titre || c.site)) || "Chantier").trim(); };
+            var ajoutChTr = function(tab, m, nom, v) { if (!(v > 0) || !tab[m]) return; tab[m][nom] = (tab[m][nom] || 0) + v; };
+            var moisChVides = function() { var t = []; for (var iMv = 0; iMv < 12; iMv++) t.push(Object.create(null)); return t; };
+            var caProjParChMois = moisChVides();
             var metByMkTr = buildMetByMachine(ctx.dbRelevesJourn || [], ctx.equipements || []);
             var EXCL_TR = { ferie: 1, intemperies: 1, panne: 1, arret: 1, non_productif: 1, conge: 1, chomage: 1, maladie: 1, maintenance: 1 };
             var horizonMs = new Date(now2.getFullYear(), 11, 31, 23, 59, 59).getTime(); // fin d'annee courante
@@ -29293,6 +29299,7 @@
                     // Index = mois de l'annee (0..11), aligne avec la boucle de rendu janvier->decembre
                     if (cursor.getFullYear() === now2.getFullYear()) {
                       caChantiersParMois[cursor.getMonth()] += dayMet * prix;
+                      ajoutChTr(caProjParChMois, cursor.getMonth(), nomChTr(c), dayMet * prix);
                     }
                   }
                 }
@@ -29310,6 +29317,40 @@
             // bancaire (512*) et ecrase cette estimation.
             var currentYearReal = now2.getFullYear();
             // Source A : rapports de forage (identique KPI stats) -> CA metrage + CA activites
+            // Recap banque : chantier d'un rapport, MEME cascade que lookupPrixMetre
+            // (chantier_id avec prix, sinon lieu = site, exact puis approche) ; sur
+            // un site a plusieurs chantiers, celui dont les dates couvrent le rapport.
+            var chParIdTr = {}, chParSiteTr = Object.create(null);
+            (dbChantiers || []).forEach(function(c) {
+              chParIdTr[String(c.id)] = c;
+              if (!c.site || !(parseFloat(c.prixMetre) > 0) || c.statut === "Annule") return;
+              var skC = String(c.site).toUpperCase().trim();
+              if (!chParSiteTr[skC]) chParSiteTr[skC] = [];
+              chParSiteTr[skC].push(c);
+            });
+            var choixChSiteTr = function(liste, dIso) {
+              var dansDates = null, recent = null;
+              liste.forEach(function(c) {
+                var d0 = String(c.dateDebut || "").substring(0, 10), d1 = String(c.dateFin || "").substring(0, 10);
+                if (dIso && d0 && dIso >= d0 && (!d1 || dIso <= d1) && !dansDates) dansDates = c;
+                if (!recent || (c.dateDebut || "") > (recent.dateDebut || "")) recent = c;
+              });
+              return dansDates || recent;
+            };
+            var nomRapportTr = function(r) {
+              var cId = r.chantier_id != null ? chParIdTr[String(r.chantier_id)] : null;
+              if (cId && parseFloat(cId.prixMetre) > 0) return nomChTr(cId);
+              var lkR = String(r.lieu || "").toUpperCase().trim();
+              if (!lkR) return cId ? nomChTr(cId) : "Autres";
+              var dIsoR = String(r.date_rapport || "").substring(0, 10);
+              if (chParSiteTr[lkR]) return nomChTr(choixChSiteTr(chParSiteTr[lkR], dIsoR));
+              var bestR = null, bestLenR = 0;
+              Object.keys(chParSiteTr).forEach(function(skR) {
+                if (skR.indexOf(lkR) >= 0 || lkR.indexOf(skR) >= 0) { var mlR = Math.min(skR.length, lkR.length); if (mlR > bestLenR) { bestR = skR; bestLenR = mlR; } }
+              });
+              return bestR ? nomChTr(choixChSiteTr(chParSiteTr[bestR], dIsoR)) : lkR;
+            };
+            var caRapParChMois = moisChVides(), caAvParChMois = moisChVides(), caRealParChMois = moisChVides();
             var caChantiersRapportsParMois = new Array(12).fill(0);
             var caActivitesRealiseParMois = new Array(12).fill(0);
             // Metrage REEL par mois (pour le cout variable au metre de la vue n+1)
@@ -29325,6 +29366,7 @@
               var prixR = lookupPrixMetre(r);
               if (mR > 0) metRapportsParMois[moisR] += mR;
               if (mR > 0 && prixR > 0) caChantiersRapportsParMois[moisR] += mR * prixR;
+              if (mR > 0 && prixR > 0) ajoutChTr(caRapParChMois, moisR, nomRapportTr(r), mR * prixR);
               // CA facturation activites (attentes/deplacements tarifes >= duree_min)
               var actsR = Array.isArray(r.activites) ? r.activites : [];
               actsR.forEach(function(a) {
@@ -29362,6 +29404,7 @@
                 var mksAv = Object.keys(relIdxAv[ck][dk]); var sTot = 0;
                 for (var mAv = 0; mAv < mksAv.length; mAv++) sTot += relIdxAv[ck][dk][mksAv[mAv]];
                 if (sTot > 0) { caChantiersAvancementParMois[d.getMonth()] += sTot * prix; metAvancementParMois[d.getMonth()] += sTot; }
+                if (sTot > 0) ajoutChTr(caAvParChMois, d.getMonth(), chParIdTr[ck] ? nomChTr(chParIdTr[ck]) : "Autres", sTot * prix);
               });
             });
             // B2 : saisies manuelles admin (fallback si pas de releve pour chantier x date)
@@ -29378,6 +29421,7 @@
                 var val = typeof vv === "object" && vv !== null ? (parseFloat(vv.valeur) || 0) : (parseFloat(vv) || 0);
                 if (val <= 0) return;
                 caChantiersAvancementParMois[d.getMonth()] += val * prix;
+                ajoutChTr(caAvParChMois, d.getMonth(), nomChTr(c), val * prix);
                 metAvancementParMois[d.getMonth()] += val;
               });
             });
@@ -29391,9 +29435,11 @@
             for (var mMax = 0; mMax < 12; mMax++) {
               if (metAvancementParMois[mMax] > metRapportsParMois[mMax]) {
                 caChantiersRealiseParMois[mMax] = caChantiersAvancementParMois[mMax];
+                caRealParChMois[mMax] = caAvParChMois[mMax];
                 metRealiseParMois[mMax] = metAvancementParMois[mMax];
               } else {
                 caChantiersRealiseParMois[mMax] = caChantiersRapportsParMois[mMax];
+                caRealParChMois[mMax] = caRapParChMois[mMax];
                 metRealiseParMois[mMax] = metRapportsParMois[mMax];
               }
             }
@@ -29493,7 +29539,11 @@
                 var reelInC = mvtReel.in || 0, reelOutC = mvtReel.out || 0;
                 var joursMoisC = dMEnd.getDate();
                 var fracRestanteC = Math.max(0, (joursMoisC - Math.min(now2.getDate(), joursMoisC)) / joursMoisC);
-                var encPlanifResteC = Math.max(0, encProjMoisC - reelInC); // CA : complement au plein
+                // CA : complement au plein. Les emprunts/apports recus ce mois-ci
+                // (inFin) ne sont PAS des reglements clients : avant, un pret de
+                // 30 MF le 5 du mois effacait les 25 MF de travaux attendus.
+                var reelInClientsC = reelInC - Math.min(mvtReel.inFin || 0, reelInC);
+                var encPlanifResteC = Math.max(0, encProjMoisC - reelInClientsC);
                 var decPlanifResteC = Math.round(decProjMoisC * fracRestanteC); // depenses : prorata
                 encaiss = reelInC + encPlanifResteC;
                 decaiss = reelOutC + decPlanifResteC;
@@ -29643,6 +29693,7 @@
               var debJanN1 = new Date(anCibleF, 0, 1).getTime();
               var caChN1 = new Array(12).fill(0);
               var metChN1 = new Array(12).fill(0);
+              var caChN1ParCh = moisChVides(); // Recap banque : meme CA par chantier
               (dbChantiers || []).forEach(function(c) {
                 if (c.statut === "Termine" || c.statut === "Annule") return;
                 var metrageC = parseFloat(c.metrage) || 0;
@@ -29695,6 +29746,7 @@
                       if (totP + dayM > restantC) dayM = restantC - totP;
                       totP += dayM;
                       if (curS.getFullYear() === anCibleF) { caChN1[curS.getMonth()] += dayM * prixC; metChN1[curS.getMonth()] += dayM; }
+                      if (curS.getFullYear() === anCibleF) ajoutChTr(caChN1ParCh, curS.getMonth(), nomChTr(c), dayM * prixC);
                     }
                   }
                   curS.setDate(curS.getDate() + 1); safeC2++;
@@ -29809,7 +29861,7 @@
                   }
                 });
               }
-              return { trN1: trN1, soldeDebutN1: soldeDebutN1, caChN1: caChN1, caActivitesMensN1: caActivitesMens };
+              return { trN1: trN1, soldeDebutN1: soldeDebutN1, caChN1: caChN1, caChN1ParCh: caChN1ParCh, caActivitesMensN1: caActivitesMens };
             };
             if (estVueN1) {
               var resN1 = computeTresoN1();
@@ -29831,189 +29883,113 @@
               if (abs >= 1000) return sign + Math.round(abs / 1000) + " k";
               return sign + Math.round(abs);
             };
-            // ── RECAP BANQUE (2026-10-05) : document imprimable 3 pages A4 au
-            // theme de l'app (maquette demo_recap_banque.html validee) —
-            // synthese + courbe de tresorerie 24 mois + carnet de chantiers.
+            // ── RECAP BANQUE v2 (2026-11-24, demo demo_recap_banque_v2.html validee) ──
+            // « Plus precis sur les encaissements mensuels », courbe et calendrier
+            // mois par mois, detail par chantier retire. Ici on ASSEMBLE les donnees
+            // (24 mois N / N+1 + chantiers) ; la mise en page est faite par
+            // wlRecapBanqueHtml (fonction pure, hors ecran). Encaissements = VRAIS
+            // encaissements de tresorerie (reel banque, puis attendu = travaux du
+            // mois precedent) : l'ancien PDF titrait « Encaissements » le CA travaux.
             // Ouvre un onglet avec bouton Imprimer / PDF ; aucune ecriture.
             var genererRecapBanque = function() {
               var anN = now2.getFullYear();
-              var rN1 = computeTresoN1();
-              var serie = trMoisN.map(function(x) { return x.solde; }).concat(rN1.trN1.map(function(x) { return x.solde; }));
-              var caMois = [];
-              for (var gm = 0; gm < 12; gm++) caMois.push((caTravailChParMois[gm] || 0) + (caTravailAcParMois[gm] || 0));
-              for (var gm2 = 0; gm2 < 12; gm2++) caMois.push((rN1.caChN1[gm2] || 0) + (rN1.caActivitesMensN1 || 0));
-              var mf = function(v) {
-                var s = v < 0 ? "-" : "";
-                return s + (Math.abs(v) / 1000000).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " MF";
-              };
               var iNow = now2.getMonth();
-              var soldeActuel = trMoisN[iNow].solde;
-              var caN = caMois.slice(0, 12).reduce(function(s, v) { return s + v; }, 0);
-              var caN1 = caMois.slice(12).reduce(function(s, v) { return s + v; }, 0);
-              var finN = trMoisN[11].solde, finN1 = rN1.trN1[11].solde, miN1 = rN1.trN1[5].solde;
+              var rN1 = computeTresoN1();
+              var fusionCh = function(dst, src) { Object.keys(src || {}).forEach(function(k) { dst[k] = (dst[k] || 0) + (src[k] || 0); }); return dst; };
+              // Valeur des travaux PAR CHANTIER de chaque mois (0..23), memes regles
+              // que caTravailChParMois : passe = realise, mois courant = realise +
+              // projete, futur = projete ; N+1 = moteur computeTresoN1.
+              var travCh = [], travAc = [];
+              for (var tm = 0; tm < 12; tm++) {
+                var mapTm = Object.create(null);
+                if (new Date(anN, tm + 1, 0) < now2) fusionCh(mapTm, caRealParChMois[tm]);
+                else if (tm === iNow) { fusionCh(mapTm, caRealParChMois[tm]); fusionCh(mapTm, caProjParChMois[tm]); }
+                else fusionCh(mapTm, caProjParChMois[tm]);
+                travCh.push(mapTm);
+                travAc.push(caTravailAcParMois[tm] || 0);
+              }
+              for (var tm1 = 0; tm1 < 12; tm1++) {
+                travCh.push(fusionCh(Object.create(null), (rN1.caChN1ParCh || [])[tm1]));
+                travAc.push(rN1.caActivitesMensN1 || 0);
+              }
+              // Provenance de l'attendu du mois i = travaux du mois i-1 (reglement
+              // ~30 j), ramenee au montant attendu (mois en cours : seul le
+              // complement restant est attendu).
+              var provenanceMois = function(i, attendu) {
+                if (i < 1 || !(attendu > 0)) return [];
+                var src = travCh[i - 1] || {}, l = [], tot = 0;
+                Object.keys(src).forEach(function(k) { if (src[k] > 0) { l.push({ nom: k, mt: src[k] }); tot += src[k]; } });
+                if (travAc[i - 1] > 0) { l.push({ nom: "Activités", mt: travAc[i - 1] }); tot += travAc[i - 1]; }
+                var kProv = tot > 0 ? attendu / tot : 0;
+                return l.map(function(q) { return { nom: q.nom, mt: q.mt * kProv }; });
+              };
+              var mois = [];
+              trMoisN.forEach(function(x, i) {
+                var det = x.detail || {};
+                var mvR = mvtsBanqueParMois[anN + "-" + String(i + 1).padStart(2, "0")] || {};
+                var o = { statut: "prev", encBanque: 0, encAttendu: 0, encFin: 0, decaiss: x.decaiss || 0, solde: x.solde, provenance: [] };
+                if (x.source === "reel") {
+                  // Reel bancaire : credits 512 hors virements internes, emprunts/apports isoles
+                  o.statut = "reel";
+                  o.encFin = det.reelInFin || 0;
+                  o.encBanque = Math.max(0, (det.reelIn != null ? det.reelIn : (x.encaiss || 0)) - o.encFin);
+                } else if (x.source === "reel_partiel") {
+                  // Mois en cours : deja sur les comptes + complement attendu
+                  o.statut = "partiel";
+                  o.encFin = Math.min(mvR.inFin || 0, det.reelIn || 0);
+                  o.encBanque = Math.max(0, (det.reelIn || 0) - o.encFin);
+                  o.encAttendu = det.encPlanifReste || 0;
+                } else {
+                  // Projete : mois courant sans ecriture, mois ecoule pas encore
+                  // saisi en compta (estime) ou mois a venir
+                  o.statut = i === iNow ? "partiel" : (i < iNow ? "estime" : "prev");
+                  o.encAttendu = x.encaiss || 0;
+                }
+                o.provenance = provenanceMois(i, o.encAttendu);
+                mois.push(o);
+              });
+              rN1.trN1.forEach(function(x, i) {
+                var o = { statut: "prev", encBanque: 0, encAttendu: x.encaiss || 0, encFin: 0, decaiss: x.decaiss || 0, solde: x.solde, provenance: [] };
+                o.provenance = provenanceMois(12 + i, o.encAttendu);
+                mois.push(o);
+              });
               // Chantiers dont la periode touche N ou N+1 (statut Annule exclu)
               var debFen = new Date(anN, 0, 1).getTime(), finFen = new Date(anN + 1, 11, 31).getTime();
+              var famC = function(c) {
+                var t = String((c.titre || "") + " " + (c.site || "")).toLowerCase();
+                if (t.indexOf("carott") >= 0 || t.indexOf("kopeto") >= 0) return "carotte";
+                if (t.indexOf("heliport") >= 0 || t.indexOf("héliport") >= 0) return "heliporte";
+                return "aircore";
+              };
               var chs = (dbChantiers || []).filter(function(c) {
                 if (c.statut === "Annule") return false;
                 var d1 = c.dateDebut ? new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime() : null;
                 var d2 = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
-                if (d1 == null) return false;
-                return d2 >= debFen && d1 <= finFen;
-              }).sort(function(a, b) { return String(a.dateDebut || "").localeCompare(String(b.dateDebut || "")); });
-              var nbN = 0, nbN1 = 0;
-              chs.forEach(function(c) {
-                var d1 = new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime();
-                var d2 = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
-                if (d1 <= new Date(anN, 11, 31).getTime() && d2 >= debFen) nbN++;
-                if (d2 >= new Date(anN + 1, 0, 1).getTime() && d1 <= finFen) nbN1++;
+                if (d1 == null || isNaN(d1)) return false;
+                if (d2 == null || isNaN(d2)) d2 = d1;
+                // Fin saisie avant le debut (faute d'annee) : le chantier reste affiche
+                return Math.max(d1, d2) >= debFen && Math.min(d1, d2) <= finFen;
+              }).sort(function(a, b) { return String(a.dateDebut || "").localeCompare(String(b.dateDebut || "")); }).map(function(c) {
+                var per = (Array.isArray(c.periodes) ? c.periodes : []).filter(function(p) { return p && p.debut; }).map(function(p) {
+                  return { debut: String(p.debut).substring(0, 10), fin: String(p.fin || p.debut).substring(0, 10), metrage: parseFloat(p.metrage) || 0 };
+                });
+                var dbC = String(c.dateDebut).substring(0, 10), fnC = String(c.dateFin || c.dateDebut).substring(0, 10);
+                if (fnC < dbC) { var tmpC = dbC; dbC = fnC; fnC = tmpC; }
+                return {
+                  client: c.client || "", titre: c.titre || c.site || "Chantier", famille: famC(c),
+                  debut: dbC, fin: fnC, periodes: per, metrage: parseFloat(c.metrage) || 0
+                };
               });
-              var famC = function(c) {
-                var t = String((c.titre || "") + " " + (c.site || "")).toLowerCase();
-                if (t.indexOf("carott") >= 0 || t.indexOf("kopeto") >= 0) return { cls: "b-ros", lbl: "carotte" };
-                if (t.indexOf("heliport") >= 0 || t.indexOf("h\u00e9liport") >= 0) return { cls: "b-cya", lbl: "heliporte" };
-                return { cls: "b-ind", lbl: "aircore" };
+              var D = {
+                anN: anN, iNow: iNow,
+                fracJour: (now2.getDate() - 1) / new Date(anN, iNow + 1, 0).getDate(),
+                dateDoc: now2.toLocaleDateString("fr-FR"),
+                decouvert: parseFloat(decouvertAutorise) || 0,
+                mois: mois, chantiers: chs
               };
-              var mmaa = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[1] + "/" + s[0].substring(2) : "?"; };
-              var esc = function(x) { return String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
-              var dateDoc = now2.toLocaleDateString("fr-FR");
-              // ── SVG CA mensuel (24 barres) ──
-              var maxCa = Math.max.apply(null, caMois.concat([1]));
-              var barsCa = "";
-              for (var bi = 0; bi < 24; bi++) {
-                var hB = Math.max(1, Math.round((caMois[bi] / maxCa) * 100));
-                barsCa += '<rect rx="3" x="' + (46 + bi * 28.6) + '" y="' + (158 - hB) + '" width="19" height="' + hB + '" fill="url(#bar2' + (bi < 12 ? "6" : "7") + ')"/>';
-              }
-              var moisL = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
-              var axeCa = "";
-              for (var bx = 0; bx < 24; bx++) axeCa += '<text x="' + (55.5 + bx * 28.6) + '" y="172" font-size="8" fill="#71717a" text-anchor="middle">' + moisL[bx % 12] + '</text>';
-              // ── SVG courbe treso (24 points) ──
-              var minS = Math.min.apply(null, serie.concat([0]));
-              var maxS = Math.max.apply(null, serie);
-              var rangeS = Math.max(1, (maxS - minS) * 1.12);
-              var xS = function(i) { return 50 + i * (680 / 23); };
-              var yS = function(v) { return 40 + (1 - (v - minS) / rangeS) * 208; };
-              var ptsReel = "", ptsPrev = "";
-              for (var pi = 0; pi <= iNow; pi++) ptsReel += (pi ? " L " : "M ") + xS(pi) + "," + yS(serie[pi]);
-              for (var pj = iNow; pj < 24; pj++) ptsPrev += (pj > iNow ? " L " : "M " + xS(iNow) + "," + yS(serie[iNow]) + " L ") + xS(pj) + "," + yS(serie[pj]);
-              var aireReel = ptsReel + " L " + xS(iNow) + "," + yS(Math.max(0, minS)) + " L " + xS(0) + "," + yS(Math.max(0, minS)) + " Z";
-              var yZ = yS(0);
-              var axeTr = "";
-              for (var tx = 0; tx < 24; tx += 2) axeTr += '<text x="' + xS(tx) + '" y="266" font-size="8" fill="#71717a" text-anchor="middle">' + moisL[tx % 12] + '</text>';
-              var xAuj = xS(iNow);
-              // ── Gantt + tableau chantiers ──
-              var gantt = "", tbl = "", totCa = 0, nbAffiches = 0;
-              chs.forEach(function(c) {
-                if (nbAffiches >= 14) return; // garde : tient sur la page
-                nbAffiches++;
-                var d1 = new Date(String(c.dateDebut).substring(0, 10) + "T00:00:00").getTime();
-                var d2t = c.dateFin ? new Date(String(c.dateFin).substring(0, 10) + "T00:00:00").getTime() : d1;
-                var lPct = Math.max(0, Math.min(100, (d1 - debFen) / (finFen - debFen) * 100));
-                var rPct = Math.max(0, Math.min(100, (d2t - debFen) / (finFen - debFen) * 100));
-                var fam = famC(c);
-                var estPrev = d1 >= new Date(anN + 1, 0, 1).getTime() || c.statut === "A venir";
-                var metrage = parseFloat(c.metrage) || 0;
-                var prixM = parseFloat(c.prixMetre) || 0;
-                var realise = Math.round(computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies));
-                var caPrev = metrage * prixM;
-                totCa += caPrev;
-                gantt += '<div class="gl"><div class="gn">' + esc(c.titre) + '<small>' + esc(c.client || "-") + ' - ' + fam.lbl + '</small></div>' +
-                  '<div class="gz"><div class="gmi"></div><div class="gb ' + fam.cls + (estPrev ? " prev" : "") + '" style="left:' + lPct.toFixed(1) + '%;width:' + Math.max(1.5, rPct - lPct).toFixed(1) + '%;"></div></div></div>';
-                tbl += '<tr><td><b>' + esc(c.client || "-") + '</b></td><td>' + esc(c.titre) + (estPrev ? ' <span class="pill pa">PREV</span>' : "") + '</td>' +
-                  '<td>' + mmaa(c.dateDebut) + ' - ' + mmaa(c.dateFin) + '</td>' +
-                  '<td class="r">' + (metrage ? metrage.toLocaleString("fr-FR") + " m" : "-") + '</td>' +
-                  '<td class="r">' + (realise ? realise.toLocaleString("fr-FR") + " m" : "-") + '</td>' +
-                  '<td class="r"><b>' + (caPrev ? mf(caPrev) : "-") + '</b></td></tr>';
-              });
-              var H = [];
-              H.push('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Recap banque Wallis Label ' + anN + '-' + (anN + 1) + '</title>');
-              H.push('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"><style>');
-              H.push(':root{--bg:#1a1d2e;--surface:rgba(36,40,60,0.85);--border:rgba(255,255,255,0.08);--text:#fafafa;--text2:#cbd5e1;--muted:#a1a1aa;--dim:#71717a;--vert:#86efac;--ambre:#fde68a;}');
-              H.push('*{margin:0;padding:0;box-sizing:border-box;}html{background:#0e1018;}body{font-family:Inter,system-ui,sans-serif;color:var(--text);font-size:12.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}');
-              H.push('.bar{position:sticky;top:0;z-index:50;background:linear-gradient(135deg,#4338ca,#6d28d9);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;font-size:13px;font-weight:700;}');
-              H.push('.bar button{margin-left:auto;padding:8px 18px;border:none;border-radius:9px;background:#fff;color:#4338ca;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer;}');
-              H.push('.page{width:210mm;height:296mm;margin:16px auto;padding:13mm 13mm 11mm;position:relative;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 6px 28px rgba(0,0,0,0.5);background:radial-gradient(ellipse 90% 45% at 50% -12%,rgba(120,119,198,0.30),transparent),radial-gradient(ellipse 55% 40% at 95% 102%,rgba(59,130,246,0.18),transparent),radial-gradient(ellipse 45% 35% at -5% 65%,rgba(236,72,153,0.12),transparent),var(--bg);}');
-              H.push('@media print{@page{size:A4 portrait;margin:0;}html,body{background:var(--bg);}.bar{display:none;}.page{margin:0;box-shadow:none;page-break-after:always;}.page:last-child{page-break-after:auto;}}');
-              H.push('.ent{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}.lb{display:flex;align-items:center;gap:11px;}');
-              H.push('.lc{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#818cf8,#c084fc);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:19px;color:#fff;box-shadow:0 4px 18px rgba(129,140,248,0.45);}');
-              H.push('.sc{font-size:16.5px;font-weight:800;}.sc small{display:block;font-size:10px;color:var(--muted);font-weight:600;margin-top:1px;}');
-              H.push('.ed{text-align:right;}.ed .num{display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.8px;color:#e0e7ff;background:rgba(99,102,241,0.18);border:1px solid rgba(129,140,248,0.45);border-radius:999px;padding:4px 13px;}.ed .dte{font-size:10px;color:var(--dim);margin-top:5px;font-weight:600;}');
-              H.push('.hero{margin:4px 0 18px;}.hero h1{font-size:31px;font-weight:900;letter-spacing:-0.03em;line-height:1.08;}.hero .grad{background:linear-gradient(90deg,#818cf8,#c084fc);-webkit-background-clip:text;background-clip:text;color:transparent;}.hero .sous{font-size:12.5px;color:var(--text2);margin-top:7px;}');
-              H.push('.sect{display:flex;align-items:center;gap:9px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.1px;color:#a5b4fc;margin:0 0 11px;}.sect::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,rgba(129,140,248,0.45),transparent);}');
-              H.push('.carte{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:15px 17px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);}');
-              H.push('.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}.kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 15px;position:relative;overflow:hidden;}.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#818cf8,#c084fc);}');
-              H.push('.kpi .l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);margin-bottom:6px;}.kpi .v{font-size:19.5px;font-weight:800;letter-spacing:-0.02em;}.kpi .s{font-size:9.5px;color:var(--dim);margin-top:3px;font-weight:600;}');
-              H.push('.note{background:linear-gradient(135deg,rgba(99,102,241,0.13),rgba(99,102,241,0.04));border:1px solid rgba(129,140,248,0.35);border-radius:13px;padding:11px 15px;font-size:11px;color:var(--text2);line-height:1.6;}.note b{color:#e0e7ff;}');
-              H.push('table{width:100%;border-collapse:collapse;font-size:11px;}th{text-align:left;font-size:8.5px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);border-bottom:1px solid rgba(129,140,248,0.4);padding:6px 8px;font-weight:800;}td{padding:6.5px 8px;border-bottom:1px solid rgba(255,255,255,0.05);color:var(--text2);}td b{color:var(--text);}td.r,th.r{text-align:right;}tr.tot td{border-top:1.5px solid rgba(129,140,248,0.5);border-bottom:none;font-weight:800;color:var(--text);padding-top:9px;}');
-              H.push('.pill{display:inline-block;padding:2.5px 10px;border-radius:999px;font-size:9px;font-weight:800;}.pa{background:rgba(245,158,11,0.13);border:1px solid rgba(245,158,11,0.4);color:var(--ambre);}');
-              H.push('.leg{display:flex;gap:16px;flex-wrap:wrap;font-size:9.5px;color:var(--muted);font-weight:600;margin-top:9px;}.leg span{display:inline-flex;align-items:center;gap:6px;}.ti{width:20px;height:4px;border-radius:2px;display:inline-block;}');
-              H.push('.ge{display:flex;margin:0 0 7px 128px;}.ge div{flex:1;text-align:center;font-size:9px;font-weight:800;letter-spacing:1px;color:var(--muted);border-bottom:1px solid rgba(255,255,255,0.10);padding-bottom:4px;}.ge div:first-child{color:#c7d2fe;border-color:rgba(129,140,248,0.5);}');
-              H.push('.gl{display:flex;align-items:center;gap:10px;margin-bottom:7px;}.gn{width:118px;font-size:10px;font-weight:700;flex-shrink:0;text-align:right;color:var(--text2);line-height:1.25;}.gn small{display:block;font-size:8px;color:var(--dim);font-weight:600;}');
-              H.push('.gz{flex:1;height:17px;position:relative;background:rgba(0,0,0,0.28);border-radius:5px;border:1px solid rgba(255,255,255,0.04);}.gmi{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:rgba(255,255,255,0.14);}.gb{position:absolute;top:2.5px;bottom:2.5px;border-radius:4px;}');
-              H.push('.b-ind{background:linear-gradient(135deg,#6366f1,#818cf8);}.b-cya{background:linear-gradient(135deg,#0891b2,#22d3ee);}.b-ros{background:linear-gradient(135deg,#db2777,#f472b6);}.gb.prev{opacity:0.52;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,0.35) 0 4px,transparent 4px 9px);}');
-              H.push('.pied{margin-top:auto;padding-top:11px;border-top:1px solid rgba(255,255,255,0.08);font-size:8.5px;color:var(--dim);display:flex;justify-content:space-between;font-weight:600;}');
-              H.push('</style></head><body>');
-              H.push('<div class="bar">Recap banque - verifie les chiffres puis imprime (destination : Enregistrer en PDF).<button onclick="window.print()">Imprimer / PDF</button></div>');
-              // ═ PAGE 1 ═
-              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Forage minier - Nouvelle-Caledonie</small></div></div><div class="ed"><span class="num">DOSSIER BANCAIRE</span><div class="dte">Edite le ' + dateDoc + '</div></div></div>');
-              H.push('<div class="hero"><h1>Recapitulatif financier<br><span class="grad">Tresorerie &amp; chantiers ' + anN + ' - ' + (anN + 1) + '</span></h1><div class="sous">Situation de tresorerie, projection a fin ' + (anN + 1) + ' et carnet de chantiers de la societe.</div></div>');
-              H.push('<div class="sect">Synthese</div><div class="kpis">');
-              H.push('<div class="kpi"><div class="l">Solde de tresorerie actuel</div><div class="v">' + mf(soldeActuel) + '</div><div class="s">SG + BCI, projete fin de mois</div></div>');
-              H.push('<div class="kpi"><div class="l">Encaissements ' + anN + '</div><div class="v">' + mf(caN) + '</div><div class="s">realise + projete fin d\u0027annee</div></div>');
-              H.push('<div class="kpi"><div class="l">Encaissements ' + (anN + 1) + ' projetes</div><div class="v">' + mf(caN1) + '</div><div class="s">carnet de chantiers</div></div>');
-              H.push('<div class="kpi"><div class="l">Solde projete fin ' + anN + '</div><div class="v" style="color:' + (finN >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN) + '</div><div class="s">previsionnel chaine</div></div>');
-              H.push('<div class="kpi"><div class="l">Solde projete fin ' + (anN + 1) + '</div><div class="v" style="color:' + (finN1 >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN1) + '</div><div class="s">hypotheses donnees ' + anN + '</div></div>');
-              H.push('<div class="kpi"><div class="l">Chantiers</div><div class="v">' + nbN + ' <span style="color:var(--dim);font-size:14px;">/ ' + anN + '</span>&nbsp; ' + nbN1 + ' <span style="color:var(--dim);font-size:14px;">/ ' + (anN + 1) + '</span></div><div class="s">voir carnet page 3</div></div>');
-              H.push('</div>');
-              H.push('<div class="sect">Encaissements mensuels - MF XPF</div><div class="carte" style="padding:17px 17px 11px;"><svg viewBox="0 0 740 196" style="width:100%;">');
-              H.push('<defs><linearGradient id="bar26" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#6366f1"/></linearGradient><linearGradient id="bar27" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8" stop-opacity="0.55"/><stop offset="100%" stop-color="#6366f1" stop-opacity="0.35"/></linearGradient></defs>');
-              H.push('<line x1="40" y1="158" x2="732" y2="158" stroke="rgba(255,255,255,0.22)" stroke-width="1.2"/>');
-              H.push('<text x="34" y="62" font-size="9" fill="#71717a" text-anchor="end">' + mf(maxCa) + '</text><line x1="40" y1="58" x2="732" y2="58" stroke="rgba(255,255,255,0.07)"/>');
-              H.push(barsCa + axeCa);
-              H.push('<text x="200" y="190" font-size="9.5" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="540" y="190" font-size="9.5" font-weight="800" fill="#71717a" text-anchor="middle">' + (anN + 1) + ' - PREVISIONNEL</text></svg>');
-              H.push('<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#6366f1,#818cf8);"></span>Realise / projete ' + anN + '</span><span><span class="ti" style="background:rgba(129,140,248,0.4);"></span>Previsionnel ' + (anN + 1) + ' (cadence des chantiers)</span></div></div>');
-              H.push('<div class="note" style="margin-top:16px;"><b>Ce que contient ce dossier.</b> Page 2 : courbe de tresorerie mensuelle - realise ' + anN + ' (comptes SG + BCI, ecritures comptables, virements internes neutralises) prolonge du previsionnel jusqu\u0027a fin ' + (anN + 1) + ', solde chaine. Page 3 : carnet de chantiers (clients, periodes, metrages, encaissements previsionnels).</div>');
-              H.push('<div class="pied"><span>WALLIS LABEL - Noumea, Nouvelle-Caledonie</span><span>PAGE 1 / 3</span></div></div>');
-              // ═ PAGE 2 ═
-              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Recapitulatif financier ' + anN + '-' + (anN + 1) + '</small></div></div><div class="ed"><span class="num">TRESORERIE</span><div class="dte">Solde mensuel consolide SG + BCI</div></div></div>');
-              H.push('<div class="sect">Courbe de tresorerie - janvier ' + anN + ' a decembre ' + (anN + 1) + ' - MF XPF</div><div class="carte" style="padding:18px 16px 10px;"><svg viewBox="0 0 740 300" style="width:100%;">');
-              H.push('<defs><linearGradient id="aire" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8" stop-opacity="0.34"/><stop offset="100%" stop-color="#818cf8" stop-opacity="0.02"/></linearGradient></defs>');
-              H.push('<line x1="46" y1="' + yZ.toFixed(1) + '" x2="732" y2="' + yZ.toFixed(1) + '" stroke="rgba(255,255,255,0.22)" stroke-width="1.2"/><text x="40" y="' + (yZ + 4).toFixed(1) + '" font-size="9" fill="#71717a" text-anchor="end">0</text>');
-              H.push('<line x1="' + xAuj.toFixed(1) + '" y1="42" x2="' + xAuj.toFixed(1) + '" y2="250" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4 4" opacity="0.8"/>');
-              H.push('<rect x="' + (xAuj - 35).toFixed(1) + '" y="26" width="70" height="15" rx="7.5" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.45)"/><text x="' + xAuj.toFixed(1) + '" y="37" font-size="8.5" font-weight="800" fill="#fde68a" text-anchor="middle">AUJOURD\u0027HUI</text>');
-              H.push('<path d="' + aireReel + '" fill="url(#aire)"/>');
-              H.push('<path d="' + ptsReel + '" fill="none" stroke="#818cf8" stroke-width="7" stroke-linejoin="round" opacity="0.18"/>');
-              H.push('<path d="' + ptsReel + '" fill="none" stroke="#818cf8" stroke-width="2.6" stroke-linejoin="round"/>');
-              H.push('<path d="' + ptsPrev + '" fill="none" stroke="#c084fc" stroke-width="2.3" stroke-dasharray="7 5" stroke-linejoin="round"/>');
-              H.push('<circle cx="' + xS(11).toFixed(1) + '" cy="' + yS(finN).toFixed(1) + '" r="4" fill="#1a1d2e" stroke="#818cf8" stroke-width="2.4"/>');
-              H.push('<text x="' + xS(11).toFixed(1) + '" y="' + (yS(finN) + 18).toFixed(1) + '" font-size="9" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + mf(finN) + ' fin ' + anN + '</text>');
-              H.push('<circle cx="' + xS(23).toFixed(1) + '" cy="' + yS(finN1).toFixed(1) + '" r="4" fill="#1a1d2e" stroke="#4ade80" stroke-width="2.4"/>');
-              H.push('<text x="' + xS(23).toFixed(1) + '" y="' + (yS(finN1) - 10).toFixed(1) + '" font-size="9" font-weight="800" fill="#86efac" text-anchor="end">' + mf(finN1) + ' fin ' + (anN + 1) + '</text>');
-              H.push(axeTr);
-              H.push('<text x="195" y="284" font-size="10" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="560" y="284" font-size="10" font-weight="800" fill="#71717a" text-anchor="middle">' + (anN + 1) + ' - PREVISIONNEL</text></svg>');
-              H.push('<div class="leg"><span><span class="ti" style="background:#818cf8;"></span>Solde realise (ecritures comptables SG + BCI)</span><span><span class="ti" style="background:repeating-linear-gradient(90deg,#c084fc 0 7px,transparent 7px 12px);"></span>Solde previsionnel (encaissements chantiers - decaissements)</span></div></div>');
-              H.push('<div class="sect" style="margin-top:17px;">Points de passage</div><div class="carte" style="padding:8px 15px 13px;"><table>');
-              H.push('<tr><th>Echeance</th><th class="r">Solde projete</th><th style="padding-left:22px;">Commentaire</th></tr>');
-              H.push('<tr><td><b>31/12/' + anN + '</b></td><td class="r"><b style="color:' + (finN >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN) + '</b></td><td style="padding-left:22px;">Fin d\u0027exercice - previsionnel sur le rythme des chantiers en cours</td></tr>');
-              H.push('<tr><td>30/06/' + (anN + 1) + '</td><td class="r">' + mf(miN1) + '</td><td style="padding-left:22px;">Mi-exercice - carnet ' + (anN + 1) + ' engage (voir page 3)</td></tr>');
-              H.push('<tr><td><b>31/12/' + (anN + 1) + '</b></td><td class="r"><b style="color:' + (finN1 >= 0 ? "var(--vert)" : "#fda4af") + ';">' + mf(finN1) + '</b></td><td style="padding-left:22px;">Fin de projection - hypotheses identiques a ' + anN + '</td></tr></table></div>');
-              H.push('<div class="note" style="margin-top:15px;"><b>Methode.</b> Realise : soldes mensuels des comptes bancaires (SG 512130, BCI 512160), virements internes neutralises. Previsionnel : encaissements = metrage previsionnel x prix contractuel au metre par chantier (cadence objectif, jours ouvres lundi-jeudi, aleas historiques lisses) ; decaissements = charges constatees au fichier des ecritures comptables. Le solde ' + (anN + 1) + ' est chaine sur le solde projete de fin ' + anN + '.</div>');
-              H.push('<div class="pied"><span>WALLIS LABEL - Recapitulatif financier - donnees au ' + dateDoc + '</span><span>PAGE 2 / 3</span></div></div>');
-              // ═ PAGE 3 ═
-              H.push('<div class="page"><div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>Recapitulatif financier ' + anN + '-' + (anN + 1) + '</small></div></div><div class="ed"><span class="num">CARNET DE CHANTIERS</span><div class="dte">Campagnes ' + anN + ' et previsionnel ' + (anN + 1) + '</div></div></div>');
-              H.push('<div class="sect">Calendrier ' + anN + ' - ' + (anN + 1) + '</div><div class="carte" style="padding:15px 17px 12px;">');
-              H.push('<div class="ge"><div>' + anN + '</div><div>' + (anN + 1) + ' - PREVISIONNEL</div></div>');
-              H.push(gantt);
-              H.push('<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#6366f1,#818cf8);"></span>Aircore</span><span><span class="ti" style="background:linear-gradient(135deg,#0891b2,#22d3ee);"></span>Heliporte</span><span><span class="ti" style="background:linear-gradient(135deg,#db2777,#f472b6);"></span>Carotte</span><span><span class="ti" style="background:rgba(129,140,248,0.4);"></span>Previsionnel (hachure)</span></div></div>');
-              H.push('<div class="sect" style="margin-top:17px;">Detail par chantier</div><div class="carte" style="padding:8px 15px 13px;"><table>');
-              H.push('<tr><th>Client</th><th>Chantier</th><th>Periode</th><th class="r">Metrage objectif</th><th class="r">Realise</th><th class="r">CA previsionnel</th></tr>');
-              H.push(tbl);
-              H.push('<tr class="tot"><td colspan="5">TOTAL CARNET ' + anN + ' - ' + (anN + 1) + '</td><td class="r" style="color:#c7d2fe;">' + mf(totCa) + '</td></tr></table></div>');
-              H.push('<div class="note" style="margin-top:15px;"><b>Moyens de production.</b> Flotte de 10 sondeuses (aircore terrestre, heliporte, carotte) et equipes dediees par site. Le CA previsionnel par chantier = metrage objectif x prix contractuel au metre.</div>');
-              H.push('<div class="pied"><span>WALLIS LABEL - Recapitulatif financier - donnees au ' + dateDoc + '</span><span>PAGE 3 / 3</span></div></div>');
-              H.push('</body></html>');
               var wR = window.open("", "_blank");
               if (!wR) { alert("Autorise les popups pour generer le recap banque."); return; }
-              wR.document.write(H.join(""));
+              wR.document.write(wlRecapBanqueHtml(D));
               wR.document.close();
             };
 
@@ -30059,7 +30035,7 @@
                   : (soldeSource === "manuel" ? h("span", { style: { fontSize: 10, background: "rgba(129,140,248,0.20)", color: "#c7d2fe", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Ancre solde manuel") : (soldeSource === "compta" ? h("span", { style: { fontSize: 10, background: "rgba(34,197,94,0.15)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Compta connectee") : h("span", { style: { fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fde68a", padding: "2px 8px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.4 } }, "Solde parametres"))),
                   h("button", {
                     onClick: function() { genererRecapBanque(); },
-                    title: "Document bancaire imprimable : synthese, courbe de tresorerie " + now2.getFullYear() + "-" + (now2.getFullYear() + 1) + " et carnet de chantiers",
+                    title: "Document bancaire imprimable : encaissements et decaissements mois par mois, courbe de tresorerie " + now2.getFullYear() + "-" + (now2.getFullYear() + 1) + " et calendrier des chantiers",
                     style: { marginLeft: "auto", fontSize: 10, padding: "3px 10px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", border: "none", color: "#ffffff", borderRadius: 6, cursor: "pointer", fontWeight: 700 }
                   }, "Recap banque (PDF)"),
                   h("button", {
@@ -42664,6 +42640,294 @@
     // Modal de recherche unifie : equipements, personnel, chantiers, pieces,
     // soumissions (rapports / releves / conges / commandes / interventions).
     // Ouverture : Ctrl+K ou Cmd+K depuis n'importe quelle page.
+    // ── RECAP BANQUE v2 : generateur PUR (donnees -> page HTML imprimable) ──
+    // Aucune lecture de base ici : l'ecran Tresorerie assemble D (24 mois N/N+1,
+    // chantiers) et ce generateur ne fait que la mise en page. Meme fonction
+    // pour la demo et pour l'app.
+    // D = { anN, iNow, fracJour, dateDoc, decouvert, sourceSolde,
+    //       mois: [24 x { statut:'reel'|'partiel'|'prev', encBanque, encAttendu,
+    //              encFin, decaiss, solde, travauxDe, provenance:[{nom, mt}] }],
+    //       chantiers: [{ client, titre, famille, debut, fin, periodes:[{debut,fin,metrage}],
+    //              metrage, realise, caPrev }] }
+    function wlRecapBanqueHtml(D) {
+      var anN = D.anN, an1 = D.anN + 1, iNow = D.iNow, mois = D.mois;
+      var MC = ["jan", "fév", "mar", "avr", "mai", "juin", "juil", "août", "sept", "oct", "nov", "déc"];
+      var ML = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+      var esc = function(x) { return String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); };
+      var nbFr = function(v, dec) { return Number(v || 0).toLocaleString("fr-FR", { minimumFractionDigits: dec, maximumFractionDigits: dec }); };
+      var signe = function(v) { return v < 0 ? "-" : ""; };
+      var mf = function(v) { return signe(v) + nbFr(Math.abs(v) / 1e6, 1) + " MF"; };
+      var m1 = function(v) { return signe(v) + nbFr(Math.abs(v) / 1e6, 1); };
+      var m2 = function(v) { return signe(v) + nbFr(Math.abs(v) / 1e6, 2); };
+      var coul = function(v) { return v >= 0 ? "var(--vert)" : "#fda4af"; };
+      var nomMois = function(i) { return ML[i % 12] + " " + (i < 12 ? anN : an1); };
+      var court = function(s, n) { s = String(s || ""); return s.length > n ? s.substring(0, n - 1) + "." : s; };
+      var pasRond = function(v) {
+        if (!(v > 0)) return 1000000;
+        var p = Math.pow(10, Math.floor(Math.log(v) / Math.LN10)), r = v / p;
+        return (r <= 1 ? 1 : (r <= 2 ? 2 : (r <= 5 ? 5 : 10))) * p;
+      };
+      var clients = mois.map(function(x) { return (x.encBanque || 0) + (x.encAttendu || 0); });
+      var somme = function(arr, a, b) { var s = 0; for (var i = a; i < b; i++) s += arr[i] || 0; return s; };
+      var encN = somme(clients, 0, 12), encN1 = somme(clients, 12, 24);
+      var dejaN = somme(mois.map(function(x) { return x.encBanque || 0; }), 0, 12);
+      var finN = mois[11].solde, miN1 = mois[17].solde, finN1 = mois[23].solde, soldeAct = mois[iNow].solde;
+      var iMin = iNow;
+      for (var im = iNow; im < 24; im++) if (mois[im].solde < mois[iMin].solde) iMin = im;
+      var X0 = 52, LARG = 680, PAS = LARG / 24;
+      var xC = function(i) { return X0 + i * PAS + PAS / 2; };
+      var xAuj = X0 + (iNow + (D.fracJour || 0)) * PAS;
+
+      // ═ Graphe 1 : encaissements mois par mois (barres empilees) ═
+      var maxE = 1000000; // echelle mini 1 MF (graphe lisible meme sans donnees)
+      mois.forEach(function(x, i) { var t = Math.max(clients[i] + (x.encFin || 0), x.decaiss || 0); if (t > maxE) maxE = t; });
+      var pasE = pasRond(maxE / 4), hautE = Math.ceil(maxE / pasE) * pasE;
+      var BASE = 226, HB = 190;
+      var yE = function(v) { return BASE - (v / hautE) * HB; };
+      // Vert = encaissements (plein = sur les comptes, hachure = attendu), rouge = decaissements (hachure = prevu)
+      var svgE = '<defs><linearGradient id="gEb" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4ade80"/><stop offset="100%" stop-color="#16a34a"/></linearGradient>' +
+        '<linearGradient id="gDb" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fb7185"/><stop offset="100%" stop-color="#e11d48"/></linearGradient>' +
+        '<pattern id="hEa" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="rgba(34,197,94,0.28)"/><line x1="0" y1="0" x2="0" y2="5" stroke="rgba(134,239,172,0.8)" stroke-width="2"/></pattern>' +
+        '<pattern id="hDa" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="rgba(244,63,94,0.26)"/><line x1="0" y1="0" x2="0" y2="5" stroke="rgba(253,164,175,0.8)" stroke-width="2"/></pattern></defs>';
+      for (var g = 0; g <= hautE + pasE / 2; g += pasE) {
+        svgE += '<line x1="' + X0 + '" y1="' + yE(g).toFixed(1) + '" x2="' + (X0 + LARG) + '" y2="' + yE(g).toFixed(1) + '" stroke="rgba(255,255,255,' + (g === 0 ? "0.22" : "0.06") + ')"/>' +
+          '<text x="' + (X0 - 6) + '" y="' + (yE(g) + 3).toFixed(1) + '" font-size="8" fill="#71717a" text-anchor="end">' + (g === 0 ? "0" : m1(g)) + '</text>';
+      }
+      svgE += '<rect x="' + (X0 + 12 * PAS) + '" y="' + (BASE - HB - 8) + '" width="' + (12 * PAS) + '" height="' + (HB + 8) + '" fill="rgba(192,132,252,0.035)"/>';
+      svgE += '<line x1="' + (X0 + 12 * PAS) + '" y1="' + (BASE - HB - 8) + '" x2="' + (X0 + 12 * PAS) + '" y2="' + (BASE + 22) + '" stroke="rgba(255,255,255,0.14)"/>';
+      mois.forEach(function(x, i) {
+        // 2 barres cote a cote : encaissements (vert, empile) puis decaissements (rouge)
+        var bx = (xC(i) - 11).toFixed(1), dx = (xC(i) + 1).toFixed(1), y = BASE;
+        var hB = (x.encBanque || 0) / hautE * HB, hA = (x.encAttendu || 0) / hautE * HB, hF = (x.encFin || 0) / hautE * HB, hD = (x.decaiss || 0) / hautE * HB;
+        if (hB > 0) { y -= hB; svgE += '<rect x="' + bx + '" y="' + y.toFixed(1) + '" width="11" height="' + hB.toFixed(1) + '" fill="url(#gEb)"/>'; }
+        if (hA > 0) { y -= hA; svgE += '<rect x="' + bx + '" y="' + y.toFixed(1) + '" width="11" height="' + hA.toFixed(1) + '" fill="url(#hEa)" stroke="rgba(134,239,172,0.85)" stroke-width="0.8"/>'; }
+        if (hF > 0) { y -= hF; svgE += '<rect x="' + bx + '" y="' + y.toFixed(1) + '" width="11" height="' + hF.toFixed(1) + '" fill="#f59e0b" opacity="0.9"/>'; }
+        if (hD > 0) svgE += '<rect x="' + dx + '" y="' + (BASE - hD).toFixed(1) + '" width="10" height="' + hD.toFixed(1) + '" fill="' + (x.statut === "reel" ? "url(#gDb)" : "url(#hDa)") + '"' + (x.statut === "reel" ? "" : ' stroke="rgba(253,164,175,0.85)" stroke-width="0.8"') + '/>';
+        var yLab = Math.min(y, BASE - hD);
+        if (clients[i] > 0) svgE += '<text x="' + xC(i).toFixed(1) + '" y="' + (yLab - 4).toFixed(1) + '" font-size="7.6" font-weight="800" fill="' + (x.statut === "prev" || x.statut === "estime" ? "#bbf7d0" : "#dcfce7") + '" text-anchor="middle">' + m1(clients[i]) + '</text>';
+        svgE += '<text x="' + xC(i).toFixed(1) + '" y="' + (BASE + 13) + '" font-size="7.6" font-weight="' + (i === iNow ? "800" : "600") + '" fill="' + (i === iNow ? "#fde68a" : "#94a3b8") + '" text-anchor="middle">' + MC[i % 12] + '</text>';
+      });
+      svgE += '<line x1="' + xAuj.toFixed(1) + '" y1="' + (BASE - HB - 6) + '" x2="' + xAuj.toFixed(1) + '" y2="' + BASE + '" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3 3"/>';
+      svgE += '<text x="' + (X0 + 6 * PAS) + '" y="' + (BASE + 30) + '" font-size="9.5" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="' + (X0 + 18 * PAS) + '" y="' + (BASE + 30) + '" font-size="9.5" font-weight="800" fill="#a78bfa" text-anchor="middle">' + an1 + ' - PRÉVISIONNEL</text>';
+
+      // ═ Graphe 2 : courbe de tresorerie graduee ═
+      var vals = mois.map(function(x) { return x.solde; });
+      var bas = Math.min.apply(null, vals.concat([0, D.decouvert > 0 ? -D.decouvert : 0])), haut = Math.max.apply(null, vals.concat([0]));
+      var pasT = pasRond((haut - bas) / 5);
+      var basT = Math.floor(bas / pasT) * pasT, hautT = Math.ceil(haut / pasT) * pasT;
+      if (hautT - basT < pasT) hautT = basT + pasT;
+      var Y0 = 50, Y1 = 336;
+      var yT = function(v) { return Y1 - (v - basT) / (hautT - basT) * (Y1 - Y0); };
+      var svgT = '<defs><linearGradient id="aT" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8" stop-opacity="0.30"/><stop offset="100%" stop-color="#818cf8" stop-opacity="0.02"/></linearGradient></defs>';
+      mois.forEach(function(x, i) {
+        if (x.statut === "reel") svgT += '<rect x="' + (X0 + i * PAS).toFixed(1) + '" y="' + (Y0 - 14) + '" width="' + PAS.toFixed(1) + '" height="' + (Y1 - Y0 + 14) + '" fill="rgba(134,239,172,0.045)"/>';
+        else if (x.statut === "partiel") svgT += '<rect x="' + (X0 + i * PAS).toFixed(1) + '" y="' + (Y0 - 14) + '" width="' + PAS.toFixed(1) + '" height="' + (Y1 - Y0 + 14) + '" fill="rgba(251,191,36,0.07)"/>';
+      });
+      for (var gt = basT; gt <= hautT + pasT / 2; gt += pasT) {
+        var zero = Math.abs(gt) < 1;
+        svgT += '<line x1="' + X0 + '" y1="' + yT(gt).toFixed(1) + '" x2="' + (X0 + LARG) + '" y2="' + yT(gt).toFixed(1) + '" stroke="rgba(255,255,255,' + (zero ? "0.30" : "0.07") + ')"' + (zero ? ' stroke-width="1.2"' : "") + '/>' +
+          '<text x="' + (X0 - 6) + '" y="' + (yT(gt) + 3).toFixed(1) + '" font-size="8" fill="' + (zero ? "#cbd5e1" : "#71717a") + '" text-anchor="end">' + (zero ? "0" : (gt > 0 ? "+" : "") + m1(gt)) + '</text>';
+      }
+      if (D.decouvert > 0) {
+        svgT += '<line x1="' + X0 + '" y1="' + yT(-D.decouvert).toFixed(1) + '" x2="' + (X0 + LARG) + '" y2="' + yT(-D.decouvert).toFixed(1) + '" stroke="#f43f5e" stroke-width="1" stroke-dasharray="6 4" opacity="0.8"/>' +
+          '<text x="' + (X0 + 4) + '" y="' + (yT(-D.decouvert) - 4).toFixed(1) + '" font-size="8" font-weight="700" fill="#fda4af">Découvert autorisé ' + mf(-D.decouvert) + '</text>';
+      }
+      // Trait plein = mois REELS (compta saisie) ; pointille ensuite (mois
+      // estimes, en cours et previsionnels)
+      var iSol = -1;
+      mois.forEach(function(x, i) { if (x.statut === "reel") iSol = i; });
+      var ptsA = "", ptsB = "";
+      for (var pa = 0; pa <= iSol; pa++) ptsA += (pa ? " L " : "M ") + xC(pa).toFixed(1) + "," + yT(vals[pa]).toFixed(1);
+      var pb0 = Math.max(iSol, 0);
+      for (var pb = pb0; pb < 24; pb++) ptsB += (pb > pb0 ? " L " : "M ") + xC(pb).toFixed(1) + "," + yT(vals[pb]).toFixed(1);
+      if (iSol >= 1) {
+        var aireA = ptsA + " L " + xC(iSol).toFixed(1) + "," + yT(Math.max(basT, 0)).toFixed(1) + " L " + xC(0).toFixed(1) + "," + yT(Math.max(basT, 0)).toFixed(1) + " Z";
+        svgT += '<path d="' + aireA + '" fill="url(#aT)"/>';
+        svgT += '<path d="' + ptsA + '" fill="none" stroke="#818cf8" stroke-width="2.6" stroke-linejoin="round"/>';
+      }
+      svgT += '<path d="' + ptsB + '" fill="none" stroke="#c084fc" stroke-width="2.2" stroke-dasharray="6 4" stroke-linejoin="round"/>';
+      svgT += '<line x1="' + xAuj.toFixed(1) + '" y1="' + (Y0 - 14) + '" x2="' + xAuj.toFixed(1) + '" y2="' + Y1 + '" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3 3"/>' +
+        '<rect x="' + (xAuj - 33).toFixed(1) + '" y="' + (Y0 - 32) + '" width="66" height="14" rx="7" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.45)"/><text x="' + xAuj.toFixed(1) + '" y="' + (Y0 - 22) + '" font-size="8" font-weight="800" fill="#fde68a" text-anchor="middle">AUJOURD&#39;HUI</text>';
+      // Solde de CHAQUE mois : etiquette au-dessus d'un sommet local, en dessous d'un creux
+      vals.forEach(function(v, i) {
+        var y = yT(v), av = i > 0 ? vals[i - 1] : v, ap = i < 23 ? vals[i + 1] : v;
+        var dessous = v < (av + ap) / 2;
+        if (dessous && y + 12 > Y1 - 4) dessous = false; // jamais sur l'axe des mois
+        var fut = i > iSol;
+        svgT += '<circle cx="' + xC(i).toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2.6" fill="#1a1d2e" stroke="' + (fut ? "#c084fc" : "#818cf8") + '" stroke-width="1.6"/>';
+        svgT += '<text x="' + xC(i).toFixed(1) + '" y="' + (dessous ? y + 12 : y - 6).toFixed(1) + '" font-size="7" font-weight="700" fill="' + (v < 0 ? "#fda4af" : (fut ? "#d8b4fe" : "#c7d2fe")) + '" text-anchor="middle">' + m1(v) + '</text>';
+      });
+      svgT += '<circle cx="' + xC(iMin).toFixed(1) + '" cy="' + yT(vals[iMin]).toFixed(1) + '" r="6.5" fill="none" stroke="#f43f5e" stroke-width="1.6"/>';
+      mois.forEach(function(x, i) {
+        svgT += '<text x="' + xC(i).toFixed(1) + '" y="' + (Y1 + 14) + '" font-size="7.6" font-weight="' + (i === iNow ? "800" : "600") + '" fill="' + (i === iNow ? "#fde68a" : "#94a3b8") + '" text-anchor="middle">' + MC[i % 12] + '</text>';
+      });
+      svgT += '<line x1="' + (X0 + 12 * PAS) + '" y1="' + (Y0 - 14) + '" x2="' + (X0 + 12 * PAS) + '" y2="' + (Y1 + 22) + '" stroke="rgba(255,255,255,0.14)"/>';
+      svgT += '<text x="' + (X0 + 6 * PAS) + '" y="' + (Y1 + 31) + '" font-size="9.5" font-weight="800" fill="#c7d2fe" text-anchor="middle">' + anN + '</text><text x="' + (X0 + 18 * PAS) + '" y="' + (Y1 + 31) + '" font-size="9.5" font-weight="800" fill="#a78bfa" text-anchor="middle">' + an1 + ' - PRÉVISIONNEL</text>';
+
+      // ═ Tableau des encaissements mois par mois ═
+      // estime = mois ecoule pas encore saisi en comptabilite (calcule comme le previsionnel)
+      var stLib = { reel: ["r", "Réel"], partiel: ["c", "En cours"], estime: ["p", "Estimé"], prev: ["p", "Prévisionnel"] };
+      var aEstime = mois.some(function(x) { return x.statut === "estime"; });
+      var MA = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+      // Provenance sur UNE ligne : mois des travaux + 2 plus gros chantiers (+n autres)
+      var provTxt = function(x, i) {
+        if (x.statut === "reel") return "Crédits bancaires SG + BCI";
+        var p = (x.provenance || []).filter(function(q) { return q && q.mt > 0; }).sort(function(a, b) { return b.mt - a.mt; });
+        var moisT = '<span class="tdm">' + MA[(i + 23) % 12] + " :</span> ";
+        if (!p.length) return x.encAttendu > 0 ? moisT + "travaux du mois" : "-";
+        var t = p.slice(0, 2).map(function(q) { return esc(court(q.nom, 13)) + " " + m1(q.mt); }).join(" · ");
+        if (p.length > 2) t += " · +" + (p.length - 2);
+        return moisT + t;
+      };
+      var lignesEnc = "";
+      var totAn = function(a) {
+        var b = 0, at = 0, f = 0, d = 0;
+        for (var i = a * 12; i < a * 12 + 12; i++) { b += mois[i].encBanque || 0; at += mois[i].encAttendu || 0; f += mois[i].encFin || 0; d += mois[i].decaiss || 0; }
+        return '<tr class="tot"><td colspan="2">TOTAL ' + (a ? an1 : anN) + '</td><td class="r ve">' + (b ? m2(b) : "-") + '</td><td class="r va">' + (at ? m2(at) : "-") + '</td><td class="r fi">' + (f ? m2(f) : "-") + '</td><td class="r ro">' + m2(d) + '</td><td class="r" style="color:' + coul(mois[a * 12 + 11].solde) + ';">' + m2(mois[a * 12 + 11].solde) + '</td><td></td></tr>';
+      };
+      mois.forEach(function(x, i) {
+        var st = stLib[x.statut] || stLib.prev;
+        lignesEnc += '<tr' + (i === iNow ? ' class="cour"' : "") + '><td><b>' + MA[i % 12] + '</b> <span class="tdm">' + (i < 12 ? anN : an1) + '</span></td><td><span class="st ' + st[0] + '">' + st[1] + '</span></td>' +
+          '<td class="r ve">' + (x.encBanque ? m2(x.encBanque) : "-") + '</td><td class="r va">' + (x.encAttendu ? m2(x.encAttendu) : "-") + '</td><td class="r fi">' + (x.encFin ? m2(x.encFin) : "-") + '</td>' +
+          '<td class="r ro">' + m2(x.decaiss || 0) + '</td><td class="r"><b style="color:' + coul(x.solde) + ';">' + m2(x.solde) + '</b></td><td class="prov">' + provTxt(x, i) + '</td></tr>';
+        if (i === 11 || i === 23) lignesEnc += totAn(i === 11 ? 0 : 1);
+      });
+
+      // ═ Calendrier mois par mois ═
+      var posJ = function(iso) {
+        var s = String(iso || "").substring(0, 10).split("-");
+        if (s.length !== 3) return null;
+        var y = parseInt(s[0], 10), m = parseInt(s[1], 10) - 1, j = parseInt(s[2], 10);
+        var nbJ = new Date(y, m + 1, 0).getDate();
+        return ((y - anN) * 12 + m + (j - 1) / nbJ) / 24 * 100;
+      };
+      var finJ = function(iso) {
+        var s = String(iso || "").substring(0, 10).split("-");
+        if (s.length !== 3) return null;
+        var y = parseInt(s[0], 10), m = parseInt(s[1], 10) - 1, j = parseInt(s[2], 10);
+        var nbJ = new Date(y, m + 1, 0).getDate();
+        return ((y - anN) * 12 + m + j / nbJ) / 24 * 100;
+      };
+      var jjmmaa = function(iso) { var s = String(iso || "").substring(0, 10).split("-"); return s.length === 3 ? s[2] + "/" + s[1] + "/" + s[0].substring(2) : "?"; };
+      var fam = { aircore: ["b-ind", "aircore"], heliporte: ["b-cya", "héliporté"], carotte: ["b-ros", "carotté"] };
+      var auj = ((iNow + (D.fracJour || 0)) / 24 * 100).toFixed(2);
+      var chs = D.chantiers || [];
+      var lignesG = chs.map(function(c) {
+        var prevC = posJ(c.debut) >= 50 || c.prev;
+        var f = fam[c.famille] || fam.aircore;
+        var per = (c.periodes && c.periodes.length) ? c.periodes : [{ debut: c.debut, fin: c.fin }];
+        var prev = prevC;
+        var barres = "", dMin = 101, dMax = -1, nbBarres = 0;
+        per.forEach(function(p) {
+          var a = posJ(p.debut), b = finJ(p.fin || p.debut);
+          if (a == null || b == null || isNaN(a) || isNaN(b)) return;
+          if (b < a) { var tmpAB = a; a = b; b = tmpAB; }
+          if (b <= 0 || a >= 100) return; // periode hors des 24 mois : pas de barre fantome
+          nbBarres++;
+          a = Math.max(0, Math.min(100, a)); b = Math.max(0, Math.min(100, b));
+          if (b <= a) b = Math.min(100, a + 0.6);
+          if (a < dMin) dMin = a; if (b > dMax) dMax = b;
+          barres += '<div class="gb ' + f[0] + (prev ? " prev" : "") + '" style="left:' + a.toFixed(2) + '%;width:' + (b - a).toFixed(2) + '%;"></div>';
+        });
+        if (nbBarres > 1 && dMax > dMin) barres = '<div class="gpo" style="left:' + dMin.toFixed(2) + '%;width:' + (dMax - dMin).toFixed(2) + '%;"></div>' + barres;
+        var lib = nbBarres ? (c.metrage ? nbFr(c.metrage, 0) + " m" : "") + (per.length > 1 ? " · " + per.length + " périodes" : "") : "";
+        // Etiquette a droite de la barre, sinon a gauche, sinon DANS la barre
+        // (chantier couvrant presque les 24 mois : jamais sur le nom)
+        var posLab = dMax < 82 ? "left:" + (dMax + 0.8).toFixed(2) + "%;" : (dMin > 18 ? "right:" + (100 - dMin + 0.8).toFixed(2) + "%;text-align:right;" : "left:" + (dMin + 0.8).toFixed(2) + "%;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.7);z-index:3;");
+        var lab = lib ? '<div class="gtx" style="' + posLab + '">' + lib + '</div>' : "";
+        return '<div class="gl"><div class="gn"><span class="gnt">' + esc(court(c.titre, 24)) + '</span><small>' + esc(jjmmaa(c.debut)) + ' → ' + esc(jjmmaa(c.fin)) + ' · ' + esc(court(c.client || "-", 16)) + '</small></div>' +
+          '<div class="gz"><div class="gau" style="left:' + auj + '%;"></div>' + barres + lab + '</div></div>';
+      });
+      var enteteG = '<div class="gl gh"><div class="gn"></div><div class="gz gzh"><div class="gan" style="left:0;width:50%;">' + anN + '</div><div class="gan p" style="left:50%;width:50%;">' + an1 + ' - PRÉVISIONNEL</div>';
+      for (var mg = 0; mg < 24; mg++) enteteG += '<div class="gmo' + (mg === iNow ? " auj" : "") + '" style="left:' + (mg / 24 * 100).toFixed(3) + '%;">' + MC[mg % 12].charAt(0).toUpperCase() + MC[mg % 12].substring(1, 3) + '</div>';
+      enteteG += '</div></div>';
+
+      // ═ Assemblage ═
+      var ent = function(sous, badge, dte) { return '<div class="ent"><div class="lb"><div class="lc">W</div><div class="sc">WALLIS LABEL<small>' + sous + '</small></div></div><div class="ed"><span class="num">' + badge + '</span><div class="dte">' + dte + '</div></div></div>'; };
+      var pied = '<div class="pied"><span>WALLIS LABEL - Récapitulatif financier - données au ' + esc(D.dateDoc) + '</span><span>PAGE %%P%% / %%T%%</span></div>';
+      var sousT = "Récapitulatif financier " + anN + "-" + an1;
+      var pages = [];
+      // Page 1 : synthese + encaissements
+      pages.push(ent("Forage minier - Nouvelle-Calédonie", "DOSSIER BANCAIRE", "Édité le " + esc(D.dateDoc)) +
+        '<div class="hero"><h1>Récapitulatif financier<br><span class="grad">Trésorerie &amp; chantiers ' + anN + ' - ' + an1 + '</span></h1><div class="sous">Encaissements et trésorerie mois par mois, projection à fin ' + an1 + ' et carnet de chantiers.</div></div>' +
+        '<div class="sect">Synthèse</div><div class="kpis">' +
+        '<div class="kpi"><div class="l">Solde fin ' + ML[iNow % 12] + ' ' + anN + '</div><div class="v" style="color:' + coul(soldeAct) + ';">' + mf(soldeAct) + '</div><div class="s">SG + BCI, mois en cours</div></div>' +
+        '<div class="kpi"><div class="l">Encaissements ' + anN + ' hors emprunts</div><div class="v" style="color:#4ade80;">' + mf(encN) + '</div><div class="s">' + (dejaN > 0 ? "dont " + mf(dejaN) + " déjà sur les comptes" : "travaux réglés à ~30 jours") + '</div></div>' +
+        '<div class="kpi"><div class="l">Encaissements ' + an1 + '</div><div class="v" style="color:#4ade80;">' + mf(encN1) + '</div><div class="s">prévus, carnet de chantiers</div></div>' +
+        '<div class="kpi"><div class="l">Solde projeté fin ' + anN + '</div><div class="v" style="color:' + coul(finN) + ';">' + mf(finN) + '</div><div class="s">prévisionnel chaîné</div></div>' +
+        '<div class="kpi"><div class="l">Solde projeté fin ' + an1 + '</div><div class="v" style="color:' + coul(finN1) + ';">' + mf(finN1) + '</div><div class="s">hypothèses données ' + anN + '</div></div>' +
+        '<div class="kpi"><div class="l">Point bas prévu</div><div class="v" style="color:' + coul(vals[iMin]) + ';">' + mf(vals[iMin]) + '</div><div class="s">fin ' + nomMois(iMin) + (D.decouvert > 0 ? " · marge " + mf(vals[iMin] + D.decouvert) + " sur le découvert" : "") + '</div></div></div>' +
+        '<div class="sect">Encaissements et décaissements mensuels - MF XPF</div><div class="carte" style="padding:15px 15px 10px;"><svg viewBox="0 0 740 264" style="width:100%;">' + svgE + '</svg>' +
+        '<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#16a34a,#4ade80);"></span>Encaissé sur les comptes</span><span><span class="ti" style="background:repeating-linear-gradient(45deg,#86efac 0 2px,rgba(34,197,94,0.3) 2px 4px);"></span>Encaissement attendu (travaux du mois précédent, ~30 j)</span><span><span class="ti" style="background:#f59e0b;"></span>Financement (emprunt, apport)</span><span><span class="ti" style="background:linear-gradient(135deg,#e11d48,#fb7185);"></span>Décaissé (réel)</span><span><span class="ti" style="background:repeating-linear-gradient(45deg,#fda4af 0 2px,rgba(244,63,94,0.3) 2px 4px);"></span>Décaissement prévu</span><span style="color:var(--dim);">Chiffre au-dessus = encaissements du mois</span></div></div>' +
+        '<div class="note" style="margin-top:14px;"><b>Ce que contient ce dossier.</b> Page 2 : encaissements, décaissements et solde de chaque mois, avec la provenance des encaissements attendus. Page 3 : courbe de trésorerie graduée, solde mois par mois. Page 4 : calendrier des chantiers mois par mois.</div>' + pied);
+      // Page 2 : tableau mois par mois
+      pages.push(ent(sousT, "ENCAISSEMENTS", "Mois par mois, en millions de F CFP") +
+        '<div class="sect">Encaissements, décaissements et solde - MF XPF</div><div class="carte" style="padding:6px 12px 10px;"><table class="tm">' +
+        '<colgroup><col style="width:11%"><col style="width:12%"><col style="width:9%"><col style="width:9%"><col style="width:8.5%"><col style="width:9%"><col style="width:9.5%"><col style="width:32%"></colgroup>' +
+        '<tr><th>Mois</th><th>Statut</th><th class="r ve">Encaissé</th><th class="r va">Attendu</th><th class="r fi">Financ.</th><th class="r ro">Décaissé</th><th class="r">Solde fin</th><th>Provenance de l&#39;attendu (MF)</th></tr>' +
+        lignesEnc + '</table></div>' +
+        '<div class="note" style="margin-top:12px;"><b>Lecture.</b> <b>Réel</b> : crédits bancaires des comptes SG (512130) et BCI (512160), virements internes entre les deux comptes neutralisés ; emprunts et apports isolés en « Financement ». <b>En cours</b> : déjà encaissé ce mois-ci + complément attendu. ' + (aEstime ? '<b>Estimé</b> : mois écoulé pas encore saisi en comptabilité, calculé comme le prévisionnel. ' : "") + '<b>Prévisionnel</b> : travaux du mois précédent (métrage × prix contractuel au mètre + activités facturables), réglés à ~30 jours fin de mois. Solde fin de mois = solde précédent + encaissements + financement - décaissements.</div>' + pied);
+      // Page 3 : tresorerie
+      pages.push(ent(sousT, "TRÉSORERIE", "Solde mensuel consolidé SG + BCI") +
+        '<div class="sect">Courbe de trésorerie - janvier ' + anN + ' à décembre ' + an1 + ' - MF XPF</div><div class="carte" style="padding:16px 14px 10px;"><svg viewBox="0 0 740 374" style="width:100%;">' + svgT + '</svg>' +
+        '<div class="leg"><span><span class="ti" style="background:#818cf8;"></span>Solde réalisé</span><span><span class="ti" style="background:repeating-linear-gradient(90deg,#c084fc 0 6px,transparent 6px 10px);"></span>Solde prévisionnel</span><span><span class="ti" style="background:rgba(134,239,172,0.35);"></span>Mois réel bancaire</span><span><span class="ti" style="background:rgba(251,191,36,0.45);"></span>Mois en cours</span>' + (D.decouvert > 0 ? '<span><span class="ti" style="background:repeating-linear-gradient(90deg,#f43f5e 0 6px,transparent 6px 10px);"></span>Découvert autorisé</span>' : "") + '<span><span class="ti" style="background:none;border:1.5px solid #f43f5e;border-radius:50%;width:9px;height:9px;"></span>Point bas</span></div></div>' +
+        '<div class="sect" style="margin-top:15px;">Points de passage</div><div class="carte" style="padding:6px 14px 11px;"><table>' +
+        '<tr><th>Échéance</th><th class="r">Solde</th><th style="padding-left:20px;">Commentaire</th></tr>' +
+        '<tr><td>Fin ' + nomMois(iNow) + '</td><td class="r"><b style="color:' + coul(soldeAct) + ';">' + mf(soldeAct) + '</b></td><td style="padding-left:20px;">Mois en cours : encaissé à date + attendu</td></tr>' +
+        '<tr><td><b>Fin ' + nomMois(iMin) + '</b></td><td class="r"><b style="color:' + coul(vals[iMin]) + ';">' + mf(vals[iMin]) + '</b></td><td style="padding-left:20px;">Point bas de la projection' + (D.decouvert > 0 ? " - marge de " + mf(vals[iMin] + D.decouvert) + " sur le découvert autorisé" : "") + '</td></tr>' +
+        '<tr><td><b>31/12/' + anN + '</b></td><td class="r"><b style="color:' + coul(finN) + ';">' + mf(finN) + '</b></td><td style="padding-left:20px;">Fin d&#39;exercice</td></tr>' +
+        '<tr><td>30/06/' + an1 + '</td><td class="r">' + mf(miN1) + '</td><td style="padding-left:20px;">Mi-exercice - carnet ' + an1 + ' engagé</td></tr>' +
+        '<tr><td><b>31/12/' + an1 + '</b></td><td class="r"><b style="color:' + coul(finN1) + ';">' + mf(finN1) + '</b></td><td style="padding-left:20px;">Fin de projection - hypothèses identiques à ' + anN + '</td></tr></table></div>' +
+        '<div class="note" style="margin-top:13px;"><b>Méthode.</b> Réalisé : soldes mensuels des comptes bancaires, virements internes neutralisés. Prévisionnel : encaissements = travaux du mois précédent ; décaissements = salaires, frais de structure, échéances d&#39;emprunts et dépenses d&#39;exploitation au mètre mesurées sur ' + anN + ' (jamais en dessous du rythme bancaire réel). Le solde ' + an1 + ' est chaîné sur le solde projeté de fin ' + anN + '.</div>' + pied);
+      // Page 4 (et suivantes) : calendrier seul (le detail par chantier a ete retire a la demande de Tomy)
+      var legG = '<div class="leg"><span><span class="ti" style="background:linear-gradient(135deg,#6366f1,#818cf8);"></span>Aircore</span><span><span class="ti" style="background:linear-gradient(135deg,#0891b2,#22d3ee);"></span>Héliporté</span><span><span class="ti" style="background:linear-gradient(135deg,#db2777,#f472b6);"></span>Carotté</span><span><span class="ti" style="background:rgba(129,140,248,0.4);"></span>Prévisionnel (hachuré)</span><span><span class="ti" style="background:rgba(255,255,255,0.28);height:1px;"></span>Coupure entre deux périodes</span><span><span class="ti" style="background:#fbbf24;width:2px;height:10px;"></span>Aujourd&#39;hui</span></div>';
+      var badgeC = "CARNET DE CHANTIERS", dteC = "Campagnes " + anN + " et prévisionnel " + an1;
+      var PAR_PAGE = 26; // marge : la page A4 coupe sans prevenir (overflow hidden)
+      for (var pg = 0; pg === 0 || pg * PAR_PAGE < lignesG.length; pg++) {
+        var tranche = lignesG.slice(pg * PAR_PAGE, (pg + 1) * PAR_PAGE).join("");
+        pages.push(ent(sousT, badgeC, dteC) +
+          '<div class="sect">Calendrier mois par mois - ' + chs.length + ' chantier' + (chs.length > 1 ? "s" : "") + (pg ? " (suite)" : "") + '</div><div class="carte" style="padding:12px 14px 10px;">' + enteteG + (tranche || '<div style="color:var(--dim);font-size:10px;padding:8px 0;">Aucun chantier sur la période.</div>') + legG + '</div>' +
+          (pg === 0 ? '<div class="note" style="margin-top:13px;"><b>Lecture.</b> Une ligne par chantier, une colonne par mois. La barre couvre les dates de travail saisies (plusieurs barres quand le chantier est coupé en périodes), avec le métrage objectif à côté. Les chantiers ' + an1 + ' sont hachurés : ils sont planifiés, pas encore engagés.</div>' : "") + pied);
+      }
+
+      var css = [
+        ':root{--bg:#1a1d2e;--surface:rgba(36,40,60,0.85);--border:rgba(255,255,255,0.08);--text:#fafafa;--text2:#cbd5e1;--muted:#a1a1aa;--dim:#71717a;--vert:#86efac;--ambre:#fde68a;}',
+        '*{margin:0;padding:0;box-sizing:border-box;}html{background:#0e1018;}body{font-family:Inter,system-ui,sans-serif;color:var(--text);font-size:12.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}',
+        '.bar{position:sticky;top:0;z-index:50;background:linear-gradient(135deg,#4338ca,#6d28d9);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;font-size:13px;font-weight:700;}',
+        '.bar button{margin-left:auto;padding:8px 18px;border:none;border-radius:9px;background:#fff;color:#4338ca;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer;}',
+        '.page{width:210mm;height:296mm;margin:16px auto;padding:12mm 12mm 10mm;position:relative;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 6px 28px rgba(0,0,0,0.5);background:radial-gradient(ellipse 90% 45% at 50% -12%,rgba(120,119,198,0.30),transparent),radial-gradient(ellipse 55% 40% at 95% 102%,rgba(59,130,246,0.18),transparent),radial-gradient(ellipse 45% 35% at -5% 65%,rgba(236,72,153,0.12),transparent),var(--bg);}',
+        '@media print{@page{size:A4 portrait;margin:0;}html,body{background:var(--bg);}.bar{display:none;}.page{margin:0;box-shadow:none;page-break-after:always;}.page:last-child{page-break-after:auto;}}',
+        '.ent{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}.lb{display:flex;align-items:center;gap:11px;}',
+        '.lc{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#818cf8,#c084fc);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:19px;color:#fff;box-shadow:0 4px 18px rgba(129,140,248,0.45);}',
+        '.sc{font-size:16.5px;font-weight:800;}.sc small{display:block;font-size:10px;color:var(--muted);font-weight:600;margin-top:1px;}',
+        '.ed{text-align:right;}.ed .num{display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.8px;color:#e0e7ff;background:rgba(99,102,241,0.18);border:1px solid rgba(129,140,248,0.45);border-radius:999px;padding:4px 13px;}.ed .dte{font-size:10px;color:var(--dim);margin-top:5px;font-weight:600;}',
+        '.hero{margin:2px 0 14px;}.hero h1{font-size:29px;font-weight:900;letter-spacing:-0.03em;line-height:1.08;}.hero .grad{background:linear-gradient(90deg,#818cf8,#c084fc);-webkit-background-clip:text;background-clip:text;color:transparent;}.hero .sous{font-size:12px;color:var(--text2);margin-top:6px;}',
+        '.sect{display:flex;align-items:center;gap:9px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.1px;color:#a5b4fc;margin:0 0 9px;}.sect::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,rgba(129,140,248,0.45),transparent);}',
+        '.carte{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:15px 17px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);}',
+        '.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:15px;}.kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:11px 14px;position:relative;overflow:hidden;}.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#818cf8,#c084fc);}',
+        '.kpi .l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);margin-bottom:5px;}.kpi .v{font-size:19px;font-weight:800;letter-spacing:-0.02em;}.kpi .s{font-size:9px;color:var(--dim);margin-top:3px;font-weight:600;}',
+        '.note{background:linear-gradient(135deg,rgba(99,102,241,0.13),rgba(99,102,241,0.04));border:1px solid rgba(129,140,248,0.35);border-radius:13px;padding:10px 14px;font-size:10.5px;color:var(--text2);line-height:1.6;}.note b{color:#e0e7ff;}',
+        'table{width:100%;border-collapse:collapse;font-size:10.5px;}th{text-align:left;font-size:8.3px;text-transform:uppercase;letter-spacing:0.7px;color:var(--muted);border-bottom:1px solid rgba(129,140,248,0.4);padding:6px 7px;font-weight:800;}td{padding:5.5px 7px;border-bottom:1px solid rgba(255,255,255,0.05);color:var(--text2);}td b{color:var(--text);}td.r,th.r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}tr.tot td{border-top:1.5px solid rgba(129,140,248,0.5);border-bottom:none;font-weight:800;color:var(--text);padding-top:7px;padding-bottom:8px;}',
+        '.tm{table-layout:fixed;}.tm td{padding:5.2px 6px;font-size:9.8px;white-space:nowrap;}.tm th{padding:5px 6px;white-space:nowrap;}.tm tr.cour td{background:rgba(251,191,36,0.07);}.prov{font-size:8.6px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;}.tdm{color:var(--dim);font-weight:600;}',
+        '.tm td.ve,.tm th.ve{color:#4ade80;}.tm td.ve{font-weight:700;}.tm td.va,.tm th.va{color:#86efac;}.tm td.fi,.tm th.fi{color:var(--ambre);}.tm td.ro,.tm th.ro{color:#fb7185;}.tm td.ro{font-weight:700;}.tm tr.tot td.ve,.tm tr.tot td.va{color:#4ade80;}.tm tr.tot td.ro{color:#fb7185;}',
+        '.st{display:inline-block;padding:1.5px 7px;border-radius:999px;font-size:8.2px;font-weight:800;white-space:nowrap;}.st.r{background:rgba(134,239,172,0.12);border:1px solid rgba(134,239,172,0.4);color:var(--vert);}.st.c{background:rgba(245,158,11,0.13);border:1px solid rgba(245,158,11,0.45);color:var(--ambre);}.st.p{background:rgba(167,139,250,0.13);border:1px solid rgba(167,139,250,0.45);color:#ddd6fe;}',
+        '.leg{display:flex;gap:14px;flex-wrap:wrap;font-size:9px;color:var(--muted);font-weight:600;margin-top:8px;}.leg span{display:inline-flex;align-items:center;gap:6px;}.ti{width:20px;height:4px;border-radius:2px;display:inline-block;}',
+        '.gl{display:flex;align-items:center;gap:8px;margin-bottom:4px;}.gn{width:160px;font-size:9.6px;font-weight:700;flex-shrink:0;text-align:right;color:var(--text2);line-height:1.2;}.gnt{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.gn small{display:block;font-size:7.4px;color:var(--dim);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '.gz{flex:1;height:19px;position:relative;background-color:rgba(0,0,0,0.25);background-image:linear-gradient(90deg,rgba(255,255,255,0.07) 1px,transparent 1px);background-size:calc(100% / 24) 100%;border-radius:4px;}',
+        '.gh{margin-bottom:6px;}.gzh{height:28px;background:none;}.gan{position:absolute;top:0;font-size:8.5px;font-weight:800;letter-spacing:1px;color:#c7d2fe;text-align:center;border-bottom:1px solid rgba(129,140,248,0.5);padding-bottom:2px;}.gan.p{color:#a78bfa;border-color:rgba(167,139,250,0.5);}',
+        '.gmo{position:absolute;top:15px;width:4.1667%;text-align:center;font-size:7.4px;font-weight:700;color:var(--dim);}.gmo.auj{color:#fde68a;}',
+        '.gb{position:absolute;top:3px;bottom:3px;border-radius:3px;}.gpo{position:absolute;top:9px;height:1px;background:rgba(255,255,255,0.28);}.gau{position:absolute;top:-2px;bottom:-2px;width:1.5px;background:#fbbf24;opacity:0.85;z-index:2;}',
+        '.gtx{position:absolute;top:3px;font-size:7.8px;font-weight:700;color:var(--text2);white-space:nowrap;line-height:13px;}',
+        '.b-ind{background:linear-gradient(135deg,#6366f1,#818cf8);}.b-cya{background:linear-gradient(135deg,#0891b2,#22d3ee);}.b-ros{background:linear-gradient(135deg,#db2777,#f472b6);}.gb.prev{opacity:0.62;}.gb.prev::after{content:"";position:absolute;top:0;left:0;right:0;bottom:0;border-radius:3px;background:repeating-linear-gradient(45deg,rgba(255,255,255,0.38) 0 3px,transparent 3px 8px);}',
+        '.pied{margin-top:auto;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);font-size:8.5px;color:var(--dim);display:flex;justify-content:space-between;font-weight:600;}'
+      ].join("");
+      var corps = pages.map(function(p, i) { return '<div class="page">' + p.replace("%%P%%", String(i + 1)).replace("%%T%%", String(pages.length)) + '</div>'; }).join("");
+      return '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Recap banque Wallis Label ' + anN + '-' + an1 + '</title>' +
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"><style>' + css + '</style></head><body>' +
+        '<div class="bar">Recap banque - vérifie les chiffres puis imprime (destination : Enregistrer en PDF).<button onclick="window.print()">Imprimer / PDF</button></div>' +
+        corps + '</body></html>';
+    }
+
     // ═══ JARVIS : assistant IA a l'ecrit (administrateur) ═══
     // Bouton rond en bas a droite (a gauche de la loupe) -> panneau lateral.
     // Ecrit d'abord : reponses mises en forme (titres, listes, gras, tableaux),
