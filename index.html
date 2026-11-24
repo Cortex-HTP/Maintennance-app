@@ -42664,8 +42664,11 @@
     // Modal de recherche unifie : equipements, personnel, chantiers, pieces,
     // soumissions (rapports / releves / conges / commandes / interventions).
     // Ouverture : Ctrl+K ou Cmd+K depuis n'importe quelle page.
-    // ═══ JARVIS : assistant voix + texte (administrateur) ═══
+    // ═══ JARVIS : assistant IA a l'ecrit (administrateur) ═══
     // Bouton rond en bas a droite (a gauche de la loupe) -> panneau lateral.
+    // Ecrit d'abord : reponses mises en forme (titres, listes, gras, tableaux),
+    // micro = simple dictee dans la zone de texte (rien ne part sans Entree),
+    // lecture a voix haute seulement sur demande (bouton « Écouter »).
     // Le serveur /api/jarvis LIT la base et la boite mail ; il ne fait AUCUNE
     // action : il renvoie des PROPOSITIONS (cartes orange). Seul le clic
     // « Confirmer » execute, ici, avec la session de l'utilisateur :
@@ -42673,12 +42676,13 @@
     // (seulement s'ils sont encore en attente), renvoi des rapports au client
     // (send-rapport de l'APP Employes). Jamais de suppression.
     var JV_EMPLOYES_API = "https://employes-psi.vercel.app";
-    var JV_SUGGESTIONS = ["Mon point du matin", "Les relevés d'heures à valider", "Les rapports pas encore signés", "Mes emails non lus", "Le carburant du mois", "Où en sont les chantiers ?"];
+    var JV_SUGGESTIONS = ["Mon point du matin", "Les relevés d'heures à valider", "Les rapports pas encore signés", "Mes emails non lus", "Analyse le carburant du mois", "Quels chantiers sont en retard ?"];
     var JV_CSS = [
       ".jv-fab{position:fixed;bottom:calc(14px + env(safe-area-inset-bottom));right:calc(72px + env(safe-area-inset-right));z-index:90;width:50px;height:50px;border-radius:50%;border:none;cursor:pointer;color:#fff;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 35% 30%,#a5f3fc,#6366f1 55%,#312e81);box-shadow:0 0 0 5px rgba(99,102,241,0.18),0 10px 26px rgba(49,46,129,0.6);transition:transform .2s}",
       ".jv-fab:hover{transform:scale(1.06)}",
-      ".jv-pan{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;z-index:1001;background:#161a2c;border-left:1px solid rgba(255,255,255,0.10);box-shadow:-30px 0 60px -20px rgba(0,0,0,0.8);display:flex;flex-direction:column;color:#fafafa;font-size:14px;padding-bottom:env(safe-area-inset-bottom)}",
-      "@media (max-width:640px){.jv-pan{width:100vw;left:0;border-left:none;padding-top:env(safe-area-inset-top)}}",
+      ".jv-pan{position:fixed;top:0;right:0;bottom:0;width:520px;max-width:100vw;z-index:1001;background:#161a2c;border-left:1px solid rgba(255,255,255,0.10);box-shadow:-30px 0 60px -20px rgba(0,0,0,0.8);display:flex;flex-direction:column;color:#fafafa;font-size:14px;padding-bottom:env(safe-area-inset-bottom)}",
+      ".jv-pan.large{width:min(940px,100vw)}",
+      "@media (max-width:640px){.jv-pan,.jv-pan.large{width:100vw;left:0;border-left:none;padding-top:env(safe-area-inset-top)}.jv-agrandir{display:none !important}}",
       ".jv-tete{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.08)}",
       ".jv-orbe{width:40px;height:40px;border-radius:50%;flex-shrink:0;position:relative;background:radial-gradient(circle at 35% 30%,#a5f3fc,#6366f1 55%,#312e81)}",
       ".jv-orbe:after{content:'';position:absolute;top:-5px;left:-5px;right:-5px;bottom:-5px;border-radius:50%;border:2px solid transparent}",
@@ -42689,10 +42693,35 @@
       "@keyframes jvTourne{to{transform:rotate(360deg)}}",
       ".jv-ico{width:34px;height:34px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}",
       ".jv-ico.on{background:rgba(134,239,172,0.12);border-color:rgba(134,239,172,0.4);color:#bbf7d0}",
-      ".jv-fil{flex:1;overflow-y:auto;padding:14px 14px 6px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}",
-      ".jv-moi{align-self:flex-end;max-width:88%;background:linear-gradient(135deg,#4f46e5,#6366f1);padding:9px 12px;border-radius:14px 4px 14px 14px;line-height:1.5;white-space:pre-wrap}",
-      ".jv-lui{align-self:flex-start;max-width:96%;width:96%}",
-      ".jv-bulle{display:inline-block;background:rgba(40,44,66,0.95);border:1px solid rgba(255,255,255,0.07);padding:10px 12px;border-radius:4px 14px 14px 14px;line-height:1.55;white-space:pre-wrap}",
+      ".jv-fil{flex:1;overflow-y:auto;padding:14px 16px 6px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch;position:relative}",
+      ".jv-moi{align-self:flex-end;max-width:85%;background:linear-gradient(135deg,#4f46e5,#6366f1);padding:9px 13px;border-radius:14px 4px 14px 14px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}",
+      ".jv-lui{align-self:stretch;min-width:0}",
+      ".jv-bulle{display:block;background:rgba(36,40,62,0.92);border:1px solid rgba(255,255,255,0.07);padding:12px 14px;border-radius:4px 14px 14px 14px;word-wrap:break-word}",
+      ".jv-bulle.err{border-color:rgba(244,63,94,0.4);color:#fecdd3;white-space:pre-wrap;line-height:1.55}",
+      ".jv-md{font-size:14px;line-height:1.62;color:#e5e7eb}",
+      ".jv-md p{margin:0 0 8px}.jv-md p:last-child,.jv-md ul:last-child,.jv-md ol:last-child{margin-bottom:0}",
+      ".jv-md b{color:#fff;font-weight:700}.jv-md em{color:#cbd5e1}",
+      ".jv-md code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:5px}",
+      ".jv-md-t{font-weight:800;font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:#a5b4fc;margin:14px 0 5px}",
+      ".jv-md-t:first-child{margin-top:0}",
+      ".jv-md ul,.jv-md ol{margin:0 0 8px;padding-left:20px}",
+      ".jv-md li{margin:3px 0;padding-left:2px}.jv-md li::marker{color:#818cf8}",
+      ".jv-md-tab{overflow-x:auto;margin:4px 0 10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px}",
+      ".jv-md-tab:last-child{margin-bottom:0}",
+      ".jv-md table{width:100%;border-collapse:collapse;font-size:12.5px}",
+      ".jv-md th{text-align:left;color:#94a3b8;font-weight:600;font-size:11px;padding:6px 9px;background:rgba(255,255,255,0.03);white-space:nowrap}",
+      ".jv-md td{padding:6px 9px;border-top:1px solid rgba(255,255,255,0.05);vertical-align:top}",
+      ".jv-md td.n,.jv-md th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}",
+      ".jv-outils{display:flex;gap:2px;margin-top:3px}",
+      ".jv-outils button{border:none;background:transparent;color:#64748b;font-size:11.5px;font-family:inherit;display:inline-flex;gap:5px;align-items:center;padding:4px 7px;border-radius:7px;cursor:pointer}",
+      ".jv-outils button:hover{background:rgba(255,255,255,0.06);color:#cbd5e1}",
+      ".jv-suites{display:flex;flex-direction:column;align-items:flex-start;gap:5px;margin-top:10px}",
+      ".jv-suites button{border:1px solid rgba(129,140,248,0.32);background:rgba(99,102,241,0.08);color:#c7d2fe;border-radius:10px;padding:6px 10px;font-size:12.5px;cursor:pointer;font-family:inherit;display:inline-flex;gap:7px;align-items:center;text-align:left}",
+      ".jv-suites button:hover{border-color:rgba(129,140,248,0.6);background:rgba(99,102,241,0.16)}",
+      ".jv-attente{color:#94a3b8;display:flex;align-items:center;gap:10px}",
+      ".jv-points{display:inline-flex;gap:4px}.jv-points i{width:6px;height:6px;border-radius:50%;background:#818cf8;animation:jvPoint 1.2s infinite ease-in-out}",
+      ".jv-points i:nth-child(2){animation-delay:.15s}.jv-points i:nth-child(3){animation-delay:.3s}",
+      "@keyframes jvPoint{0%,80%,100%{opacity:.25;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}",
       ".jv-carte{margin-top:8px;background:rgba(10,12,22,0.55);border:1px solid rgba(255,255,255,0.09);border-radius:12px;padding:10px 12px}",
       ".jv-carte.act{border-color:rgba(245,165,36,0.5);background:rgba(245,165,36,0.06)}",
       ".jv-carte.fait{border-color:rgba(134,239,172,0.45);background:rgba(134,239,172,0.06)}",
@@ -42714,10 +42743,18 @@
       ".jv-b.lien{background:rgba(99,102,241,0.15);color:#c7d2fe;border:1px solid rgba(99,102,241,0.35)}",
       ".jv-sugg{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px 8px}",
       ".jv-sugg button{border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#cbd5e1;border-radius:999px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit}",
-      ".jv-saisie{display:flex;gap:8px;align-items:center;padding:10px 12px 12px;border-top:1px solid rgba(255,255,255,0.08)}",
-      ".jv-micro{width:46px;height:46px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0}",
-      ".jv-micro.actif{background:linear-gradient(135deg,#ef4444,#f97316);box-shadow:0 0 0 6px rgba(239,68,68,0.2)}",
-      ".jv-saisie input{flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:12px;color:#fafafa;font-size:16px;padding:10px 12px;font-family:inherit;outline:none}",
+      ".jv-saisie{padding:10px 12px 12px;border-top:1px solid rgba(255,255,255,0.08)}",
+      ".jv-compo{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:9px 8px 6px 12px;transition:border-color .15s}",
+      ".jv-compo:focus-within{border-color:rgba(129,140,248,0.6)}",
+      ".jv-compo textarea{display:block;width:100%;box-sizing:border-box;background:transparent;border:none;outline:none;resize:none;color:#fafafa;font-size:15px;line-height:1.5;font-family:inherit;padding:0 4px 0 0;margin:0;min-height:22px;max-height:200px;overflow-y:auto}",
+      "@media (max-width:640px){.jv-compo textarea{font-size:16px}}",
+      ".jv-compo-bas{display:flex;align-items:center;gap:4px;margin-top:5px}",
+      ".jv-aide{flex:1;min-width:0;font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".jv-mini{width:32px;height:32px;border-radius:9px;border:none;background:transparent;color:#94a3b8;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}",
+      ".jv-mini:hover{background:rgba(255,255,255,0.07);color:#e5e7eb}",
+      ".jv-mini.actif{background:rgba(239,68,68,0.18);color:#fca5a5}",
+      ".jv-env{width:34px;height:34px;border-radius:10px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}",
+      ".jv-env:disabled{opacity:.35;cursor:default}",
       ".jv-badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:4px}",
       ".jv-badge.alert{background:rgba(244,63,94,0.18);color:#fda4af}.jv-badge.review{background:rgba(251,191,36,0.16);color:#fde68a}.jv-badge.ok{background:rgba(134,239,172,0.14);color:#bbf7d0}"
     ].join("\n");
@@ -42735,8 +42772,111 @@
     function jvVoixFr() {
       try { return window.speechSynthesis.getVoices().filter(function(v) { return /^fr/i.test(v.lang); }).sort(function(a, b) { return jvScoreVoix(b) - jvScoreVoix(a); }); } catch (e) { return []; }
     }
-    // Texte pour l'oral : sans les symboles que la voix lit mal
-    function jvPourOral(t) { return String(t || "").replace(/[*_#`>|]/g, " ").replace(/\s+/g, " ").trim(); }
+    // Texte pour l'oral : sans les symboles que la voix lit mal (puces, tableaux, gras)
+    function jvPourOral(t) { return String(t || "").replace(/^\s*[-•]\s+/gm, "").replace(/-{2,}|[*_#`>|]/g, " ").replace(/\s+/g, " ").trim(); }
+    // Texte a copier (coller dans un email, un message) : sans les marques de mise en forme
+    function jvTexteBrut(t) { return String(t || "").replace(/\*\*([^*]+?)\*\*/g, "$1").replace(/^\s*#{1,6}\s+/gm, "").replace(/`([^`]+)`/g, "$1").trim(); }
+    function jvCopier(t) {
+      var secours = function() {
+        var z = document.createElement("textarea");
+        z.value = t; z.setAttribute("readonly", ""); z.style.position = "fixed"; z.style.top = "-1000px";
+        document.body.appendChild(z); z.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(z);
+      };
+      try { if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t).catch(secours); } catch (e) {}
+      secours();
+      return Promise.resolve();
+    }
+
+    // Mise en forme des reponses (petit sous-ensemble Markdown) : titres « ### »,
+    // listes « - » / « 1. », **gras**, *italique*, `code`, tableaux « | a | b | ».
+    // Rendu en elements React : jamais de HTML injecte (le texte vient de l'IA).
+    function jvBlocs(texte) {
+      var lignes = String(texte || "").replace(/\r/g, "").split("\n");
+      var blocs = [], cur = null;
+      var clore = function() { if (cur) blocs.push(cur); cur = null; };
+      var cellules = function(l) { return l.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(function(c) { return c.trim(); }); };
+      // fin de titre « ## Titre ## » retiree par une boucle (pas de regex a retour arriere)
+      var sansFin = function(x) { var k = x.length; while (k > 0 && /[\s#]/.test(x.charAt(k - 1))) k--; return x.substring(0, k); };
+      for (var i = 0; i < lignes.length; i++) {
+        var l = lignes[i], m;
+        if (!l.trim()) { clore(); continue; }
+        // ligne demesuree (texte anormal) : simple paragraphe, aucune analyse
+        if (l.length > 2000) { if (!cur || cur.t !== "p") { clore(); cur = { t: "p", lignes: [] }; } cur.lignes.push(l.trim()); continue; }
+        if (/^\s*\|.*\|\s*$/.test(l)) {
+          var tabCur = cur && cur.t === "table";
+          // ligne |---|---| : la ligne d'avant devient l'en-tete (« | - | - | » plus bas = vraie ligne)
+          if (/^[\s|:-]+$/.test(l) && l.indexOf("-") >= 0 && (/-{3,}/.test(l) || (tabCur && !cur.entete && cur.lignes.length === 1))) {
+            if (tabCur && !cur.entete && cur.lignes.length === 1) cur.entete = cur.lignes.pop();
+            continue;
+          }
+          if (!tabCur) { clore(); cur = { t: "table", entete: null, lignes: [] }; }
+          cur.lignes.push(cellules(l));
+          continue;
+        }
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l)) { clore(); continue; }
+        if ((m = /^\s*#{1,6}\s+(.*)$/.exec(l))) { clore(); var tt = sansFin(m[1]); if (tt) blocs.push({ t: "h", x: tt }); continue; }
+        if ((m = /^\s*[-*•]\s+(.*)$/.exec(l))) {
+          if (!cur || cur.t !== "ul") { clore(); cur = { t: "ul", items: [] }; }
+          cur.items.push(m[1]);
+          continue;
+        }
+        if ((m = /^\s*(\d{1,3})[.)]\s+(.*)$/.exec(l))) {
+          if (!cur || cur.t !== "ol") { clore(); cur = { t: "ol", debut: parseInt(m[1], 10), items: [] }; }
+          cur.items.push(m[2]);
+          continue;
+        }
+        // ligne en retrait sous une puce = suite de la puce
+        if (cur && (cur.t === "ul" || cur.t === "ol") && /^\s{2,}\S/.test(l)) { cur.items[cur.items.length - 1] += " " + l.trim(); continue; }
+        if (!cur || cur.t !== "p") { clore(); cur = { t: "p", lignes: [] }; }
+        cur.lignes.push(l.trim());
+      }
+      clore();
+      return blocs;
+    }
+    function jvEnLigne(x, cle) {
+      var out = [], re = /\*\*([^*]+?)\*\*|`([^`]+)`|\*([^*\s][^*]*?)\*/g, dernier = 0, m, k = 0;
+      x = String(x == null ? "" : x);
+      while ((m = re.exec(x))) {
+        if (m.index > dernier) out.push(x.substring(dernier, m.index));
+        if (m[1] != null) out.push(h("b", { key: cle + "b" + k }, m[1]));
+        else if (m[2] != null) out.push(h("code", { key: cle + "c" + k }, m[2]));
+        else out.push(h("em", { key: cle + "i" + k }, m[3]));
+        k++;
+        dernier = re.lastIndex;
+      }
+      if (dernier < x.length) out.push(x.substring(dernier));
+      return out;
+    }
+    var JV_NUM = /^[-+−]?[\d\s  .,]+\s*(%|m|h|j|l|L|km|F|F CFP|XPF|L\/m|L\/h|L\/100 ?km|m\/j)?$/;
+    function jvRendu(texte) {
+      return h("div", { className: "jv-md" }, jvBlocs(texte).map(function(b, i) {
+        var k = "b" + i;
+        if (b.t === "h") return h("div", { key: k, className: "jv-md-t" }, jvEnLigne(b.x, k));
+        if (b.t === "ul") return h("ul", { key: k }, b.items.map(function(x, j) { return h("li", { key: j }, jvEnLigne(x, k + "-" + j)); }));
+        if (b.t === "ol") return h("ol", { key: k, start: b.debut }, b.items.map(function(x, j) { return h("li", { key: j }, jvEnLigne(x, k + "-" + j)); }));
+        if (b.t === "table") {
+          var nb = 0;
+          (b.entete ? [b.entete] : []).concat(b.lignes).forEach(function(r) { if (r.length > nb) nb = r.length; });
+          // colonne de chiffres (hors 1re) : alignee a droite, en-tete compris
+          var num = [];
+          for (var c0 = 0; c0 < nb; c0++) {
+            var vals = b.lignes.map(function(r) { return String(r[c0] == null ? "" : r[c0]).replace(/\*/g, "").trim(); }).filter(function(v) { return v && v !== "-" && v !== "—"; });
+            num.push(c0 > 0 && vals.length > 0 && vals.every(function(v) { return v.length <= 40 && JV_NUM.test(v); }));
+          }
+          var rang = function(r, tag, kk) {
+            var c = [];
+            for (var j = 0; j < nb; j++) c.push(h(tag, { key: j, className: num[j] ? "n" : null }, jvEnLigne(r[j] == null ? "" : r[j], kk + "-" + j)));
+            return c;
+          };
+          return h("div", { key: k, className: "jv-md-tab" }, h("table", null,
+            b.entete ? h("thead", null, h("tr", null, rang(b.entete, "th", k + "h"))) : null,
+            h("tbody", null, b.lignes.map(function(r, j) { return h("tr", { key: j }, rang(r, "td", k + "r" + j)); }))));
+        }
+        return h("p", { key: k }, b.lignes.map(function(l, j) { return h(React.Fragment, { key: j }, j ? h("br") : null, jvEnLigne(l, k + "-" + j)); }));
+      }));
+    }
     // Resume d'une proposition, renvoye a Jarvis dans l'historique (il sait ce qui a ete confirme)
     function jvResumeProp(p, e) {
       var st = e && e.statut === "fait" ? "CONFIRMEE et executee" : (e && e.statut === "annule" ? "annulee par Tomy" : (e && e.statut === "erreur" ? "echec : " + (e.info || "") : "en attente de confirmation"));
@@ -42908,22 +43048,23 @@
     }
 
     function JarvisBulle(props) {
-      var ctx = useAppData();
       var _o = useState(false); var ouvert = _o[0], setOuvert = _o[1];
       var _m = useState([]); var msgs = _m[0], setMsgs = _m[1];
       var _s = useState(""); var saisie = _s[0], setSaisie = _s[1];
       var _p = useState(false); var pense = _p[0], setPense = _p[1];
       var _e = useState(false); var ecoute = _e[0], setEcoute = _e[1];
-      var _pa = useState(false); var parle = _pa[0], setParle = _pa[1];
+      var _pa = useState(-1); var parle = _pa[0], setParle = _pa[1]; // index du message lu a voix haute (-1 : aucun)
       var _et = useState({}); var etats = _et[0], setEtats = _et[1];
-      var _vo = useState(function() { return tkLireLocal("wl_jarvis_voix", true) !== false; }); var voixOn = _vo[0], setVoixOn = _vo[1];
-      var _vn = useState(function() { return tkLireLocal("wl_jarvis_voix_nom", ""); }); var voixNom = _vn[0], setVoixNom = _vn[1];
+      var _lg = useState(function() { return tkLireLocal("wl_jarvis_large", false) === true; }); var large = _lg[0], setLarge = _lg[1];
+      var _cp = useState(-1); var copie = _cp[0], setCopie = _cp[1];
+      var _d0 = useState(0); var debut = _d0[0], setDebut = _d0[1];
+      var _tc = useState(0); var setTic = _tc[1];
       var _vl = useState([]); var voixListe = _vl[0], setVoixListe = _vl[1];
-      var filRef = useRef(null), recoRef = useRef(null), envolRef = useRef(0), msgsRef = useRef([]), etatsRef = useRef({});
-      var voixOnRef = useRef(voixOn);
-      var penseRef = useRef(false);
-      msgsRef.current = msgs; etatsRef.current = etats; voixOnRef.current = voixOn;
+      var filRef = useRef(null), zoneRef = useRef(null), recoRef = useRef(null), envolRef = useRef(0), msgsRef = useRef([]), etatsRef = useRef({});
+      var penseRef = useRef(false), lectureRef = useRef(0), posFilRef = useRef(0);
+      msgsRef.current = msgs; etatsRef.current = etats;
       var micro = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+      var tts = typeof window !== "undefined" && !!window.speechSynthesis;
       useEffect(function() {
         if (!window.speechSynthesis) return;
         var charger = function() { setVoixListe(jvVoixFr()); };
@@ -42931,50 +43072,96 @@
         try { window.speechSynthesis.addEventListener("voiceschanged", charger); } catch (e) {}
         return function() { try { window.speechSynthesis.removeEventListener("voiceschanged", charger); window.speechSynthesis.cancel(); } catch (e) {} };
       }, []);
-      useEffect(function() { if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight; }, [msgs, pense, etats]);
+      // Nouvelle reponse : on se place au debut de la question (lecture de haut en bas) ;
+      // question envoyee : on descend en bas du fil
+      useEffect(function() {
+        var f = filRef.current;
+        if (!f) return;
+        var n = msgs.length;
+        if (n > 1 && msgs[n - 1].role === "assistant") {
+          var q = f.querySelector('[data-jv="' + (n - 2) + '"]');
+          if (q) { f.scrollTop = Math.max(0, q.offsetTop - 10); return; }
+        }
+        f.scrollTop = f.scrollHeight;
+      }, [msgs, pense]);
+      // Zone de texte qui grandit avec le texte (6 a 7 lignes max, puis defilement)
+      useEffect(function() {
+        var z = zoneRef.current;
+        if (!z || !ouvert) return;
+        z.style.height = "auto";
+        z.style.height = Math.min(z.scrollHeight, 200) + "px";
+      }, [saisie, ouvert, large]);
+      useEffect(function() {
+        // Reouverture : le fil reprend la ou on lisait (display:none remet le defilement a zero)
+        if (ouvert && filRef.current && posFilRef.current > 0) filRef.current.scrollTop = posFilRef.current;
+        if (ouvert && zoneRef.current && window.innerWidth > 640) { try { zoneRef.current.focus(); } catch (e) {} }
+      }, [ouvert]);
+      // Compteur de secondes pendant la recherche
+      useEffect(function() {
+        if (!pense) return;
+        var id = setInterval(function() { setTic(function(x) { return x + 1; }); }, 1000);
+        return function() { clearInterval(id); };
+      }, [pense]);
       useEffect(function() {
         if (!ouvert) return;
-        // Echap ferme le panneau, sauf pendant une saisie (un brouillon d'email ne se perd pas par megarde)
+        // Echap ferme le panneau, sauf pendant une saisie (un brouillon d'email ne se perd pas
+        // par megarde) ; dans la zone de demande VIDE, Echap ferme aussi
         var touche = function(e) {
           if (e.key !== "Escape") return;
           var t = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : "";
-          if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") return;
+          var zoneVide = e.target === zoneRef.current && !String(e.target.value || "").trim();
+          if (!zoneVide && (t === "INPUT" || t === "TEXTAREA" || t === "SELECT")) return;
           fermer();
         };
         window.addEventListener("keydown", touche);
         return function() { window.removeEventListener("keydown", touche); };
       }, [ouvert]);
-      var voixChoisie = function() { var l = voixListe; for (var i = 0; i < l.length; i++) if (l[i].name === voixNom) return l[i]; return l[0] || null; };
-      var taire = function() { try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {} setParle(false); };
-      var dire = function(texte, force) {
-        if ((!voixOnRef.current && !force) || !window.speechSynthesis) return;
+      // Voix choisie autrefois (reglage wl_jarvis_voix_nom), sinon la plus naturelle de l'appareil
+      var voixChoisie = function() { var nom = tkLireLocal("wl_jarvis_voix_nom", ""), l = voixListe; for (var i = 0; i < l.length; i++) if (l[i].name === nom) return l[i]; return l[0] || null; };
+      var taire = function() { lectureRef.current++; try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {} setParle(-1); };
+      // Lecture a voix haute d'UNE reponse, seulement sur demande (bouton « Écouter »)
+      var lire = function(texte, i) {
+        if (!window.speechSynthesis) return;
+        if (parle === i) { taire(); return; }
+        taire();
+        var jeton = lectureRef.current;
+        var fin = function() { if (lectureRef.current === jeton) setParle(-1); };
         try {
-          window.speechSynthesis.cancel();
-          var phrases = jvPourOral(texte).match(/[^.!?;:]+[.!?;:]*/g) || [jvPourOral(texte)];
+          var t = jvPourOral(texte);
+          var phrases = t.match(/[^.!?;:]+[.!?;:]*/g) || [t];
           var vx = voixChoisie();
-          setParle(true);
-          phrases.forEach(function(ph, i) {
+          setParle(i);
+          phrases.forEach(function(ph, k) {
             var u = new SpeechSynthesisUtterance(ph.trim());
             u.lang = "fr-FR"; u.rate = 1.03; if (vx) u.voice = vx;
-            if (i === phrases.length - 1) { u.onend = function() { setParle(false); }; u.onerror = function() { setParle(false); }; }
+            if (k === phrases.length - 1) { u.onend = fin; u.onerror = fin; }
             window.speechSynthesis.speak(u);
           });
-        } catch (e) { setParle(false); }
+        } catch (e) { setParle(-1); }
+      };
+      var copier = function(texte, i) {
+        jvCopier(jvTexteBrut(texte)).then(function() {
+          setCopie(i);
+          setTimeout(function() { setCopie(function(c) { return c === i ? -1 : c; }); }, 1600);
+        });
       };
       var arreterMicro = function() { try { if (recoRef.current) recoRef.current.abort(); } catch (e) {} recoRef.current = null; setEcoute(false); };
-      var fermer = function() { arreterMicro(); taire(); setOuvert(false); };
+      var fermer = function() { if (filRef.current) posFilRef.current = filRef.current.scrollTop; arreterMicro(); taire(); setOuvert(false); };
       var onEtat = function(cle, e) { setEtats(function(o) { var n = Object.assign({}, o); n[cle] = e; return n; }); };
       var aller = function(page) { props.onNavigate(page); if (window.innerWidth <= 640) fermer(); };
+      var basculerLarge = function() { var n = !large; setLarge(n); tkEcrireLocal("wl_jarvis_large", n); };
 
-      var envoyer = async function(q) {
+      // depuisZone : seul un envoi de la zone de texte la vide (une suite ou une
+      // suggestion cliquee ne doit pas effacer un brouillon en cours)
+      var envoyer = async function(q, depuisZone) {
         var texte = String(q || "").trim();
-        // penseRef (et pas pense) : envoyer est aussi appele par la dictee, creee a un rendu plus ancien
+        // penseRef (et pas pense) : envoyer peut etre appele depuis un rendu plus ancien
         if (!texte || penseRef.current) return;
         penseRef.current = true;
-        taire();
+        arreterMicro(); taire();
         var avant = msgsRef.current;
         var apres = avant.concat([{ role: "user", texte: texte }]);
-        setMsgs(apres); setSaisie(""); setPense(true);
+        setMsgs(apres); if (depuisZone) setSaisie(""); setPense(true); setDebut(Date.now());
         var epoque = ++envolRef.current;
         // Historique envoye : textes + etat des propositions (Jarvis sait ce qui a ete confirme)
         var hist = apres.slice(-14).map(function(m) {
@@ -42990,7 +43177,7 @@
           var d = await r.json().catch(function() { return {}; });
           if (r.status === 401) rep = { role: "assistant", texte: "Jarvis est réservé à l'administrateur.", erreur: true };
           else if (!r.ok || !d.ok) rep = { role: "assistant", texte: (d && d.error) || ("Jarvis ne répond pas (erreur " + r.status + "). Réessaie dans un instant."), erreur: true };
-          else rep = { role: "assistant", texte: d.texte || "", cartes: d.cartes || [], propositions: d.propositions || [] };
+          else rep = { role: "assistant", texte: d.texte || "", cartes: d.cartes || [], propositions: d.propositions || [], suites: d.suites || [] };
         } catch (e) {
           rep = { role: "assistant", texte: "Pas de connexion avec Jarvis. Vérifie le réseau et réessaie.", erreur: true };
         }
@@ -42998,66 +43185,91 @@
         penseRef.current = false;
         setMsgs(function(m) { return m.concat([rep]); });
         setPense(false);
-        if (!rep.erreur) dire(rep.texte);
       };
-      var ecouter = function() {
-        if (ecoute) { arreterMicro(); return; }
+      // Micro = DICTEE : le texte dicte s'ajoute dans la zone, Tomy relit et envoie lui-meme
+      var dicter = function() {
+        // recoRef (et pas ecoute, mis a jour seulement au demarrage) : un double clic n'ouvre pas 2 dictees
+        if (recoRef.current) { arreterMicro(); return; }
         if (!micro) { setMsgs(function(m) { return m.concat([{ role: "assistant", texte: "La dictée n'est pas disponible dans ce navigateur (Chrome ou Edge conseillés) : écris ta demande.", erreur: true }]); }); return; }
         taire();
         try {
           var R = window.SpeechRecognition || window.webkitSpeechRecognition;
           var reco = new R();
           reco.lang = "fr-FR"; reco.interimResults = true; reco.continuous = false;
-          var dicte = "";
+          var base = String(saisie || "").replace(/\s+$/, "");
           reco.onstart = function() { setEcoute(true); };
+          // Dictee arretee (envoi, clic, nouvelle dictee) : ses derniers resultats sont ignores
           reco.onresult = function(e) {
+            if (recoRef.current !== reco) return;
             var txt = "";
             for (var i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
-            setSaisie(txt);
-            if (e.results[e.results.length - 1].isFinal) dicte = txt;
+            setSaisie(base + (base ? " " : "") + txt.trim());
           };
           reco.onerror = function(e) {
             if (e.error === "not-allowed" || e.error === "service-not-allowed") setMsgs(function(m) { return m.concat([{ role: "assistant", texte: "Le micro est bloqué : autorise-le dans le navigateur (icône à gauche de l'adresse), ou écris ta demande.", erreur: true }]); });
           };
-          reco.onend = function() { setEcoute(false); recoRef.current = null; if (dicte.trim()) envoyer(dicte); };
+          reco.onend = function() {
+            if (recoRef.current !== reco) return;
+            recoRef.current = null; setEcoute(false);
+            if (zoneRef.current) { try { zoneRef.current.focus(); } catch (e2) {} }
+          };
           recoRef.current = reco;
           reco.start();
         } catch (e) { setEcoute(false); }
       };
       var nouvelle = function() { envolRef.current++; penseRef.current = false; arreterMicro(); taire(); setMsgs([]); setEtats({}); setPense(false); setSaisie(""); };
+      var touches = function(e) {
+        // Composition en cours (accents via IME) : Entree valide la lettre, n'envoie pas
+        var compo = (e.nativeEvent && e.nativeEvent.isComposing) || e.keyCode === 229;
+        if (e.key === "Enter" && !e.shiftKey && !compo) { e.preventDefault(); envoyer(saisie, true); return; }
+        // Fleche haut dans une zone vide : reprend la derniere question (pour la corriger)
+        if (e.key === "ArrowUp" && !saisie) {
+          for (var i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") { e.preventDefault(); setSaisie(msgs[i].texte); return; }
+        }
+      };
 
-      var etatTxt = ecoute ? "J'écoute..." : pense ? "Je regarde dans l'app..." : parle ? "Je parle..." : "Prêt";
+      var sec = pense && debut ? Math.max(0, Math.round((Date.now() - debut) / 1000)) : 0;
+      var etatTxt = ecoute ? "Dictée en cours..." : pense ? "Je cherche dans l'app..." : parle >= 0 ? "Lecture à voix haute..." : "Prêt";
+      var accueil = "Bonjour. **Écris-moi ta demande** comme à un collègue : je lis l'app (chantiers, machines, carburant, relevés, rapports, tâches, emails), je t'analyse les chiffres et je te prépare les actions.\n\nTu **confirmes toujours** avant que quoi que ce soit soit créé ou envoyé.";
       // Panneau ferme = MASQUE, pas demonte : les cartes gardent leurs modifications
       // et leur verrou anti-double-clic (un envoi en cours n'est jamais repropose)
       return h(React.Fragment, null, h("style", null, JV_CSS),
         !ouvert ? h("button", { type: "button", className: "jv-fab", title: "Jarvis, ton assistant", "aria-label": "Ouvrir Jarvis", onClick: function() { setOuvert(true); } }, h(Icon, { name: "sparkles", size: 22, color: "#fff" })) : null,
-        h("div", { className: "jv-pan", role: "dialog", "aria-label": "Jarvis", "aria-hidden": !ouvert, style: ouvert ? null : { display: "none" } },
+        h("div", { className: "jv-pan" + (large ? " large" : ""), role: "dialog", "aria-label": "Jarvis", "aria-hidden": !ouvert, style: ouvert ? null : { display: "none" } },
           h("div", { className: "jv-tete" },
-            h("div", { className: "jv-orbe" + (ecoute ? " ecoute" : pense ? " pense" : parle ? " parle" : "") }),
+            h("div", { className: "jv-orbe" + (ecoute ? " ecoute" : pense ? " pense" : parle >= 0 ? " parle" : "") }),
             h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { fontWeight: 800, fontSize: 17 } }, "Jarvis"), h("div", { style: { fontSize: 11.5, color: "#94a3b8" } }, etatTxt)),
             msgs.length ? h("button", { type: "button", className: "jv-ico", title: "Nouvelle conversation", onClick: nouvelle }, h(Icon, { name: "rotate-ccw", size: 15 })) : null,
-            window.speechSynthesis ? h("button", { type: "button", className: "jv-ico" + (voixOn ? " on" : ""), title: voixOn ? "Réponse à voix haute : activée" : "Réponse à voix haute : coupée", onClick: function() { var n = !voixOn; setVoixOn(n); tkEcrireLocal("wl_jarvis_voix", n); if (!n) taire(); } }, h(Icon, { name: voixOn ? "volume-2" : "volume-x", size: 15 })) : null,
+            h("button", { type: "button", className: "jv-ico jv-agrandir", title: large ? "Réduire le panneau" : "Agrandir le panneau", onClick: basculerLarge }, h(Icon, { name: large ? "minimize-2" : "maximize-2", size: 15 })),
             h("button", { type: "button", className: "jv-ico", title: "Fermer (Échap)", onClick: fermer }, h(Icon, { name: "x", size: 15 }))),
-          voixOn && voixListe.length ? h("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "#94a3b8" } },
-            h("span", null, "Voix"),
-            h("select", { value: (voixChoisie() || {}).name || "", onChange: function(e) { setVoixNom(e.target.value); tkEcrireLocal("wl_jarvis_voix_nom", e.target.value); }, style: { flex: 1, minWidth: 0, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e5e7eb", fontSize: 12, padding: "5px 8px", fontFamily: "inherit" } },
-              voixListe.map(function(vx) { return h("option", { key: vx.name, value: vx.name }, vx.name.replace(/Microsoft |Online |\(Natural\) - /g, "").replace(/\s*-\s*French.*$/i, "") + (jvScoreVoix(vx) >= 100 ? " · naturelle" : "")); })),
-            h("button", { type: "button", className: "jv-b sec", style: { padding: "5px 10px", fontSize: 12 }, onClick: function() { dire("Bonjour Tomy. Voici ma voix pour les réponses de Jarvis.", true); } }, "Écouter")) : null,
           h("div", { className: "jv-fil", ref: filRef },
-            !msgs.length ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle" }, "Bonjour. Parle-moi avec le micro ou écris ta demande. Je lis l'app pour toi (chantiers, machines, carburant, relevés, rapports, tâches, emails) et je te prépare les actions : tu confirmes toujours avant que je fasse quoi que ce soit.")) : null,
+            !msgs.length ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle" }, jvRendu(accueil))) : null,
             msgs.map(function(m, i) {
-              if (m.role === "user") return h("div", { key: i, className: "jv-moi" }, m.texte);
-              return h("div", { key: i, className: "jv-lui" },
-                m.texte ? h("div", { className: "jv-bulle", style: m.erreur ? { borderColor: "rgba(244,63,94,0.4)", color: "#fecdd3" } : null }, m.texte) : null,
+              if (m.role === "user") return h("div", { key: i, "data-jv": i, className: "jv-moi" }, m.texte);
+              var dernier = i === msgs.length - 1;
+              return h("div", { key: i, "data-jv": i, className: "jv-lui" },
+                // rendu mis en cache sur le message (pas recalcule a chaque seconde d'attente ni a chaque frappe)
+                m.texte ? h("div", { className: "jv-bulle" + (m.erreur ? " err" : "") }, m.erreur ? m.texte : (m._rendu || (m._rendu = jvRendu(m.texte)))) : null,
+                m.texte && !m.erreur ? h("div", { className: "jv-outils" },
+                  h("button", { type: "button", title: "Copier la réponse", onClick: function() { copier(m.texte, i); } }, h(Icon, { name: copie === i ? "check" : "copy", size: 13 }), copie === i ? "Copié" : "Copier"),
+                  tts ? h("button", { type: "button", title: parle === i ? "Arrêter la lecture" : "Lire à voix haute", onClick: function() { lire(m.texte, i); } }, h(Icon, { name: parle === i ? "square" : "volume-2", size: 13 }), parle === i ? "Arrêter" : "Écouter") : null) : null,
                 (m.cartes || []).map(function(c, k) { return h(JvCarteDonnees, { key: "c" + k, carte: c, onNavigate: aller }); }),
-                (m.propositions || []).map(function(p) { return h(JvProposition, { key: p.cle, p: p, etat: etats[p.cle], onEtat: onEtat, onNavigate: aller }); }));
+                (m.propositions || []).map(function(p) { return h(JvProposition, { key: p.cle, p: p, etat: etats[p.cle], onEtat: onEtat, onNavigate: aller }); }),
+                dernier && !pense && m.suites && m.suites.length ? h("div", { className: "jv-suites" }, m.suites.map(function(s, k) {
+                  return h("button", { key: k, type: "button", onClick: function() { envoyer(s); } }, h(Icon, { name: "corner-down-right", size: 13 }), s);
+                })) : null);
             }),
-            pense ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle", style: { color: "#94a3b8" } }, "Je regarde...")) : null),
+            pense ? h("div", { className: "jv-lui" }, h("div", { className: "jv-bulle jv-attente" },
+              h("span", { className: "jv-points" }, h("i"), h("i"), h("i")),
+              h("span", null, (sec < 18 ? "Je cherche dans l'app" : "J'analyse les chiffres, encore un instant") + (sec >= 3 ? " · " + sec + " s" : "")))) : null),
           !msgs.length ? h("div", { className: "jv-sugg" }, JV_SUGGESTIONS.map(function(s) { return h("button", { key: s, type: "button", onClick: function() { envoyer(s); } }, s); })) : null,
           h("div", { className: "jv-saisie" },
-            h("button", { type: "button", className: "jv-micro" + (ecoute ? " actif" : ""), title: ecoute ? "Arrêter" : "Parler à Jarvis", onClick: ecouter }, h(Icon, { name: ecoute ? "square" : "mic", size: 20, color: "#fff" })),
-            h("input", { value: saisie, placeholder: ecoute ? "J'écoute..." : "Ta demande...", onChange: function(e) { setSaisie(e.target.value); }, onKeyDown: function(e) { if (e.key === "Enter") envoyer(saisie); } }),
-            h("button", { type: "button", className: "jv-ico", title: "Envoyer", disabled: pense || !saisie.trim(), onClick: function() { envoyer(saisie); } }, h(Icon, { name: "send", size: 15 })))));
+            h("div", { className: "jv-compo" },
+              h("textarea", { ref: zoneRef, rows: 1, value: saisie, maxLength: 4000, placeholder: ecoute ? "Parle, le texte s'écrit ici..." : "Écris ta demande à Jarvis...", onChange: function(e) { setSaisie(e.target.value); }, onKeyDown: touches }),
+              h("div", { className: "jv-compo-bas" },
+                micro ? h("button", { type: "button", className: "jv-mini" + (ecoute ? " actif" : ""), title: ecoute ? "Arrêter la dictée" : "Dicter (le texte s'écrit, tu relis avant d'envoyer)", onClick: dicter }, h(Icon, { name: ecoute ? "square" : "mic", size: 16 })) : null,
+                h("div", { className: "jv-aide" }, ecoute ? "Dictée : relis avant d'envoyer" : "Entrée pour envoyer · Maj+Entrée pour aller à la ligne"),
+                h("button", { type: "button", className: "jv-env", title: "Envoyer", disabled: pense || !saisie.trim(), onClick: function() { envoyer(saisie, true); } }, h(Icon, { name: "arrow-up", size: 17, color: "#fff" })))))));
     }
 
     // ═══ CHAT EQUIPE (bulle type Messenger, panneau flottant) ═══

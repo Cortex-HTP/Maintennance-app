@@ -1,8 +1,9 @@
 // =====================================================================
-// /api/jarvis - assistant vocal / texte de l'APP Wallis-Label admin
+// /api/jarvis - assistant IA (a l'ecrit) de l'APP Wallis-Label admin
 // =====================================================================
 // POST { messages: [{role:'user'|'assistant', content:string}...], page?: string }
-//   -> { ok, texte, cartes:[{titre,icone,colonnes?,lignes,lien?}], propositions:[...], model }
+//   -> { ok, texte (markdown leger), cartes:[{titre,icone,colonnes?,lignes,lien?}],
+//        propositions:[...], suites:[questions de suite], model }
 //
 // Claude (tool use) LIT la base (outils de api/_jarvis_outils.js, lecture
 // seule, cle service cote serveur) et la boite mail de l'utilisateur (via
@@ -35,12 +36,15 @@ function autorises() {
   return String(process.env.JARVIS_EMAILS || process.env.RH_ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter((e) => e);
 }
 
-const SYSTEM = `Tu es Jarvis, l'assistant de Tomy, gerant de WALLIS LABEL (forages et sondages en Nouvelle-Caledonie), integre a son application de gestion. Tomy te parle souvent A LA VOIX et ta reponse est LUE A VOIX HAUTE.
+const SYSTEM = `Tu es Jarvis, l'assistant de Tomy, gerant de WALLIS LABEL (forages et sondages en Nouvelle-Caledonie), integre a son application de gestion. Tomy t'ECRIT dans un panneau de discussion et LIT ta reponse a l'ecran (texte mis en forme). Il lui arrive de dicter : un mot mal reconnu doit etre compris au sens le plus probable (mais pour une action, en cas de doute, pose la question).
 
-STYLE
-- Francais parle, tutoiement, phrases courtes. 2 a 5 phrases en general. Pas de markdown, pas de listes a puces, pas de tableaux, pas d'emoji : les chiffres detailles s'affichent deja dans des cartes sous ta reponse.
-- Commence par l'essentiel (la reponse, l'urgence). Arrondis les chiffres pour l'oral ("environ 1 200 metres").
-- Les dates : "lundi 24", "hier", "le 3 decembre". Les montants en francs (F CFP).
+STYLE (ecrit)
+- Francais ecrit, tutoiement, clair et direct. Premiere phrase = la reponse ou l'urgence, avec le chiffre cle en **gras**. Ensuite le detail.
+- Mise en forme : **gras** pour les chiffres et points cles ; listes "- " ; titres courts "### " seulement si la reponse a plusieurs parties ; tableau markdown (| a | b |, 6 colonnes max) quand tu compares plusieurs machines, chantiers ou periodes. Pas d'emoji, pas de titre pour une reponse courte.
+- Va au fond des choses : chiffres exacts avec leur unite (m, h, L, L/m, F CFP), comparaisons utiles (mois precedent, objectif, autres machines), cause probable de ce qui cloche, et ce que Tomy peut faire (prepare l'action avec un outil proposer_* quand c'est utile). Pas de remplissage ni de formule de politesse : 60 a 250 mots en general, davantage seulement si Tomy demande une analyse detaillee.
+- Les cartes affichees sous ta reponse montrent deja les listes brutes des outils : ne les recopie pas en entier, dis ce qui compte et ce qui cloche.
+- Dates : "lundi 24/11", "hier", "le 3/12". Montants en F CFP avec espaces ("1 250 000 F"). Les fourchettes et estimations sont presentees comme telles.
+- Termine, quand c'est utile, par 1 a 3 questions de suite que Tomy pourrait te poser ensuite, chacune seule sur sa ligne commencant par ">> " (ex. ">> Le detail par machine"). 60 caracteres max, formulees comme Tomy les ecrirait.
 
 DONNEES
 - N'invente JAMAIS un chiffre, un nom, une adresse email ou une date : appelle les outils de lecture. Si l'information n'existe pas, dis-le simplement.
@@ -81,6 +85,31 @@ const OUTILS_PROPOSITION = [
   { name: 'proposer_relance_signatures', description: "Prepare le renvoi au client, pour signature, de rapports de forage non signes (ids de l'outil rapports_non_signes).", input_schema: { type: 'object', properties: { rapport_ids: { type: 'array', items: { type: 'integer' } } }, required: ['rapport_ids'] } },
   { name: 'ouvrir_page', description: "Propose un bouton pour ouvrir un ecran de l'application.", input_schema: { type: 'object', properties: { page: { type: 'string', enum: Object.keys(PAGES) } }, required: ['page'] } }
 ];
+
+// Questions de suite : SEULEMENT le bloc de lignes « >> ... » qui TERMINE la
+// reponse -> boutons sous la reponse. Un « >> » au milieu (citation d'email)
+// reste dans le texte. Jamais d'adresse ni de lien dans une suite : un clic
+// l'envoie comme une demande de Tomy (anti-injection via un email piege).
+function extraireSuites(t) {
+  const lignes = String(t || '').replace(/\r/g, '').split('\n');
+  let fin = lignes.length;
+  const trouvees = [];
+  for (let i = lignes.length - 1; i >= 0; i--) {
+    const l = lignes[i];
+    if (!l.trim()) { fin = i; continue; }
+    const m = /^\s*>>\s*(.+)$/.exec(l.slice(0, 300));
+    if (!m) break;
+    trouvees.unshift(m[1]);
+    fin = i;
+  }
+  const suites = [];
+  trouvees.forEach((x) => {
+    const s = x.replace(/[*_`]/g, '').trim().slice(0, 90);
+    if (!s || /@|https?:|www\./i.test(s)) return;
+    if (suites.length < 3 && suites.indexOf(s) < 0) suites.push(s);
+  });
+  return { texte: lignes.slice(0, fin).join('\n').replace(/\n{3,}/g, '\n\n').trim(), suites };
+}
 
 // Appel d'un autre handler de /api dans la meme fonction (requete simulee)
 function appelInterne(handler, headers, body) {
@@ -289,7 +318,7 @@ module.exports = async function handler(req, res) {
     const tid = setTimeout(() => ctrl.abort(), final ? reste - 1000 : reste - 12000);
     let data;
     try {
-      const corps = { model: MODEL, max_tokens: 2000, system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }], tools: OUTILS_LECTURE.concat(OUTILS_PROPOSITION), messages };
+      const corps = { model: MODEL, max_tokens: 3000, system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }], tools: OUTILS_LECTURE.concat(OUTILS_PROPOSITION), messages };
       if (final) corps.tool_choice = { type: 'none' };
       const r = await fetch(ANTHROPIC_URL, {
         method: 'POST', signal: ctrl.signal,
@@ -303,13 +332,17 @@ module.exports = async function handler(req, res) {
       }
       data = await r.json();
     } catch (e) {
-      if (propositions.length || (e && e.name === 'AbortError')) { coupe = true; break; }
+      const abandon = !!(e && e.name === 'AbortError');
+      // Tour intermediaire coupe (reponse longue) : le tour suivant, avec le
+      // temps restant, force une reponse finale sans outil au lieu d'un 504
+      if (abandon && !final) continue;
+      if (propositions.length || abandon) { coupe = true; break; }
       return res.status(502).json({ ok: false, error: 'Erreur Jarvis : ' + String((e && e.message) || e).slice(0, 200) });
     } finally { clearTimeout(tid); }
     const blocs = Array.isArray(data.content) ? data.content : [];
     const appels = blocs.filter((b) => b.type === 'tool_use');
     if (data.stop_reason !== 'tool_use' || !appels.length) {
-      texte = blocs.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+      texte = blocs.filter((b) => b.type === 'text').map((b) => b.text).join('\n\n').trim();
       break;
     }
     messages.push({ role: 'assistant', content: blocs });
@@ -335,10 +368,12 @@ module.exports = async function handler(req, res) {
     });
     messages.push({ role: 'user', content: resultats });
   }
+  const ext = extraireSuites(texte);
+  texte = ext.texte;
   if (!texte) {
     if (propositions.length) texte = 'Je t\'ai préparé ça, vérifie et confirme.';
     else if (coupe) return res.status(504).json({ ok: false, error: 'Jarvis a mis trop de temps à répondre : repose la question plus simplement.' });
     else texte = 'Je n\'ai pas de réponse, reformule ta demande.';
   }
-  return res.status(200).json({ ok: true, texte, cartes, propositions, model: MODEL });
+  return res.status(200).json({ ok: true, texte, cartes, propositions, suites: ext.suites, model: MODEL });
 };
