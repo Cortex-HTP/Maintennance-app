@@ -6,7 +6,8 @@
 //        contrat: {...document actuellement propose...} | null,
 //        doc: 'contrat' | 'avenant_cdd' | 'avenant_cdi' | 'autorisation_conduite' |
 //             'attestation_travail' | 'certificat_travail' | 'courrier',
-//        embauche: true si nouvelle embauche (pas encore de fiche) }
+//        embauche: true si nouvelle embauche (pas encore de fiche),
+//        reprise: true si la nouvelle embauche a repris une fiche existante }
 //   -> { ok, reponse, contrat|null (donnees du document), doc_type, model }
 //
 // L'agent discute comme le projet claude.ai "RH Wallis-Label" (memes regles,
@@ -364,9 +365,12 @@ module.exports = async function handler(req, res) {
   // hasOwnProperty : "constructor", "toString"... ne sont pas des documents
   const doc = (typeof body.doc === 'string' && Object.prototype.hasOwnProperty.call(LIBELLES_DOCS, body.doc)) ? body.doc : 'contrat';
   const embauche = body.embauche === true;
+  // Nouvelle embauche d'une personne DEJA connue (fiche reprise) : la fiche
+  // fait foi pour l'identite, contrat OU promesse d'embauche restent possibles
+  const reprise = !embauche && body.reprise === true;
   // Outils proposes : celui du document ouvert ; a l'embauche, contrat ET
   // promesse d'embauche (les deux se preparent avant la fiche)
-  const tools = embauche ? [TOOL_CONTRAT, TOOLS_DOCS.promesse_embauche]
+  const tools = (embauche || reprise) ? [TOOL_CONTRAT, TOOLS_DOCS.promesse_embauche]
     : (doc === 'contrat' ? [TOOL_CONTRAT] : [TOOLS_DOCS[doc]]);
   const nomsOutils = {};
   nomsOutils[TOOL_CONTRAT.name] = 'contrat';
@@ -378,7 +382,7 @@ module.exports = async function handler(req, res) {
     : "FICHE EMPLOYE (ecran Personnel, fait foi pour l'identite) :\n";
   messages[0] = {
     role: 'user',
-    content: "Nous sommes le " + dateNC + " (Noumea).\nDOCUMENT DEMANDE : " + (embauche ? "contrat de travail (proposer_contrat) ou promesse d'embauche (proposer_promesse_embauche) selon la demande" : LIBELLES_DOCS[doc]) + "\n" + enTete + ficheTxt + '\n\nDemande : ' + (messages[0].role === 'user' ? messages[0].content : '')
+    content: "Nous sommes le " + dateNC + " (Noumea).\nDOCUMENT DEMANDE : " + ((embauche || reprise) ? "contrat de travail (proposer_contrat) ou promesse d'embauche (proposer_promesse_embauche) selon la demande" : LIBELLES_DOCS[doc]) + "\n" + enTete + ficheTxt + '\n\nDemande : ' + (messages[0].role === 'user' ? messages[0].content : '')
   };
 
   const payload = {

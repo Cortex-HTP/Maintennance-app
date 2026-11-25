@@ -10142,6 +10142,19 @@
       return min === 0;
     }
 
+    // Contrat ARCHIVE (contratsHistorique, debut ET fin renseignes) qui couvre
+    // le jour : le salarie est toujours en poste alors que sa fiche porte deja
+    // son contrat SUIVANT (nouveau CDD ou CDI signe avant le terme, 2026-11-26).
+    function contratHistoriqueCouvre(p, refDayMs) {
+      var isoH = localISODate(new Date(refDayMs));
+      var hist = Array.isArray(p && p.contratsHistorique) ? p.contratsHistorique : [];
+      for (var iH = 0; iH < hist.length; iH++) {
+        var cH = hist[iH];
+        if (!cH || !cH.dateEmbauche || !cH.dateFinContrat) continue;
+        if (String(cH.dateEmbauche).substring(0, 10) <= isoH && isoH <= String(cH.dateFinContrat).substring(0, 10)) return true;
+      }
+      return false;
+    }
     function isActiveEmploye(p, refDate) {
       if (!p) return false;
       var ref = refDate || new Date();
@@ -10150,14 +10163,14 @@
       if (p.dateEmbauche) {
         try {
           var dEmb = new Date(String(p.dateEmbauche).substring(0, 10) + "T00:00:00");
-          if (!isNaN(dEmb.getTime()) && dEmb.getTime() > refDay) return false;
+          if (!isNaN(dEmb.getTime()) && dEmb.getTime() > refDay) return contratHistoriqueCouvre(p, refDay);
         } catch (e) { /* date invalide : on ignore la borne basse */ }
       }
       // Verifie dateFinContrat (dernier jour inclus) : fini AVANT refDate -> pas actif
       if (p.dateFinContrat) {
         try {
           var dFin = new Date(String(p.dateFinContrat).substring(0, 10) + "T00:00:00");
-          if (!isNaN(dFin.getTime()) && dFin.getTime() < refDay) return false;
+          if (!isNaN(dFin.getTime()) && dFin.getTime() < refDay) return contratHistoriqueCouvre(p, refDay);
         } catch (e) { /* date invalide : on ignore la borne haute */ }
       }
       return true;
@@ -10346,6 +10359,117 @@
     function rhSansAccents(s) {
       return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().trim();
     }
+    // Nouvelle embauche : la personne a-t-elle DEJA une fiche (actifs ET anciens) ?
+    // Meme N° CAFAT, meme nom + prenom (dans les deux ordres), meme nom + date de
+    // naissance, ou nom ET prenom cites dans la demande TANT QUE la carte n'a
+    // pas de nom (un CDD de REMPLACEMENT cite le salarie absent). Sous-traitants
+    // exclus. ignores : ids ecartes par « Autre personne » (homonymes).
+    function rhChercherFiches(personnel, ident, texte, ignores) {
+      var norm = function(x) { return rhSansAccents(x).replace(/[^A-Z0-9]+/g, " ").trim(); };
+      var nI = norm(ident && ident.nom), pI = norm(ident && ident.prenom);
+      var cI = String((ident && ident.numeroCafat) || "").replace(/\D/g, "");
+      var dI = String((ident && ident.dateNaissance) || "").substring(0, 10);
+      var t = " " + norm(texte) + " ";
+      var out = [];
+      (personnel || []).forEach(function(p) {
+        if (!p || p.roleMecanicien || (ignores && ignores[String(p.id)])) return;
+        var nP = norm(p.nom), pP = norm(p.prenom);
+        if (!nP) return;
+        var cP = String(p.numeroCafat || "").replace(/\D/g, "");
+        var raison = "";
+        if (cI.length >= 4 && cI === cP) raison = "meme N° CAFAT";
+        else if (nI && pI && pP && ((nI === nP && pI === pP) || (nI === pP && pI === nP))) raison = "meme nom et prenom";
+        else if (nI && nI === nP && RH_ISO_JOUR.test(dI) && dI === String(p.dateNaissance || "").substring(0, 10)) raison = "meme nom et date de naissance";
+        else if (!nI && pP && t.indexOf(" " + nP + " ") >= 0 && t.indexOf(" " + pP + " ") >= 0) raison = "nom et prenom cites dans ta demande";
+        if (raison) out.push({ p: p, raison: raison });
+      });
+      return out;
+    }
+    function rhVeilleIso(iso) {
+      var d = new Date(String(iso).substring(0, 10) + "T00:00:00");
+      d.setDate(d.getDate() - 1);
+      return localISODate(d);
+    }
+    // Ce que devient une fiche EXISTANTE quand un nouveau contrat est depose
+    // (salarie repris a la nouvelle embauche, ou Documents RH de sa fiche).
+    // nc = { debut, fin, type "CDD"|"CDI", identite (carte) ou null }.
+    // - debut APRES le contrat de la fiche : l'ancien part dans contratsHistorique
+    //   (clos la veille du nouveau s'il courait encore - fin incluse), ses
+    //   prolongations avec lui ; la fiche porte le nouveau contrat.
+    // - meme debut : contrat reedite, dates/type mis a jour.
+    // - debut AVANT le contrat de la fiche (regularisation d'une periode passee) :
+    //   fiche inchangee (jamais ecraser le contrat en cours par un plus ancien).
+    // Identite : seuls les champs NON vides qui different sont reportes.
+    // Meme calcul pour le recapitulatif et pour l'enregistrement.
+    function planContratFiche(emp, nc) {
+      var f = Object.assign({}, emp);
+      var lignes = [], modifs = [], resume = [];
+      var change = false;
+      var fmt = function(d) { var p = String(d || "").substring(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : ""; };
+      RH_CHAMPS_IDENTITE.forEach(function(ch) {
+        if (!nc || !nc.identite || !Object.prototype.hasOwnProperty.call(nc.identite, ch.k)) return;
+        var v = String(nc.identite[ch.k] == null ? "" : nc.identite[ch.k]).trim();
+        if (ch.k === "nom") v = v.toUpperCase();
+        if (!v) return; // une case videe n'efface jamais la fiche
+        if (ch.date && !RH_ISO_JOUR.test(v)) return;
+        var avant = String(emp[ch.k] == null ? "" : emp[ch.k]).trim();
+        if (ch.date) avant = avant.substring(0, 10);
+        if (ch.k === "nom") avant = avant.toUpperCase();
+        if (avant === v) return;
+        f[ch.k] = v; modifs.push(ch.l); change = true;
+      });
+      var debut = String((nc && nc.debut) || "").substring(0, 10);
+      var type = nc && nc.type === "CDI" ? "CDI" : "CDD";
+      var finN = (type === "CDD" && RH_ISO_JOUR.test(String((nc && nc.fin) || "").substring(0, 10))) ? String(nc.fin).substring(0, 10) : "";
+      var debC = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : "";
+      var finC = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "";
+      var typeC = emp.typeContrat || "CDI";
+      var txtContrat = function(fin) { return type + (type === "CDI" ? " a partir du " + fmt(debut) : (fin ? " du " + fmt(debut) + " au " + fmt(fin) : " a partir du " + fmt(debut) + " (sans terme precis)")); };
+      var nouveauTxt = txtContrat(finN);
+      // Ancien contrat a garder dans l'historique : la fiche en a un qui commence
+      // AVANT le nouveau, ou (fiche sans date d'embauche) un qui s'est termine avant
+      var aArchiver = debC ? debut > debC : !!(finC && finC < debut);
+      if (!RH_ISO_JOUR.test(debut)) {
+        lignes.push(["Contrat de la fiche", "inchange (date de debut du document inconnue)"]);
+      } else if (!aArchiver && (!debC || debut === debC)) {
+        // Fiche sans contrat date, ou MEME contrat reedite. Un avenant deja passe
+        // a repousse la fin : une reedition du contrat initial ne la ramene pas.
+        var finEff = finN;
+        var avenantGarde = debC === debut && type === typeC && !!finC && !!finN && finN < finC && Array.isArray(emp.prolongations) && emp.prolongations.length > 0;
+        if (avenantGarde) finEff = finC;
+        var txtEff = txtContrat(finEff) + (avenantGarde ? " (fin deja reportee par avenant)" : "");
+        if (debC === debut && finC === finEff && typeC === type) lignes.push(["Contrat de la fiche", "inchange (deja " + txtEff + ")"]);
+        else {
+          f.dateEmbauche = debut; f.dateFinContrat = finEff; f.typeContrat = type; f.motifFin = "";
+          change = true;
+          lignes.push(["Contrat de la fiche", (debC ? "mis a jour : " : "") + txtEff]);
+          resume.push("contrat " + txtEff);
+        }
+      } else if (!aArchiver) {
+        lignes.push(["Contrat de la fiche", "inchange : ce document commence avant son contrat actuel (" + typeC + " du " + fmt(debC) + "). Ajoute la periode a la main dans l'historique si besoin."]);
+      } else {
+        var coupe = !finC || finC >= debut;
+        var finArch = coupe ? rhVeilleIso(debut) : finC;
+        var ancien = { dateEmbauche: debC, dateFinContrat: finArch, motifFin: emp.motifFin || (coupe ? "Suivi du contrat du " + fmt(debut) : ""), typeContrat: typeC };
+        if (Array.isArray(emp.prolongations) && emp.prolongations.length) ancien.prolongations = emp.prolongations;
+        f.contratsHistorique = (Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : []).concat([ancien]);
+        f.dateEmbauche = debut; f.dateFinContrat = finN; f.typeContrat = type; f.motifFin = "";
+        f.dateReembauche = debut; f.prolongations = [];
+        change = true;
+        var aujIso = localISODate(new Date());
+        var enPoste = (!debC || debC <= aujIso) && finArch >= aujIso;
+        var txtA = typeC + (debC ? " du " + fmt(debC) + (finC ? " au " + fmt(finC) : "") : " termine le " + fmt(finC)) + " : ";
+        if (coupe) txtA += "clos au " + fmt(finArch) + " (veille du nouveau), garde dans l'historique";
+        else if (enPoste) txtA += "il reste en poste jusqu'au " + fmt(finArch) + ", puis le nouveau contrat prend le relais (l'ancien est garde dans l'historique)";
+        else txtA += "garde dans l'historique";
+        lignes.push([enPoste ? "Contrat en cours" : "Ancien contrat", txtA]);
+        lignes.push(["Nouveau contrat", nouveauTxt]);
+        resume.push("nouveau contrat " + nouveauTxt + ", l'ancien est dans l'historique");
+      }
+      lignes.push(["Infos de la fiche", modifs.length ? "mises a jour : " + modifs.join(", ") : "inchangees"]);
+      if (modifs.length) resume.push("infos mises a jour (" + modifs.join(", ") + ")");
+      return { fiche: f, change: change, lignes: lignes, modifs: modifs, resume: resume.length ? "Fiche mise a jour : " + resume.join(" ; ") + "." : "" };
+    }
     var RH_SUGGESTIONS = {
       contrat: [
         { t: "Nouveau CDD", s: "CDD d'usage BTP (renfort)", m: "Nouveau CDD d'usage pour un renfort : " },
@@ -10382,7 +10506,7 @@
       { k: "adresse", l: "Adresse", ia: "adresse" }, { k: "numeroCafat", l: "N° CAFAT", ia: "numero_cafat" }
     ];
 
-    function RhContratIA({ emp, doc, embauche, personnel, onCreerFiche, onProlonger, onClose }) {
+    function RhContratIA({ emp, doc, embauche, personnel, onCreerFiche, onProlonger, onContratFiche, onClose }) {
       var docDemande = doc || "contrat";
       var _msgs = useState([]); var msgs = _msgs[0]; var setMsgs = _msgs[1];
       var _saisie = useState(""); var saisie = _saisie[0]; var setSaisie = _saisie[1];
@@ -10405,6 +10529,13 @@
       // celle du rendu d'origine lirait une liste du personnel perimee)
       var onProlongerRef = React.useRef(onProlonger);
       onProlongerRef.current = onProlonger;
+      var onContratFicheRef = React.useRef(onContratFiche);
+      onContratFicheRef.current = onContratFiche;
+      // Nouvelle embauche d'une personne DEJA connue : fiche reprise
+      // ({ id, fiche, identAvant }) ; ignores = homonymes ecartes (« Autre personne »)
+      var _reprise = useState(null); var reprise = _reprise[0]; var setReprise = _reprise[1];
+      var _ignores = useState({}); var ignores = _ignores[0]; var setIgnores = _ignores[1];
+      var relanceRepriseRef = React.useRef(false);
       // Compteur des corrections manuelles de la carte : une reponse de l'agent
       // partie AVANT une correction ne doit ni l'ecraser ni la marquer a jour
       var identSeqRef = React.useRef(0);
@@ -10427,8 +10558,13 @@
         if (filRef.current) filRef.current.scrollTop = filRef.current.scrollHeight;
       }, [msgs, enCours]);
 
-      // Salarie concerne : la fiche existante, ou celle creee pendant l'embauche
-      var cible = empCree || emp || null;
+      // Salarie concerne : la fiche existante, celle reprise a la nouvelle
+      // embauche (version a jour de la liste), ou celle creee pendant l'embauche
+      var ficheReprise = reprise ? ((personnel || []).find(function(x) { return x.id === reprise.id; }) || reprise.fiche) : null;
+      var cible = empCree || emp || ficheReprise || null;
+      var estReprise = !!ficheReprise && cible === ficheReprise;
+      // Deja dans le systeme ? (tant qu'aucune fiche n'est rattachee)
+      var trouves = (!!embauche && !cible) ? rhChercherFiches(personnel, ident, msgs.filter(function(m) { return m.role === "user"; }).map(function(m) { return m.content; }).join(" "), ignores) : [];
       var modeEmbauche = !!embauche;
       var nomAffiche = cible ? ((cible.prenom || "") + " " + (cible.nom || "")).trim() : ((ident.prenom || "") + " " + (ident.nom || "")).trim();
 
@@ -10440,6 +10576,11 @@
             lieuNaissance: ident.lieuNaissance, nationalite: ident.nationalite, adresse: ident.adresse, numeroCafat: ident.numeroCafat };
         }
         var e = cible;
+        if (estReprise) {
+          // corrections de la carte (nouvelle adresse...) prioritaires sur la fiche
+          e = Object.assign({}, cible);
+          RH_CHAMPS_IDENTITE.forEach(function(ch) { var v = String(ident[ch.k] || "").trim(); if (v) e[ch.k] = v; });
+        }
         return {
           code: e.code || ("u" + e.id), nom: e.nom || "", prenom: e.prenom || "",
           dateNaissance: e.dateNaissance || "", lieuNaissance: e.lieuNaissance || "", nationalite: e.nationalite || "",
@@ -10516,14 +10657,14 @@
         var nouveaux = msgs.concat([{ role: "user", content: txt }]);
         var sansFiche = !cible;
         var seqCarte = identSeqRef.current;
-        setMsgs(nouveaux); setSaisie(""); setEnCours(true); setErrA("");
+        setMsgs(nouveaux); if (!texteForce) setSaisie(""); setEnCours(true); setErrA("");
         jeton().then(function(tok) {
           return fetch("/api/rh-agent", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok },
             // le document courant repart avec la demande : l'agent ajuste CES
             // valeurs au lieu de tout reconstruire de memoire
-            body: JSON.stringify({ messages: nouveaux, fiche: fichePourIA(), contrat: contrat, doc: docDemande, embauche: modeEmbauche && sansFiche })
+            body: JSON.stringify({ messages: nouveaux, fiche: fichePourIA(), contrat: contrat, doc: docDemande, embauche: modeEmbauche && sansFiche, reprise: estReprise })
           }).then(function(r) {
             return r.json().catch(function() { return { error: "HTTP " + r.status }; })
               .then(function(j) { return { ok: r.ok, j: j, tok: tok }; });
@@ -10550,7 +10691,7 @@
                 return n;
               });
             }
-            if (sansFiche && carteIntacte) setIdentSale(false);
+            if (carteIntacte) setIdentSale(false);
             setContrat(out.j.contrat); setDocType(dt); setConfirmFiche(false);
             genererPdf(out.j.contrat, dt, out.tok);
           }
@@ -10577,7 +10718,7 @@
         return n;
       };
       var aSigner = rhDocASigner(docType, contrat);
-      var deposer = function(fiche) {
+      var deposer = function(fiche, apresDepot) {
         if (!pdfBlobRef.current || !contrat) return;
         setDepose("encours");
         var tok, storagePath;
@@ -10621,7 +10762,10 @@
           }
           var nf = "";
           if (docType === "avenant_cdd" && onProlongerRef.current) nf = onProlongerRef.current(fiche.id, finIso, nomFichier()) || "";
-          if (monteRef.current) { setInfoDepot(nf ? "Fin de contrat de la fiche reportee au " + fmtIso(nf) + "." : ""); setDepose("ok"); }
+          // Fiche suivie APRES l'insertion au Coffre (jamais une fiche modifiee pour un depot rate)
+          var infoFiche = "";
+          if (apresDepot) { try { infoFiche = apresDepot() || ""; } catch (eA) { infoFiche = "Fiche NON mise a jour (" + (eA.message || eA) + ") : corrige-la a la main."; } }
+          if (monteRef.current) { setInfoDepot(nf ? "Fin de contrat de la fiche reportee au " + fmtIso(nf) + "." : infoFiche); setDepose("ok"); }
         }).catch(function(e) {
           if (monteRef.current) setDepose("");
           alert("Depot impossible : " + (e.message || e));
@@ -10659,11 +10803,19 @@
         if (!pdfBlobRef.current || !contrat || depose === "encours" || genEnCours || enCours) return;
         if (!cible) {
           if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
+          if (trouves.length) { alert("Cette personne semble deja avoir une fiche (carte a gauche) : clique « Reprendre ses infos », ou « Autre personne » si c'est un homonyme."); return; }
           setConfirmFiche(true); // recapitulatif avant la creation de la fiche
           return;
         }
+        if (estReprise && identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
         if (!cible.code) {
           alert("Cette fiche n'a pas de code interne : ouvre Modifier et renseigne le champ Code (ex. p21) avant le depot, sinon le document serait invisible dans le Coffre de l'employe.");
+          return;
+        }
+        // Contrat d'une fiche EXISTANTE : recapitulatif de ce que devient la fiche
+        if (docType === "contrat" && !empCree) {
+          if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
+          setConfirmFiche(true);
           return;
         }
         if (!confirm("Deposer " + nomFichier() + " au Coffre RH de " + nomAffiche + (aSigner ? " pour signature sur tablette ?" : " ? (document signe par la societe seule)"))) return;
@@ -10673,10 +10825,14 @@
         if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current) return;
         var fiche = construireFiche();
         if (!fiche.nom || !fiche.prenom) { alert("Le nom et le prenom sont obligatoires (carte a gauche)."); return; }
+        if (trouves.length) { setConfirmFiche(false); alert("Cette personne semble deja avoir une fiche (carte a gauche) : clique « Reprendre ses infos », ou « Autre personne » si c'est un homonyme."); return; }
+        var cafatN = String(fiche.numeroCafat || "").replace(/\D/g, "");
+        var memeCafat = cafatN.length >= 4 ? (personnel || []).find(function(p) { return String(p.numeroCafat || "").replace(/\D/g, "") === cafatN; }) : null;
+        if (memeCafat && !confirm("Le N° CAFAT " + fiche.numeroCafat + " est deja celui de " + memeCafat.prenom + " " + memeCafat.nom + " (code " + (memeCafat.code || "?") + "). Creer quand meme une NOUVELLE fiche avec ce numero ?")) return;
         var doublon = (personnel || []).find(function(p) {
           return rhSansAccents(p.nom) === rhSansAccents(fiche.nom) && rhSansAccents(p.prenom) === rhSansAccents(fiche.prenom);
         });
-        if (doublon && !confirm("Une fiche existe deja pour " + doublon.prenom + " " + doublon.nom + " (code " + (doublon.code || "?") + "). Pour un ancien salarie, utilise plutot Reembaucher, puis Documents RH depuis sa fiche.\n\nCreer quand meme une NOUVELLE fiche ?")) return;
+        if (doublon && !ignores[String(doublon.id)] && !confirm("Une fiche existe deja pour " + doublon.prenom + " " + doublon.nom + " (code " + (doublon.code || "?") + "). Pour un ancien salarie, utilise plutot Reembaucher, puis Documents RH depuis sa fiche.\n\nCreer quand meme une NOUVELLE fiche ?")) return;
         setDepose("encours");
         // Codes deja utilises au Coffre RH (fiches supprimees comprises)
         fetchAllRows(function() { return supabase.from("rh_documents").select("id,personnel_code").like("personnel_code", "p%").order("id"); }).then(function(res) {
@@ -10695,7 +10851,51 @@
         });
       };
 
-      var suggestions = RH_SUGGESTIONS[modeEmbauche && !empCree ? "embauche" : docDemande] || [];
+      // Nouveau contrat d'une fiche existante : dates du document + carte (reprise)
+      var ncCourant = function() {
+        var c = contrat || {};
+        return { debut: String(c.debut_iso || ""), fin: String(c.fin_iso || ""), type: estCdi(c) ? "CDI" : "CDD", identite: estReprise ? ident : null };
+      };
+      var confirmerContratFiche = function() {
+        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !cible) return;
+        if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
+        var fC = cible, nc = ncCourant();
+        setConfirmFiche(false);
+        deposer(fC, function() { return onContratFicheRef.current ? onContratFicheRef.current(fC.id, nc) : ""; });
+      };
+      // « Reprendre ses infos » : la carte prend l'identite de la fiche, l'agent
+      // travaille avec la fiche, le depot reembauche cette fiche (pas de doublon)
+      var reprendreFiche = function(p) {
+        if (enCours || depose === "encours") return;
+        identSeqRef.current++;
+        setReprise({ id: p.id, fiche: p, identAvant: ident });
+        var n = {};
+        RH_CHAMPS_IDENTITE.forEach(function(ch) { var v = String(p[ch.k] == null ? "" : p[ch.k]); n[ch.k] = ch.date ? v.substring(0, 10) : v; });
+        setIdent(n);
+        setConfirmFiche(false);
+        if (contrat) { setIdentSale(true); relanceRepriseRef.current = true; }
+      };
+      var delierFiche = function() {
+        if (!reprise || enCours || depose === "encours") return;
+        var idR = reprise.id;
+        identSeqRef.current++;
+        setIgnores(function(prev) { var n = Object.assign({}, prev); n[String(idR)] = true; return n; });
+        setIdent(reprise.identAvant || ident);
+        setReprise(null);
+        setConfirmFiche(false);
+        if (contrat) setIdentSale(true);
+      };
+      var ignorerTrouve = function(p) {
+        setIgnores(function(prev) { var n = Object.assign({}, prev); n[String(p.id)] = true; return n; });
+      };
+      // Document deja propose avant la reprise : l'agent le refait avec la fiche
+      useEffect(function() {
+        if (!relanceRepriseRef.current || !reprise) return;
+        relanceRepriseRef.current = false;
+        envoyer("Cette personne a deja une fiche Personnel (" + ((reprise.fiche && reprise.fiche.code) || "") + ") : reprends son identite depuis la fiche et mets le document a jour, sans rien changer d'autre.");
+      }, [reprise]);
+
+      var suggestions = RH_SUGGESTIONS[modeEmbauche && !empCree && !estReprise ? "embauche" : docDemande] || [];
       var bulleStyle = function(mien) {
         return { alignSelf: mien ? "flex-end" : "flex-start", maxWidth: "88%", padding: "8px 12px", borderRadius: mien ? "12px 3px 12px 12px" : "3px 12px 12px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", background: mien ? "linear-gradient(135deg,#4f46e5,#6366f1)" : "rgba(40,44,66,0.95)", border: mien ? "none" : "1px solid rgba(255,255,255,0.07)", color: mien ? "#fff" : "#e8e8ed", marginTop: 8 };
       };
@@ -10704,10 +10904,10 @@
       };
       var fmtIso = function(d) { var p = String(d || "").split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : ""; };
       var titre = modeEmbauche
-        ? (empCree ? "Nouvelle embauche - " + nomAffiche : "Nouvelle embauche - agent RH")
+        ? (empCree ? "Nouvelle embauche - " + nomAffiche : estReprise ? "Nouveau contrat - " + nomAffiche + " (fiche existante)" : "Nouvelle embauche - agent RH")
         : (RH_DOC_LIBELLE[docDemande] || "Document") + " - " + nomAffiche;
-      var intro = modeEmbauche && !empCree
-        ? "Nouvelle embauche : la personne n'a pas encore de fiche. Donne son identite et le contrat voulu (ou remplis la carte a gauche) : ce qui manque sort en rouge. La fiche Personnel sera creee au depot du contrat au Coffre RH."
+      var intro = modeEmbauche && !empCree && !estReprise
+        ? "Nouvelle embauche : donne le nom et le contrat voulu (ou remplis la carte a gauche). Si la personne a deja travaille chez nous, l'app la retrouve et propose de reprendre sa fiche. Sinon ce qui manque sort en rouge et la fiche Personnel sera creee au depot du contrat au Coffre RH."
         : "Discute comme avec le projet RH : decris le document, ajuste, l'apercu se met a jour a droite. L'agent lit deja la fiche du salarie.";
       var placeholder = docDemande === "attestation_travail" ? "Ex : ajoute son salaire, c'est pour sa banque..."
         : docDemande === "avenant_cdd" ? "Ex : renouvelle jusqu'au 18 decembre..."
@@ -10716,14 +10916,48 @@
 
       // ── Carte d'identite (nouvelle embauche, tant que la fiche n'existe pas) ──
       var carte = (modeEmbauche && !empCree) ? h("div", { style: { flex: "0 0 240px", minWidth: 220, height: 560, overflowY: "auto", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "10px 12px" } },
-        h("div", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } }, h(Icon, { name: "id-card", size: 13, color: "#a1a1aa" }), "Futur salarie"),
+        h("div", { style: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.6, color: "#a1a1aa", display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } }, h(Icon, { name: "id-card", size: 13, color: "#a1a1aa" }), estReprise ? "Salarie (fiche existante)" : "Futur salarie"),
+        estReprise ? h("div", { style: { margin: "6px 0 4px", padding: "9px 11px", borderRadius: 11, background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.4)", fontSize: 12, lineHeight: 1.45 } },
+          h("div", { style: { fontWeight: 800, color: "#c7d2fe", display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "user-check", size: 14, color: "#c7d2fe" }), "Fiche " + (ficheReprise.code || "") + " reprise"),
+          h("div", { style: { color: "#a1a1aa", fontSize: 11.5, marginTop: 2 } },
+            (ficheReprise.role || "") + " - " + (isActiveEmploye(ficheReprise) || isFuturEmploye(ficheReprise)
+              ? ((ficheReprise.typeContrat || "CDI") === "CDD" && ficheReprise.dateFinContrat ? "CDD en cours jusqu'au " + fmtIso(String(ficheReprise.dateFinContrat).substring(0, 10)) : (ficheReprise.typeContrat || "CDI") + " en cours")
+              : "ancien employe" + (ficheReprise.dateFinContrat ? ", parti le " + fmtIso(String(ficheReprise.dateFinContrat).substring(0, 10)) : "")),
+            h("br"), ((Array.isArray(ficheReprise.contratsHistorique) ? ficheReprise.contratsHistorique.length : 0) + 1) + " contrat(s) au total" + (ficheReprise.accesAppEmploye ? " - acces APP Employes actif" : "")),
+          depose === "ok" ? null : h("div", { style: { marginTop: 7 } }, h(Button, { variant: "secondary", disabled: enCours || depose === "encours", onClick: delierFiche }, h(IconText, { icon: "unlink", size: 13 }, "Ce n'est pas lui")))
+        ) : null,
+        estReprise && ficheReprise.typeContrat === "CDD" && isActiveEmploye(ficheReprise) ? h("div", { style: { marginTop: 6, padding: "7px 9px", borderRadius: 9, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", color: "#fde68a", fontSize: 11.5 } },
+          "CDD en cours : pour prolonger CE contrat, c'est « Renouvellement de CDD » dans ses Documents RH (avenant). Ici : un nouveau CDD ou le passage en CDI.") : null,
+        trouves.map(function(t) {
+          var p = t.p;
+          var actifT = isActiveEmploye(p) || isFuturEmploye(p);
+          return h("div", { key: "tr-" + p.id, style: { margin: "6px 0 4px", padding: "10px 11px", borderRadius: 11, background: "rgba(34,197,94,0.09)", border: "1px solid rgba(34,197,94,0.4)", fontSize: 12, lineHeight: 1.45 } },
+            h("div", { style: { fontWeight: 800, color: "#86efac", display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 } }, h(Icon, { name: "search", size: 14, color: "#86efac" }), "Deja dans le systeme"),
+            h("div", { style: { marginTop: 3 } },
+              h("b", null, ((p.nom || "") + " " + (p.prenom || "")).trim()), " - " + (p.code || "sans code"), h("br"),
+              (p.role || "") + ", " + (actifT ? ((p.typeContrat || "CDI") === "CDD" && p.dateFinContrat ? "CDD en cours jusqu'au " + fmtIso(String(p.dateFinContrat).substring(0, 10)) : (p.typeContrat || "CDI") + " en cours") : "parti" + (p.dateFinContrat ? " le " + fmtIso(String(p.dateFinContrat).substring(0, 10)) : "")),
+              p.dateNaissance ? h(React.Fragment, null, h("br"), "Ne le " + fmtIso(String(p.dateNaissance).substring(0, 10))) : null),
+            h("div", { style: { color: "#a1a1aa", fontSize: 11.5, marginTop: 3 } }, "Reconnu : " + t.raison),
+            h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 } },
+              h(Button, { disabled: enCours || depose === "encours", onClick: function() { reprendreFiche(p); } }, h(IconText, { icon: "check", size: 13 }, "Reprendre ses infos")),
+              h(Button, { variant: "secondary", onClick: function() { ignorerTrouve(p); } }, "Autre personne")));
+        }),
         RH_CHAMPS_IDENTITE.map(function(ch) {
           var v = ident[ch.k] || "";
+          var vF = estReprise ? String(ficheReprise[ch.k] == null ? "" : ficheReprise[ch.k]) : "";
+          if (ch.date) vF = vF.substring(0, 10);
+          var modif = estReprise && !!String(v).trim() && String(v).trim() !== vF.trim();
+          var st = champStyle(!v && !!contrat);
+          if (modif) st = Object.assign({}, st, { border: "1px solid rgba(245,158,11,0.6)", background: "rgba(245,158,11,0.07)" });
+          else if (estReprise && v) st = Object.assign({}, st, { border: "1px solid rgba(34,197,94,0.45)", background: "rgba(34,197,94,0.06)" });
           return h("div", { key: ch.k },
-            h("div", { style: { fontSize: 10.5, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.4, margin: "9px 0 3px" } }, ch.l),
-            h("input", { type: ch.date ? "date" : "text", value: v, onChange: function(e) { majIdent(ch.k, ch.k === "nom" ? e.target.value.toUpperCase() : e.target.value); }, style: champStyle(!v && !!contrat) }));
+            h("div", { style: { fontSize: 10.5, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.4, margin: "9px 0 3px", display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" } }, ch.l,
+              modif ? h("span", { style: { fontSize: 9.5, color: "#fde68a", textTransform: "none", letterSpacing: 0 } }, "modifie - mis a jour dans la fiche au depot du contrat") : null),
+            h("input", { type: ch.date ? "date" : "text", value: v, disabled: depose === "ok", onChange: function(e) { majIdent(ch.k, ch.k === "nom" ? e.target.value.toUpperCase() : e.target.value); }, style: st }));
         }),
-        h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 10, lineHeight: 1.45 } }, "L'agent remplit cette carte a partir de la discussion ; tu peux aussi corriger ici. Rien n'est enregistre avant la creation de la fiche."),
+        h("div", { style: { fontSize: 11, color: "#71717a", marginTop: 10, lineHeight: 1.45 } }, estReprise
+          ? "En vert : repris de sa fiche. Une correction ici (nouvelle adresse...) sera enregistree dans sa fiche au depot du contrat."
+          : "Tape le nom et le prenom (ou le N° CAFAT) : si la personne a deja travaille chez nous, l'app la retrouve. L'agent remplit aussi cette carte a partir de la discussion. Rien n'est enregistre avant le depot."),
         identSale ? h("div", { style: { marginTop: 10, padding: "8px 10px", borderRadius: 9, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 11.5, color: "#fde68a" } },
           "Carte modifiee : le document n'en tient pas encore compte.",
           h("div", { style: { marginTop: 7 } }, h(Button, { variant: "secondary", disabled: enCours, onClick: function() { envoyer("J'ai corrige la carte d'identite : mets le document a jour avec ces valeurs, sans rien changer d'autre."); } }, h(IconText, { icon: "refresh-cw", size: 13 }, "Mettre a jour le document")))
@@ -10752,14 +10986,33 @@
         );
       };
 
+      // ── Recapitulatif : contrat d'une fiche EXISTANTE (reprise ou Documents RH) ──
+      var recapContratFiche = function() {
+        var plan = planContratFiche(cible, ncCourant());
+        var lignesR = [["Fiche Personnel", ((cible.nom || "") + " " + (cible.prenom || "")).trim() + " (" + (cible.code || "?") + ")" + (estReprise ? " reutilisee - pas de nouvelle fiche" : "")]];
+        plan.lignes.forEach(function(l) { lignesR.push(l); });
+        lignesR.push(["Acces APP Employes", cible.accesAppEmploye ? (cible.pin ? "conserve (meme PIN)" : "active, mais PIN a generer dans la fiche") : "desactive (PIN a generer dans la fiche)"]);
+        lignesR.push(["Coffre RH", nomFichier() + (aSigner ? " - en attente de sa signature sur tablette" : "")]);
+        var ligne = function(a, b, i) { return h("tr", { key: i }, h("td", { style: { padding: "4px 6px", color: "#a1a1aa", width: "34%", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, a), h("td", { style: { padding: "4px 6px", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, b)); };
+        return h("div", { style: { marginTop: 10, padding: "12px 14px", borderRadius: 12, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.35)", fontSize: 12.5 } },
+          h("div", { style: { fontWeight: 800, marginBottom: 6, display: "flex", alignItems: "center", gap: 7 } }, h(Icon, { name: "history", size: 15, color: "#a5b4fc" }), "Ce qui va se passer"),
+          h("table", { style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null, lignesR.map(function(l, i) { return ligne(l[0], l[1], i); }))),
+          h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 } },
+            h(Button, { variant: "secondary", onClick: function() { setConfirmFiche(false); } }, "Annuler"),
+            h(Button, { onClick: confirmerContratFiche, disabled: depose === "encours" || enCours || genEnCours }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Depot..." : "Confirmer")))
+        );
+      };
+      var bloqueDoublon = !cible && trouves.length > 0;
       var promesseSansFiche = !cible && docType === "promesse_embauche";
       var actions = depose === "ok"
         ? h("span", { style: { alignSelf: "center", fontSize: 12.5, fontWeight: 800, color: "#86efac", textAlign: "right" } },
-            (empCree && docType === "contrat" ? "Fiche " + empCree.code + " creee - " : "") + (aSigner ? "Depose au Coffre RH - en attente de signature" : "Depose au Coffre RH - visible dans son APP Employes") + (infoDepot ? " " + infoDepot : ""))
+            (empCree && docType === "contrat" ? "Fiche " + empCree.code + " creee - " : estReprise && docType === "contrat" ? "Fiche " + (cible.code || "") + " reprise - " : "") + (aSigner ? "Depose au Coffre RH - en attente de signature" : "Depose au Coffre RH - visible dans son APP Employes") + (infoDepot ? " " + infoDepot : ""))
         : promesseSansFiche
           ? h("span", { style: { alignSelf: "center", fontSize: 11.5, color: "#a1a1aa", maxWidth: 300 } }, "A telecharger et remettre au candidat. Demande ensuite son contrat : la fiche sera creee a ce moment-la.")
-          : h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours || enCours || confirmFiche },
-              h(IconText, { icon: cible ? "lock" : "user-plus", size: 14 }, depose === "encours" ? "Depot..." : (cible ? (aSigner ? "Deposer au Coffre RH" : "Deposer au Coffre RH (sans signature)") : "Creer la fiche et deposer au Coffre RH")));
+          : h(React.Fragment, null,
+              bloqueDoublon ? h("span", { style: { alignSelf: "center", fontSize: 11.5, color: "#fde68a", maxWidth: 300 } }, "Deja dans le systeme : reprends sa fiche (carte a gauche) ou choisis « Autre personne ».") : null,
+              h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours || enCours || confirmFiche || bloqueDoublon },
+                h(IconText, { icon: cible ? "lock" : "user-plus", size: 14 }, depose === "encours" ? "Depot..." : (estReprise && docType === "contrat" ? ((isActiveEmploye(ficheReprise) || isFuturEmploye(ficheReprise)) ? "Deposer au Coffre RH (fiche existante)" : "Reembaucher et deposer au Coffre RH") : cible ? (aSigner ? "Deposer au Coffre RH" : "Deposer au Coffre RH (sans signature)") : "Creer la fiche et deposer au Coffre RH"))));
 
       return h(Modal, { title: titre, onClose: onClose, size: carte ? 1320 : 1150 },
         h("div", { style: { display: "flex", gap: 16, alignItems: "stretch", flexWrap: "wrap" } },
@@ -10797,7 +11050,7 @@
                 h("div", { style: { fontWeight: 800, marginBottom: 3 } }, "A verifier avant envoi :"),
                 contrat.a_verifier.map(function(v, i) { return h("div", { key: i }, "- " + v); })
               ) : null,
-              confirmFiche ? recapFiche() : h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" } },
+              confirmFiche ? (cible ? recapContratFiche() : recapFiche()) : h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" } },
                 h("a", { href: pdfUrl, download: nomFichier(), style: { textDecoration: "none" } },
                   h(Button, { variant: "secondary" }, h(IconText, { icon: "download", size: 14 }, "Telecharger"))),
                 actions
@@ -11438,6 +11691,20 @@
         });
         return nf;
       }
+      // Nouveau contrat depose pour une fiche EXISTANTE (salarie repris a la
+      // nouvelle embauche, ou Documents RH d'une fiche) : la fiche suit le
+      // contrat (planContratFiche, meme calcul que le recapitulatif).
+      // Renvoie le texte du bandeau de fin.
+      function appliquerContratFiche(empId, nc) {
+        var x0 = personnel.find(function(x) { return x.id === empId; });
+        if (!x0) return "";
+        var plan0 = planContratFiche(x0, nc);
+        if (!plan0.change) return "";
+        setPersonnel(function(p) {
+          return p.map(function(x) { return x.id === empId ? planContratFiche(x, nc).fiche : x; });
+        });
+        return plan0.resume;
+      }
       // Case des demarches d'embauche (date du jour si cochee, vide sinon)
       function cocherDemarche(empId, cle, fait) {
         setPersonnel(function(p) {
@@ -11523,12 +11790,16 @@
           return p.map(function(x) {
             if (x.id !== emp.id) return x;
             // 1. L'ancien contrat part dans l'historique (jamais ecrase)
-            var histo = (x.contratsHistorique || []).concat([{
+            var ancienCt = {
               dateEmbauche: x.dateEmbauche || "",
               dateFinContrat: x.dateFinContrat || "",
               motifFin: x.motifFin || "",
               typeContrat: x.typeContrat || "CDI"
-            }]);
+            };
+            // ses avenants partent avec lui (le nouveau contrat repart de zero
+            // pour la regle des 2 renouvellements)
+            if (Array.isArray(x.prolongations) && x.prolongations.length) ancienCt.prolongations = x.prolongations;
+            var histo = (x.contratsHistorique || []).concat([ancienCt]);
             // 2. Nouvelle ligne de contrat : nouvelles dates, memes infos
             return Object.assign({}, x, {
               contratsHistorique: histo,
@@ -11536,7 +11807,8 @@
               dateFinContrat: (reembauche.typeContrat === "CDD" && reembauche.dateFinPrevue) ? reembauche.dateFinPrevue : "",
               motifFin: "",
               typeContrat: reembauche.typeContrat,
-              dateReembauche: reembauche.date
+              dateReembauche: reembauche.date,
+              prolongations: []
             });
           });
         });
@@ -12265,7 +12537,7 @@
         })() : null,
         viewFiche && renderFiche(viewFiche),
         docsRH && h(RhDocumentsRH, { emp: personnel.find(function(x) { return x.id === docsRH.id; }) || docsRH, onClose: function() { setDocsRH(null); }, onChoisir: function(k) { var e = docsRH; setDocsRH(null); setContratIA({ emp: e, doc: k, embauche: false }); } }),
-        contratIA && h(RhContratIA, { emp: contratIA.emp ? (personnel.find(function(x) { return x.id === contratIA.emp.id; }) || contratIA.emp) : null, doc: contratIA.doc, embauche: !!contratIA.embauche, personnel: personnel, onCreerFiche: creerFicheEmbauche, onProlonger: prolongerParAvenant, onClose: function() { setContratIA(null); } }),
+        contratIA && h(RhContratIA, { emp: contratIA.emp ? (personnel.find(function(x) { return x.id === contratIA.emp.id; }) || contratIA.emp) : null, doc: contratIA.doc, embauche: !!contratIA.embauche, personnel: personnel, onCreerFiche: creerFicheEmbauche, onProlonger: prolongerParAvenant, onContratFiche: appliquerContratFiche, onClose: function() { setContratIA(null); } }),
         ficheRapportDetail && renderFicheRapportDetail(ficheRapportDetail)
       );
     }
@@ -21315,8 +21587,15 @@
       // - Sans dates de contrat -> toujours visible
       var firstDayOfMonthPe = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
       var firstDayNextMonthPe = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
+      var moisDebPe = localISODate(firstDayOfMonthPe);
+      var moisFinPe = localISODate(new Date(firstDayNextMonthPe.getFullYear(), firstDayNextMonthPe.getMonth(), 0));
       var personnel = loadPersonnelFromParametres(parametres).filter(function(p) {
         if (p.roleMecanicien) return false;
+        // Contrat ARCHIVE (debut et fin) qui touche le mois : visible (salarie en
+        // poste dont la fiche porte deja le contrat suivant, 2026-11-26)
+        if ((Array.isArray(p.contratsHistorique) ? p.contratsHistorique : []).some(function(cA) {
+          return cA && cA.dateEmbauche && cA.dateFinContrat && String(cA.dateEmbauche).substring(0, 10) <= moisFinPe && String(cA.dateFinContrat).substring(0, 10) >= moisDebPe;
+        })) return true;
         // Embauche apres la fin du mois affiche -> pas encore arrive
         if (p.dateEmbauche) {
           try {
