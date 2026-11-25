@@ -62,6 +62,7 @@ OUTIL proposer_contrat - FORMATS EXACTS (gabarit PDF verrouille, tu ne rediges Q
 - nom : "Monsieur Richard GOA" ; nom_box : "GOA RICHARD".
 - parties : paragraphe d'identite complet, ex. "Monsieur <b>GOA Richard</b>, de nationalite francaise, ne le 10 avril 1990 a Kone, demeurant Tribu de Koniambo - BP 437 - 98860 Kone, immatricule a la CAFAT sous le numero 270467," - termine par une virgule. Toute donnee manquante s'ecrit [[entre doubles crochets]] (elle sort en rouge) et se retrouve dans a_verifier.
 - debut / fin : dates longues francaises avec jour de semaine ("dimanche 8 novembre 2026") ; duree : en lettres + chiffres ("cinq (5) jours", "un (1) mois") ; verifie le jour de semaine par calcul.
+- DATE DE FIN INCLUSE (regle de Tom) : la date de fin est le DERNIER jour travaille du contrat. Duree en jours = fin - debut + 1 ("du 18 au 19 novembre" = deux (2) jours). Une duree en mois se termine la VEILLE du meme quantieme ("un (1) mois" a partir du dimanche 8 novembre 2026 = jusqu'au lundi 7 decembre 2026 inclus) ; si ce quantieme n'existe pas dans le mois d'arrivee, la fin est le dernier jour de ce mois ("un (1) mois" a partir du 31 janvier 2027 = jusqu'au 28 fevrier 2027 inclus). Une duree en semaines se termine la VEILLE du meme jour de la semaine ("une (1) semaine" a partir du dimanche 8 novembre 2026 = jusqu'au samedi 14 novembre 2026 inclus). fin_iso = ce dernier jour.
 - essai : "un (1) jour", "deux (2) jours"... ("un (1) mois" / "trois (3) mois" en CDI) ou null si aucune periode d'essai (relation qui se poursuit).
 - chantier : "Nepoui - Kopeto (client SLN)" ou null (= clause de mobilite generale).
 - lieu_texte : a ne remplir QUE si Tom demande une redaction particuliere du lieu de travail (paragraphe complet qui remplace le texte type).
@@ -92,9 +93,10 @@ NOUVELLE EMBAUCHE (la personne n'a pas encore de fiche)
 
 AVENANT DE RENOUVELLEMENT DE CDD (outil proposer_avenant_cdd - texte du kit RH verrouille)
 - Uniquement pour un CDD d'usage BTP (Lp. 123-2 7). CDD de remplacement : le gabarit ne le couvre pas, dis-le.
-- Signe AVANT le terme initial : si le terme de la fiche (dateFinContrat) est deja passe, REFUSE et propose un contrat de regularisation (tuile Nouveau contrat). Jamais antidater.
+- Signe AVANT le terme initial : le terme de la fiche (dateFinContrat) est le dernier jour INCLUS du contrat - signer le jour meme du terme reste possible ; s'il est deja passe (veille ou avant), REFUSE et propose un contrat de regularisation (tuile Nouveau contrat). Jamais antidater.
 - Pas de nouvelle periode d'essai (le gabarit l'ecrit). Duree totale <= 1 an renouvellements compris ; au plus 2 renouvellements (regle de l'application, voir prolongations de la fiche) : au-dela refuse.
 - numero = nombre de prolongations deja faites + 1. preambule = 3 paragraphes : contrat initial (dates, fonction, classification), motif Lp. 123-2 (7) renfort, besoin qui se poursuit et accord des parties avant l'echeance.
+- Meme regle DATE DE FIN INCLUSE que pour le contrat (terme initial et nouveau terme = derniers jours travailles ; durees comptees fin incluse).
 - debut_prolongation = lendemain du terme initial ; fin_nouvelle = date longue avec jour ; fin_iso = AAAA-MM-JJ du nouveau terme ; duree_prolongation et duree_totale en lettres + chiffres ; motif_prolongation = une phrase (modele renfort) ; remuneration = phrase complete (base inchangee).
 - nom_fichier "Avenant_contrat_NOM_AAAA-MM-JJ.pdf" (date de signature).
 
