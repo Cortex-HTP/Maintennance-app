@@ -10525,6 +10525,12 @@
       var _empCree = useState(null); var empCree = _empCree[0]; var setEmpCree = _empCree[1];
       var _confirmFiche = useState(false); var confirmFiche = _confirmFiche[0]; var setConfirmFiche = _confirmFiche[1];
       var _infoDepot = useState(""); var infoDepot = _infoDepot[0]; var setInfoDepot = _infoDepot[1];
+      // Signature : compte de l'APP Employes qui recevra le document ("" = pas
+      // encore choisi, "lui" = le salarie lui-meme, code = compte d'un responsable
+      // (sa tablette), "aucune" = sans signature du salarie). Demande a CHAQUE depot.
+      var _compteSig = useState(""); var compteSig = _compteSig[0]; var setCompteSig = _compteSig[1];
+      var _echeanceSig = useState(""); var echeanceSig = _echeanceSig[0]; var setEcheanceSig = _echeanceSig[1];
+      var _sigFaite = useState(""); var sigFaite = _sigFaite[0]; var setSigFaite = _sigFaite[1];
       // Derniere fonction de prolongation recue (l'appel arrive apres le depot :
       // celle du rendu d'origine lirait une liste du personnel perimee)
       var onProlongerRef = React.useRef(onProlonger);
@@ -10718,8 +10724,25 @@
         return n;
       };
       var aSigner = rhDocASigner(docType, contrat);
+      // Comptes pouvant recevoir un document a signer : memes regles que l'ajout
+      // manuel au Coffre (acces APP Employes + code + actif ou a venir)
+      var nomPers = function(p) { return ((p.prenom || "") + " " + (p.nom || "")).trim(); };
+      var comptesSig = (personnel || []).filter(function(p) {
+        return p && p.accesAppEmploye && p.code && !(cible && p.code === cible.code) && (isActiveEmploye(p) || isFuturEmploye(p));
+      }).sort(function(a, b) { return ((a.nom || "") + " " + (a.prenom || "")).localeCompare((b.nom || "") + " " + (b.prenom || ""), "fr"); });
+      // Le salarie lui-meme : seulement s'il peut se connecter (acces + PIN)
+      var luiPeutSigner = !!(cible && cible.code && cible.accesAppEmploye && cible.pin && (isActiveEmploye(cible) || isFuturEmploye(cible)));
+      var nomCompteSig = function(c) { var p = comptesSig.find(function(x) { return x.code === c; }); return p ? nomPers(p) : c; };
+      var texteSig = function(c) {
+        if (c === "aucune") return "sans signature du salarie (visible dans son APP Employes)";
+        if (c === "lui") return "en attente de sa signature sur son APP Employes";
+        return "en attente de signature sur le compte de " + nomCompteSig(c) + " (sa tablette)";
+      };
+      var ouvrirRecap = function() { setCompteSig(""); setEcheanceSig(""); setConfirmFiche(true); };
       var deposer = function(fiche, apresDepot) {
-        if (!pdfBlobRef.current || !contrat) return;
+        if (!pdfBlobRef.current || !contrat || !compteSig) return;
+        var compteDepot = compteSig, echeanceDepot = echeanceSig;
+        var sigDemandee = compteDepot !== "aucune";
         setDepose("encours");
         var tok, storagePath;
         var finIso = String((contrat && contrat.fin_iso) || "");
@@ -10750,8 +10773,12 @@
             // avant 11h la date UTC est celle de la veille)
             date_emission: localISODate(new Date()),
             date_expiration: expiration,
-            status: aSigner ? "pending_signature" : "active",
-            needs_signature: aSigner,
+            status: sigDemandee ? "pending_signature" : "active",
+            needs_signature: sigDemandee,
+            // Compte qui recevra le document a signer (null = celui du salarie)
+            remis_via: sigDemandee && compteDepot !== "lui" ? compteDepot : null,
+            // fin de journee LOCALE (instant, pas une date calendaire)
+            deadline_at: sigDemandee && RH_ISO_JOUR.test(echeanceDepot) ? new Date(echeanceDepot + "T23:59:00").toISOString() : null,
             uploaded_by: email,
             notes: "Genere par l'agent RH (IA) - " + (RH_DOC_LIBELLE[docType] || "document") + " - pre-signe cote societe"
           }).select("*").single();
@@ -10765,7 +10792,7 @@
           // Fiche suivie APRES l'insertion au Coffre (jamais une fiche modifiee pour un depot rate)
           var infoFiche = "";
           if (apresDepot) { try { infoFiche = apresDepot() || ""; } catch (eA) { infoFiche = "Fiche NON mise a jour (" + (eA.message || eA) + ") : corrige-la a la main."; } }
-          if (monteRef.current) { setInfoDepot(nf ? "Fin de contrat de la fiche reportee au " + fmtIso(nf) + "." : infoFiche); setDepose("ok"); }
+          if (monteRef.current) { setSigFaite(texteSig(compteDepot)); setInfoDepot(nf ? "Fin de contrat de la fiche reportee au " + fmtIso(nf) + "." : infoFiche); setDepose("ok"); }
         }).catch(function(e) {
           if (monteRef.current) setDepose("");
           alert("Depot impossible : " + (e.message || e));
@@ -10804,7 +10831,7 @@
         if (!cible) {
           if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
           if (trouves.length) { alert("Cette personne semble deja avoir une fiche (carte a gauche) : clique « Reprendre ses infos », ou « Autre personne » si c'est un homonyme."); return; }
-          setConfirmFiche(true); // recapitulatif avant la creation de la fiche
+          ouvrirRecap(); // recapitulatif (fiche + signature) avant la creation de la fiche
           return;
         }
         if (estReprise && identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
@@ -10815,14 +10842,14 @@
         // Contrat d'une fiche EXISTANTE : recapitulatif de ce que devient la fiche
         if (docType === "contrat" && !empCree) {
           if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
-          setConfirmFiche(true);
+          ouvrirRecap();
           return;
         }
-        if (!confirm("Deposer " + nomFichier() + " au Coffre RH de " + nomAffiche + (aSigner ? " pour signature sur tablette ?" : " ? (document signe par la societe seule)"))) return;
-        deposer(cible);
+        // Autres documents : recapitulatif + compte de signature
+        ouvrirRecap();
       };
       var confirmerEmbauche = function() {
-        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current) return;
+        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !compteSig) return;
         var fiche = construireFiche();
         if (!fiche.nom || !fiche.prenom) { alert("Le nom et le prenom sont obligatoires (carte a gauche)."); return; }
         if (trouves.length) { setConfirmFiche(false); alert("Cette personne semble deja avoir une fiche (carte a gauche) : clique « Reprendre ses infos », ou « Autre personne » si c'est un homonyme."); return; }
@@ -10857,7 +10884,7 @@
         return { debut: String(c.debut_iso || ""), fin: String(c.fin_iso || ""), type: estCdi(c) ? "CDI" : "CDD", identite: estReprise ? ident : null };
       };
       var confirmerContratFiche = function() {
-        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !cible) return;
+        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !cible || !compteSig) return;
         if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
         var fC = cible, nc = ncCourant();
         setConfirmFiche(false);
@@ -10964,6 +10991,57 @@
         ) : null
       ) : null;
 
+      // ── Signature : sur quel compte ? (question posee a CHAQUE depot, rien de coche d'avance) ──
+      var blocSignature = function() {
+        var nomSal = nomAffiche || "le salarie";
+        var option = function(val, titre, detail, off) {
+          var on = compteSig === val;
+          return h("label", { key: "sig-" + val, style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 10px", borderRadius: 9, border: "1px solid " + (on ? "rgba(6,182,212,0.7)" : "rgba(255,255,255,0.12)"), background: on ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.03)", cursor: off ? "not-allowed" : "pointer", opacity: off ? 0.5 : 1 } },
+            h("input", { type: "radio", name: "compte-signature", checked: on, disabled: !!off, onChange: function() { setCompteSig(val); }, style: { marginTop: 3, accentColor: "#06b6d4" } }),
+            h("div", null,
+              h("div", { style: { fontSize: 12.5, fontWeight: 800 } }, titre),
+              h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 1 } }, detail)));
+        };
+        return h("div", { style: { marginTop: 10, padding: 12, borderRadius: 10, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.32)" } },
+          h("div", { style: { fontSize: 13.5, fontWeight: 800, display: "flex", alignItems: "center", gap: 7 } }, h(Icon, { name: "pen-tool", size: 14, color: "#67e8f9" }), "Sur quel compte la signature doit-elle avoir lieu ?"),
+          h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginTop: 2 } }, aSigner
+            ? nomSal + " doit signer ce document : choisis le compte de l'APP Employes ou il arrivera."
+            : "Document signe par la societe seule : tu peux aussi ne demander aucune signature."),
+          h("div", { style: { display: "grid", gap: 6, marginTop: 10, maxHeight: 260, overflowY: "auto" } },
+            option("lui", nomSal + " - son propre compte", luiPeutSigner ? "Sur son telephone, avec son PIN (« Mes documents RH »)." : "Impossible pour l'instant : pas d'acces a l'APP Employes ou pas de PIN (a activer dans sa fiche).", !luiPeutSigner),
+            comptesSig.map(function(p) {
+              return option(p.code, "Compte de " + nomPers(p) + (p.role ? " (" + p.role + ")" : ""), "Arrive sur sa tablette (« A faire signer - equipe ») ; " + nomSal + " lit et signe dessus.");
+            }),
+            option("aucune", "Aucune signature du salarie", aSigner ? "Deconseille pour un contrat : il faudra le faire signer autrement (papier)." : "Le document est simplement mis a sa disposition.")),
+          !compteSig ? h("div", { style: { marginTop: 8, fontSize: 11.5, color: "#fde68a" } }, "Choisis un compte pour pouvoir deposer.") : null,
+          compteSig && compteSig !== "aucune" ? h("div", { style: { marginTop: 10 } },
+            h("div", { style: { fontSize: 10.5, fontWeight: 800, color: "#71717a", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Signer avant le (optionnel)"),
+            h("input", { type: "date", value: echeanceSig, onChange: function(e) { setEcheanceSig(e.target.value); }, style: champStyle(false) })) : null
+        );
+      };
+      // ── Recapitulatif des autres documents (attestation, avenant, courrier...) ──
+      var confirmerDepotSimple = function() {
+        if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !cible || !compteSig) return;
+        if (identSale) { alert("La carte d'identite a change depuis le dernier document : clique d'abord sur « Mettre a jour le document »."); return; }
+        setConfirmFiche(false);
+        deposer(cible);
+      };
+      var recapDocFiche = function() {
+        var lignesD = [
+          ["Salarie", nomPers(cible) + " (" + (cible.code || "?") + ")"],
+          ["Document", (RH_DOC_LIBELLE[docType] || "Document") + " - " + nomFichier()]
+        ];
+        if (docType === "avenant_cdd") lignesD.push(["Fiche", "fin de contrat reportee au terme de l'avenant"]);
+        var ligneD = function(a, b, i) { return h("tr", { key: i }, h("td", { style: { padding: "4px 6px", color: "#a1a1aa", width: "34%", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, a), h("td", { style: { padding: "4px 6px", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, b)); };
+        return h("div", { style: { marginTop: 10, padding: "12px 14px", borderRadius: 12, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.35)", fontSize: 12.5 } },
+          h("div", { style: { fontWeight: 800, marginBottom: 6, display: "flex", alignItems: "center", gap: 7 } }, h(Icon, { name: "lock", size: 15, color: "#a5b4fc" }), "Depot au Coffre RH"),
+          h("table", { style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null, lignesD.map(function(l, i) { return ligneD(l[0], l[1], i); }))),
+          blocSignature(),
+          h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 } },
+            h(Button, { variant: "secondary", onClick: function() { setConfirmFiche(false); } }, "Annuler"),
+            h(Button, { onClick: confirmerDepotSimple, disabled: depose === "encours" || enCours || genEnCours || !compteSig }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Depot..." : "Confirmer le depot")))
+        );
+      };
       // ── Recapitulatif avant creation de la fiche (nouvelle embauche) ──
       var recapFiche = function() {
         var f = construireFiche();
@@ -10977,12 +11055,13 @@
             ligne("Role", f.role),
             ligne("Salaire de la fiche", f.salaire ? fmtMoney(f.salaire) : "a renseigner dans la fiche"),
             ligne("Acces APP Employes", "desactive pour l'instant (PIN a generer avant son premier rapport)"),
-            ligne("Coffre RH", nomFichier() + " - en attente de sa signature sur tablette")
+            ligne("Coffre RH", nomFichier())
           )),
           manque.length ? h("div", { style: { color: "#fda4af", fontSize: 12, marginTop: 8 } }, "Champs encore vides : " + manque.join(", ") + " (completables ensuite dans la fiche).") : null,
+          blocSignature(),
           h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 } },
             h(Button, { variant: "secondary", onClick: function() { setConfirmFiche(false); } }, "Annuler"),
-            h(Button, { onClick: confirmerEmbauche, disabled: depose === "encours" || enCours || genEnCours }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Creation..." : "Confirmer")))
+            h(Button, { onClick: confirmerEmbauche, disabled: depose === "encours" || enCours || genEnCours || !compteSig }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Creation..." : "Confirmer")))
         );
       };
 
@@ -10992,27 +11071,28 @@
         var lignesR = [["Fiche Personnel", ((cible.nom || "") + " " + (cible.prenom || "")).trim() + " (" + (cible.code || "?") + ")" + (estReprise ? " reutilisee - pas de nouvelle fiche" : "")]];
         plan.lignes.forEach(function(l) { lignesR.push(l); });
         lignesR.push(["Acces APP Employes", cible.accesAppEmploye ? (cible.pin ? "conserve (meme PIN)" : "active, mais PIN a generer dans la fiche") : "desactive (PIN a generer dans la fiche)"]);
-        lignesR.push(["Coffre RH", nomFichier() + (aSigner ? " - en attente de sa signature sur tablette" : "")]);
+        lignesR.push(["Coffre RH", nomFichier()]);
         var ligne = function(a, b, i) { return h("tr", { key: i }, h("td", { style: { padding: "4px 6px", color: "#a1a1aa", width: "34%", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, a), h("td", { style: { padding: "4px 6px", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, b)); };
         return h("div", { style: { marginTop: 10, padding: "12px 14px", borderRadius: 12, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.35)", fontSize: 12.5 } },
           h("div", { style: { fontWeight: 800, marginBottom: 6, display: "flex", alignItems: "center", gap: 7 } }, h(Icon, { name: "history", size: 15, color: "#a5b4fc" }), "Ce qui va se passer"),
           h("table", { style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null, lignesR.map(function(l, i) { return ligne(l[0], l[1], i); }))),
+          blocSignature(),
           h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 } },
             h(Button, { variant: "secondary", onClick: function() { setConfirmFiche(false); } }, "Annuler"),
-            h(Button, { onClick: confirmerContratFiche, disabled: depose === "encours" || enCours || genEnCours }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Depot..." : "Confirmer")))
+            h(Button, { onClick: confirmerContratFiche, disabled: depose === "encours" || enCours || genEnCours || !compteSig }, h(IconText, { icon: "check", size: 14 }, depose === "encours" ? "Depot..." : "Confirmer")))
         );
       };
       var bloqueDoublon = !cible && trouves.length > 0;
       var promesseSansFiche = !cible && docType === "promesse_embauche";
       var actions = depose === "ok"
         ? h("span", { style: { alignSelf: "center", fontSize: 12.5, fontWeight: 800, color: "#86efac", textAlign: "right" } },
-            (empCree && docType === "contrat" ? "Fiche " + empCree.code + " creee - " : estReprise && docType === "contrat" ? "Fiche " + (cible.code || "") + " reprise - " : "") + (aSigner ? "Depose au Coffre RH - en attente de signature" : "Depose au Coffre RH - visible dans son APP Employes") + (infoDepot ? " " + infoDepot : ""))
+            (empCree && docType === "contrat" ? "Fiche " + empCree.code + " creee - " : estReprise && docType === "contrat" ? "Fiche " + (cible.code || "") + " reprise - " : "") + "Depose au Coffre RH - " + (sigFaite || "fait") + "." + (infoDepot ? " " + infoDepot : ""))
         : promesseSansFiche
           ? h("span", { style: { alignSelf: "center", fontSize: 11.5, color: "#a1a1aa", maxWidth: 300 } }, "A telecharger et remettre au candidat. Demande ensuite son contrat : la fiche sera creee a ce moment-la.")
           : h(React.Fragment, null,
               bloqueDoublon ? h("span", { style: { alignSelf: "center", fontSize: 11.5, color: "#fde68a", maxWidth: 300 } }, "Deja dans le systeme : reprends sa fiche (carte a gauche) ou choisis « Autre personne ».") : null,
               h(Button, { onClick: deposerCoffre, disabled: depose === "encours" || genEnCours || enCours || confirmFiche || bloqueDoublon },
-                h(IconText, { icon: cible ? "lock" : "user-plus", size: 14 }, depose === "encours" ? "Depot..." : (estReprise && docType === "contrat" ? ((isActiveEmploye(ficheReprise) || isFuturEmploye(ficheReprise)) ? "Deposer au Coffre RH (fiche existante)" : "Reembaucher et deposer au Coffre RH") : cible ? (aSigner ? "Deposer au Coffre RH" : "Deposer au Coffre RH (sans signature)") : "Creer la fiche et deposer au Coffre RH"))));
+                h(IconText, { icon: cible ? "lock" : "user-plus", size: 14 }, depose === "encours" ? "Depot..." : (estReprise && docType === "contrat" ? ((isActiveEmploye(ficheReprise) || isFuturEmploye(ficheReprise)) ? "Deposer au Coffre RH (fiche existante)" : "Reembaucher et deposer au Coffre RH") : cible ? "Deposer au Coffre RH" : "Creer la fiche et deposer au Coffre RH"))));
 
       return h(Modal, { title: titre, onClose: onClose, size: carte ? 1320 : 1150 },
         h("div", { style: { display: "flex", gap: 16, alignItems: "stretch", flexWrap: "wrap" } },
@@ -11050,7 +11130,7 @@
                 h("div", { style: { fontWeight: 800, marginBottom: 3 } }, "A verifier avant envoi :"),
                 contrat.a_verifier.map(function(v, i) { return h("div", { key: i }, "- " + v); })
               ) : null,
-              confirmFiche ? (cible ? recapContratFiche() : recapFiche()) : h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" } },
+              confirmFiche ? (!cible ? recapFiche() : (docType === "contrat" && !empCree) ? recapContratFiche() : recapDocFiche()) : h("div", { style: { display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" } },
                 h("a", { href: pdfUrl, download: nomFichier(), style: { textDecoration: "none" } },
                   h(Button, { variant: "secondary" }, h(IconText, { icon: "download", size: 14 }, "Telecharger"))),
                 actions
