@@ -1366,6 +1366,51 @@
       }
       return false;
     }
+    // ── Masse salariale x1,4 d'un MOIS (previsionnel de tresorerie, 2026-11-27) ──
+    // Chaque jour du mois compte au prorata (salaire / jours du mois) pour chaque
+    // salarie SOUS CONTRAT ce jour-la (contrat courant + historiques : entre deux
+    // contrats = non paye, embauche future a sa date, ancien salarie jusqu'a sa
+    // fin). CDD encore en poste ou a venir : apres la fin de son contrat,
+    // renouvellement PRESUME tant qu'un chantier tourne (renfort de chantier),
+    // jamais apres la fin des chantiers ni dans le passe. Salaire a venir
+    // (contrat suivant) applique a sa date. Sous-traitants exclus (comme avant).
+    // chantierActifIso(iso) -> bool ; aujIso = date du jour "YYYY-MM-DD".
+    function wlMasseSalarialeMois(personnel, y, m, chantierActifIso, aujIso) {
+      var nbJ = new Date(y, m + 1, 0).getDate();
+      var isos = [], actifs = [];
+      for (var j = 1; j <= nbJ; j++) {
+        var isoJ = y + "-" + String(m + 1).padStart(2, "0") + "-" + String(j).padStart(2, "0");
+        isos.push(isoJ);
+        actifs.push(isoJ >= aujIso && !!chantierActifIso(isoJ));
+      }
+      var total = 0;
+      (personnel || []).forEach(function(p) {
+        if (!p || p.roleMecanicien) return;
+        var salBase = parseFloat(String(p.salaire == null ? "" : p.salaire).replace(/\s/g, "")) || 0;
+        var sa = p.salaireAVenir;
+        var auSa = sa && sa.au ? String(sa.au).substring(0, 10) : "";
+        var salAV = auSa ? (parseFloat(String(sa.salaire == null ? "" : sa.salaire).replace(/\s/g, "")) || 0) : 0;
+        if (!(salBase > 0) && !(salAV > 0)) return;
+        var fen = fenetresEmploi(p);
+        var finCour = p.dateFinContrat ? String(p.dateFinContrat).substring(0, 10) : "";
+        // Depart annonce (motifFin : demission, fin de CDD notee...) = jamais presume
+        var renouvelable = p.typeContrat === "CDD" && !String(p.motifFin || "").trim() && /^\d{4}-\d{2}-\d{2}$/.test(finCour) && finCour >= aujIso;
+        var somme = 0;
+        for (var k = 0; k < isos.length; k++) {
+          var iso = isos[k], couvert = false;
+          for (var iF = 0; iF < fen.length; iF++) {
+            if (fen[iF].debut && iso < fen[iF].debut) continue;
+            if (fen[iF].fin && iso > fen[iF].fin) continue;
+            couvert = true; break;
+          }
+          if (!couvert && renouvelable && iso > finCour && actifs[k]) couvert = true;
+          if (!couvert) continue;
+          somme += ((salAV > 0 && iso >= auSa) ? salAV : salBase) / nbJ;
+        }
+        total += somme;
+      });
+      return total * 1.40;
+    }
     // ── REGLE « un rapport ENVOYE ecrase le NON PRODUCTIF pose a la main » (2026-11-11, Tomy) ──
     // NP PERSONNEL = pose au pinceau du Planning Employes : la ligne n'a PAS de
     // chantier (chantier_id null, cf. setAffectation). Si l'employe figure dans
@@ -27789,7 +27834,13 @@
       // Choix de la methode : si on a au moins 1 chantier planifie -> caYTD + chantiers
       var caAnnuelProj = nbChantiersPlanifies > 0 ? (caYTD + caPrevChantiers) : caExtrapole;
       var metragesAnnuelProj = nbChantiersPlanifies > 0 ? (metragesYTD + metragesPrevChantiers) : metragesExtrapole;
-      var coutConsoAnnuelProj = (coutConsoYTD / daysElapsed) * 365;
+      // Consommables (et gasoil) projetes au METRE qui reste a forer sur les
+      // chantiers planifies (2026-11-27) : l'ancienne extrapolation x365 jours
+      // continuait a depenser jusqu'au 31/12 apres la fin des chantiers.
+      // Sans chantier planifie : extrapolation lineaire historique.
+      var coutConsoAnnuelProj = nbChantiersPlanifies > 0
+        ? coutConsoYTD + (metragesYTD > 0 ? (coutConsoYTD / metragesYTD) * metragesPrevChantiers : 0)
+        : (coutConsoYTD / daysElapsed) * 365;
       var productiviteYTD = minutesForationYTD > 0 ? metragesYTD / (minutesForationYTD / 60) : 0;
 
       // ── Projection CA sur la periode (caPeriode deja calcule plus haut via dbRelevesJourn) ──
@@ -27809,11 +27860,23 @@
         // ~27 jours au lieu de ~18 et gonflait la projection de ~50%.
         var workdaysElapsed = 0;
         var workdaysTotal = 0;
+        // Jours ouvres A VENIR : comptes seulement si au moins un chantier tourne
+        // ce jour-la (fenetre de la fiche + periodes de travail). En decembre les
+        // chantiers s'arretent vers le 17 : la projection ne court plus jusqu'au
+        // 31 (2026-11-27). Aucune fiche chantier datee : comportement historique.
+        var chDatesProjM = (dbChantiers || []).filter(function(cM) { return cM && cM.statut !== "Termine" && cM.statut !== "Annule" && (chantierF === "all" || String(cM.id) === String(chantierF)); });
+        var chantiersDatesM = (dbChantiers || []).some(function(cM) { return cM && cM.dateDebut && cM.dateFin; });
+        var chantierTourneM = function(dM) {
+          if (!chantiersDatesM) return true;
+          var isoM = localISODate(dM);
+          var tM = new Date(isoM + "T12:00:00").getTime();
+          return chDatesProjM.some(function(cM) { return (!cM.dateDebut || isoM >= String(cM.dateDebut).substring(0, 10)) && (!cM.dateFin || isoM <= String(cM.dateFin).substring(0, 10)) && chantierEnPeriode(cM, tM); });
+        };
         var iter = new Date(monthStart);
         while (iter <= monthEnd) {
           var dowM = iter.getDay();
           var isWorkday = dowM >= 1 && dowM <= 4;
-          if (isWorkday) {
+          if (isWorkday && (iter <= periodEnd || chantierTourneM(iter))) {
             workdaysTotal++;
             // Borne = periodEnd (et non "now") : la journee en cours non close
             // est exclue du CA realise, elle doit l'etre aussi du diviseur,
@@ -27823,7 +27886,7 @@
           iter.setDate(iter.getDate() + 1);
         }
         workdaysElapsed = Math.max(1, workdaysElapsed);
-        projRatioMois = workdaysTotal / workdaysElapsed;
+        projRatioMois = Math.max(workdaysTotal, workdaysElapsed) / workdaysElapsed;
         caProjPeriode = caPeriode * projRatioMois;
         // ── STABILISATION du debut de mois ──
         // Sur 1-4 jours ecoules, l'extrapolation multiplie une poignee de
@@ -28386,6 +28449,13 @@
           }
         });
       });
+      // CA ACTIVITES annuel projete (attentes, deplacements...) : elles n'existent
+      // que sur chantier -> realise + ratio activites/metrage de l'annee x CA
+      // metrage restant des chantiers planifies (2026-11-27). L'ancien x365 jours
+      // facturait des attentes jusqu'au 31/12 apres la fin des chantiers.
+      var caActAnnuelProj = nbChantiersPlanifies > 0
+        ? caFactYTD + (caYTD > 0 ? Math.min(0.5, caFactYTD / caYTD) * caPrevChantiers : 0)
+        : (daysElapsed > 0 ? (caFactYTD / daysElapsed) * 365 : 0);
 
       // ── Detail par sondeuse ──
       var sondeusesMap = {}; // code -> stats
@@ -28997,7 +29067,7 @@
             // CA et CA projete : ACTIVITES FACTURABLES INCLUSES dans les grandes
             // valeurs (metrage + activites), decomposition dans le sous-titre.
             kpiCard("green", "coins", fmtCaCompact(caPeriode + caFactPeriode) + " XPF", "CA (" + periodLabelShort + ")", "Metrage : " + fmtCaCompact(caPeriode) + " + Activites : " + fmtCaCompact(caFactPeriode) + " XPF · Annuel " + now.getFullYear() + " (" + daysElapsed + "j) : " + fmtCaCompact(caYTD + caFactYTD) + " XPF (" + fmtCaCompact(caYTD) + " + " + fmtCaCompact(caFactYTD) + ")"),
-            kpiCard("red", "trending-up", fmtCaCompact(caProjPeriode + caFactPeriode * projRatioMois) + " XPF", "CA projete (" + periodLabelShort + ")", "Annuel projete : " + fmtCaCompact(caAnnuelProj + (daysElapsed > 0 ? (caFactYTD / daysElapsed) * 365 : 0)) + " XPF · Metrage : " + fmtCaCompact(caAnnuelProj) + " + Activites : " + fmtCaCompact(daysElapsed > 0 ? (caFactYTD / daysElapsed) * 365 : 0) + " XPF - " + (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? "" : " (periode passee : projete = realise)")),
+            kpiCard("red", "trending-up", fmtCaCompact(caProjPeriode + caFactPeriode * projRatioMois) + " XPF", "CA projete (" + periodLabelShort + ")", "Annuel projete : " + fmtCaCompact(caAnnuelProj + caActAnnuelProj) + " XPF · Metrage : " + fmtCaCompact(caAnnuelProj) + " + Activites : " + fmtCaCompact(caActAnnuelProj) + " XPF - " + (nbChantiersPlanifies > 0 ? "Realise + " + nbChantiersPlanifies + " chantier(s) planifie(s)" : "Extrapolation lineaire (pas de planning)") + (period === "mois" ? "" : " (periode passee : projete = realise)")),
             kpiCard("pink", "package-x", fmtXPF(totalCoutConso), "Cout consommables", "Annuel projete : " + fmtCaCompact(coutConsoAnnuelProj) + " XPF"),
             kpiCard("amber", "zap", productivite.toFixed(1) + " m/h", "Productivite foration", "Annuel YTD : " + productiviteYTD.toFixed(1) + " m/h")
           ),
@@ -29507,8 +29577,9 @@
           // ── Tresorerie previsionnelle - annee calendaire (mois courant a decembre) ──
           // Encaissements par mois : pour chaque chantier en cours ou a venir, projection
           //   metrage jour par jour (via previsionnelBaseChantierDay + coefDispo historique)
-          //   agregee par mois puis multipliee par le prixMetre. + moyenne CA activites YTD.
-          // Decaissements par mois : salaires x 1.4 + charges fixes + mensualites emprunts.
+          //   agregee par mois puis multipliee par le prixMetre. + CA activites au prorata.
+          // Decaissements par mois : decaissProjete (salaires du mois x1.4 selon les
+          //   contrats + charges fixes + emprunts + depenses variables des travaux payes).
           // Solde initial : lu dans parametres.tresorerie_solde_init (defaut 0).
           (function() {
             var now2 = new Date(); now2.setHours(0, 0, 0, 0);
@@ -29640,6 +29711,17 @@
             //   emprunts - factures fournisseurs 401 non lettrees a echeance J+30)
             var nbMoisRestants = 12; // annee complete
             var caChantiersParMois = new Array(12).fill(0);
+            // Metrage projete par mois (depenses variables des travaux) et chantiers
+            // qui restent a faire (jours "chantier qui tourne" : CDD presumes)
+            var metChantiersParMois = new Array(12).fill(0);
+            var chantiersProjetesTr = [];
+            // Dernier jour de production projetee par chantier (vues N puis n+1) :
+            // un chantier fini en avance ne retient plus de CDD jusqu'a sa dateFin
+            var finProdTr = Object.create(null);
+            var noterProdTr = function(cId, d) {
+              var isoP = localISODate(d);
+              if (!finProdTr[cId] || isoP > finProdTr[cId]) finProdTr[cId] = isoP;
+            };
             // Recap banque : le MEME CA ventile par chantier (provenance des
             // encaissements attendus). Tableaux additifs, rien d'autre ne les lit.
             var nomChTr = function(c) { return String((c && (c.titre || c.site)) || "Chantier").trim(); };
@@ -29771,6 +29853,7 @@
               var realise = computeRealiseChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
               var restant = Math.max(0, metrage - realise);
               if (restant <= 0) return;
+              chantiersProjetesTr.push(c);
               // Vitesse quotidienne du chantier
               var vitesseQuot = computeMetragePerJourChantier(c, ctx.dbRelevesJourn, ctx.dbSaisies);
               // Taux d'absence historique
@@ -29835,9 +29918,11 @@
                   if (dayMet > 0) {
                     if (totalProj + dayMet > restant) dayMet = restant - totalProj;
                     totalProj += dayMet;
+                    if (dayMet > 0) noterProdTr(c.id, cursor);
                     // Index = mois de l'annee (0..11), aligne avec la boucle de rendu janvier->decembre
                     if (cursor.getFullYear() === now2.getFullYear()) {
                       caChantiersParMois[cursor.getMonth()] += dayMet * prix;
+                      metChantiersParMois[cursor.getMonth()] += dayMet;
                       ajoutChTr(caProjParChMois, cursor.getMonth(), nomChTr(c), dayMet * prix);
                     }
                   }
@@ -30017,20 +30102,112 @@
             var encaissMoyenReel = nbMoisReel > 0 ? (totalInReel / nbMoisReel) : null;
             var decaissMoyenReel = nbMoisReel > 0 ? (totalOutReel / nbMoisReel) : null;
 
+            // ══ ENTREES / SORTIES PROJETEES CALEES SUR LES CHANTIERS (2026-11-27) ══
+            // Demande Tomy : les encaissements s'arretent avec les chantiers (le
+            // dernier mois de travaux est encaisse le mois suivant, delai 30 j) ;
+            // les sorties continuent apres, mais au BON montant : salaires des
+            // contrats reellement en cours + charges fixes + emprunts, sans les
+            // depenses de chantier.
+            // 1) CA ACTIVITES (attentes, deplacements...) : seulement sur chantier ->
+            //    au prorata du CA metrage du mois (ratio mesure sur le realise de
+            //    l'annee), au lieu d'une moyenne plate qui tournait sans fin.
+            //    Ratio = CA activites / CA metrage de l'annee a date (caFactYTD /
+            //    caYTD, meme regle que les cartes du haut), plafonne a 50 %.
+            var ratioActCh = caYTD > 0 ? Math.min(0.5, caFactYTD / caYTD) : null;
+            var activitesPourCa = function(caCh) {
+              if (!(caCh > 0)) return 0;
+              return ratioActCh != null ? ratioActCh * caCh : caActivitesMens;
+            };
+            // 2) Jour ou au moins un chantier a projeter tourne (fenetre de la fiche
+            //    + periodes de travail) : renouvellement presume des CDD.
+            var cacheActifTr = Object.create(null);
+            var chantierActifTr = function(iso) {
+              if (cacheActifTr[iso] !== undefined) return cacheActifTr[iso];
+              var tA = new Date(iso + "T12:00:00").getTime();
+              var rA = chantiersProjetesTr.some(function(c) {
+                return iso >= String(c.dateDebut).substring(0, 10) && iso <= String(c.dateFin).substring(0, 10) && !!finProdTr[c.id] && iso <= finProdTr[c.id] && chantierEnPeriode(c, tA);
+              });
+              cacheActifTr[iso] = rA;
+              return rA;
+            };
+            // 3) Masse salariale x1,4 de CHAQUE mois (wlMasseSalarialeMois) : avant,
+            //    la masse du jour s'appliquait a tous les mois (CDD payes sans fin).
+            var aujIsoTr = localISODate(now2);
+            var cacheSalTr = Object.create(null);
+            var salairesPourMois = function(yS, mS) {
+              var kS = yS + "-" + mS;
+              if (cacheSalTr[kS] === undefined) cacheSalTr[kS] = wlMasseSalarialeMois(personnelDataAll, yS, mS, chantierActifTr, aujIsoTr);
+              return cacheSalTr[kS];
+            };
+            // 4) Cout VARIABLE d'exploitation au metre, mesure sur le reel de l'annee
+            //    (memes mois fiables compta AVEC metrage) : (sorties banque - masse
+            //    salariale x1,4 - frais fixes - emprunts) / metrage = gasoil, consommables,
+            //    pieces, sous-traitance... par metre fore. Exige >= 1000 m/mois.
+            var coutVarMetre = null;
+            if (decaissMoyenReel != null) {
+              var totOutVar = 0, totMetVar = 0, totFixesVar = 0, nbVar = 0;
+              for (var mvF = 0; mvF < 12; mvF++) {
+                if (moisFiable(mvF) && metRealiseParMois[mvF] > 0) {
+                  var mvVarF = mvtsBanqueParMois[currentYear + "-" + String(mvF + 1).padStart(2, "0")];
+                  totOutVar += (mvVarF && mvVarF.out) || 0;
+                  totMetVar += metRealiseParMois[mvF];
+                  totFixesVar += salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mvF);
+                  nbVar++;
+                }
+              }
+              if (nbVar > 0 && (totMetVar / nbVar) >= 1000) coutVarMetre = Math.max(0, (totOutVar - totFixesVar) / totMetVar);
+            }
+            // Prix moyen reel au metre de l'annee (repli : convertir un CA en metres)
+            var prixMoyenReelN = 0;
+            (function() {
+              var sCa = 0, sMet = 0;
+              for (var pmR = 0; pmR < 12; pmR++) {
+                if (metRealiseParMois[pmR] > 0) { sCa += caChantiersRealiseParMois[pmR]; sMet += metRealiseParMois[pmR]; }
+              }
+              if (sMet > 0) prixMoyenReelN = sCa / sMet;
+            }());
+            // 5) Decaissements d'un mois PROJETE - MEME modele en vue N et n+1 :
+            //    salaires du mois + frais fixes + emprunts du mois + depenses
+            //    variables des travaux PAYES ce mois-ci (cout/m x metrage du mois
+            //    precedent, delai 30 j comme les encaissements ; les factures 401
+            //    ne sont alors pas recomptees). Sans cout/m mesurable : plancher =
+            //    rythme bancaire reel (ajuste des emprunts), SEULEMENT les mois qui
+            //    paient des travaux - apres les chantiers, charges fixes seules.
+            var decaissProjete = function(yD, mD, metPaye, travauxPayes, factFrsD, empD) {
+              var salD = salairesPourMois(yD, mD);
+              var rD = { salaires: salD, factFrs: 0, varExploitation: null, metrageMois: metPaye || 0, plancher: null, theo: 0, total: 0 };
+              if (coutVarMetre != null) {
+                // Les achats a 30 j sont dans le variable ; mais des factures 401
+                // deja recues plus elevees (ex. reparation d'intersaison apres les
+                // chantiers) sont de vraies sorties : on garde le plus grand.
+                var varD = coutVarMetre * (metPaye || 0);
+                if ((factFrsD || 0) > varD) { rD.factFrs = factFrsD; rD.theo = salD + chargesFixesMens + empD + factFrsD; }
+                else { rD.varExploitation = varD; rD.theo = salD + chargesFixesMens + empD + varD; }
+                rD.total = rD.theo;
+              } else {
+                rD.factFrs = factFrsD || 0;
+                rD.theo = salD + chargesFixesMens + empD + rD.factFrs;
+                if (decaissMoyenReel != null && travauxPayes > 0) rD.plancher = Math.max(0, decaissMoyenReel - empruntsMensuel + empD);
+                rD.total = rD.plancher != null ? Math.max(rD.plancher, rD.theo) : rD.theo;
+              }
+              return rD;
+            };
+
             // ── PASSE 1 : calcul des nets mensuels (encaiss - decaiss) sans solde cumule ──
             // Valeur des TRAVAUX par mois (rapports reels si dispo, sinon forecast chantiers/machines).
             // Sert au DECALAGE d'encaissement : le cash d'un mois = les travaux du mois precedent (~30j fin de mois).
             var caTravailChParMois = new Array(12).fill(0);
             var caTravailAcParMois = new Array(12).fill(0);
+            var metTravailParMois = new Array(12).fill(0);
             for (var mt = 0; mt < 12; mt++) {
               var dMtEnd = new Date(currentYear, mt + 1, 0);
               var estPasseMt = dMtEnd < now2;
               var estCourantMt = mt === now2.getMonth();
               var realChMt = caChantiersRealiseParMois[mt] || 0;
               var realAcMt = caActivitesRealiseParMois[mt] || 0;
-              if (estPasseMt) { caTravailChParMois[mt] = realChMt; caTravailAcParMois[mt] = realAcMt; }
-              else if (estCourantMt) { caTravailChParMois[mt] = realChMt + (caChantiersParMois[mt] || 0); caTravailAcParMois[mt] = Math.max(realAcMt, caActivitesMens); }
-              else { caTravailChParMois[mt] = caChantiersParMois[mt] || 0; caTravailAcParMois[mt] = caActivitesMens; }
+              if (estPasseMt) { caTravailChParMois[mt] = realChMt; caTravailAcParMois[mt] = realAcMt; metTravailParMois[mt] = metRealiseParMois[mt] || 0; }
+              else if (estCourantMt) { caTravailChParMois[mt] = realChMt + (caChantiersParMois[mt] || 0); caTravailAcParMois[mt] = Math.max(realAcMt, activitesPourCa(caTravailChParMois[mt])); metTravailParMois[mt] = (metRealiseParMois[mt] || 0) + (metChantiersParMois[mt] || 0); }
+              else { caTravailChParMois[mt] = caChantiersParMois[mt] || 0; caTravailAcParMois[mt] = activitesPourCa(caTravailChParMois[mt]); metTravailParMois[mt] = metChantiersParMois[mt] || 0; }
             }
             var trMoisRaw = [];
             for (var mi2 = 0; mi2 < 12; mi2++) {
@@ -30073,8 +30250,7 @@
                 var caChProjC = moisTravailEncC >= 0 ? caTravailChParMois[moisTravailEncC] : 0;
                 var caAcProjC = moisTravailEncC >= 0 ? caTravailAcParMois[moisTravailEncC] : 0;
                 var encProjMoisC = caChProjC + caAcProjC;
-                var decaissTheoriqueC = salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mi2) + factFrsMi;
-                var decProjMoisC = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheoriqueC) : decaissTheoriqueC;
+                var decProjMoisC = decaissProjete(currentYear, mi2, moisTravailEncC >= 0 ? metTravailParMois[moisTravailEncC] : 0, encProjMoisC, factFrsMi, empruntsPourMois(currentYear, mi2)).total;
                 var reelInC = mvtReel.in || 0, reelOutC = mvtReel.out || 0;
                 var joursMoisC = dMEnd.getDate();
                 var fracRestanteC = Math.max(0, (joursMoisC - Math.min(now2.getDate(), joursMoisC)) / joursMoisC);
@@ -30111,14 +30287,14 @@
                   caChantiersMi = 0; caActivitesMi = 0;
                 }
                 encaiss = caChantiersMi + caActivitesMi;
-                // ── DECAISSEMENTS : on ne projette jamais MOINS que le rythme reel observe ──
-                //   La moyenne reelle des mois deja saisis (hors virements internes) est le
-                //   meilleur proxy du vrai rythme mensuel de sortie. On prend le MAX entre ce
-                //   rythme et le theorique (salaires+fixes+emprunts+fournisseurs echus), pour ne
-                //   PAS sous-estimer les depenses (le blend 50/50 sous-estimait apres nettoyage).
+                // ── DECAISSEMENTS : modele commun (decaissProjete) - salaires du mois
+                //   selon les contrats, fixes, emprunts, depenses variables des
+                //   travaux payes ce mois (mois precedent). Apres les chantiers, il ne
+                //   reste que les charges fixes (avant : moyenne bancaire, chantiers
+                //   compris, appliquee a tous les mois).
                 var empMoisProj = empruntsPourMois(currentYear, mi2);
-                var decaissTheorique = salairesMens + chargesFixesMens + empMoisProj + factFrsMi;
-                decaiss = decaissMoyenReel != null ? Math.max(decaissMoyenReel, decaissTheorique) : decaissTheorique;
+                var decMoProj = decaissProjete(currentYear, mi2, moisTravailEnc >= 0 ? metTravailParMois[moisTravailEnc] : 0, encaiss, factFrsMi, empMoisProj);
+                decaiss = decMoProj.total;
                 source = "projete";
                 monthDetail = {
                   kind: "projete",
@@ -30127,13 +30303,16 @@
                   encaissTheorique: encaiss,
                   encaissMoyenReel: null,
                   encaissAjustement: 0,
-                  salaires: salairesMens,
+                  salaires: decMoProj.salaires,
                   chargesFixes: chargesFixesMens,
                   emprunts: empMoisProj,
-                  factFrs: factFrsMi,
-                  decaissTheorique: decaissTheorique,
-                  decaissMoyenReel: decaissMoyenReel,
-                  decaissAjustement: decaiss - decaissTheorique
+                  factFrs: decMoProj.factFrs,
+                  decaissTheorique: decMoProj.theo,
+                  decaissMoyenReel: decMoProj.plancher,
+                  decaissAjustement: decaiss - decMoProj.theo,
+                  varExploitation: decMoProj.varExploitation,
+                  coutVarMetre: coutVarMetre,
+                  metrageMois: decMoProj.metrageMois
                 };
               }
               var net = encaiss - decaiss;
@@ -30220,7 +30399,7 @@
             // vitesse mesuree -> mode legacy previsionnelBaseChantierDay. Toutes les
             // hypotheses sont ESTIMEES SUR LES DONNEES DE L'ANNEE N : salaires
             // (Personnel x1.4), frais generaux structure (FEC), plancher de
-            // decaissements (rythme bancaire reel), CA activites (moyenne YTD),
+            // decaissements (rythme bancaire reel), CA activites (prorata chantiers),
             // emprunts (echeancier mois par mois, fins de prets respectees).
             // Serie de l'ANNEE N conservee telle quelle : le bloc n+1 remplace
             // trMois quand la vue 2027 est affichee, et le Recap banque a
@@ -30285,6 +30464,7 @@
                       if (totP + dayM > restantC) dayM = restantC - totP;
                       totP += dayM;
                       if (curS.getFullYear() === anCibleF) { caChN1[curS.getMonth()] += dayM * prixC; metChN1[curS.getMonth()] += dayM; }
+                      noterProdTr(c.id, curS);
                       if (curS.getFullYear() === anCibleF) ajoutChTr(caChN1ParCh, curS.getMonth(), nomChTr(c), dayM * prixC);
                     }
                   }
@@ -30309,81 +30489,31 @@
                 });
                 return tot3;
               };
-              // ── Cout VARIABLE d'exploitation au metre, mesure sur le reel N ──
-              // (decaissements bancaires reels moyens - salaires - frais fixes -
-              // emprunts N) / metrage reel mensuel moyen = gasoil, consommables,
-              // pieces, sous-traitance... par metre fore. En n+1, ces depenses
-              // suivent le METRAGE PROJETE du mois : plus de CA = plus de sorties.
-              var coutVarMetreN1 = null;
-              if (decaissMoyenReel != null) {
-                // Numerateur et denominateur sur les MEMES mois (fiables compta
-                // AVEC metrage) : moyenner les sorties sur 6 mois et le metrage
-                // sur 4 sous-evaluait le cout/m des qu'un mois fiable etait sans
-                // forage. Emprunts au reel de chaque mois (prets soldes exclus).
-                var totOutVar = 0, totMetVar = 0, totFixesVar = 0, nbVar = 0;
-                for (var mvF = 0; mvF < 12; mvF++) {
-                  if (moisFiable(mvF) && metRealiseParMois[mvF] > 0) {
-                    var kVarF = currentYear + "-" + String(mvF + 1).padStart(2, "0");
-                    var mvVarF = mvtsBanqueParMois[kVarF];
-                    totOutVar += (mvVarF && mvVarF.out) || 0;
-                    totMetVar += metRealiseParMois[mvF];
-                    totFixesVar += salairesMens + chargesFixesMens + empruntsPourMois(currentYear, mvF);
-                    nbVar++;
-                  }
-                }
-                if (nbVar > 0 && (totMetVar / nbVar) >= 1000) {
-                  coutVarMetreN1 = Math.max(0, (totOutVar - totFixesVar) / totMetVar);
-                }
-              }
-              // Prix moyen reel au metre de l'annee N (pour convertir le CA de
-              // decembre N en metres : janvier n+1 paie les travaux de decembre)
-              var prixMoyenReelN = 0;
-              (function() {
-                var sCa = 0, sMet = 0;
-                for (var pmR = 0; pmR < 12; pmR++) {
-                  if (metRealiseParMois[pmR] > 0) { sCa += caChantiersRealiseParMois[pmR]; sMet += metRealiseParMois[pmR]; }
-                }
-                if (sMet > 0) prixMoyenReelN = sCa / sMet;
-              }());
+              // Activites n+1 : au prorata du CA metrage du mois (plus de moyenne
+              // plate apres la fin des chantiers)
+              var caAcN1 = caChN1.map(function(vA) { return activitesPourCa(vA); });
               // Passe mensuelle n+1 : encaissement = travaux du mois precedent (janvier
-              // n+1 encaisse decembre N), decaissements = salaires + fixes + emprunts
-              // du mois + DEPENSES VARIABLES indexees sur le metrage projete (cout/m
-              // mesure N). Sans cout/m mesurable : plancher rythme reel ajuste.
+              // n+1 encaisse decembre N) ; decaissements = MEME modele que la vue N
+              // (decaissProjete : salaires du mois selon les contrats, fixes,
+              // emprunts du mois, depenses variables des travaux payes).
               var soldeDebutN1 = trMoisN[11].solde;
               var trN1 = [];
               var soldeC3 = soldeDebutN1;
               for (var mN = 0; mN < 12; mN++) {
                 var kMonthN = anCibleF + "-" + String(mN + 1).padStart(2, "0");
                 var caChMi3 = mN === 0 ? (caTravailChParMois[11] || 0) : (caChN1[mN - 1] || 0);
-                var caAcMi3 = mN === 0 ? (caTravailAcParMois[11] || 0) : caActivitesMens;
+                var caAcMi3 = mN === 0 ? (caTravailAcParMois[11] || 0) : (caAcN1[mN - 1] || 0);
                 var encN = caChMi3 + caAcMi3;
                 var empMoisN = empruntsPourMoisN1(anCibleF, mN);
                 var factMiN = factFrsFutures[kMonthN] || 0;
-                // MEME DECALAGE 30 J QUE LES ENCAISSEMENTS : le mois M encaisse ET
-                // paie les travaux du mois M-1 (clients ET fournisseurs a 30 jours).
-                // Ainsi, a encaissement egal, depenses variables egales -> net
-                // mensuel lisible = marge des travaux M-1 moins fixes du mois.
-                // Janvier n+1 paie decembre N (CA decembre / prix moyen reel N).
-                var varExpN = null, metPayeN = 0;
-                if (coutVarMetreN1 != null) {
-                  if (mN === 0) metPayeN = prixMoyenReelN > 0 ? (caChMi3 / prixMoyenReelN) : 0;
-                  else metPayeN = metChN1[mN - 1] || 0;
-                  varExpN = coutVarMetreN1 * metPayeN;
-                }
-                var decTheoN, decN, plancherN1 = null;
-                if (varExpN != null) {
-                  // Modele complet. Les factures 401 ne sont PAS recomptees : les
-                  // achats a 30 j sont deja modelises par le variable decale
-                  // (sinon janvier paierait decembre N deux fois).
-                  decTheoN = salairesMens + chargesFixesMens + empMoisN + varExpN;
-                  decN = decTheoN;
-                } else {
-                  // Repli sans cout/m mesurable : plancher = rythme bancaire reel N,
-                  // AJUSTE du delta d'emprunts (fins de prets visibles sur la courbe)
-                  decTheoN = salairesMens + chargesFixesMens + empMoisN + factMiN;
-                  plancherN1 = decaissMoyenReel != null ? Math.max(0, decaissMoyenReel - empruntsMensuel + empMoisN) : null;
-                  decN = plancherN1 != null ? Math.max(plancherN1, decTheoN) : decTheoN;
-                }
+                // MEME DECALAGE 30 J QUE LES ENCAISSEMENTS : le mois M paie les
+                // depenses variables des travaux du mois M-1 (janvier n+1 paie
+                // decembre N : metrage realise + projete de decembre).
+                var metPayeN = mN === 0
+                  ? ((metTravailParMois[11] || 0) > 0 ? metTravailParMois[11] : (prixMoyenReelN > 0 ? caChMi3 / prixMoyenReelN : 0))
+                  : (metChN1[mN - 1] || 0);
+                var decMoN = decaissProjete(anCibleF, mN, metPayeN, encN, factMiN, empMoisN);
+                var decN = decMoN.total;
                 var netN = encN - decN;
                 soldeC3 += netN;
                 trN1.push({
@@ -30393,14 +30523,14 @@
                   detail: {
                     kind: "projete", caChantiers: caChMi3, caActivites: caAcMi3,
                     encaissTheorique: encN, encaissMoyenReel: null, encaissAjustement: 0,
-                    salaires: salairesMens, chargesFixes: chargesFixesMens, emprunts: empMoisN,
-                    factFrs: varExpN != null ? 0 : factMiN, decaissTheorique: decTheoN, decaissMoyenReel: plancherN1,
-                    decaissAjustement: decN - decTheoN,
-                    varExploitation: varExpN, coutVarMetre: coutVarMetreN1, metrageMois: metPayeN
+                    salaires: decMoN.salaires, chargesFixes: chargesFixesMens, emprunts: empMoisN,
+                    factFrs: decMoN.factFrs, decaissTheorique: decMoN.theo, decaissMoyenReel: decMoN.plancher,
+                    decaissAjustement: decN - decMoN.theo,
+                    varExploitation: decMoN.varExploitation, coutVarMetre: coutVarMetre, metrageMois: decMoN.metrageMois
                   }
                 });
               }
-              return { trN1: trN1, soldeDebutN1: soldeDebutN1, caChN1: caChN1, caChN1ParCh: caChN1ParCh, caActivitesMensN1: caActivitesMens };
+              return { trN1: trN1, soldeDebutN1: soldeDebutN1, caChN1: caChN1, caChN1ParCh: caChN1ParCh, caAcN1: caAcN1, caActivitesMensN1: caActivitesMens };
             };
             if (estVueN1) {
               var resN1 = computeTresoN1();
@@ -30449,7 +30579,7 @@
               }
               for (var tm1 = 0; tm1 < 12; tm1++) {
                 travCh.push(fusionCh(Object.create(null), (rN1.caChN1ParCh || [])[tm1]));
-                travAc.push(rN1.caActivitesMensN1 || 0);
+                travAc.push(((rN1.caAcN1 || [])[tm1]) || 0);
               }
               // Provenance de l'attendu du mois i = travaux du mois i-1 (reglement
               // ~30 j), ramenee au montant attendu (mois en cours : seul le
@@ -30847,7 +30977,7 @@
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caChantiers))
                                 ),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0" } },
-                                  h("span", null, "CA activites " + ((!x.estPasse && !x.estCourant) ? "(moyenne YTD)" : "(rapports sondeurs)")),
+                                  h("span", null, "CA activites " + ((!x.estPasse && !x.estCourant) ? "(au prorata des chantiers)" : "(rapports sondeurs)")),
                                   h("span", { style: { fontFamily: "monospace" } }, fmtCaTr(det.caActivites))
                                 ),
                                 h("div", { style: { display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(34,197,94,0.30)", marginTop: 4, paddingTop: 6, fontWeight: 800, color: "#86efac" } },
