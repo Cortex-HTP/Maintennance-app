@@ -22043,6 +22043,20 @@
         fenHC.forEach(function(f) { if (f.debut && (minDebHC === null || f.debut < minDebHC)) minDebHC = f.debut; });
         return (minDebHC && dateStr < minDebHC) ? "avant" : "apres";
       }
+      // Libelle d'un jour hors contrat. ENTRE deux contrats on annonce la
+      // reprise : la fiche porte deja le contrat suivant, sa dateFinContrat
+      // n'est pas celle du contrat qui vient de finir (2026-11-26).
+      function libelleHorsContratPe(emp, dateStr, hc) {
+        var frL = function(iso) { return String(iso || "").substring(0, 10).split("-").reverse().join("/"); };
+        var reprL = null, finL = null;
+        fenetresEmploi(emp).forEach(function(f) {
+          if (f.debut && f.debut > dateStr && (reprL === null || f.debut < reprL)) reprL = f.debut;
+          if (f.fin && f.fin < dateStr && (finL === null || f.fin > finL)) finL = f.fin;
+        });
+        if (hc === "avant") return "Pas encore embauche - arrive le " + frL(reprL || emp.dateEmbauche);
+        if (reprL) return "Entre deux contrats - " + (finL ? "fin le " + frL(finL) + ", " : "") + "reprise le " + frL(reprL);
+        return "Contrat termine le " + frL(finL || emp.dateFinContrat);
+      }
       function siteToChantierPe(lieu) {
         if (!lieu) return null;
         var lk = String(lieu).toUpperCase().trim();
@@ -22262,8 +22276,7 @@
         var empHC = (personnel || []).find(function(p) { return p.id === empId; });
         var hc = empHC ? horsContratPe(empHC, dateStr) : null;
         if (hc && brush !== "eraser") {
-          alert((empHC.prenom || "") + " " + (empHC.nom || "") + " n'est pas sous contrat a cette date (" +
-            (hc === "avant" ? "arrive le " + String(empHC.dateEmbauche).substring(0, 10).split("-").reverse().join("/") : "contrat termine le " + String(empHC.dateFinContrat).substring(0, 10).split("-").reverse().join("/")) + ").");
+          alert((empHC.prenom || "") + " " + (empHC.nom || "") + " n'est pas sous contrat a cette date.\n" + libelleHorsContratPe(empHC, dateStr, hc) + ".");
           return;
         }
         // ── Conge APPROUVE : on ne peint ni ne gomme par-dessus ──
@@ -22436,7 +22449,7 @@
           h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
             h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "#7c3aed", border: "1.5px dashed #f59e0b", display: "inline-block" } }), "Conflit : planifie + conge demande"),
           h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
-            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "rgba(120,113,108,0.45)", display: "inline-block" } }), "Hors contrat (avant embauche / apres fin)")
+            h("span", { style: { width: 16, height: 15, borderRadius: 4, background: "rgba(120,113,108,0.45)", display: "inline-block" } }), "Hors contrat (avant embauche / entre deux contrats / apres fin)")
         ),
         // Brush selector (chantier palette)
         h("div", { style: { background: "rgba(36, 40, 60, 0.85)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderRadius: 12, border: "1px solid var(--border)", padding: 16, marginBottom: 16, boxShadow: "var(--shadow-sm)" } },
@@ -22664,9 +22677,7 @@
                       cellStyle.fontSize = 9;
                       cellStyle.color = "#d6d3d1";
                       contenu = "NP";
-                      tip = hcPe === "avant"
-                        ? "Pas encore embauche - arrive le " + String(emp.dateEmbauche).substring(0, 10).split("-").reverse().join("/")
-                        : "Contrat termine le " + String(emp.dateFinContrat).substring(0, 10).split("-").reverse().join("/");
+                      tip = libelleHorsContratPe(emp, dateStr, hcPe);
                     }
 
                     return h("td", {
