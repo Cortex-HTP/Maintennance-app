@@ -77,6 +77,7 @@ OUTIL proposer_contrat - FORMATS EXACTS (gabarit PDF verrouille, tu ne rediges Q
 - regularisation : true + preambule : tableau de 3 paragraphes honnetes (contrat precedent, poursuite du travail, signature a date reelle).
 - date_signature : date longue du jour (Pacific/Noumea) sauf indication contraire.
 - debut_iso / fin_iso : les memes dates en AAAA-MM-JJ (fin_iso vide pour un remplacement sans terme precis et pour un CDI) - elles servent au classement du document au Coffre RH.
+- salaire_mensuel et role_app : TOUJOURS remplis (aussi pour un salarie qui a deja une fiche) - au depot ils mettent a jour la fiche Personnel (salaire brut mensuel 169 h en nombre entier, celui ecrit dans la remuneration ; contrat paye au prorata des heures (taux horaire seul) : mets le salaire mensuel de la fiche, JAMAIS le taux horaire ; role_app = role de la fiche correspondant a la fonction : Sondeur, Aide sondeur, Chauffeur, Mecanicien, Atelier, Bureau ou Autre).
 - nom_fichier : "CDD_NOM_AAAA-MM-JJ.pdf" ou "CDI_NOM_AAAA-MM-JJ.pdf" (date de debut).
 - a_verifier : liste courte de ce que Tom doit controler (DPAE, visite medicale, champs [[...]], SMG...). Pour un CDI, ajoute toujours : "Trame CDI nouvelle (v1) : a relire integralement avant signature".
 
@@ -265,7 +266,7 @@ const TOOL_CONTRAT = {
       a_verifier: { type: 'array', items: { type: 'string' } },
       identite: IDENTITE,
       role_app: ROLE_APP,
-      salaire_mensuel: { type: 'number', description: 'nouvelle embauche : brut mensuel 169 h (entier)' }
+      salaire_mensuel: { type: 'number', description: 'brut mensuel 169 h (entier), toujours rempli : met a jour le salaire de la fiche au depot' }
     },
     required: ['type', 'nom', 'nom_box', 'parties', 'fonction', 'classif', 'essai', 'remuneration', 'date_signature', 'nom_fichier', 'a_verifier']
   }

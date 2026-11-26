@@ -2399,6 +2399,49 @@
     // onglets aux donnees divergentes ne se re-ecrasent donc pas en ping-pong ; et les releves
     // d'heures + demandes de conge sont re-lus en base A CHAQUE cycle (donnees fraiches, les
     // onglets convergent vers le meme contenu).
+    // Salaire / poste d'un contrat SUIVANT saisi a l'avance (planContratFiche ->
+    // salaireAVenir) : appliques le jour du nouveau contrat, a la premiere ouverture
+    // de l'app admin ce jour-la ou apres (ecrit dans personnel_data). Pur, renvoie
+    // la nouvelle liste, ou null s'il n'y a rien a appliquer.
+    function appliquerSalairesAVenir(list, iso) {
+      var touche = false;
+      var out = (list || []).map(function(p) {
+        var sa = p && p.salaireAVenir;
+        if (!sa || !sa.au || String(sa.au).substring(0, 10) > iso) return p;
+        touche = true;
+        var n = Object.assign({}, p);
+        delete n.salaireAVenir;
+        var salN = parseFloat(String(sa.salaire == null ? "" : sa.salaire).replace(/\s/g, ""));
+        var salA = parseFloat(String(p.salaire == null ? "" : p.salaire).replace(/\s/g, "")) || 0;
+        if (salN > 0 && Math.round(salN) !== Math.round(salA)) {
+          n.salaire = String(Math.round(salN));
+          if (salA > 0) n.salairesHistorique = (Array.isArray(p.salairesHistorique) ? p.salairesHistorique : []).concat([{ salaire: Math.round(salA), au: String(sa.au).substring(0, 10) }]);
+        }
+        if (sa.role) n.role = sa.role;
+        return n;
+      });
+      return touche ? out : null;
+    }
+    function SalairesAVenirPromoteur(props) {
+      var ctx = useAppData();
+      var fait = React.useRef("");
+      useEffect(function() {
+        if (!ctx.isAdmin) return;
+        if (props && (props.dataLoading || props.loadError)) return;
+        var row = (ctx.parametres || []).find(function(p) { return p && p.categorie === PERSONNEL_STORAGE_KEY; });
+        if (!row || !row.valeur || String(row.valeur).indexOf("salaireAVenir") < 0) return;
+        var iso = localISODate(new Date());
+        var list;
+        try { list = JSON.parse(row.valeur) || []; } catch (e) { return; }
+        var maj = appliquerSalairesAVenir(list, iso);
+        if (!maj) return;
+        var cle = iso + "|" + String(row.valeur).length;
+        if (fait.current === cle) return; // une seule ecriture par etat du blob
+        fait.current = cle;
+        savePersonnel(ctx.parametres, maj, function() {}, function(r) { if (!r || !r.ok) fait.current = ""; }, ctx.setParametres);
+      }, [ctx.isAdmin, ctx.parametres, props && props.dataLoading, props && props.loadError]);
+      return null;
+    }
     function PaiesAutoPublisher(props) {
       var ctx = useAppData();
       var dernierPublie = React.useRef({}); // periode -> empreinte (hors "genere") publiee par CET onglet
@@ -10150,10 +10193,25 @@
       var hist = Array.isArray(p && p.contratsHistorique) ? p.contratsHistorique : [];
       for (var iH = 0; iH < hist.length; iH++) {
         var cH = hist[iH];
-        if (!cH || !cH.dateEmbauche || !cH.dateFinContrat) continue;
-        if (String(cH.dateEmbauche).substring(0, 10) <= isoH && isoH <= String(cH.dateFinContrat).substring(0, 10)) return true;
+        if (!cH || !cH.dateFinContrat) continue; // fin obligatoire (jamais de fenetre ouverte)
+        if ((!cH.dateEmbauche || String(cH.dateEmbauche).substring(0, 10) <= isoH) && isoH <= String(cH.dateFinContrat).substring(0, 10)) return true;
       }
       return false;
+    }
+    // Le contrat ARCHIVE qui couvre le jour (null si aucun)
+    function contratArchiveDuJour(p, iso) {
+      var hist = Array.isArray(p && p.contratsHistorique) ? p.contratsHistorique : [];
+      var trouve = null;
+      hist.forEach(function(cJ) {
+        if (cJ && cJ.dateFinContrat && (!cJ.dateEmbauche || String(cJ.dateEmbauche).substring(0, 10) <= iso) && iso <= String(cJ.dateFinContrat).substring(0, 10)) trouve = cJ;
+      });
+      return trouve;
+    }
+    // Salarie en poste dont la fiche porte deja le contrat SUIVANT : le contrat
+    // vraiment en cours aujourd'hui (archive), sinon null
+    function contratAvantSuivant(p, iso) {
+      if (!p || !p.dateEmbauche || String(p.dateEmbauche).substring(0, 10) <= iso) return null;
+      return contratArchiveDuJour(p, iso);
     }
     function isActiveEmploye(p, refDate) {
       if (!p) return false;
@@ -10392,7 +10450,9 @@
     }
     // Ce que devient une fiche EXISTANTE quand un nouveau contrat est depose
     // (salarie repris a la nouvelle embauche, ou Documents RH de sa fiche).
-    // nc = { debut, fin, type "CDD"|"CDI", identite (carte) ou null }.
+    // nc = { debut, fin, type "CDD"|"CDI", identite (carte) ou null, salaire, role }.
+    // Salaire / poste : appliques AVEC le contrat (ancien salaire garde dans
+    // salairesHistorique, au = debut du nouveau contrat).
     // - debut APRES le contrat de la fiche : l'ancien part dans contratsHistorique
     //   (clos la veille du nouveau s'il courait encore - fin incluse), ses
     //   prolongations avec lui ; la fiche porte le nouveau contrat.
@@ -10429,15 +10489,21 @@
       // Ancien contrat a garder dans l'historique : la fiche en a un qui commence
       // AVANT le nouveau, ou (fiche sans date d'embauche) un qui s'est termine avant
       var aArchiver = debC ? debut > debC : !!(finC && finC < debut);
+      var appliquerRemu = false;
       if (!RH_ISO_JOUR.test(debut)) {
         lignes.push(["Contrat de la fiche", "inchange (date de debut du document inconnue)"]);
-      } else if (!aArchiver && (!debC || debut === debC)) {
+      } else if (!debC && !aArchiver) {
+        // Sans date d'embauche, poser le nouveau debut ferait sortir toute la periode
+        // passee de la paie, des primes et du planning
+        lignes.push(["Contrat de la fiche", "inchange : la fiche n'a pas de date d'embauche. Renseigne-la d'abord (bouton Modifier de la fiche), puis recommence."]);
+      } else if (!aArchiver && debut === debC) {
         // Fiche sans contrat date, ou MEME contrat reedite. Un avenant deja passe
         // a repousse la fin : une reedition du contrat initial ne la ramene pas.
         var finEff = finN;
         var avenantGarde = debC === debut && type === typeC && !!finC && !!finN && finN < finC && Array.isArray(emp.prolongations) && emp.prolongations.length > 0;
         if (avenantGarde) finEff = finC;
         var txtEff = txtContrat(finEff) + (avenantGarde ? " (fin deja reportee par avenant)" : "");
+        appliquerRemu = true;
         if (debC === debut && finC === finEff && typeC === type) lignes.push(["Contrat de la fiche", "inchange (deja " + txtEff + ")"]);
         else {
           f.dateEmbauche = debut; f.dateFinContrat = finEff; f.typeContrat = type; f.motifFin = "";
@@ -10448,6 +10514,7 @@
       } else if (!aArchiver) {
         lignes.push(["Contrat de la fiche", "inchange : ce document commence avant son contrat actuel (" + typeC + " du " + fmt(debC) + "). Ajoute la periode a la main dans l'historique si besoin."]);
       } else {
+        appliquerRemu = true;
         var coupe = !finC || finC >= debut;
         var finArch = coupe ? rhVeilleIso(debut) : finC;
         var ancien = { dateEmbauche: debC, dateFinContrat: finArch, motifFin: emp.motifFin || (coupe ? "Suivi du contrat du " + fmt(debut) : ""), typeContrat: typeC };
@@ -10465,6 +10532,48 @@
         lignes.push([enPoste ? "Contrat en cours" : "Ancien contrat", txtA]);
         lignes.push(["Nouveau contrat", nouveauTxt]);
         resume.push("nouveau contrat " + nouveauTxt + ", l'ancien est dans l'historique");
+      }
+      // Salaire et poste du nouveau contrat
+      var fmtF = function(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " F"; };
+      var salN = (nc && nc.salaire != null && nc.salaire !== "") ? Math.round(parseFloat(String(nc.salaire).replace(/\s/g, "").replace(",", "."))) : NaN;
+      var salA = parseFloat(String(emp.salaire == null ? "" : emp.salaire).replace(/\s/g, "")) || 0;
+      // Contrat qui commence APRES aujourd'hui : salaire et poste attendent leur date
+      // (salaireAVenir, applique le jour J par SalairesAVenirPromoteur) - sinon masse
+      // salariale, couts et paie du mois en cours prendraient deja le nouveau salaire
+      var aVenir = debut > localISODate(new Date());
+      var sav = {};
+      // Garde-fou : un taux horaire ou une faute de frappe ne remplace pas un salaire mensuel
+      var salOk = salN >= 84500 && (!(salA > 0) || salN <= 3 * salA);
+      if (appliquerRemu && salN > 0 && !salOk) {
+        lignes.push(["Salaire", "montant du contrat ignore (" + fmtF(salN) + " : anormal pour un salaire mensuel) - fiche inchangee (" + fmtF(salA) + ")"]);
+      } else if (appliquerRemu && salN > 0) {
+        if (Math.round(salA) !== salN) {
+          change = true;
+          if (aVenir) {
+            sav.salaire = String(salN);
+            lignes.push(["Salaire", (salA > 0 ? fmtF(salA) + " -> " : "") + fmtF(salN) + " le " + fmt(debut) + " (applique automatiquement ce jour-la" + (salA > 0 ? ", l'ancien garde dans l'historique des salaires" : "") + ")"]);
+          } else {
+            f.salaire = String(salN);
+            if (salA > 0) f.salairesHistorique = (Array.isArray(emp.salairesHistorique) ? emp.salairesHistorique : []).concat([{ salaire: Math.round(salA), au: debut }]);
+            lignes.push(["Salaire", (salA > 0 ? fmtF(salA) + " -> " : "") + fmtF(salN) + " (a partir du " + fmt(debut) + (salA > 0 ? ", l'ancien est garde dans l'historique des salaires" : "") + ")"]);
+          }
+          resume.push("salaire " + fmtF(salN) + (aVenir ? " le " + fmt(debut) : ""));
+        } else lignes.push(["Salaire", "inchange (" + fmtF(salA) + ")"]);
+      }
+      var roleN = (nc && typeof nc.role === "string") ? nc.role.trim() : "";
+      // « Autre » (liste fermee de l'agent) n'ecrase pas un poste precis hors liste
+      if (roleN === "Autre" && emp.role && RH_ROLES_FICHE.indexOf(emp.role) < 0) roleN = "";
+      if (appliquerRemu && roleN && (RH_ROLES_FICHE.indexOf(roleN) >= 0 || roleN === emp.role)) {
+        if (roleN !== (emp.role || "")) {
+          change = true;
+          if (aVenir) sav.role = roleN; else f.role = roleN;
+          lignes.push(["Poste", (emp.role ? emp.role + " -> " : "") + roleN + (aVenir ? " le " + fmt(debut) : "")]);
+          resume.push("poste " + roleN + (aVenir ? " le " + fmt(debut) : ""));
+        } else lignes.push(["Poste", "inchange (" + roleN + ")"]);
+      }
+      if (appliquerRemu) {
+        if (sav.salaire || sav.role) { sav.au = debut; f.salaireAVenir = sav; }
+        else if (f.salaireAVenir) { delete f.salaireAVenir; change = true; }
       }
       lignes.push(["Infos de la fiche", modifs.length ? "mises a jour : " + modifs.join(", ") : "inchangees"]);
       if (modifs.length) resume.push("infos mises a jour (" + modifs.join(", ") + ")");
@@ -10881,7 +10990,7 @@
       // Nouveau contrat d'une fiche existante : dates du document + carte (reprise)
       var ncCourant = function() {
         var c = contrat || {};
-        return { debut: String(c.debut_iso || ""), fin: String(c.fin_iso || ""), type: estCdi(c) ? "CDI" : "CDD", identite: estReprise ? ident : null };
+        return { debut: String(c.debut_iso || ""), fin: String(c.fin_iso || ""), type: estCdi(c) ? "CDI" : "CDD", identite: estReprise ? ident : null, salaire: c.salaire_mensuel, role: c.role_app };
       };
       var confirmerContratFiche = function() {
         if (enCours || genEnCours || depose === "encours" || !pdfBlobRef.current || !cible || !compteSig) return;
@@ -11759,6 +11868,7 @@
         if (!x0) return "";
         var ancienne = x0.dateFinContrat ? String(x0.dateFinContrat).substring(0, 10) : "";
         if (ancienne && nf <= ancienne) return "";
+        if (x0.dateEmbauche && nf < String(x0.dateEmbauche).substring(0, 10)) return "";
         setPersonnel(function(p) {
           return p.map(function(x) {
             if (x.id !== empId) return x;
@@ -11857,40 +11967,36 @@
       // Detail des contrats (clic sur le badge "CDD total" de la liste)
       var _contratsDetail = useState(null);
       var contratsDetail = _contratsDetail[0], setContratsDetail = _contratsDetail[1];
+      // Reembauche (ancien) OU contrat SUIVANT (salarie encore sous contrat, 2026-11-26) :
+      // nouvelles dates, type, salaire, poste. Meme calcul que le depot d'un contrat
+      // de l'agent RH (planContratFiche) : l'actuel va jusqu'a son terme (ou est clos
+      // la veille du nouveau), puis passe dans l'historique avec ses avenants.
       function openReembauche(emp) {
         // Date locale (PAS toISOString : avant 11h a Noumea ce serait "hier")
         var t = new Date();
-        var iso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
-        setReembauche({ emp: emp, date: iso, typeContrat: emp.typeContrat === "CDD" ? "CDD" : "CDI", dateFinPrevue: "" });
+        var iso = localISODate(t);
+        var finA = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "";
+        var actifR = isActiveEmploye(emp, t) || isFuturEmploye(emp, t);
+        // Encore sous contrat : par defaut le 1er jour ouvre apres son terme
+        var deb = iso;
+        if (contratAvantSuivant(emp, iso)) deb = String(emp.dateEmbauche).substring(0, 10); // modifier le contrat suivant deja saisi
+        else if (actifR && finA && finA >= iso) {
+          var dN = new Date(finA + "T00:00:00");
+          do { dN.setDate(dN.getDate() + 1); } while (dN.getDay() === 0 || dN.getDay() === 6);
+          deb = localISODate(dN);
+        }
+        setReembauche({ emp: emp, actif: actifR, date: deb, typeContrat: emp.typeContrat === "CDD" ? "CDD" : "CDI", dateFinPrevue: "", salaire: emp.salaire != null ? String(emp.salaire).replace(/\s/g, "") : "", role: emp.role || "" });
+      }
+      function ncReembauche(r) {
+        return { debut: String(r.date || ""), fin: r.typeContrat === "CDD" ? String(r.dateFinPrevue || "") : "", type: r.typeContrat, salaire: r.salaire, role: r.role, identite: null };
       }
       function confirmReembauche() {
-        if (!reembauche || !reembauche.date) { alert("Date d'embauche requise"); return; }
-        var emp = reembauche.emp;
+        if (!reembauche || !RH_ISO_JOUR.test(String(reembauche.date || ""))) { alert("Date de debut du nouveau contrat requise"); return; }
+        var emp = reembauche.emp, nc = ncReembauche(reembauche);
+        var x0 = personnel.find(function(x) { return x.id === emp.id; }) || emp;
+        if (!planContratFiche(x0, nc).change) { alert("Rien a enregistrer : verifie la date de debut (apres le debut du contrat actuel)."); return; }
         setPersonnel(function(p) {
-          return p.map(function(x) {
-            if (x.id !== emp.id) return x;
-            // 1. L'ancien contrat part dans l'historique (jamais ecrase)
-            var ancienCt = {
-              dateEmbauche: x.dateEmbauche || "",
-              dateFinContrat: x.dateFinContrat || "",
-              motifFin: x.motifFin || "",
-              typeContrat: x.typeContrat || "CDI"
-            };
-            // ses avenants partent avec lui (le nouveau contrat repart de zero
-            // pour la regle des 2 renouvellements)
-            if (Array.isArray(x.prolongations) && x.prolongations.length) ancienCt.prolongations = x.prolongations;
-            var histo = (x.contratsHistorique || []).concat([ancienCt]);
-            // 2. Nouvelle ligne de contrat : nouvelles dates, memes infos
-            return Object.assign({}, x, {
-              contratsHistorique: histo,
-              dateEmbauche: reembauche.date,
-              dateFinContrat: (reembauche.typeContrat === "CDD" && reembauche.dateFinPrevue) ? reembauche.dateFinPrevue : "",
-              motifFin: "",
-              typeContrat: reembauche.typeContrat,
-              dateReembauche: reembauche.date,
-              prolongations: []
-            });
-          });
+          return p.map(function(x) { return x.id === emp.id ? planContratFiche(x, nc).fiche : x; });
         });
         setReembauche(null);
       }
@@ -11906,6 +12012,8 @@
         if (!/^\d{4}-\d{2}-\d{2}$/.test(nf)) { alert("Choisis la nouvelle date de fin du contrat."); return; }
         var ancienne = emp.dateFinContrat ? String(emp.dateFinContrat).substring(0, 10) : "";
         if (ancienne && nf <= ancienne) { alert("La nouvelle date de fin doit etre APRES la date actuelle (" + formatDate(ancienne) + ")."); return; }
+        var debutP = emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : "";
+        if (debutP && nf < debutP) { alert("La nouvelle date de fin doit etre APRES le debut du contrat (" + formatDate(debutP) + ")."); return; }
         var t = new Date();
         var todayIso = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
         setPersonnel(function(p) {
@@ -11940,16 +12048,34 @@
         var couleurFin = finPassee ? "#fda4af" : finProche ? "#fde68a" : "#86efac";
         var prolongs = Array.isArray(emp.prolongations) ? emp.prolongations : [];
         var histoContrats = Array.isArray(emp.contratsHistorique) ? emp.contratsHistorique : [];
+        // Fiche qui porte deja le contrat SUIVANT : le contrat vraiment en cours est archive
+        var ctJour = contratAvantSuivant(emp, todayIso);
+        var finJour = ctJour ? String(ctJour.dateFinContrat).substring(0, 10) : "";
+        var restJour = ctJour ? Math.round((new Date(finJour + "T00:00:00") - new Date(todayIso + "T00:00:00")) / 86400000) : null;
+        var avantSuivant = ctJour ? Math.round((new Date(String(emp.dateEmbauche).substring(0, 10) + "T00:00:00") - new Date(todayIso + "T00:00:00")) / 86400000) : null;
+        var histoPrec = histoContrats.filter(function(ct) { return ct !== ctJour; });
+        var etiquetteC = function(txt, col) { return h("div", { style: { fontSize: 10.5, fontWeight: 800, color: col, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } }, txt); };
         var inputStyleC = { width: "100%", padding: "9px 12px", background: "rgba(0,0,0,0.30)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 8, color: "#fafafa", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
         var labelStyleC = { display: "block", fontSize: 11, fontWeight: 700, color: "#a1a1aa", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.4 };
         return h("div", null,
-          // Etat du contrat en cours
+          // Contrat VRAIMENT en cours (archive) quand la fiche porte deja le suivant
+          ctJour ? h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.30)", marginBottom: 8 } },
+            etiquetteC("Contrat en cours", "#fde68a"),
+            h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+              h("span", { style: { fontSize: 11, fontWeight: 800, padding: "2px 10px", borderRadius: 999, background: "rgba(251,191,36,0.18)", color: "#fde68a" } }, ctJour.typeContrat || "CDD"),
+              h("span", { style: { fontSize: 13.5, fontWeight: 700, color: "#e5e7eb" } }, "du " + formatDate(String(ctJour.dateEmbauche).substring(0, 10)) + " au " + formatDate(finJour)),
+              h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: "#fde68a" } }, restJour === 0 ? "Dernier jour aujourd'hui" : restJour + " j restant" + (restJour > 1 ? "s" : "")))) : null,
+          // Etat du contrat de la fiche (en cours, ou SUIVANT)
           h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.30)", marginBottom: 16 } },
+            ctJour ? etiquetteC("Contrat suivant", "#7dd3fc") : null,
+            emp.salaireAVenir ? h("div", { style: { fontSize: 11.5, color: "#7dd3fc", marginBottom: 6 } },
+              "Le " + formatDate(String(emp.salaireAVenir.au || "").substring(0, 10)) + " : " + [emp.salaireAVenir.salaire ? "salaire " + fmtMoney(emp.salaireAVenir.salaire) : "", emp.salaireAVenir.role ? "poste " + emp.salaireAVenir.role : ""].filter(Boolean).join(", ") + " (applique automatiquement)") : null,
             h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
               h("span", { style: { fontSize: 11, fontWeight: 800, padding: "2px 10px", borderRadius: 999, background: "rgba(251,191,36,0.18)", color: "#fde68a" } }, "CDD"),
               h("span", { style: { fontSize: 13.5, fontWeight: 700, color: "#e5e7eb" } },
                 "du " + formatDate(emp.dateEmbauche) + " au " + (fin ? formatDate(fin) : "?")),
-              joursRestants != null ? h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: couleurFin } },
+              ctJour ? h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: "#7dd3fc" } }, "commence dans " + avantSuivant + " j")
+              : joursRestants != null ? h("span", { style: { marginLeft: "auto", fontSize: 12, fontWeight: 800, color: couleurFin } },
                 finPassee ? "Echu depuis " + Math.abs(joursRestants) + " j" : joursRestants === 0 ? "Dernier jour aujourd'hui" : joursRestants + " j restants") : null
             ),
             prolongs.length > 0 ? h("div", { style: { fontSize: 11, color: "#a1a1aa", marginTop: 6 } },
@@ -11958,11 +12084,11 @@
           // Formulaire de prolongation
           h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.30)", marginBottom: 16 } },
             h("div", { style: { fontSize: 13, fontWeight: 800, color: "#86efac", marginBottom: 10, display: "flex", alignItems: "center", gap: 8 } },
-              h(Icon, { name: "calendar-plus", size: 15, color: "#86efac" }), "Prolonger le contrat"),
+              h(Icon, { name: "calendar-plus", size: 15, color: "#86efac" }), ctJour ? "Prolonger le contrat SUIVANT (du " + formatDate(String(emp.dateEmbauche).substring(0, 10)) + (fin ? " au " + formatDate(fin) : "") + ")" : "Prolonger le contrat (meme contrat, avenant)"),
             h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 } },
               h("div", null,
                 h("label", { style: labelStyleC }, "Nouvelle date de fin *"),
-                h("input", { type: "date", min: fin || undefined, value: prolong.nouvelleFin, onChange: function(e) { setProlong(Object.assign({}, prolong, { nouvelleFin: e.target.value })); }, style: inputStyleC })
+                h("input", { type: "date", min: fin || (emp.dateEmbauche ? String(emp.dateEmbauche).substring(0, 10) : undefined), value: prolong.nouvelleFin, onChange: function(e) { setProlong(Object.assign({}, prolong, { nouvelleFin: e.target.value })); }, style: inputStyleC })
               ),
               h("div", null,
                 h("label", { style: labelStyleC }, "Note (avenant, motif...)"),
@@ -11972,6 +12098,14 @@
             h("div", { style: { fontSize: 10.5, color: "#a1a1aa", marginBottom: 10, fontStyle: "italic" } },
               "La date de fin actuelle est remplacee et l'avenant est trace ci-dessous. Primes, fenetres d'emploi et alertes fin de CDD suivent automatiquement. Rappel NC : un CDD ne peut etre renouvele que 2 fois au maximum."),
             h(Button, { onClick: function() { prolongerContrat(emp); } }, h(IconText, { icon: "calendar-plus", size: 14 }, "Prolonger jusqu'au " + (prolong.nouvelleFin ? formatDate(prolong.nouvelleFin) : "...")))
+          ),
+          // Nouveau contrat (reembauche) : autre chose qu'une prolongation
+          h("div", { style: { padding: 14, borderRadius: 10, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.40)", marginBottom: 16 } },
+            h("div", { style: { fontSize: 13, fontWeight: 800, color: "#c7d2fe", marginBottom: 6, display: "flex", alignItems: "center", gap: 8 } },
+              h(Icon, { name: "user-check", size: 15, color: "#c7d2fe" }), "Reembaucher - nouveau contrat"),
+            h("div", { style: { fontSize: 11.5, color: "#a1a1aa", marginBottom: 10, lineHeight: 1.45 } },
+              "NOUVEAU contrat (pas une prolongation) : nouvelles dates, type, salaire, poste. Le contrat actuel va jusqu'a son terme, puis passe dans les contrats precedents."),
+            h(Button, { onClick: function() { setViewFiche(null); setFicheTab("infos"); openReembauche(emp); } }, h(IconText, { icon: "user-check", size: 14 }, "Nouveau contrat..."))
           ),
           // Historique des prolongations (avenants)
           prolongs.length > 0 ? h("div", { style: { marginBottom: 14 } },
@@ -11986,9 +12120,9 @@
             })
           ) : null,
           // Contrats precedents (reembauches)
-          histoContrats.length > 0 ? h("div", null,
+          histoPrec.length > 0 ? h("div", null,
             h("div", { style: { fontSize: 11, fontWeight: 800, color: "#a1a1aa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 } }, "Contrats precedents"),
-            histoContrats.slice().reverse().map(function(ct, ci) {
+            histoPrec.slice().reverse().map(function(ct, ci) {
               return h("div", { key: ci, style: { fontSize: 12, color: "#a1a1aa", padding: "4px 12px" } },
                 (ct.typeContrat || "CDI") + " du " + formatDate(ct.dateEmbauche) + " au " + formatDate(ct.dateFinContrat) + (ct.motifFin ? " (" + ct.motifFin + ")" : ""));
             })
@@ -12066,7 +12200,7 @@
         }
 
         // Onglet Contrat : uniquement pour les CDD (prolongation + avenants)
-        var isCDD = emp.typeContrat === "CDD";
+        var isCDD = emp.typeContrat === "CDD" || !!contratAvantSuivant(emp, localISODate(new Date()));
         var tabsBar = (hasAnyRapport || isCDD) ? h("div", { style: { display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: 18, marginLeft: -20, marginRight: -20, paddingLeft: 20, paddingRight: 20 } },
           tabBtn("infos", "Infos"),
           hasAnyRapport ? tabBtn("activite", "Activite (" + allEmpRapports.length + ")") : null,
@@ -12513,22 +12647,29 @@
                           "CDD total : " + fmtDureeJours(jCDD));
                       })()
                     ),
-                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: actif ? "#059669" : "#71717a" } }, emp.salaire ? fmtMoney(emp.salaire) : "-"),
+                    h("td", { style: { padding: "10px 12px", fontWeight: 600, color: actif ? "#059669" : "#71717a" } }, emp.salaire ? fmtMoney(emp.salaire) : "-",
+                      emp.salaireAVenir && emp.salaireAVenir.salaire ? h("div", { title: "Salaire du contrat suivant, applique automatiquement ce jour-la", style: { fontSize: 10.5, color: "#7dd3fc", fontWeight: 700, whiteSpace: "nowrap", marginTop: 2 } }, "-> " + fmtMoney(emp.salaireAVenir.salaire) + " le " + formatDate(String(emp.salaireAVenir.au || "").substring(0, 10))) : null),
                     h("td", { style: { padding: "10px 12px" } },
                       actif
                         ? h("div", null,
                             h("span", { style: { padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.30)" } }, "Actif"),
                             // CDD en cours : date de fin visible directement dans la liste
                             // (orange a 30 jours, rouge a 7 jours)
-                            (emp.typeContrat === "CDD" && emp.dateFinContrat) ? (function() {
-                              var finJ = new Date(String(emp.dateFinContrat).substring(0, 10) + "T00:00:00");
+                            (contratAvantSuivant(emp, localISODate(nowTodayP)) || (emp.typeContrat === "CDD" && emp.dateFinContrat)) ? (function() {
+                              // Contrat SUIVANT deja saisi : la fin affichee est celle du contrat en cours
+                              var ctL = contratAvantSuivant(emp, localISODate(nowTodayP));
+                              var finAff = ctL ? String(ctL.dateFinContrat).substring(0, 10) : String(emp.dateFinContrat).substring(0, 10);
+                              var finJ = new Date(finAff + "T00:00:00");
                               var auj = new Date(nowTodayP.getFullYear(), nowTodayP.getMonth(), nowTodayP.getDate());
                               var reste = isNaN(finJ.getTime()) ? null : Math.round((finJ.getTime() - auj.getTime()) / 86400000);
                               var col = reste == null ? "#94a3b8" : reste <= 7 ? "#fda4af" : reste <= 30 ? "#fde68a" : "#cbd5e1";
-                              return h("div", { title: "Fin du CDD en cours", style: { fontSize: 11, color: col, marginTop: 4, fontWeight: 700, whiteSpace: "nowrap" } },
-                                "Fin CDD " + formatDate(emp.dateFinContrat) + (reste === 0 ? " (dernier jour aujourd'hui)" : reste != null && reste > 0 ? " (J-" + reste + ")" : ""));
+                              return h(React.Fragment, null,
+                                h("div", { title: ctL ? "Fin du contrat en cours (le contrat suivant est deja saisi)" : "Fin du CDD en cours", style: { fontSize: 11, color: col, marginTop: 4, fontWeight: 700, whiteSpace: "nowrap" } },
+                                  "Fin " + ((ctL && ctL.typeContrat) || "CDD") + " " + formatDate(finAff) + (reste === 0 ? " (dernier jour aujourd'hui)" : reste != null && reste > 0 ? " (J-" + reste + ")" : "")),
+                                ctL ? h("div", { style: { fontSize: 10.5, color: "#7dd3fc", marginTop: 2, fontWeight: 700, whiteSpace: "nowrap" } },
+                                  "puis " + (emp.typeContrat || "CDI") + " du " + formatDate(String(emp.dateEmbauche).substring(0, 10)) + (emp.dateFinContrat ? " au " + formatDate(String(emp.dateFinContrat).substring(0, 10)) : (emp.typeContrat === "CDD" ? " (sans terme)" : ""))) : null);
                             })() : null,
-                            (emp.contratsHistorique || []).length > 0 ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, (emp.contratsHistorique.length + 1) + "e contrat depuis le " + formatDate(emp.dateEmbauche)) : null
+                            ((emp.contratsHistorique || []).length > 0 && !contratAvantSuivant(emp, localISODate(nowTodayP))) ? h("div", { style: { fontSize: 10, color: "#7dd3fc", marginTop: 3, fontWeight: 700 } }, (emp.contratsHistorique.length + 1) + "e contrat depuis le " + formatDate(emp.dateEmbauche)) : null
                           )
                         : futur
                         ? h("div", null,
@@ -12552,6 +12693,7 @@
                     ),
                     h("td", { style: { padding: "10px 12px", whiteSpace: "nowrap" }, onClick: function(e) { e.stopPropagation(); } },
                       (!actif && !futur) ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.40)", borderRadius: 6, padding: "4px 8px", color: "#86efac", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Reembaucher : nouvelle ligne de contrat, ancien contrat conserve en historique" }, h(Icon, { name: "user-check", size: 12, color: "#86efac" }), "Reembaucher") : null,
+                      ((actif || futur) && !emp.roleMecanicien) ? h("button", { onClick: function() { openReembauche(emp); }, style: { background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.45)", borderRadius: 6, padding: "4px 8px", color: "#c7d2fe", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 4, fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }, title: "Contrat suivant : prepare son prochain contrat (dates, salaire, poste) ; il reste en poste jusqu'a la fin de l'actuel" }, h(Icon, { name: "calendar-plus", size: 12, color: "#c7d2fe" }), "Contrat suivant") : null,
                       (ctx.isAdmin && !emp.roleMecanicien) ? h("button", { onClick: function() { setDocsRH(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Documents RH (contrats, attestations, certificat...)" }, h(Icon, { name: "folder-open", size: 15, color: "#a5b4fc" })) : null,
                       h("button", { onClick: function() { setEditing(emp); setShowModal(true); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4 }, title: "Modifier" }, h(Icon, { name: "pencil", size: 15 })),
                       h("button", { onClick: function() { setToDelete(emp); }, style: { background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "#dc2626" }, title: "Supprimer definitivement" }, h(Icon, { name: "trash-2", size: 15, color: "#dc2626" }))
@@ -12566,20 +12708,39 @@
           h(PersonnelForm, { onSave: handleSave, onCancel: function() { setShowModal(false); setEditing(null); }, editItem: editing, allPersonnel: personnel })),
         toDelete && h(ConfirmDialog, { title: "Supprimer l'employe ?", message: "Confirmer la suppression de \"" + toDelete.prenom + " " + toDelete.nom + "\" ?", onConfirm: function() { handleDelete(toDelete.id); }, onCancel: function() { setToDelete(null); } }),
         // Modal re-embauche : nouvelle ligne de contrat, historique conserve
-        reembauche && h(Modal, { title: "Reembaucher " + reembauche.emp.prenom + " " + reembauche.emp.nom, onClose: function() { setReembauche(null); }, size: 480 },
-          h("div", { style: { display: "grid", gap: 14 } },
-            h("div", { style: { padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.25)", fontSize: 12.5, color: "#cbd5e1", lineHeight: 1.5 } },
-              "Une nouvelle ligne de contrat sera ouverte en gardant toutes les informations (poste, salaire, PIN, coffre RH...). L'ancien contrat ",
-              h("strong", { style: { color: "#7dd3fc" } }, "du " + formatDate(reembauche.emp.dateEmbauche) + " au " + formatDate(reembauche.emp.dateFinContrat)),
-              " reste conserve dans l'historique de la fiche."),
-            h(FormField, { label: "Date de la nouvelle embauche" }, h("input", { type: "date", style: inputStyle, value: reembauche.date, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { date: e.target.value })); } })),
-            h(FormField, { label: "Type de contrat" }, h("select", { style: selectStyle, value: reembauche.typeContrat, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { typeContrat: e.target.value })); } },
-              ["CDI", "CDD"].map(function(t) { return h("option", { key: t, value: t }, t); }))),
-            reembauche.typeContrat === "CDD" ? h(FormField, { label: "Fin prevue du CDD (optionnel, modifiable ensuite)" }, h("input", { type: "date", style: inputStyle, value: reembauche.dateFinPrevue, onChange: function(e) { setReembauche(Object.assign({}, reembauche, { dateFinPrevue: e.target.value })); } })) : null,
-            h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end" } },
-              h(Button, { variant: "secondary", onClick: function() { setReembauche(null); } }, "Annuler"),
-              h(Button, { onClick: confirmReembauche }, h(IconText, { icon: "user-check", size: 14 }, "Reembaucher")))
-          )
+        reembauche && h(Modal, { title: (reembauche.actif ? "Contrat suivant - " : "Reembaucher ") + reembauche.emp.prenom + " " + reembauche.emp.nom, onClose: function() { setReembauche(null); }, size: 560 },
+          (function() {
+            var r = reembauche;
+            var maj = function(o) { setReembauche(Object.assign({}, r, o)); };
+            var empR = personnel.find(function(x) { return x.id === r.emp.id; }) || r.emp;
+            var dateOk = RH_ISO_JOUR.test(String(r.date || ""));
+            var planR = dateOk ? planContratFiche(empR, ncReembauche(r)) : null;
+            var roles = RH_ROLES_FICHE.indexOf(r.role) >= 0 || !r.role ? RH_ROLES_FICHE : [r.role].concat(RH_ROLES_FICHE);
+            return h("div", { style: { display: "grid", gap: 14 } },
+              h("div", { style: { padding: "10px 14px", borderRadius: 10, background: "rgba(56,189,248,0.07)", border: "1px solid rgba(56,189,248,0.25)", fontSize: 12.5, color: "#cbd5e1", lineHeight: 1.5 } },
+                r.actif
+                  ? "Prepare son prochain contrat a l'avance. Il reste en poste jusqu'a la fin de son contrat actuel ; la fiche bascule toute seule le jour du nouveau contrat (planning, paie, primes, APP Employes)."
+                  : "Une nouvelle ligne de contrat est ouverte en gardant tout le reste (PIN, Coffre RH, historique) ; l'ancien contrat reste dans l'historique de la fiche."),
+              h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                h(FormField, { label: "Debut du nouveau contrat" }, h("input", { type: "date", style: inputStyle, value: r.date, onChange: function(e) { maj({ date: e.target.value }); } })),
+                h(FormField, { label: "Type de contrat" }, h("select", { style: selectStyle, value: r.typeContrat, onChange: function(e) { maj({ typeContrat: e.target.value }); } },
+                  ["CDD", "CDI"].map(function(t) { return h("option", { key: t, value: t }, t); })))),
+              r.typeContrat === "CDD" ? h(FormField, { label: "Fin du CDD - dernier jour inclus (optionnel, modifiable ensuite)" }, h("input", { type: "date", style: inputStyle, value: r.dateFinPrevue, onChange: function(e) { maj({ dateFinPrevue: e.target.value }); } })) : null,
+              h("div", { className: "grid-2-col-mobile", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                h(FormField, { label: "Salaire mensuel brut (F)" }, h("input", { type: "number", min: 0, style: inputStyle, value: r.salaire, onChange: function(e) { maj({ salaire: e.target.value }); } })),
+                h(FormField, { label: "Poste" }, h("select", { style: selectStyle, value: r.role || "", onChange: function(e) { maj({ role: e.target.value }); } },
+                  (r.role ? [] : [h("option", { key: "", value: "" }, "-- Choisir --")]).concat(roles.map(function(ro) { return h("option", { key: ro, value: ro }, ro); }))))),
+              planR ? h("div", { style: { padding: "12px 14px", borderRadius: 12, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.35)", fontSize: 12.5 } },
+                h("div", { style: { fontWeight: 800, marginBottom: 6 } }, "Ce qui va se passer"),
+                h("table", { style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null, planR.lignes.map(function(l, i) {
+                  return h("tr", { key: i }, h("td", { style: { padding: "4px 6px", color: "#a1a1aa", width: "34%", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, l[0]), h("td", { style: { padding: "4px 6px", verticalAlign: "top", borderBottom: "1px solid rgba(255,255,255,0.06)" } }, l[1]));
+                })))) : null,
+              h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" } },
+                h(Button, { variant: "secondary", onClick: function() { setReembauche(null); } }, "Annuler"),
+                h(Button, { onClick: confirmReembauche, disabled: !planR || !planR.change }, h(IconText, { icon: r.actif ? "calendar-plus" : "user-check", size: 14 }, r.actif ? "Enregistrer le contrat suivant" : "Reembaucher"))),
+              h("div", { style: { fontSize: 11.5, color: "#71717a" } }, "Pour le document a signer : Documents RH > Nouveau contrat (l'agent reprend ces informations).")
+            );
+          })()
         ),
         // Modal detail des contrats : toutes les dates, durees et le cumul CDD
         contratsDetail ? (function() {
@@ -21674,7 +21835,7 @@
         // Contrat ARCHIVE (debut et fin) qui touche le mois : visible (salarie en
         // poste dont la fiche porte deja le contrat suivant, 2026-11-26)
         if ((Array.isArray(p.contratsHistorique) ? p.contratsHistorique : []).some(function(cA) {
-          return cA && cA.dateEmbauche && cA.dateFinContrat && String(cA.dateEmbauche).substring(0, 10) <= moisFinPe && String(cA.dateFinContrat).substring(0, 10) >= moisDebPe;
+          return cA && cA.dateFinContrat && (!cA.dateEmbauche || String(cA.dateEmbauche).substring(0, 10) <= moisFinPe) && String(cA.dateFinContrat).substring(0, 10) >= moisDebPe;
         })) return true;
         // Embauche apres la fin du mois affiche -> pas encore arrive
         if (p.dateEmbauche) {
@@ -47993,6 +48154,7 @@
         h(RechercheGlobale, { onNavigate: navigate }),
         // Publication automatique du paquet paie Cortex-Paies (admin uniquement, invisible)
         h(PaiesAutoPublisher, { dataLoading: dataLoading, loadError: loadError }),
+        h(SalairesAVenirPromoteur, { dataLoading: dataLoading, loadError: loadError }),
         h(ChatBulleAdmin, null),
         // Jarvis : assistant voix + texte (administrateur ; le serveur verifie aussi la liste JARVIS_EMAILS)
         isAdmin ? h(JarvisBulle, { onNavigate: navigate, page: currentPage }) : null,
