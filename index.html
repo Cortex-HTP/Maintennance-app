@@ -28834,23 +28834,24 @@
       var cleMoisC = function(dC) { return dC.getFullYear() + "-" + String(dC.getMonth() + 1).padStart(2, "0"); };
       var finKC = cleMoisC(periodEnd || now), debKC = periodStart ? cleMoisC(periodStart) : null;
       var clesCompta = Object.keys(comptaParMois).filter(function(kC) { return comptaParMois[kC].saisi && (!debKC || kC >= debKC) && kC <= finKC; }).sort();
+      // STRICTEMENT la periode selectionnee (demande Tomy 2026-11-27) : plus de
+      // repli sur le cumul de l'annee. Mois de la periode pas encore en compta :
+      // signales, jamais remplaces par d'autres mois.
       var comptaRepli = false;
-      if (clesCompta.length === 0) {
-        // Periode pas encore en compta : cumul de l'annee du DERNIER mois saisi
-        // (en janvier, l'annee precedente tant que decembre n'est pas saisi)
-        var saisisC = Object.keys(comptaParMois).filter(function(kC) { return comptaParMois[kC].saisi; }).sort();
-        var anRepli = saisisC.length ? saisisC[saisisC.length - 1].substring(0, 4) : null;
-        clesCompta = anRepli ? saisisC.filter(function(kC) { return kC.substring(0, 4) === anRepli; }) : [];
-        comptaRepli = clesCompta.length > 0;
-      }
+      var saisisToutC = Object.keys(comptaParMois).filter(function(kC) { return comptaParMois[kC].saisi; }).sort();
+      var dernierSaisiC = saisisToutC.length ? saisisToutC[saisisToutC.length - 1] : null;
+      var finMoisTxtC = function(kC) { return String(new Date(parseInt(kC.substring(0, 4), 10), parseInt(kC.substring(5, 7), 10), 0).getDate()) + "/" + kC.substring(5, 7) + "/" + kC.substring(0, 4); };
+      var horsComptaC = !!(dernierSaisiC && finKC > dernierSaisiC); // la periode depasse la compta saisie
       var comptaPer = clesCompta.length ? wlComptaSomme(comptaParMois, clesCompta, metresParMoisCompta) : null;
       var nomsMoisC = ["janv.", "fevr.", "mars", "avr.", "mai", "juin", "juil.", "aout", "sept.", "oct.", "nov.", "dec."];
       var libMoisC = function(kC) { var pC = kC.split("-"); return nomsMoisC[parseInt(pC[1], 10) - 1] + " " + pC[0]; };
-      var comptaLibelle = !comptaPer ? "" : (comptaRepli
-        ? "cumul " + comptaPer.dernier.substring(0, 4) + " au " + String(new Date(parseInt(comptaPer.dernier.substring(0, 4), 10), parseInt(comptaPer.dernier.substring(5, 7), 10), 0).getDate()) + "/" + comptaPer.dernier.substring(5, 7) + " (mois pas encore en compta)"
-        : (comptaPer.nb === 1 ? libMoisC(comptaPer.premier) : libMoisC(comptaPer.premier) + " -> " + libMoisC(comptaPer.dernier))) + " · toute l'entreprise";
+      var comptaLibelle = !comptaPer ? "" : (comptaPer.nb === 1 ? libMoisC(comptaPer.premier) : libMoisC(comptaPer.premier) + " -> " + libMoisC(comptaPer.dernier)) +
+        (horsComptaC ? " (la suite n'est pas encore en compta : saisie jusqu'au " + finMoisTxtC(dernierSaisiC) + ")" : "") + " · toute l'entreprise";
+      var comptaAbsenteTxt = dernierSaisiC
+        ? "Periode pas encore en compta (saisie jusqu'au " + finMoisTxtC(dernierSaisiC) + ")"
+        : "Pas encore de compta importee (FEC)";
       var fmtMFC = function(v) { return (v >= 0 ? "+" : "-") + (Math.abs(v) / 1000000).toFixed(1) + " MF"; };
-      var comptaDetailTxt = !comptaPer ? "Pas encore de compta saisie (FEC)." :
+      var comptaDetailTxt = !comptaPer ? comptaAbsenteTxt + "." :
         "COMPTA = grand livre, " + comptaLibelle + "\n\nProduits (classe 7) : " + fmtMFC(comptaPer.prod) +
         "\nCharges hors amortissements : " + fmtMFC(-comptaPer.charges) +
         "\nAmortissements (etales par mois) : " + fmtMFC(-comptaPer.amort) +
@@ -28862,7 +28863,7 @@
           tagC("COMPTA"), texte,
           note ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, note) : null);
       };
-      var infoCompta = comptaPer ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } }, comptaLibelle) : null;
+      var infoCompta = h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } }, comptaPer ? comptaLibelle : comptaAbsenteTxt);
       // Prix moyen pondere par metres realises sur la periode filtree
       var sumMetresPrix = 0, sumMetres = 0;
       filtered.forEach(function(r) {
@@ -29499,7 +29500,7 @@
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "ESTIME = calcul de l'app sur la periode affichee" + (calibCompta && flotteEntiere ? ", cale sur les vrais frais de la compta (" + calibCompta.mois.length + " derniers mois saisis : achats au metre, le reste au mois)" : "") + ". COMPTA = produits - charges du GRAND LIVRE (amortissements compris, etales par mois), toute l'entreprise, sur les mois deja saisis" + (comptaRepli ? " (periode pas encore en compta : cumul de l'annee)" : "") + " - survole la ligne pour le detail. TRESO = cash decaisse sur la MEME periode et le MEME metrage (512 hors virements internes SG<->BCI) : reel pour les mois CLOTURES, objectif previsionnel (max moyenne reelle / theorique) pour le mois en cours (prorata aux jours ouvres ecoules). Un mois complet et un mois en cours sont donc comparables. Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "ESTIME = calcul de l'app sur la periode affichee" + (calibCompta && flotteEntiere ? ", cale sur les vrais frais de la compta (" + calibCompta.mois.length + " derniers mois saisis : achats au metre, le reste au mois)" : "") + ". COMPTA = produits - charges du GRAND LIVRE (amortissements compris, etales par mois), toute l'entreprise, sur les mois de la periode deja saisis par la comptable" + " - survole la ligne pour le detail. TRESO = cash decaisse sur la MEME periode et le MEME metrage (512 hors virements internes SG<->BCI) : reel pour les mois CLOTURES, objectif previsionnel (max moyenne reelle / theorique) pour le mois en cours (prorata aux jours ouvres ecoules). Un mois complet et un mois en cours sont donc comparables. Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
