@@ -16990,6 +16990,100 @@
     // ELARGI (rentabilite) mais PAS dans le pool STRUCTURE (tresorerie), car deja projetes
     // via les factures fournisseurs 401 a J+30.
     var ENTRETIEN_PIECES_ACC = { "615510": 1, "615515": 1, "615600": 1, "602120": 1, "602130": 1, "606300": 1 };
+    // ══ COMPTA REELLE (grand livre) pour les cartes de l'Accueil (2026-11-27) ══
+    // Demande Tomy : « si le bilan est negatif, la compta doit l'etre aussi ».
+    // Par mois "AAAA-MM" : produits (classe 7, credit - debit), charges classe 6
+    // hors amortissements (debit - credit, dont achats 60x), amortissements 68x
+    // ETALES au prorata des jours couverts (le moteur de l'APP Compta inscrit
+    // toute l'annee a UNE date : du 1er janvier a la date d'arrete) ; "saisi" =
+    // mois echu avec des ecritures banque 512 (hors report a nouveau).
+    function wlComptaParMois(ecritures, refDate) {
+      var mois = {};
+      var amortParAn = {};
+      var get = function(k) { if (!mois[k]) mois[k] = { prod: 0, charges: 0, achats: 0, excep: 0, amort: 0, banque: false, paie: false, saisi: false }; return mois[k]; };
+      (ecritures || []).forEach(function(e) {
+        if (!e || !e.date_ecriture) return;
+        var iso = String(e.date_ecriture).substring(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+        var k = iso.substring(0, 7);
+        var code = String(e.compte_code || "");
+        var deb = parseFloat(e.debit) || 0, cred = parseFloat(e.credit) || 0;
+        if (code.substring(0, 3) === "512") { if (String(e.journal_code || "").toUpperCase() !== "RAN") get(k).banque = true; return; }
+        if (code.charAt(0) === "7") { get(k).prod += cred - deb; return; }
+        if (code.charAt(0) !== "6") return;
+        if (code.substring(0, 2) === "68") {
+          var an = iso.substring(0, 4);
+          if (!amortParAn[an]) amortParAn[an] = { total: 0, dernier: iso };
+          amortParAn[an].total += deb - cred;
+          if (iso > amortParAn[an].dernier) amortParAn[an].dernier = iso;
+          return;
+        }
+        get(k).charges += deb - cred;
+        if (code.substring(0, 2) === "60") get(k).achats += deb - cred;
+        // Exceptionnel (67x, dont VNC de cession 675) et impot sur les benefices
+        // (69x) : dans le resultat COMPTA, jamais dans le cout fixe du calage
+        if (code.substring(0, 2) === "67" || code.substring(0, 2) === "69") get(k).excep += deb - cred;
+        if (code.substring(0, 2) === "64") get(k).paie = true;
+      });
+      // Mois "saisi" = echu, banque 512 ET paie 64x passees (une banque seule =
+      // mois a moitie saisi : charges incompletes -> resultat trop beau)
+      Object.keys(mois).forEach(function(k) {
+        var p = k.split("-");
+        var finMois = new Date(parseInt(p[0], 10), parseInt(p[1], 10), 0, 23, 59, 59);
+        mois[k].saisi = mois[k].banque && mois[k].paie && finMois.getTime() < refDate.getTime();
+      });
+      // Taux journalier = dotation inscrite / jours couverts (1er janvier -> date
+      // d'arrete) ; prolonge jusqu'au DERNIER mois saisi de l'annee si l'arrete est
+      // plus ancien (sinon les mois saisis apres l'arrete paraissaient sans amortissement).
+      Object.keys(amortParAn).forEach(function(an) {
+        var a = amortParAn[an], y = parseInt(an, 10);
+        var d0 = new Date(y, 0, 1).getTime();
+        var dFin = new Date(a.dernier + "T00:00:00").getTime();
+        var joursTot = Math.round((dFin - d0) / 86400000) + 1;
+        if (!(joursTot > 0)) return;
+        var dernierSaisi = -1;
+        for (var ms = 0; ms < 12; ms++) { var kS = y + "-" + String(ms + 1).padStart(2, "0"); if (mois[kS] && mois[kS].saisi) dernierSaisi = ms; }
+        var finEtal = Math.max(dFin, dernierSaisi >= 0 ? new Date(y, dernierSaisi + 1, 0).getTime() : dFin);
+        for (var m = 0; m < 12; m++) {
+          var debM = new Date(y, m, 1).getTime();
+          if (debM > finEtal) break;
+          var finM = Math.min(new Date(y, m + 1, 0).getTime(), finEtal);
+          var j = Math.round((finM - debM) / 86400000) + 1;
+          get(y + "-" + String(m + 1).padStart(2, "0")).amort += a.total * j / joursTot;
+        }
+      });
+      return mois;
+    }
+    // Somme compta d'une liste de mois (resultat = produits - charges - amortissements)
+    function wlComptaSomme(parMois, cles, metresParMois) {
+      var r = { prod: 0, charges: 0, amort: 0, metres: 0, nb: 0, premier: null, dernier: null };
+      (cles || []).forEach(function(k) {
+        var m = parMois[k];
+        if (!m) return;
+        r.prod += m.prod; r.charges += m.charges; r.amort += m.amort;
+        r.metres += (metresParMois && metresParMois[k]) || 0; r.nb++;
+        if (!r.premier || k < r.premier) r.premier = k;
+        if (!r.dernier || k > r.dernier) r.dernier = k;
+      });
+      r.chargesTot = r.charges + r.amort;
+      r.resultat = r.prod - r.chargesTot;
+      return r;
+    }
+    // ESTIME cale sur la compta : sur les 3 derniers mois SAISIS avec du forage,
+    // achats consommes (60x) = cout VARIABLE au metre ; tout le reste (salaires,
+    // structure, interets, amortissements...) = cout FIXE par mois. null si la
+    // compta n'a aucun mois exploitable (l'appelant garde son calcul).
+    function wlCalibrageCompta(parMois, metresParMois) {
+      var cles = Object.keys(parMois || {}).filter(function(k) {
+        var m = parMois[k];
+        return m.saisi && ((metresParMois && metresParMois[k]) || 0) > 0 && (m.charges + m.amort) > 0;
+      }).sort().slice(-3);
+      if (cles.length === 0) return null;
+      var achats = 0, autres = 0, met = 0;
+      cles.forEach(function(k) { var m = parMois[k]; achats += m.achats; autres += m.charges - m.achats - (m.excep || 0) + m.amort; met += metresParMois[k]; });
+      if (!(met > 0)) return null;
+      return { varMetre: Math.max(0, achats) / met, fixeMois: Math.max(0, autres) / cles.length, mois: cles };
+    }
     function computeFraisGenerauxFEC(ecritures, refDate) {
       var year = refDate.getFullYear();
       var fgParMois = new Array(12).fill(0);
@@ -17183,6 +17277,10 @@
     // (section "Detail par sondeuse") sur la periode [periodStart, periodEnd]. Objectif :
     // le cout/m d'une machine (ex FS1 = 5649 XPF/m) est IDENTIQUE ici et dans les Stats,
     // pour que la marge de l'Avancement s'appuie sur le meme chiffre.
+    // ⚠ Depuis le 27/11/2026, l'Accueil (flotte entiere, avec compta) CALE ce cout
+    // sur les vrais frais de la compta (wlCalibrageCompta x facteurCalib) ; cette
+    // fonction ne l'est pas encore : Avancement / Calendrier / prix de vente gardent
+    // le modele maison tant que le rapprochement app / compta n'est pas fait.
     //
     // ctx doit fournir : dbRapportsForage, dbCarburants, dbEmprunts, parametres, pieces,
     //                    dbChantiers, dbEcrCompta, equipements, dbPaliers, dbAffectations,
@@ -27327,7 +27425,7 @@
             var res = await supabase.from("ecritures_compta")
               .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
               .in("exercice", [yearNow - 1, yearNow])
-              .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+              .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.7%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
               .order("id")
               .range(from, from + pageSize - 1);
             if (res.error) { console.warn("[stats] fetch ecritures compta:", res.error.message); break; }
@@ -27413,6 +27511,7 @@
       } else if (period === "3mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
       else if (period === "6mois") periodStart = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
       else if (period === "1an") periodStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      else if (period === "annee") periodStart = new Date(now.getFullYear(), 0, 1); // 1er janvier -> aujourd'hui
       // "all" => null (tout l'historique)
 
       // ── BARRIERE "journee non terminee" ──────────────────────────────────
@@ -27594,7 +27693,7 @@
       // ── Donnees du graphique evolution : journalier ou mensuel selon la periode ──
       // Mois / 3 mois : barres journalieres
       // 6 mois / 1 an / Tout : barres mensuelles
-      var isMonthlyView = (period === "6mois" || period === "1an" || period === "all");
+      var isMonthlyView = (period === "6mois" || period === "annee" || period === "1an" || period === "all");
       var chartData = []; // [{ label, value, ca, jsDate, isWE }]
 
       // Index chantier_id -> prixMetre (pour calcul CA)
@@ -27958,6 +28057,7 @@
       else if (period === "3mois") periodLabelShort = "3 mois";
       else if (period === "6mois") periodLabelShort = "6 mois";
       else if (period === "1an") periodLabelShort = "1 an";
+      else if (period === "annee") periodLabelShort = "annee en cours";
       else if (period === "all") periodLabelShort = "tout l'historique";
 
       // Helper formatage XPF compact
@@ -27980,6 +28080,7 @@
         var nbMois;
         if (period === "6mois") nbMois = 6;
         else if (period === "1an") nbMois = 12;
+        else if (period === "annee") nbMois = now.getMonth() + 1;
         else {
           // "all" : du plus ancien mois a maintenant
           var keys = Object.keys(monthMap).sort();
@@ -28685,6 +28786,83 @@
       }
       // TOTAL
       var totalCoutsAll = coutConsoSondeusesAll + coutCarburantVL + coutPersonnelTotal + coutEmpruntAll + coutChargesFixesTotal + coutPrimesMetrageTotal;
+      // ── COMPTA REELLE + ESTIME CALE SUR LA COMPTA (2026-11-27) ──
+      // ESTIME (ex-« COMPTA ») : le cout de la periode suit les VRAIS frais de la
+      // compta (3 derniers mois saisis) : achats au metre + reste au mois. Une
+      // periode peu productive porte donc ses frais fixes entiers (avant : modele
+      // maison salaires x1,4 + frais FEC, qui pouvait contredire la compta).
+      // Flotte entiere seulement (sans filtre chantier / sondeuse / sondeur) ;
+      // les machines recoivent le MEME facteur. Sans compta : calcul historique.
+      var metresParMoisCompta = {};
+      (rapports || []).forEach(function(rM) {
+        if (!rM || !rM.date_rapport) return;
+        var kM = String(rM.date_rapport).substring(0, 7);
+        metresParMoisCompta[kM] = (metresParMoisCompta[kM] || 0) + (parseFloat(rM.total_metres) || 0);
+      });
+      var comptaParMois = wlComptaParMois(dbEcrCompta, now);
+      var calibCompta = wlCalibrageCompta(comptaParMois, metresParMoisCompta);
+      var flotteEntiere = chantierF === "all" && sondeuseF === "all" && sondeurF === "all";
+      var totalCoutsApp = totalCoutsAll;
+      // Fractions de mois CALENDAIRES de la periode (fixeMois = un vrai mois)
+      var nbMoisCal = (function() {
+        var d0c = periodStart;
+        if (!d0c) {
+          (filtered || []).forEach(function(rC) {
+            var dC = rC && rC.date_rapport ? new Date(String(rC.date_rapport).substring(0, 10) + "T00:00:00") : null;
+            if (dC && !isNaN(dC.getTime()) && (!d0c || dC.getTime() < d0c.getTime())) d0c = dC;
+          });
+        }
+        if (!d0c) return nbMoisPeriode;
+        var d1c = periodEnd || now;
+        var deb0 = new Date(d0c.getFullYear(), d0c.getMonth(), d0c.getDate()).getTime();
+        var fin0 = new Date(d1c.getFullYear(), d1c.getMonth(), d1c.getDate()).getTime();
+        var tot = 0, cur = new Date(d0c.getFullYear(), d0c.getMonth(), 1), safeC = 0;
+        while (cur.getTime() <= fin0 && safeC < 400) {
+          var jm = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
+          var debC = Math.max(cur.getTime(), deb0);
+          var finC = Math.min(new Date(cur.getFullYear(), cur.getMonth(), jm).getTime(), fin0);
+          if (finC >= debC) tot += (Math.round((finC - debC) / 86400000) + 1) / jm;
+          cur.setMonth(cur.getMonth() + 1); safeC++;
+        }
+        return tot > 0 ? tot : nbMoisPeriode;
+      })();
+      if (calibCompta && flotteEntiere) totalCoutsAll = calibCompta.fixeMois * nbMoisCal + calibCompta.varMetre * totalMetres;
+      var facteurCalib = (calibCompta && flotteEntiere && totalCoutsApp > 0) ? totalCoutsAll / totalCoutsApp : 1;
+      // COMPTA : produits - charges du grand livre sur les mois SAISIS de la periode ;
+      // periode pas encore en compta (mois en cours) -> cumul de l'annee jusqu'au
+      // dernier mois saisi. Toute l'entreprise, quels que soient les filtres.
+      var cleMoisC = function(dC) { return dC.getFullYear() + "-" + String(dC.getMonth() + 1).padStart(2, "0"); };
+      var finKC = cleMoisC(periodEnd || now), debKC = periodStart ? cleMoisC(periodStart) : null;
+      var clesCompta = Object.keys(comptaParMois).filter(function(kC) { return comptaParMois[kC].saisi && (!debKC || kC >= debKC) && kC <= finKC; }).sort();
+      var comptaRepli = false;
+      if (clesCompta.length === 0) {
+        // Periode pas encore en compta : cumul de l'annee du DERNIER mois saisi
+        // (en janvier, l'annee precedente tant que decembre n'est pas saisi)
+        var saisisC = Object.keys(comptaParMois).filter(function(kC) { return comptaParMois[kC].saisi; }).sort();
+        var anRepli = saisisC.length ? saisisC[saisisC.length - 1].substring(0, 4) : null;
+        clesCompta = anRepli ? saisisC.filter(function(kC) { return kC.substring(0, 4) === anRepli; }) : [];
+        comptaRepli = clesCompta.length > 0;
+      }
+      var comptaPer = clesCompta.length ? wlComptaSomme(comptaParMois, clesCompta, metresParMoisCompta) : null;
+      var nomsMoisC = ["janv.", "fevr.", "mars", "avr.", "mai", "juin", "juil.", "aout", "sept.", "oct.", "nov.", "dec."];
+      var libMoisC = function(kC) { var pC = kC.split("-"); return nomsMoisC[parseInt(pC[1], 10) - 1] + " " + pC[0]; };
+      var comptaLibelle = !comptaPer ? "" : (comptaRepli
+        ? "cumul " + comptaPer.dernier.substring(0, 4) + " au " + String(new Date(parseInt(comptaPer.dernier.substring(0, 4), 10), parseInt(comptaPer.dernier.substring(5, 7), 10), 0).getDate()) + "/" + comptaPer.dernier.substring(5, 7) + " (mois pas encore en compta)"
+        : (comptaPer.nb === 1 ? libMoisC(comptaPer.premier) : libMoisC(comptaPer.premier) + " -> " + libMoisC(comptaPer.dernier))) + " · toute l'entreprise";
+      var fmtMFC = function(v) { return (v >= 0 ? "+" : "-") + (Math.abs(v) / 1000000).toFixed(1) + " MF"; };
+      var comptaDetailTxt = !comptaPer ? "Pas encore de compta saisie (FEC)." :
+        "COMPTA = grand livre, " + comptaLibelle + "\n\nProduits (classe 7) : " + fmtMFC(comptaPer.prod) +
+        "\nCharges hors amortissements : " + fmtMFC(-comptaPer.charges) +
+        "\nAmortissements (etales par mois) : " + fmtMFC(-comptaPer.amort) +
+        "\n─────────\nResultat comptable : " + fmtMFC(comptaPer.resultat) +
+        "\nMetres fores sur ces mois : " + Math.round(comptaPer.metres).toLocaleString("fr-FR") + " m";
+      var tagC = function(txt) { return h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, txt); };
+      var ligneCompta = function(texte, couleur, note) {
+        return h("div", { style: { fontSize: 14, fontWeight: 800, color: couleur, lineHeight: 1.25, marginTop: 3, cursor: "help" }, title: comptaDetailTxt },
+          tagC("COMPTA"), texte,
+          note ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, note) : null);
+      };
+      var infoCompta = comptaPer ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } }, comptaLibelle) : null;
       // Prix moyen pondere par metres realises sur la periode filtree
       var sumMetresPrix = 0, sumMetres = 0;
       filtered.forEach(function(r) {
@@ -28903,6 +29081,13 @@
         var partJours = totalJoursFlotte > 0 ? (nbJoursMi / totalJoursFlotte) : partMetres;
         var coutIndirect = (chargesIndirVarTotal + coutChargesFixesTotal) * partJours + coutPrimesMetrageTotal * partMetres;
         var coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        // ESTIME cale sur la compta : meme facteur pour toutes les machines (somme
+        // des machines = cout estime de la periode), couts directs inchanges
+        if (facteurCalib !== 1 && coutTotal > 0) {
+          var ajustCalib = coutTotal * (facteurCalib - 1);
+          coutIndirect = Math.max(0, coutIndirect + ajustCalib); // jamais negatif
+          coutTotal = s.coutConso + s.coutPersonnel + coutCharges + s.coutEmprunt + coutIndirect;
+        }
         // Chantier principal (celui avec le plus de metres pour cette machine)
         var chantPrincipal = null;
         var maxM = 0;
@@ -29076,6 +29261,7 @@
             h("option", { value: "moisdernier" }, "Mois dernier"),
             h("option", { value: "3mois" }, "3 mois"),
             h("option", { value: "6mois" }, "6 mois"),
+            h("option", { value: "annee" }, "Annee en cours"),
             h("option", { value: "1an" }, "1 an"),
             h("option", { value: "all" }, "Tout l'historique")
           ),
@@ -29220,7 +29406,7 @@
               h("div", { style: { flex: 1 } },
                 h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Seuil rentabilite" + (seuilMoisProjete != null ? " - mois complet (projete)" : "")),
                 h("div", { style: { fontSize: 14, fontWeight: 800, color: "#fde68a", lineHeight: 1.25 } },
-                  h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
+                  h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "ESTIME"),
                   Math.round(seuilMoisProjete != null ? seuilMoisProjete : seuilMois).toLocaleString("fr-FR") + " m",
                   joursOuvres > 0 ? h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + seuilJour.toFixed(1) + " m/jour)") : null
                 ),
@@ -29242,7 +29428,11 @@
                 ) : null,
                 seuilTresoProjete != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } },
                   "A date : " + Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m · " + (totalMetresAll >= seuilTresoMois ? "+" + Math.round(totalMetresAll - seuilTresoMois).toLocaleString("fr-FR") + " m" : "reste " + Math.round(seuilTresoMois - totalMetresAll).toLocaleString("fr-FR") + " m")
-                ) : null
+                ) : null,
+                ligneCompta(comptaPer && comptaPer.nb > 0 && prixMetreEffectif > 0 ? Math.round(comptaPer.chargesTot / comptaPer.nb / prixMetreEffectif).toLocaleString("fr-FR") + " m / mois" : "—",
+                  comptaPer && comptaPer.resultat < 0 ? "#fda4af" : "#fde68a",
+                  comptaPer && comptaPer.nb > 0 ? "(" + fmtCaCompact(comptaPer.chargesTot / comptaPer.nb) + " de charges / mois)" : null),
+                infoCompta
               )
             ),
             // Cout au metre (compact, colorise)
@@ -29254,13 +29444,16 @@
                 h("div", { style: { flex: 1 } },
                   h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Cout au metre"),
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: col.txt, lineHeight: 1.25 } },
-                    h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
+                    h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "ESTIME"),
                     fmtXPF(Math.round(coutParMetreGlobal)) + " /m",
                     h("span", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } },
                       seuilDepasse ? "(+" + Math.round(totalMetresAll - seuilMois) + " m a date)" : "(manque " + Math.round(seuilMois - totalMetresAll) + " m a date)")),
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.25, marginTop: 3 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
-                    coutTresoMetre != null ? (fmtXPF(Math.round(coutTresoMetre)) + " /m") : "—")
+                    coutTresoMetre != null ? (fmtXPF(Math.round(coutTresoMetre)) + " /m") : "—"),
+                  ligneCompta(comptaPer && comptaPer.metres > 0 ? fmtXPF(Math.round(comptaPer.chargesTot / comptaPer.metres)) + " /m" : "—",
+                    comptaPer && comptaPer.resultat < 0 ? "#fda4af" : "#86efac", null),
+                  infoCompta
                 )
               );
             }()),
@@ -29269,24 +29462,31 @@
               var gainMetre = prixMetreEffectif - coutParMetreGlobal;
               var margePct = prixMetreEffectif > 0 ? (gainMetre / prixMetreEffectif) * 100 : 0;
               var positif = gainMetre > 0;
-              var col = positif ? { bg: "rgba(34,197,94,0.10)", br: "rgba(34,197,94,0.30)", txt: "#86efac", icon: "trending-up" }
+              var cartePositive = comptaPer ? comptaPer.resultat >= 0 : positif;
+              var col = cartePositive ? { bg: "rgba(34,197,94,0.10)", br: "rgba(34,197,94,0.30)", txt: "#86efac", icon: "trending-up" }
                                 : { bg: "rgba(244,63,94,0.10)",  br: "rgba(244,63,94,0.30)",  txt: "#fda4af", icon: "trending-down" };
+              var gainC = comptaPer && comptaPer.metres > 0 ? comptaPer.resultat / comptaPer.metres : null;
+              var pctC = comptaPer && comptaPer.prod > 0 ? (comptaPer.resultat / comptaPer.prod) * 100 : null;
               return h("div", { style: { flex: "1 1 220px", background: col.bg, border: "1px solid " + col.br, borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 } },
                 h(Icon, { name: col.icon, size: 18, color: col.txt }),
                 h("div", { style: { flex: 1 } },
                   h("div", { style: { fontSize: 10.5, color: "#a1a1aa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Gain au metre"),
-                  h("div", { style: { fontSize: 14, fontWeight: 800, color: col.txt, lineHeight: 1.3 } },
-                    h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "COMPTA"),
+                  h("div", { style: { fontSize: 14, fontWeight: 800, color: positif ? "#86efac" : "#fda4af", lineHeight: 1.3 } },
+                    h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "ESTIME"),
                     (positif ? "+" : "") + fmtXPF(Math.round(gainMetre)) + " /m",
                     h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + (positif ? "+" : "") + margePct.toFixed(1) + "%)")),
                   h("div", { style: { fontSize: 14, fontWeight: 800, color: tresoColor, lineHeight: 1.3, marginTop: 2 } },
                     h("span", { style: { fontSize: 9, color: "#a1a1aa", fontWeight: 700, marginRight: 5, letterSpacing: 0.3 } }, "TRESO"),
                     gainTresoMetre != null ? ((gainTresoMetre >= 0 ? "+" : "") + fmtXPF(Math.round(gainTresoMetre)) + " /m") : "—",
-                    gainTresoPct != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + (gainTresoPct >= 0 ? "+" : "") + gainTresoPct.toFixed(1) + "%)") : null)
+                    gainTresoPct != null ? h("span", { style: { fontSize: 10, color: "#a1a1aa", fontWeight: 500, marginLeft: 5 } }, "(" + (gainTresoPct >= 0 ? "+" : "") + gainTresoPct.toFixed(1) + "%)") : null),
+                  ligneCompta(gainC != null ? (gainC >= 0 ? "+" : "") + fmtXPF(Math.round(gainC)) + " /m" : "—",
+                    pctC == null ? "#a1a1aa" : (pctC >= 5 ? "#86efac" : (pctC >= 0 ? "#fcd34d" : "#fda4af")),
+                    comptaPer ? (pctC != null ? "(" + (pctC >= 0 ? "+" : "") + pctC.toFixed(1) + "%) · " : "") + "resultat " + fmtMFC(comptaPer.resultat) : null),
+                  infoCompta
                 )
               );
             }()),
-            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "COMPTA = charges (compte de resultat) sur la periode affichee. TRESO = cash decaisse sur la MEME periode et le MEME metrage (512 hors virements internes SG<->BCI) : reel pour les mois CLOTURES, objectif previsionnel (max moyenne reelle / theorique) pour le mois en cours (prorata aux jours ouvres ecoules). Un mois complet et un mois en cours sont donc comparables. Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
+            h("div", { style: { flexBasis: "100%", fontSize: 10, color: "#71717a", fontStyle: "italic", marginTop: -2 } }, "ESTIME = calcul de l'app sur la periode affichee" + (calibCompta && flotteEntiere ? ", cale sur les vrais frais de la compta (" + calibCompta.mois.length + " derniers mois saisis : achats au metre, le reste au mois)" : "") + ". COMPTA = produits - charges du GRAND LIVRE (amortissements compris, etales par mois), toute l'entreprise, sur les mois deja saisis" + (comptaRepli ? " (periode pas encore en compta : cumul de l'annee)" : "") + " - survole la ligne pour le detail. TRESO = cash decaisse sur la MEME periode et le MEME metrage (512 hors virements internes SG<->BCI) : reel pour les mois CLOTURES, objectif previsionnel (max moyenne reelle / theorique) pour le mois en cours (prorata aux jours ouvres ecoules). Un mois complet et un mois en cours sont donc comparables. Ecart compta/treso normal : la treso inclut le capital des emprunts." + (decaissTresoPeriode == null ? " TRESO indisponible (pas de donnees compta) -> reimporter le FEC." : ""))
           ) : null,
           // (KPI "temps reel" retires : ils proratisaient les couts fixes aux jours
           //  travailles -> rentabilite optimiste trompeuse. Le cout au metre complet
@@ -46660,7 +46860,7 @@
               var ecrRes = await supabase.from("ecritures_compta")
                 .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                 .in("exercice", [yearFEC - 1, yearFEC])
-                .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+                .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.7%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
                 .order("id")
                 .range(fromFEC, fromFEC + 999);
               if (ecrRes.error) { console.warn("Table ecritures_compta:", ecrRes.error.message); break; }
@@ -46947,7 +47147,7 @@
                 var r = await supabase.from("ecritures_compta")
                   .select("date_ecriture,compte_code,debit,credit,lettrage,libelle,journal_code,piece")
                   .in("exercice", [yFEC - 1, yFEC])
-                  .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
+                  .or("compte_code.like.512%,compte_code.like.401%,compte_code.like.6%,compte_code.like.7%,compte_code.like.2%,compte_code.like.16%,compte_code.like.455%")
                   .order("id")
                   .range(offFEC, offFEC + 999);
                 if (r.error || !r.data || r.data.length === 0) break;
