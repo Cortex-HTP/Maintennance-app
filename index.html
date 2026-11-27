@@ -29429,10 +29429,23 @@
                 seuilTresoProjete != null ? h("div", { style: { fontSize: 10, color: "#a1a1aa", lineHeight: 1.3, marginTop: 1 } },
                   "A date : " + Math.round(seuilTresoMois).toLocaleString("fr-FR") + " m · " + (totalMetresAll >= seuilTresoMois ? "+" + Math.round(totalMetresAll - seuilTresoMois).toLocaleString("fr-FR") + " m" : "reste " + Math.round(seuilTresoMois - totalMetresAll).toLocaleString("fr-FR") + " m")
                 ) : null,
-                ligneCompta(comptaPer && comptaPer.nb > 0 && prixMetreEffectif > 0 ? Math.round(comptaPer.chargesTot / comptaPer.nb / prixMetreEffectif).toLocaleString("fr-FR") + " m / mois" : "—",
-                  comptaPer && comptaPer.resultat < 0 ? "#fda4af" : "#fde68a",
-                  comptaPer && comptaPer.nb > 0 ? "(" + fmtCaCompact(comptaPer.chargesTot / comptaPer.nb) + " de charges / mois)" : null),
-                infoCompta
+                // Seuil COMPTA = metres qu'il aurait fallu forer pour couvrir les charges
+                // au prix REELLEMENT comptabilise par metre (produits / metres), sur les
+                // memes mois. Compta negative => seuil AU-DESSUS du realise. (Avant :
+                // charges / prix contrat, par mois -> paraissait sous les autres seuils
+                // alors que l'ecart venait du facture.)
+                (function() {
+                  var okS = comptaPer && comptaPer.prod > 0 && comptaPer.metres > 0;
+                  var seuilC = okS ? comptaPer.chargesTot * comptaPer.metres / comptaPer.prod : null;
+                  var prixC = okS ? comptaPer.prod / comptaPer.metres : null;
+                  return h(React.Fragment, null,
+                    ligneCompta(seuilC != null ? Math.round(seuilC).toLocaleString("fr-FR") + " m" : "—",
+                      comptaPer && comptaPer.resultat < 0 ? "#fda4af" : "#fde68a",
+                      seuilC != null ? "(realise " + Math.round(comptaPer.metres).toLocaleString("fr-FR") + " m · " + (comptaPer.metres >= seuilC ? "+" + Math.round(comptaPer.metres - seuilC).toLocaleString("fr-FR") + " m" : "manque " + Math.round(seuilC - comptaPer.metres).toLocaleString("fr-FR") + " m") + ")" : null),
+                    prixC != null ? h("div", { style: { fontSize: 10, color: prixMetreEffectif > 0 && prixC < prixMetreEffectif * 0.95 ? "#fdba74" : "#a1a1aa", lineHeight: 1.3, marginTop: 1 } },
+                      "Facture en compta : " + Math.round(prixC).toLocaleString("fr-FR") + " F/m" + (prixMetreEffectif > 0 ? " (prix contrats " + Math.round(prixMetreEffectif).toLocaleString("fr-FR") + " F/m)" : "")) : null,
+                    infoCompta);
+                })()
               )
             ),
             // Cout au metre (compact, colorise)
